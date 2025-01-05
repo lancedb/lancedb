@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from .embeddings import EmbeddingFunctionConfig
 
 
-class FixedSizeListMixin(ABC):
+class FixedSizeListConstraintMixin(ABC):
     @staticmethod
     @abstractmethod
     def dim() -> int:
@@ -67,8 +67,8 @@ def vector(dim: int, value_type: pa.DataType = pa.float32()):
 
 def Vector(
     dim: int, value_type: pa.DataType = pa.float32(), nullable: bool = True
-) -> Type[FixedSizeListMixin]:
-    """Pydantic Vector Type.
+) -> Type[FixedSizeListConstraintMixin]:
+    """Pydantic Vector Constraint Type.
 
     !!! warning
         Experimental feature.
@@ -85,13 +85,14 @@ def Vector(
     Examples
     --------
 
+    >>> from typing import Annotated
     >>> import pydantic
-    >>> from lancedb.pydantic import Vector
+    >>> from lancedb.pydantic import Vector, FixedSizeList
     ...
     >>> class MyModel(pydantic.BaseModel):
     ...     id: int
     ...     url: str
-    ...     embeddings: Vector(768)
+    ...     embeddings: Annotated[FixedSizeList, Vector(768)]
     >>> schema = pydantic_to_schema(MyModel)
     >>> assert schema == pa.schema([
     ...     pa.field("id", pa.int64(), False),
@@ -101,7 +102,7 @@ def Vector(
     """
 
     # TODO: make a public parameterized type.
-    class FixedSizeList(list, FixedSizeListMixin):
+    class FixedSizeListConstraint(list, FixedSizeListConstraintMixin):
         def __repr__(self):
             return f"FixedSizeList(dim={dim})"
 
@@ -149,7 +150,10 @@ def Vector(
                 field_schema["maxItems"] = dim
                 field_schema["minItems"] = dim
 
-    return FixedSizeList
+    return FixedSizeListConstraint
+
+
+class FixedSizeList(list): ...
 
 
 def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
@@ -223,8 +227,15 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
             # Struct
             fields = _pydantic_model_to_fields(field.annotation)
             return pa.struct(fields)
-        elif issubclass(field.annotation, FixedSizeListMixin):
+        elif issubclass(field.annotation, FixedSizeListConstraintMixin):
             return pa.list_(field.annotation.value_arrow_type(), field.annotation.dim())
+        elif issubclass(field.annotation, FixedSizeList) and field.metadata:
+            metadata = field.metadata[0]
+            for metadata in field.metadata:
+                if inspect.isclass(metadata) and issubclass(
+                    metadata, FixedSizeListConstraintMixin
+                ):
+                    return pa.list_(metadata.value_arrow_type(), metadata.dim())
     return _py_type_to_arrow_type(field.annotation, field)
 
 
@@ -242,9 +253,20 @@ def is_nullable(field: FieldInfo) -> bool:
             if typ is type(None):
                 return True
     elif inspect.isclass(field.annotation) and issubclass(
-        field.annotation, FixedSizeListMixin
+        field.annotation, FixedSizeListConstraintMixin
     ):
         return field.annotation.nullable()
+    elif (
+        inspect.isclass(field.annotation)
+        and issubclass(field.annotation, FixedSizeList)
+        and field.metadata
+    ):
+        metadata = field.metadata[0]
+        for metadata in field.metadata:
+            if inspect.isclass(metadata) and issubclass(
+                metadata, FixedSizeListConstraintMixin
+            ):
+                return metadata.nullable()
     return False
 
 
