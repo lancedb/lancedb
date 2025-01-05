@@ -1813,6 +1813,12 @@ class AsyncFTSQuery(AsyncQueryBase):
                 self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
             )
 
+    async def to_arrow(self) -> pa.Table:
+        results = await super().to_arrow()
+        if self._reranker:
+            results = self._reranker.rerank_fts(results)
+        return results
+
 
 class AsyncVectorQuery(AsyncQueryBase):
     def __init__(self, inner: LanceVectorQuery):
@@ -1992,6 +1998,12 @@ class AsyncVectorQuery(AsyncQueryBase):
         return AsyncHybridQuery(
             self._inner.nearest_to_text({"query": query, "columns": columns})
         )
+
+    async def to_arrow(self) -> pa.Table:
+        results = await super().to_arrow()
+        if self._reranker:
+            results = self._reranker.rerank_vector(results)
+        return results
 
 
 class AsyncHybridQuery(AsyncQueryBase):
