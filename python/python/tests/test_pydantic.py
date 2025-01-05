@@ -4,12 +4,18 @@
 import json
 import sys
 from datetime import date, datetime
-from typing import List, Optional, Tuple
+from typing import Annotated, List, Optional, Tuple
 
 import pyarrow as pa
 import pydantic
 import pytest
-from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, Vector, pydantic_to_schema
+from lancedb.pydantic import (
+    PYDANTIC_VERSION,
+    FixedSizeList,
+    LanceModel,
+    Vector,
+    pydantic_to_schema,
+)
 from pydantic import Field
 
 
@@ -161,7 +167,7 @@ def test_pydantic_to_arrow_py38():
     assert schema == expect_schema
 
 
-def test_nullable_vector():
+def test_nullable_vector_old_style():
     class NullableModel(pydantic.BaseModel):
         vec: Vector(16, nullable=False)
 
@@ -181,9 +187,29 @@ def test_nullable_vector():
     assert schema == pa.schema([pa.field("vec", pa.list_(pa.float32(), 16), True)])
 
 
+def test_nullable_vector():
+    class NullableModel(pydantic.BaseModel):
+        vec: Annotated[FixedSizeList, Vector(dim=16, nullable=False)]
+
+    schema = pydantic_to_schema(NullableModel)
+    assert schema == pa.schema([pa.field("vec", pa.list_(pa.float32(), 16), False)])
+
+    class DefaultModel(pydantic.BaseModel):
+        vec: Annotated[FixedSizeList, Vector(dim=16)]
+
+    schema = pydantic_to_schema(DefaultModel)
+    assert schema == pa.schema([pa.field("vec", pa.list_(pa.float32(), 16), True)])
+
+    class NotNullableModel(pydantic.BaseModel):
+        vec: Annotated[FixedSizeList, Vector(dim=16)]
+
+    schema = pydantic_to_schema(NotNullableModel)
+    assert schema == pa.schema([pa.field("vec", pa.list_(pa.float32(), 16), True)])
+
+
 def test_fixed_size_list_field():
     class TestModel(pydantic.BaseModel):
-        vec: Vector(16)
+        vec: Annotated[FixedSizeList, Vector(dim=16)]
         li: List[int]
 
     data = TestModel(vec=list(range(16)), li=[1, 2, 3])
@@ -230,7 +256,7 @@ def test_fixed_size_list_field():
 
 def test_fixed_size_list_validation():
     class TestModel(pydantic.BaseModel):
-        vec: Vector(8)
+        vec: Annotated[FixedSizeList, Vector(dim=8)]
 
     with pytest.raises(pydantic.ValidationError):
         TestModel(vec=range(9))
@@ -243,7 +269,7 @@ def test_fixed_size_list_validation():
 
 def test_lance_model():
     class TestModel(LanceModel):
-        vector: Vector(16) = Field(default=[0.0] * 16)
+        vector: Annotated[FixedSizeList, Vector(16)] = Field(default=[0.0] * 16)
         li: List[int] = Field(default=[1, 2, 3])
 
     schema = pydantic_to_schema(TestModel)
