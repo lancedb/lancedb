@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from datetime import date, datetime
 from typing import (
     TYPE_CHECKING,
-    Annotated,  # needed for evaluation of ForwardRef Annotation fields
+    Annotated,  # noqa: F401 # needed for evaluation of ForwardRef Annotation fields
     Any,
     Callable,
     Dict,
@@ -269,21 +269,16 @@ def is_nullable(field: FieldInfo) -> bool:
         for typ in args:
             if typ is type(None):
                 return True
-    elif inspect.isclass(field.annotation) and issubclass(
-        field.annotation, FixedSizeListConstraintMixin
-    ):
-        return field.annotation.nullable()
-    elif (
-        inspect.isclass(field.annotation)
-        and issubclass(field.annotation, FixedSizeList)
-        and field.metadata
-    ):
-        metadata = field.metadata[0]
-        for metadata in field.metadata:
-            if inspect.isclass(metadata) and issubclass(
-                metadata, FixedSizeListConstraintMixin
-            ):
-                return metadata.nullable()
+    elif inspect.isclass(field.annotation):
+        if issubclass(field.annotation, FixedSizeListConstraintMixin):
+            return field.annotation.nullable()
+        elif issubclass(field.annotation, FixedSizeList) and field.metadata:
+            metadata = field.metadata[0]
+            for metadata in field.metadata:
+                if inspect.isclass(metadata) and issubclass(
+                    metadata, FixedSizeListConstraintMixin
+                ):
+                    return metadata.nullable()
     return False
 
 
