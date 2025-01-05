@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import sys
 import types
@@ -12,6 +13,7 @@ from abc import ABC, abstractmethod
 from datetime import date, datetime
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     Callable,
     Dict,
@@ -65,7 +67,7 @@ def vector(dim: int, value_type: pa.DataType = pa.float32()):
     return Vector(dim, value_type)
 
 
-def Vector(
+def _Vector(
     dim: int, value_type: pa.DataType = pa.float32(), nullable: bool = True
 ) -> Type[FixedSizeListMixin]:
     """Pydantic Vector Type.
@@ -152,6 +154,89 @@ def Vector(
     return FixedSizeList
 
 
+_PA_FLOAT32 = pa.float32()
+
+
+class Vector(list):
+    """Pydantic Vector Type.
+
+    Examples
+    --------
+
+    >>> from typing import Annotated
+    >>> import pydantic
+    >>> from lancedb.pydantic import Vector, VectorConstraints
+    ...
+    >>> class MyModel(pydantic.BaseModel):
+    ...     id: int
+    ...     url: str
+    ...     embeddings: Annotated[Vector, VectorConstraints(dim=768)]
+    >>> schema = pydantic_to_schema(MyModel)
+    >>> assert schema == pa.schema([
+    ...     pa.field("id", pa.int64(), False),
+    ...     pa.field("url", pa.utf8(), False),
+    ...     pa.field("embeddings", pa.list_(pa.float32(), 768))
+    ... ])
+    """
+
+    def __new__(
+        cls, dim: int, value_type: pa.DataType = _PA_FLOAT32, nullable: bool = True
+    ):
+        from warnings import warn
+
+        message = """Instantiating lancedb.pydantic.Vector is deprecated, \
+and it will be an Error in future release.  Use typing.Annotated with constraints.
+e.g. typing.Annotated[Vector, lancedb.pydantic.VectorConstraints(dim=768)]"""
+
+        warn(
+            message,
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        # assert isinstance(dim, int)
+        if sys.version_info < (3, 9) or PYDANTIC_VERSION.major < 2:
+            return _Vector(dim, value_type, nullable)
+        else:
+            return Annotated[
+                Vector,
+                VectorConstraints(dim=dim, value_type=value_type, nullable=nullable),
+            ]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class VectorConstraints:
+    """
+    Parameters
+    ----------
+    dim : int
+        The dimension of the vector.
+    value_type : pyarrow.DataType, optional
+        The value type of the vector, by default pa.float32()
+    nullable : bool, optional
+        Whether the vector is nullable, by default it is True.
+    """
+
+    dim: int
+    """The dimension of the vector."""
+    value_type: pa.DataType = dataclasses.field(default=pa.float32(), repr=False)
+    """The value type of the vector, by default pa.float32()"""
+    nullable: bool = dataclasses.field(default=True, repr=False)
+
+    def __get_pydantic_core_schema__(
+        self,
+        source_type: Any,
+        handler: pydantic.GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        return core_schema.no_info_after_validator_function(
+            Vector,
+            core_schema.list_schema(
+                min_length=self.dim,
+                max_length=self.dim,
+                items_schema=core_schema.float_schema(),
+            ),
+        )
+
+
 def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     """Convert a field with native Python type to Arrow data type.
 
@@ -225,6 +310,9 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
             return pa.struct(fields)
         elif issubclass(field.annotation, FixedSizeListMixin):
             return pa.list_(field.annotation.value_arrow_type(), field.annotation.dim())
+        elif issubclass(field.annotation, Vector) and field.metadata:
+            metadata: VectorConstraints = field.metadata[0]
+            return pa.list_(metadata.value_type, metadata.dim)
     return _py_type_to_arrow_type(field.annotation, field)
 
 
@@ -241,10 +329,12 @@ def is_nullable(field: FieldInfo) -> bool:
         for typ in args:
             if typ is type(None):
                 return True
-    elif inspect.isclass(field.annotation) and issubclass(
-        field.annotation, FixedSizeListMixin
-    ):
-        return field.annotation.nullable()
+    elif inspect.isclass(field.annotation):
+        if issubclass(field.annotation, FixedSizeListMixin):
+            return field.annotation.nullable()
+        elif issubclass(field.annotation, Vector) and field.metadata:
+            metadata: VectorConstraints = field.metadata[0]
+            return metadata.nullable
     return False
 
 
@@ -297,11 +387,11 @@ class LanceModel(pydantic.BaseModel):
     Examples
     --------
     >>> import lancedb
-    >>> from lancedb.pydantic import LanceModel, Vector
+    >>> from lancedb.pydantic import LanceModel, Vector, VectorConstraints
     >>>
     >>> class TestModel(LanceModel):
     ...     name: str
-    ...     vector: Vector(2)
+    ...     vector: Annotated[Vector, VectorConstraints(dim=2)]
     ...
     >>> db = lancedb.connect("./example")
     >>> table = db.create_table("test", schema=TestModel.to_arrow_schema())
