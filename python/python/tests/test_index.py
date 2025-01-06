@@ -8,7 +8,7 @@ import pyarrow as pa
 import pytest
 import pytest_asyncio
 from lancedb import AsyncConnection, AsyncTable, connect_async
-from lancedb.index import BTree, IvfPq, Bitmap, LabelList, HnswPq, HnswSq
+from lancedb.index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq
 
 
 @pytest_asyncio.fixture
@@ -39,6 +39,27 @@ async def some_table(db_async):
     return await db_async.create_table(
         "some_table",
         data,
+    )
+
+
+@pytest_asyncio.fixture
+async def binary_table(db_async):
+    data = [
+        {
+            "id": i,
+            "vector": [i] * 128,
+        }
+        for i in range(NROWS)
+    ]
+    return await db_async.create_table(
+        "binary_table",
+        data,
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.uint8(), 128)),
+            ]
+        ),
     )
 
 
@@ -143,3 +164,27 @@ async def test_create_hnswsq_index(some_table: AsyncTable):
     await some_table.create_index("vector", config=HnswSq(num_partitions=10))
     indices = await some_table.list_indices()
     assert len(indices) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_index_with_binary_vectors(binary_table: AsyncTable):
+    await binary_table.create_index(
+        "vector", config=IvfFlat(distance_type="hamming", num_partitions=10)
+    )
+    indices = await binary_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "IvfFlat"
+    assert indices[0].columns == ["vector"]
+    assert indices[0].name == "vector_idx"
+
+    stats = await binary_table.index_stats("vector_idx")
+    assert stats.index_type == "IVF_FLAT"
+    assert stats.distance_type == "hamming"
+    assert stats.num_indexed_rows == await binary_table.count_rows()
+    assert stats.num_unindexed_rows == 0
+    assert stats.num_indices == 1
+
+    # the dataset contains vectors with all values from 0 to 255
+    for v in range(256):
+        res = await binary_table.query().nearest_to([v] * 128).to_arrow()
+        assert res["id"][0].as_py() == v

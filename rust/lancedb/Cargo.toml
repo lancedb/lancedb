@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.14.1-beta.6"
+version = "0.14.2-beta.0"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true

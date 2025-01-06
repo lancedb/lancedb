@@ -210,6 +210,8 @@ impl<S: HttpSend> RemoteTable<S> {
         body["prefilter"] = query.base.prefilter.into();
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
         body["nprobes"] = query.nprobes.into();
+        body["lower_bound"] = query.lower_bound.into();
+        body["upper_bound"] = query.upper_bound.into();
         body["ef"] = query.ef.into();
         body["refine_factor"] = query.refine_factor.into();
         if let Some(vector_column) = query.column.as_ref() {
@@ -563,6 +565,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let (index_type, distance_type) = match index.index {
             // TODO: Should we pass the actual index parameters? SaaS does not
             // yet support them.
+            Index::IvfFlat(index) => ("IVF_FLAT", Some(index.distance_type)),
             Index::IvfPq(index) => ("IVF_PQ", Some(index.distance_type)),
             Index::IvfHnswSq(index) => ("IVF_HNSW_SQ", Some(index.distance_type)),
             Index::BTree(_) => ("BTREE", None),
@@ -873,6 +876,7 @@ mod tests {
     use lance_index::scalar::FullTextSearchQuery;
     use reqwest::Body;
 
+    use crate::index::vector::IvfFlatIndexBuilder;
     use crate::{
         index::{vector::IvfPqIndexBuilder, Index, IndexStatistics, IndexType},
         query::{ExecutableQuery, QueryBase},
@@ -1302,6 +1306,8 @@ mod tests {
                 "prefilter": true,
                 "distance_type": "l2",
                 "nprobes": 20,
+                "lower_bound": Option::<f32>::None,
+                "upper_bound": Option::<f32>::None,
                 "k": 10,
                 "ef": Option::<usize>::None,
                 "refine_factor": null,
@@ -1351,6 +1357,8 @@ mod tests {
                 "bypass_vector_index": true,
                 "columns": ["a", "b"],
                 "nprobes": 12,
+                "lower_bound": Option::<f32>::None,
+                "upper_bound": Option::<f32>::None,
                 "ef": Option::<usize>::None,
                 "refine_factor": 2,
                 "version": null,
@@ -1489,6 +1497,11 @@ mod tests {
     #[tokio::test]
     async fn test_create_index() {
         let cases = [
+            (
+                "IVF_FLAT",
+                Some("hamming"),
+                Index::IvfFlat(IvfFlatIndexBuilder::default().distance_type(DistanceType::Hamming)),
+            ),
             ("IVF_PQ", Some("l2"), Index::IvfPq(Default::default())),
             (
                 "IVF_PQ",

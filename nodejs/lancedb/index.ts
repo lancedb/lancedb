@@ -62,6 +62,7 @@ export { Index, IndexOptions, IvfPqOptions } from "./indices";
 export { Table, AddDataOptions, UpdateOptions, OptimizeOptions } from "./table";
 
 export * as embedding from "./embedding";
+export * as rerankers from "./rerankers";
 
 /**
  * Connect to a LanceDB instance at the given URI.

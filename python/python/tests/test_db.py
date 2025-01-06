@@ -508,6 +508,32 @@ def test_delete_table(tmp_db: lancedb.DBConnection):
     tmp_db.drop_table("does_not_exist", ignore_missing=True)
 
 
+@pytest.mark.asyncio
+async def test_delete_table_async(tmp_db: lancedb.DBConnection):
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+
+    tmp_db.create_table("test", data=data)
+
+    with pytest.raises(Exception):
+        tmp_db.create_table("test", data=data)
+
+    assert tmp_db.table_names() == ["test"]
+
+    tmp_db.drop_table("test")
+    assert tmp_db.table_names() == []
+
+    tmp_db.create_table("test", data=data)
+    assert tmp_db.table_names() == ["test"]
+
+    tmp_db.drop_table("does_not_exist", ignore_missing=True)
+
+
 def test_drop_database(tmp_db: lancedb.DBConnection):
     data = pd.DataFrame(
         {
@@ -681,3 +707,25 @@ def test_create_table_with_invalid_names(tmp_db: lancedb.DBConnection):
     with pytest.raises(ValueError):
         tmp_db.create_table("foo$$bar", data)
     tmp_db.create_table("foo.bar", data)
+
+
+def test_bypass_vector_index_sync(tmp_db: lancedb.DBConnection):
+    data = [{"vector": np.random.rand(32)} for _ in range(512)]
+    sample_key = data[100]["vector"]
+    table = tmp_db.create_table(
+        "test",
+        data,
+    )
+
+    table.create_index(
+        num_partitions=2,
+        num_sub_vectors=2,
+    )
+
+    plan_with_index = table.search(sample_key).explain_plan(verbose=True)
+    assert "ANN" in plan_with_index
+
+    plan_without_index = (
+        table.search(sample_key).bypass_vector_index().explain_plan(verbose=True)
+    )
+    assert "KNN" in plan_without_index

@@ -34,7 +34,7 @@ from lance.dependencies import _check_for_hugging_face
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from .index import BTree, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -61,11 +61,12 @@ from .index import lang_mapping
 
 
 if TYPE_CHECKING:
-    import PIL
-    from lance.dataset import CleanupStats, ReaderLike
-    from ._lancedb import Table as LanceDBTable, OptimizeStats
+    from ._lancedb import Table as LanceDBTable, OptimizeStats, CompactionStats
     from .db import LanceDBConnection
     from .index import IndexConfig
+    from lance.dataset import CleanupStats, ReaderLike
+    import pandas
+    import PIL
 
 pd = safe_import_pandas()
 pl = safe_import_polars()
@@ -84,7 +85,6 @@ def _pd_schema_without_embedding_funcs(
     )
     if not embedding_functions:
         return schema
-    columns = set(columns)
     return pa.schema([field for field in schema if field.name in columns])
 
 
@@ -119,7 +119,7 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
             return pa.Table.from_batches(data, schema=schema)
         else:
             return pa.Table.from_pylist(data, schema=schema)
-    elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
+    elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):  # type: ignore
         raw_schema = _pd_schema_without_embedding_funcs(schema, data.columns.to_list())
         table = pa.Table.from_pandas(data, preserve_index=False, schema=raw_schema)
         # Do not serialize Pandas metadata
@@ -160,7 +160,7 @@ def _sanitize_data(
     metadata: Optional[dict] = None,  # embedding metadata
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
-):
+) -> Tuple[pa.Table, pa.Schema]:
     data = _coerce_to_table(data, schema)
 
     if metadata:
@@ -178,13 +178,17 @@ def _sanitize_data(
 
 
 def sanitize_create_table(
-    data, schema, metadata=None, on_bad_vectors="error", fill_value=0.0
+    data,
+    schema: Union[pa.Schema, LanceModel],
+    metadata=None,
+    on_bad_vectors: str = "error",
+    fill_value: float = 0.0,
 ):
     if inspect.isclass(schema) and issubclass(schema, LanceModel):
         # convert LanceModel to pyarrow schema
         # note that it's possible this contains
         # embedding function metadata already
-        schema = schema.to_arrow_schema()
+        schema: pa.Schema = schema.to_arrow_schema()
 
     if data is not None:
         if metadata is None and schema is not None:
@@ -270,41 +274,6 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
                     pa.array(col_data, type=dtype),
                 )
     return data
-
-
-def _generator_to_data_and_schema(
-    data: Iterable,
-) -> Tuple[Iterable[pa.RecordBatch], pa.Schema]:
-    def _with_first_generator(first, data):
-        yield first
-        yield from data
-
-    first = next(data, None)
-    schema = None
-    if isinstance(first, pa.RecordBatch):
-        schema = first.schema
-        data = _with_first_generator(first, data)
-    elif isinstance(first, pa.Table):
-        schema = first.schema
-        data = _with_first_generator(first.to_batches(), data)
-    return data, schema
-
-
-def _to_record_batch_generator(
-    data: Iterable,
-    schema,
-    metadata,
-    on_bad_vectors,
-    fill_value,
-):
-    for batch in data:
-        # always convert to table because we need to sanitize the data
-        # and do things like add the vector column etc
-        if isinstance(batch, pa.RecordBatch):
-            batch = pa.Table.from_batches([batch])
-        batch, _ = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
-        for b in batch.to_batches():
-            yield b
 
 
 def _table_path(base: str, table_name: str) -> str:
@@ -404,7 +373,7 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    def to_pandas(self) -> "pd.DataFrame":
+    def to_pandas(self) -> "pandas.DataFrame":
         """Return the table as a pandas DataFrame.
 
         Returns
@@ -433,7 +402,9 @@ class Table(ABC):
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         *,
-        index_type: Literal["IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"] = "IVF_PQ",
+        index_type: Literal[
+            "IVF_FLAT", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = "IVF_PQ",
         num_bits: int = 8,
         max_iterations: int = 50,
         sample_rate: int = 256,
@@ -446,8 +417,9 @@ class Table(ABC):
         ----------
         metric: str, default "L2"
             The distance metric to use when creating the index.
-            Valid values are "L2", "cosine", or "dot".
+            Valid values are "L2", "cosine", "dot", or "hamming".
             L2 is euclidean distance.
+            Hamming is available only for binary vectors.
         num_partitions: int, default 256
             The number of IVF partitions to use when creating the index.
             Default is 256.
@@ -534,8 +506,8 @@ class Table(ABC):
     def create_fts_index(
         self,
         field_names: Union[str, List[str]],
-        ordering_field_names: Union[str, List[str]] = None,
         *,
+        ordering_field_names: Optional[Union[str, List[str]]] = None,
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         use_tantivy: bool = True,
@@ -787,8 +759,7 @@ class Table(ABC):
     @abstractmethod
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
-    ) -> pa.RecordBatchReader:
-        pass
+    ) -> pa.RecordBatchReader: ...
 
     @abstractmethod
     def _do_merge(
@@ -797,8 +768,7 @@ class Table(ABC):
         new_data: DATA,
         on_bad_vectors: str,
         fill_value: float,
-    ):
-        pass
+    ): ...
 
     @abstractmethod
     def delete(self, where: str):
@@ -1089,7 +1059,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def checkout(self):
+    def checkout(self, version: int):
         """
         Checks out a specific version of the Table
 
@@ -1118,7 +1088,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def list_versions(self):
+    def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
 
     @cached_property
@@ -1241,7 +1211,7 @@ class LanceTable(Table):
             A PyArrow schema object."""
         return LOOP.run(self._table.schema())
 
-    def list_versions(self):
+    def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
 
@@ -1294,7 +1264,7 @@ class LanceTable(Table):
         """
         LOOP.run(self._table.checkout_latest())
 
-    def restore(self, version: int = None):
+    def restore(self, version: Optional[int] = None):
         """Restore a version of the table. This is an in-place operation.
 
         This creates a new version where the data is equivalent to the
@@ -1335,7 +1305,7 @@ class LanceTable(Table):
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.count_rows()
 
     def __repr__(self) -> str:
@@ -1408,7 +1378,9 @@ class LanceTable(Table):
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         num_bits: int = 8,
-        index_type: Literal["IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"] = "IVF_PQ",
+        index_type: Literal[
+            "IVF_FLAT", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = "IVF_PQ",
         max_iterations: int = 50,
         sample_rate: int = 256,
         m: int = 20,
@@ -1432,6 +1404,13 @@ class LanceTable(Table):
             )
             self.checkout_latest()
             return
+        elif index_type == "IVF_FLAT":
+            config = IvfFlat(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+            )
         elif index_type == "IVF_PQ":
             config = IvfPq(
                 distance_type=metric,
@@ -1494,8 +1473,8 @@ class LanceTable(Table):
     def create_fts_index(
         self,
         field_names: Union[str, List[str]],
-        ordering_field_names: Union[str, List[str]] = None,
         *,
+        ordering_field_names: Optional[Union[str, List[str]]] = None,
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         use_tantivy: bool = True,
@@ -1582,6 +1561,7 @@ class LanceTable(Table):
             writer_heap_size=writer_heap_size,
         )
 
+    @staticmethod
     def infer_tokenizer_configs(tokenizer_name: str) -> dict:
         if tokenizer_name == "default":
             return {
@@ -1747,7 +1727,7 @@ class LanceTable(Table):
         )
 
     @overload
-    def search(
+    def search(  # type: ignore
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
@@ -1883,11 +1863,11 @@ class LanceTable(Table):
         name: str,
         data: Optional[DATA] = None,
         schema: Optional[pa.Schema] = None,
-        mode: Literal["create", "overwrite", "append"] = "create",
+        mode: Literal["create", "overwrite"] = "create",
         exist_ok: bool = False,
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        embedding_functions: List[EmbeddingFunctionConfig] = None,
+        embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
@@ -2053,7 +2033,7 @@ class LanceTable(Table):
             older_than, delete_unverified=delete_unverified
         )
 
-    def compact_files(self, *args, **kwargs):
+    def compact_files(self, *args, **kwargs) -> CompactionStats:
         """
         Run the compaction process on the table.
 
@@ -2438,7 +2418,7 @@ def _process_iterator(data: Iterable, schema: Optional[pa.Schema] = None) -> pa.
             if batch_table.schema != schema:
                 try:
                     batch_table = batch_table.cast(schema)
-                except pa.lib.ArrowInvalid:
+                except pa.lib.ArrowInvalid:  # type: ignore
                     raise ValueError(
                         f"Input iterator yielded a batch with schema that "
                         f"does not match the expected schema.\nExpected:\n{schema}\n"
@@ -2619,7 +2599,7 @@ class AsyncTable:
         *,
         replace: Optional[bool] = None,
         config: Optional[
-            Union[IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
+            Union[IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
         ] = None,
     ):
         """Create an index to speed up queries
@@ -2648,7 +2628,7 @@ class AsyncTable:
         """
         if config is not None:
             if not isinstance(
-                config, (IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS)
+                config, (IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS)
             ):
                 raise TypeError(
                     "config must be an instance of IvfPq, HnswPq, HnswSq, BTree,"
@@ -2698,16 +2678,17 @@ class AsyncTable:
             on_bad_vectors = "error"
         if fill_value is None:
             fill_value = 0.0
-        data, _ = _sanitize_data(
+        table_and_schema: Tuple[pa.Table, pa.Schema] = _sanitize_data(
             data,
             schema,
             metadata=schema.metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
-        if isinstance(data, pa.Table):
-            data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
-        await self._inner.add(data, mode)
+        tbl, schema = table_and_schema
+        if isinstance(tbl, pa.Table):
+            data = pa.RecordBatchReader.from_batches(schema, tbl.to_batches())
+        await self._inner.add(data, mode or "append")
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """
@@ -2805,6 +2786,7 @@ class AsyncTable:
                 async_query.nearest_to(query.vector)
                 .distance_type(query.metric)
                 .nprobes(query.nprobes)
+                .distance_range(query.lower_bound, query.upper_bound)
             )
             if query.refine_factor:
                 async_query = async_query.refine_factor(query.refine_factor)
@@ -2812,6 +2794,8 @@ class AsyncTable:
                 async_query = async_query.column(query.vector_column)
             if query.ef:
                 async_query = async_query.ef(query.ef)
+            if not query.use_index:
+                async_query = async_query.bypass_vector_index()
 
         if not query.prefilter:
             async_query = async_query.postfilter()
@@ -2963,7 +2947,7 @@ class AsyncTable:
 
         return await self._inner.update(updates_sql, where)
 
-    async def add_columns(self, transforms: Dict[str, str]):
+    async def add_columns(self, transforms: dict[str, str]):
         """
         Add new columns with defined values.
 
@@ -2976,7 +2960,7 @@ class AsyncTable:
         """
         await self._inner.add_columns(list(transforms.items()))
 
-    async def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
+    async def alter_columns(self, *alterations: Iterable[dict[str, Any]]):
         """
         Alter column names and nullability.
 
@@ -3035,7 +3019,7 @@ class AsyncTable:
 
         return versions
 
-    async def checkout(self, version):
+    async def checkout(self, version: int):
         """
         Checks out a specific version of the Table
 
@@ -3134,9 +3118,12 @@ class AsyncTable:
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
+        cleanup_since_ms: Optional[int] = None
         if cleanup_older_than is not None:
-            cleanup_older_than = round(cleanup_older_than.total_seconds() * 1000)
-        return await self._inner.optimize(cleanup_older_than, delete_unverified)
+            cleanup_since_ms = round(cleanup_older_than.total_seconds() * 1000)
+        return await self._inner.optimize(
+            cleanup_since_ms=cleanup_since_ms, delete_unverified=delete_unverified
+        )
 
     async def list_indices(self) -> Iterable[IndexConfig]:
         """

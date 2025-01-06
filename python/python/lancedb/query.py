@@ -115,6 +115,9 @@ class Query(pydantic.BaseModel):
     # e.g. `{"nprobes": "10", "refine_factor": "10"}`
     nprobes: int = 10
 
+    lower_bound: Optional[float] = None
+    upper_bound: Optional[float] = None
+
     # Refine factor.
     refine_factor: Optional[int] = None
 
@@ -125,6 +128,9 @@ class Query(pydantic.BaseModel):
     fast_search: bool = False
 
     ef: Optional[int] = None
+
+    # Default is true. Set to false to enforce a brute force search.
+    use_index: bool = True
 
 
 class LanceQueryBuilder(ABC):
@@ -253,6 +259,7 @@ class LanceQueryBuilder(ABC):
         self._vector = None
         self._text = None
         self._ef = None
+        self._use_index = True
 
     @deprecation.deprecated(
         deprecated_in="0.3.1",
@@ -494,6 +501,7 @@ class LanceQueryBuilder(ABC):
                 "metric": self._metric,
                 "nprobes": self._nprobes,
                 "refine_factor": self._refine_factor,
+                "use_index": self._use_index,
             },
             prefilter=self._prefilter,
             filter=self._str_query,
@@ -582,6 +590,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._query = query
         self._metric = "L2"
         self._nprobes = 20
+        self._lower_bound = None
+        self._upper_bound = None
         self._refine_factor = None
         self._vector_column = vector_column
         self._prefilter = False
@@ -625,6 +635,30 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The LanceQueryBuilder object.
         """
         self._nprobes = nprobes
+        return self
+
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> LanceVectorQueryBuilder:
+        """Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._lower_bound = lower_bound
+        self._upper_bound = upper_bound
         return self
 
     def ef(self, ef: int) -> LanceVectorQueryBuilder:
@@ -706,12 +740,15 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             metric=self._metric,
             columns=self._columns,
             nprobes=self._nprobes,
+            lower_bound=self._lower_bound,
+            upper_bound=self._upper_bound,
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
+            use_index=self._use_index,
         )
         result_set = self._table._execute_query(query, batch_size)
         if self._reranker is not None:
@@ -783,6 +820,24 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         if query_string is not None and not isinstance(query_string, str):
             raise ValueError("Reranking currently only supports string queries")
         self._str_query = query_string if query_string is not None else self._str_query
+        return self
+
+    def bypass_vector_index(self) -> LanceVectorQueryBuilder:
+        """
+        If this is called then any vector index is skipped
+
+        An exhaustive (flat) search will be performed.  The query vector will
+        be compared to every vector in the table.  At high scales this can be
+        expensive.  However, this is often still useful.  For example, skipping
+        the vector index can give you ground truth results which you can use to
+        calculate your recall to select an appropriate value for nprobes.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceVectorQueryBuilder object.
+        """
+        self._use_index = False
         return self
 
 
@@ -1091,6 +1146,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.refine_factor(self._refine_factor)
         if self._ef:
             self._vector_query.ef(self._ef)
+        if not self._use_index:
+            self._vector_query.bypass_vector_index()
 
         with ThreadPoolExecutor() as executor:
             fts_future = executor.submit(self._fts_query.with_row_id(True).to_arrow)
@@ -1241,6 +1298,31 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._nprobes = nprobes
         return self
 
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> LanceHybridQueryBuilder:
+        """
+        Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._lower_bound = lower_bound
+        self._upper_bound = upper_bound
+        return self
+
     def ef(self, ef: int) -> LanceHybridQueryBuilder:
         """
         Set the number of candidates to consider during search.
@@ -1304,6 +1386,24 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def text(self, text: str) -> LanceHybridQueryBuilder:
         self._text = text
+        return self
+
+    def bypass_vector_index(self) -> LanceHybridQueryBuilder:
+        """
+        If this is called then any vector index is skipped
+
+        An exhaustive (flat) search will be performed.  The query vector will
+        be compared to every vector in the table.  At high scales this can be
+        expensive.  However, this is often still useful.  For example, skipping
+        the vector index can give you ground truth results which you can use to
+        calculate your recall to select an appropriate value for nprobes.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._use_index = False
         return self
 
 
@@ -1510,6 +1610,32 @@ class AsyncQueryBase(object):
             If unspecified, do not flatten the nested columns.
         """
         return (flatten_columns(await self.to_arrow(), flatten)).to_pandas()
+
+    async def to_polars(self) -> "pl.DataFrame":
+        """
+        Execute the query and collect the results into a Polars DataFrame.
+
+        This method will collect all results into memory before returning.  If you
+        expect a large number of results, you may want to use
+        [to_batches][lancedb.query.AsyncQueryBase.to_batches] and convert each batch to
+        polars separately.
+
+        Examples
+        --------
+
+        >>> import asyncio
+        >>> import polars as pl
+        >>> from lancedb import connect_async
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", data=[{"a": 1, "b": 2}])
+        ...     async for batch in await table.query().to_batches():
+        ...         batch_df = pl.from_arrow(batch)
+        >>> asyncio.run(doctest_example())
+        """
+        import polars as pl
+
+        return pl.from_arrow(await self.to_arrow())
 
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
@@ -1802,6 +1928,29 @@ class AsyncVectorQuery(AsyncQueryBase):
         you the desired recall.
         """
         self._inner.nprobes(nprobes)
+        return self
+
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> AsyncVectorQuery:
+        """Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        AsyncVectorQuery
+            The AsyncVectorQuery object.
+        """
+        self._inner.distance_range(lower_bound, upper_bound)
         return self
 
     def ef(self, ef: int) -> AsyncVectorQuery:

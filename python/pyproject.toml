@@ -1,9 +1,10 @@
 [project]
 name = "lancedb"
 # version in Cargo.toml
+dynamic = ["version"]
 dependencies = [
     "deprecation",
-    "pylance==0.21.0b5",
+    "pylance==0.21.1b1",
     "tqdm>=4.27.0",
     "pydantic>=1.10",
     "packaging",
@@ -52,8 +53,9 @@ tests = [
     "pytz",
     "polars>=0.19, <=1.3.0",
     "tantivy",
+    "pyarrow-stubs"
 ]
-dev = ["ruff", "pre-commit"]
+dev = ["ruff", "pre-commit", "pyright"]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 clip = ["torch", "pillow", "open-clip"]
 embeddings = [
@@ -93,3 +95,7 @@ markers = [
     "asyncio",
     "s3_test",
 ]
+
+[tool.pyright]
+include = ["python/lancedb/table.py"]
+pythonVersion = "3.12"

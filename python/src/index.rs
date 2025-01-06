@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use lancedb::index::vector::IvfFlatIndexBuilder;
 use lancedb::index::{
     scalar::{BTreeIndexBuilder, FtsIndexBuilder, TokenizerConfig},
     vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
@@ -58,6 +59,18 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .with_position(params.with_position);
                 opts.tokenizer_configs = inner_opts;
                 Ok(LanceDbIndex::FTS(opts))
+            },
+            "IvfFlat" => {
+                let params = source.extract::<IvfFlatParams>()?;
+                let distance_type = parse_distance_type(params.distance_type)?;
+                let mut ivf_flat_builder = IvfFlatIndexBuilder::default()
+                    .distance_type(distance_type)
+                    .max_iterations(params.max_iterations)
+                    .sample_rate(params.sample_rate);
+                if let Some(num_partitions) = params.num_partitions {
+                    ivf_flat_builder = ivf_flat_builder.num_partitions(num_partitions);
+                }
+                Ok(LanceDbIndex::IvfFlat(ivf_flat_builder))
             },
             "IvfPq" => {
                 let params = source.extract::<IvfPqParams>()?;
@@ -127,6 +140,14 @@ struct FtsParams {
     stem: bool,
     remove_stop_words: bool,
     ascii_folding: bool,
+}
+
+#[derive(FromPyObject)]
+struct IvfFlatParams {
+    distance_type: String,
+    num_partitions: Option<u32>,
+    max_iterations: u32,
+    sample_rate: u32,
 }
 
 #[derive(FromPyObject)]
