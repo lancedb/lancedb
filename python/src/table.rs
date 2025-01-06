@@ -97,10 +97,12 @@ impl Table {
         self.name.clone()
     }
 
+    /// Returns True if the table is open, False if it is closed.
     pub fn is_open(&self) -> bool {
         self.inner.is_some()
     }
 
+    /// Closes the table, releasing any resources associated with it.
     pub fn close(&mut self) {
         self.inner.take();
     }
@@ -301,6 +303,7 @@ impl Table {
         Query::new(self.inner_ref().unwrap().query())
     }
 
+    /// Optimize the on-disk data by compacting and pruning old data, for better performance.
     #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None))]
     pub fn optimize(
         self_: PyRef<'_, Self>,

@@ -755,6 +755,10 @@ pub struct VectorQuery {
     // IVF PQ - ANN search.
     pub(crate) query_vector: Vec<Arc<dyn Array>>,
     pub(crate) nprobes: usize,
+    // The lower bound (inclusive) of the distance to search for.
+    pub(crate) lower_bound: Option<f32>,
+    // The upper bound (exclusive) of the distance to search for.
+    pub(crate) upper_bound: Option<f32>,
     // The number of candidates to return during the refine step for HNSW,
     // defaults to 1.5 * limit.
     pub(crate) ef: Option<usize>,
@@ -771,6 +775,8 @@ impl VectorQuery {
             column: None,
             query_vector: Vec::new(),
             nprobes: 20,
+            lower_bound: None,
+            upper_bound: None,
             ef: None,
             refine_factor: None,
             distance_type: None,
@@ -828,6 +834,14 @@ impl VectorQuery {
     /// you the desired recall.
     pub fn nprobes(mut self, nprobes: usize) -> Self {
         self.nprobes = nprobes;
+        self
+    }
+
+    /// Set the distance range for vector search,
+    /// only rows with distances in the range [lower_bound, upper_bound) will be returned
+    pub fn distance_range(mut self, lower_bound: Option<f32>, upper_bound: Option<f32>) -> Self {
+        self.lower_bound = lower_bound;
+        self.upper_bound = upper_bound;
         self
     }
 
@@ -1347,6 +1361,30 @@ mod tests {
             .unwrap();
         for batch in results {
             assert!(batch.column_by_name("_rowid").is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_distance_range() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let results = table
+            .vector_search(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .distance_range(Some(0.0), Some(1.0))
+            .limit(10)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        for batch in results {
+            let distances = batch["_distance"].as_primitive::<Float32Type>();
+            assert!(distances.iter().all(|d| {
+                let d = d.unwrap();
+                (0.0..1.0).contains(&d)
+            }));
         }
     }
 
