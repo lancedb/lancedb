@@ -101,6 +101,9 @@ def test_distance_range(table: lancedb.table.Table):
     min_dist = dists[0]
     max_dist = dists[-1]
 
+    res = table.search(q).distance_range(upper_bound=min_dist).to_arrow()
+    assert len(res) == 0
+
     res = table.search(q).distance_range(lower_bound=max_dist).to_arrow()
     assert len(res) == 1
     assert res["_distance"].to_pylist() == [max_dist]
@@ -108,6 +111,10 @@ def test_distance_range(table: lancedb.table.Table):
     res = table.search(q).distance_range(upper_bound=max_dist).to_arrow()
     assert len(res) == 1
     assert res["_distance"].to_pylist() == [min_dist]
+
+    res = table.search(q).distance_range(lower_bound=min_dist).to_arrow()
+    assert len(res) == 2
+    assert res["_distance"].to_pylist() == [min_dist, max_dist]
 
 
 @pytest.mark.asyncio
@@ -117,6 +124,14 @@ async def test_distance_range_async(table_async: AsyncTable):
     dists = rs["_distance"].to_pylist()
     min_dist = dists[0]
     max_dist = dists[-1]
+
+    res = (
+        await table_async.query()
+        .nearest_to(q)
+        .distance_range(upper_bound=min_dist)
+        .to_arrow()
+    )
+    assert len(res) == 0
 
     res = (
         await table_async.query()
@@ -135,6 +150,15 @@ async def test_distance_range_async(table_async: AsyncTable):
     )
     assert len(res) == 1
     assert res["_distance"].to_pylist() == [min_dist]
+
+    res = (
+        await table_async.query()
+        .nearest_to(q)
+        .distance_range(lower_bound=min_dist)
+        .to_arrow()
+    )
+    assert len(res) == 2
+    assert res["_distance"].to_pylist() == [min_dist, max_dist]
 
 
 def test_vector_query_with_no_limit(table):
