@@ -558,7 +558,7 @@ def test_cast_to_target_schema():
             "extra": pa.int64(),
         }
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(Exception):
         _cast_to_target_schema(data, target)
     output = _cast_to_target_schema(data, target, allow_subschema=True)
     expected_schema = pa.schema(

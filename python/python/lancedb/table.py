@@ -245,16 +245,27 @@ def _cast_to_target_schema(
     if table.schema == target_schema:
         # Fast path when the schemas are already the same
         return table
-    
-    new_schema = pass
+
+    fields = []
+    for field in table.schema:
+        target_field = target_schema.field(field.name)
+        if target_field is None:
+            raise ValueError(f"Field {field.name} not found in target schema")
+        fields.append(target_field)
+    reordered_schema = pa.schema(fields, metadata=target_schema.metadata)
+    if not allow_subschema and len(reordered_schema) != len(target_schema):
+        raise ValueError(
+            "Input table has different number of columns than target schema"
+        )
 
     if allow_subschema:
-        fields = _infer_subschema(list(iter(table.schema)), list(iter(target_schema)))
+        fields = _infer_subschema(
+            list(iter(table.schema)), list(iter(reordered_schema))
+        )
         subschema = pa.schema(fields, metadata=target_schema.metadata)
         return table.cast(subschema)
     else:
-        return table.cast(target_schema)
-
+        return table.cast(reordered_schema)
 
 
 def _infer_subschema(
@@ -268,7 +279,7 @@ def _infer_subschema(
 
     ``schema`` may have fewer fields than `reference_fields`, but it may not have
     more fields.
-    
+
     """
     fields = []
     lookup = {f.name: f for f in reference_fields}
