@@ -1,8 +1,8 @@
 **SFR RAG 📑**
 ====================================================================
-Salesforce AI Research introduces SFR-RAG, a 9-billion-parameter language model trained with a significant emphasis on reliable, precise, and faithful contextual generation abilities specific to real-world RAG use cases and relevant agentic tasks. They include precise factual knowledge extraction, distinguishing relevant against distracting contexts, citing appropriate sources along with answers, producing complex and multi-hop reasoning over multiple contexts, consistent format following, as well as refraining from hallucination over unanswerable queries.
+Salesforce AI Research introduced SFR-RAG, a 9-billion-parameter language model trained with a significant emphasis on reliable, precise, and faithful contextual generation abilities specific to real-world RAG use cases and relevant agentic tasks. It targets precise factual knowledge extraction, distinction between relevant nad distracting contexts, citation of appropriate sources along with answers, production of complex and multi-hop reasoning over multiple contexts, consistent format following, as well as minimization of hallucination over unanswerable queries.
 
-**[Offical Implementation](https://github.com/SalesforceAIResearch/SFR-RAG)**
+**[Official Implementation](https://github.com/SalesforceAIResearch/SFR-RAG)**
 
 <figure markdown="span">
   ![agent-based-rag](https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/rag/salesforce_contextbench.png)

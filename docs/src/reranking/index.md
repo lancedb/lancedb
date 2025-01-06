@@ -13,7 +13,7 @@ LanceDB comes with some built-in rerankers. Some of the rerankers that are avail
 
 
 ## Using a Reranker
-Using rerankers is optional for vector and FTS. However, for hybrid search, rerankers are required. To use a reranker, you need to create an instance of the reranker and pass it to the `rerank` method of the query builder.
+Using rerankers is optional for vector and FTS. However, for hybrid search, rerankers are required. To use a reranker, you need to create an instance of the reranker and pass it to the `rerank` method of the query builder:
 
 ```python
 import lancedb
@@ -64,7 +64,7 @@ reranked = reranker.rerank_multivector([res1, res2, res3],  deduplicate=True)
 ```
     
 ## Available Rerankers
-LanceDB comes with some built-in rerankers. Here are some of the rerankers that are available in LanceDB:
+LanceDB comes with the following built-in rerankers:
 
 - [Cohere Reranker](./cohere.md)
 - [Cross Encoder Reranker](./cross_encoder.md)

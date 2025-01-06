@@ -1,8 +1,9 @@
 ## Building Custom Rerankers
 You can build your own custom reranker by subclassing the `Reranker` class and implementing the `rerank_hybrid()` method. Optionally, you can also implement the `rerank_vector()` and `rerank_fts()` methods if you want to support reranking for vector and FTS search separately.
-Here's an example of a custom reranker that combines the results of semantic and full-text search using a linear combination of the scores.
 
 The `Reranker` base interface comes with a `merge_results()` method that can be used to combine the results of semantic and full-text search. This is a vanilla merging algorithm that simply concatenates the results and removes the duplicates without taking the scores into consideration. It only keeps the first copy of the row encountered. This works well in cases that don't require the scores of semantic and full-text search to combine the results. If you want to use the scores or want to support `return_score="all"`, you'll need to implement your own merging algorithm.
+
+Here's an example of a custom reranker that combines the results of semantic and full-text search using a linear combination of the scores:
 
 ```python
 
@@ -42,7 +43,7 @@ class MyReranker(Reranker):
 ```
 
 ### Example of a Custom Reranker
-For the sake of simplicity let's build custom reranker that just enchances the Cohere Reranker by accepting a filter query, and accept other CohereReranker params as kwags.
+For the sake of simplicity let's build custom reranker that enhances the Cohere Reranker by accepting a filter query, and accepts other CohereReranker params as kwargs.
 
 ```python
 
@@ -83,6 +84,6 @@ class ModifiedCohereReranker(CohereReranker):
 ```
 
 !!! tip
-    The `vector_results` and `fts_results` are pyarrow tables. Lean more about pyarrow tables [here](https://arrow.apache.org/docs/python). It can be convered to other data types like pandas dataframe, pydict, pylist etc.
+    The `vector_results` and `fts_results` are pyarrow tables. Lean more about pyarrow tables [here](https://arrow.apache.org/docs/python). It can be converted to other data types like pandas dataframe, pydict, pylist etc.
 
     For example, You can convert them to pandas dataframes using `to_pandas()` method and perform any operations you want. After you are done, you can convert the dataframe back to pyarrow table using `pa.Table.from_pandas()` method and return it.
