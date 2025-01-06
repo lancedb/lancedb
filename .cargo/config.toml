@@ -44,4 +44,4 @@ rustflags = ["-Ctarget-feature=+crt-static"]
 
 # Experimental target for Arm64 Windows
 [target.aarch64-pc-windows-msvc]
-rustflags = ["-Ctarget-feature=+crt-static"]
+rustflags = ["-Ctarget-feature=+crt-static,+crt-static,+neon,+fp16,+fhm,+dotprod"]
