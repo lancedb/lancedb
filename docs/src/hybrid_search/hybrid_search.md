@@ -40,7 +40,7 @@ table.add(data)
 
 # Create a fts index before the hybrid search
 table.create_fts_index("text")
-# hybrid search with default re-ranker
+# hybrid search with default reranker
 results = table.search("flower moon", query_type="hybrid").to_pandas()
 ```
 !!! Note
@@ -68,7 +68,7 @@ By default, LanceDB uses `RRFReranker()`, which uses reciprocal rank fusion scor
 
 
 ## Available Rerankers
-LanceDB provides a number of re-rankers out of the box. You can use any of these re-rankers by passing them to the `rerank()` method. 
+LanceDB provides a number of rerankers out of the box. You can use any of these rerankers by passing them to the `rerank()` method. 
 Go to [Rerankers](../reranking/index.md) to learn more about using the available rerankers and implementing custom rerankers.
 
 

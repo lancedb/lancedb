@@ -66,7 +66,7 @@ the size of the data.
 
 ### Embedding Functions
 
-The embedding API has been completely reworked, and it now more closely resembles the Python API, including the new [embedding registry](./js/classes/embedding.EmbeddingFunctionRegistry.md)
+The embedding API has been completely reworked, and it now more closely resembles the Python API, including the new [embedding registry](./js/classes/embedding.EmbeddingFunctionRegistry.md):
 
 === "vectordb (deprecated)"
 

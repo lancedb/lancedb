@@ -2,7 +2,7 @@
 
 Voyage AI provides cutting-edge embedding and rerankers.
 
-This re-ranker uses the [VoyageAI](https://docs.voyageai.com/docs/) API to rerank the search results. You can use this re-ranker by passing `VoyageAIReranker()` to the `rerank()` method. Note that you'll either need to set the `VOYAGE_API_KEY` environment variable or pass the `api_key` argument to use this re-ranker.
+This reranker uses the [VoyageAI](https://docs.voyageai.com/docs/) API to rerank the search results. You can use this reranker by passing `VoyageAIReranker()` to the `rerank()` method. Note that you'll either need to set the `VOYAGE_API_KEY` environment variable or pass the `api_key` argument to use this reranker.
 
 
 !!! note

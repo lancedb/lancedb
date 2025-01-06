@@ -4,8 +4,8 @@
 
 LanceDB supports filtering of query results based on metadata fields. By default, post-filtering is
 performed on the top-k results returned by the vector search. However, pre-filtering is also an
-option that performs the filter prior to vector search. This can be useful to narrow down on
-the search space on a very large dataset to reduce query latency.
+option that performs the filter prior to vector search. This can be useful to narrow down
+the search space of a very large dataset to reduce query latency.
 
 Note that both pre-filtering and post-filtering can yield false positives. For pre-filtering, if the filter is too selective, it might eliminate relevant items that the vector search would have otherwise identified as a good match. In this case, increasing `nprobes` parameter will help reduce such false positives. It is recommended to set `use_index=false` if you know that the filter is highly selective.
 
@@ -63,15 +63,15 @@ const tbl = await db.createTable('myVectors', data)
         ```
 !!! note
 
-    Creating a [scalar index](guides/scalar_index.md) accelerates filtering
+    Creating a [scalar index](guides/scalar_index.md) accelerates filtering.
 
 ## SQL filters
 
 Because it's built on top of [DataFusion](https://github.com/apache/arrow-datafusion), LanceDB
 embraces the utilization of standard SQL expressions as predicates for filtering operations.
-It can be used during vector search, update, and deletion operations.
+SQL can be used during vector search, update, and deletion operations.
 
-Currently, Lance supports a growing list of SQL expressions.
+LanceDB supports a growing list of SQL expressions:
 
 - `>`, `>=`, `<`, `<=`, `=`
 - `AND`, `OR`, `NOT`
@@ -121,7 +121,7 @@ path must be wrapped in backticks.
 !!!warning "Field names containing periods (`.`) are not supported."
 
 Literals for dates, timestamps, and decimals can be written by writing the string
-value after the type name. For example
+value after the type name. For example:
 
 === "SQL"
 
@@ -163,7 +163,7 @@ The mapping from SQL types to Arrow types is:
 
 ## Filtering without Vector Search
 
-You can also filter your data without search.
+You can also filter your data without search:
 
 === "Python"
 

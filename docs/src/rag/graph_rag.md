@@ -6,7 +6,7 @@ One of the main benefits of Graph RAG is its ability to capture and represent co
 
 **[Official Paper](https://arxiv.org/pdf/2404.16130)**
 
-**[Offical Implementation](https://github.com/microsoft/graphrag)**
+**[Official Implementation](https://github.com/microsoft/graphrag)**
 
 [Microsoft Research Blog](https://www.microsoft.com/en-us/research/blog/graphrag-unlocking-llm-discovery-on-narrative-private-data/)
 
@@ -39,13 +39,13 @@ python3 -m graphrag.index --root dataset-dir
 
 - **Execute Query**
 
-Global Query Execution gives a broad overview of dataset
+Global Query Execution gives a broad overview of dataset:
 
 ```bash
 python3 -m graphrag.query --root dataset-dir --method global "query-question"
 ```
 
-Local Query Execution gives a detailed and specific answers based on the context of the entities
+Local Query Execution gives a detailed and specific answers based on the context of the entities:
 
 ```bash
 python3 -m graphrag.query --root  dataset-dir --method local "query-question"

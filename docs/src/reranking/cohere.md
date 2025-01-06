@@ -1,6 +1,6 @@
 # Cohere Reranker
 
-This re-ranker uses the [Cohere](https://cohere.ai/) API to rerank the search results. You can use this re-ranker by passing `CohereReranker()` to the `rerank()` method. Note that you'll either need to set the `COHERE_API_KEY` environment variable or pass the `api_key` argument to use this re-ranker.
+This reranker uses the [Cohere](https://cohere.ai/) API to rerank the search results. You can use this reranker by passing `CohereReranker()` to the `rerank()` method. Note that you'll either need to set the `COHERE_API_KEY` environment variable or pass the `api_key` argument to use this reranker.
 
 
 !!! note
@@ -62,17 +62,17 @@ You can specify the type of scores you want the reranker to return. The followin
 ### Hybrid Search
 |`return_score`| Status | Description |
 | --- | --- | --- |
-| `relevance` | ✅ Supported | Returns only have the `_relevance_score` column |
-| `all` | ❌ Not Supported | Returns have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_relevance_score`) |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column |
+| `all` | ❌ Not Supported | Results have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_relevance_score`) |
 
 ### Vector Search
 |`return_score`| Status | Description |
 | --- | --- | --- |
-| `relevance` | ✅ Supported | Returns only have the `_relevance_score` column |
-| `all` | ✅ Supported | Returns have vector(`_distance`) along with Hybrid Search score(`_relevance_score`) |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column |
+| `all` | ✅ Supported | Results have vector(`_distance`) along with Hybrid Search score(`_relevance_score`) |
 
 ### FTS Search
 |`return_score`| Status | Description |
 | --- | --- | --- |
-| `relevance` | ✅ Supported | Returns only have the `_relevance_score` column |
-| `all` | ✅ Supported | Returns have FTS(`score`) along with Hybrid Search score(`_relevance_score`) |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column |
+| `all` | ✅ Supported | Results have FTS(`score`) along with Hybrid Search score(`_relevance_score`) |
