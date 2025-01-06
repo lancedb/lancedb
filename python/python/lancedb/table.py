@@ -206,7 +206,6 @@ def _sanitize_data(
     # 1. There might be embedding columns missing that will be added
     #    in the add_embeddings step.
     # 2. If `allow_subschemas` is True, there might be columns missing.
-    # TODO: What about empty list?
     table = _into_pyarrow_table(data)
 
     table = _append_vector_columns(table, target_schema, metadata=metadata)
@@ -2751,7 +2750,8 @@ class AsyncTable:
             allow_subschema=True,
         )
         if isinstance(data, pa.Table):
-            data = pa.RecordBatchReader.from_batches(schema, data.to_batches())
+            data = data.to_reader()
+
         await self._inner.add(data, mode or "append")
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
