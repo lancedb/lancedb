@@ -2786,6 +2786,7 @@ class AsyncTable:
                 async_query.nearest_to(query.vector)
                 .distance_type(query.metric)
                 .nprobes(query.nprobes)
+                .distance_range(query.lower_bound, query.upper_bound)
             )
             if query.refine_factor:
                 async_query = async_query.refine_factor(query.refine_factor)

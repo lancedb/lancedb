@@ -210,6 +210,8 @@ impl<S: HttpSend> RemoteTable<S> {
         body["prefilter"] = query.base.prefilter.into();
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
         body["nprobes"] = query.nprobes.into();
+        body["lower_bound"] = query.lower_bound.into();
+        body["upper_bound"] = query.upper_bound.into();
         body["ef"] = query.ef.into();
         body["refine_factor"] = query.refine_factor.into();
         if let Some(vector_column) = query.column.as_ref() {
@@ -1304,6 +1306,8 @@ mod tests {
                 "prefilter": true,
                 "distance_type": "l2",
                 "nprobes": 20,
+                "lower_bound": Option::<f32>::None,
+                "upper_bound": Option::<f32>::None,
                 "k": 10,
                 "ef": Option::<usize>::None,
                 "refine_factor": null,
@@ -1353,6 +1357,8 @@ mod tests {
                 "bypass_vector_index": true,
                 "columns": ["a", "b"],
                 "nprobes": 12,
+                "lower_bound": Option::<f32>::None,
+                "upper_bound": Option::<f32>::None,
                 "ef": Option::<usize>::None,
                 "refine_factor": 2,
                 "version": null,
