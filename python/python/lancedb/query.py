@@ -28,7 +28,7 @@ from .arrow import AsyncRecordBatchReader
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
-from .util import safe_import_pandas
+from .util import safe_import_pandas, flatten_columns
 
 if TYPE_CHECKING:
     import PIL
@@ -293,24 +293,7 @@ class LanceQueryBuilder(ABC):
             specified depth.
             If unspecified, do not flatten the nested columns.
         """
-        tbl = self.to_arrow()
-        if flatten is True:
-            while True:
-                tbl = tbl.flatten()
-                # loop through all columns to check if there is any struct column
-                if any(pa.types.is_struct(col.type) for col in tbl.schema):
-                    continue
-                else:
-                    break
-        elif isinstance(flatten, int):
-            if flatten <= 0:
-                raise ValueError(
-                    "Please specify a positive integer for flatten or the boolean "
-                    "value `True`"
-                )
-            while flatten > 0:
-                tbl = tbl.flatten()
-                flatten -= 1
+        tbl = flatten_columns(self.to_arrow(), flatten)
         return tbl.to_pandas()
 
     @abstractmethod
@@ -1595,7 +1578,9 @@ class AsyncQueryBase(object):
         """
         return (await self.to_arrow()).to_pylist()
 
-    async def to_pandas(self) -> "pd.DataFrame":
+    async def to_pandas(
+        self, flatten: Optional[Union[int, bool]] = None
+    ) -> "pd.DataFrame":
         """
         Execute the query and collect the results into a pandas DataFrame.
 
@@ -1615,8 +1600,16 @@ class AsyncQueryBase(object):
         ...     async for batch in await table.query().to_batches():
         ...         batch_df = batch.to_pandas()
         >>> asyncio.run(doctest_example())
+
+        Parameters
+        ----------
+        flatten: Optional[Union[int, bool]]
+            If flatten is True, flatten all nested columns.
+            If flatten is an integer, flatten the nested columns up to the
+            specified depth.
+            If unspecified, do not flatten the nested columns.
         """
-        return (await self.to_arrow()).to_pandas()
+        return (flatten_columns(await self.to_arrow(), flatten)).to_pandas()
 
     async def to_polars(self) -> "pl.DataFrame":
         """
