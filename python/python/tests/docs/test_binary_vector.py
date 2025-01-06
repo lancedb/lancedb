@@ -21,7 +21,7 @@ def test_binary_vector():
     ]
     tbl = db.create_table("my_binary_vectors", data=data)
     query = np.random.randint(0, 256, size=16)
-    tbl.search(query).to_arrow()
+    tbl.search(query).metric("hamming").to_arrow()
     # --8<-- [end:sync_binary_vector]
     db.drop_table("my_binary_vectors")
 
@@ -39,6 +39,6 @@ async def test_binary_vector_async():
     ]
     tbl = await db.create_table("my_binary_vectors", data=data)
     query = np.random.randint(0, 256, size=16)
-    await tbl.query().nearest_to(query).to_arrow()
+    await tbl.query().nearest_to(query).distance_type("hamming").to_arrow()
     # --8<-- [end:async_binary_vector]
     await db.drop_table("my_binary_vectors")

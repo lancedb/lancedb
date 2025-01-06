@@ -2459,6 +2459,20 @@ def _infer_target_schema(table: pa.Table) -> pa.Schema:
             )
 
             schema = schema.set(i, new_field)
+        elif (
+            field.name == VECTOR_COLUMN_NAME
+            and (pa.types.is_list(field.type) or pa.types.is_large_list(field.type))
+            and pa.types.is_integer(field.type.value_type)
+        ):
+            # Use the most common length of the list as the dimensions
+            dim = _modal_list_size(table.column(i))
+            new_field = pa.field(
+                VECTOR_COLUMN_NAME,
+                pa.list_(pa.uint8(), dim),
+                nullable=field.nullable,
+            )
+
+            schema = schema.set(i, new_field)
 
     return schema
 
