@@ -28,7 +28,7 @@ from .arrow import AsyncRecordBatchReader
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
-from .util import safe_import_pandas
+from .util import safe_import_pandas, flatten_columns
 
 if TYPE_CHECKING:
     import PIL
@@ -114,6 +114,9 @@ class Query(pydantic.BaseModel):
     # optional query parameters for tuning the results,
     # e.g. `{"nprobes": "10", "refine_factor": "10"}`
     nprobes: int = 10
+
+    lower_bound: Optional[float] = None
+    upper_bound: Optional[float] = None
 
     # Refine factor.
     refine_factor: Optional[int] = None
@@ -290,24 +293,7 @@ class LanceQueryBuilder(ABC):
             specified depth.
             If unspecified, do not flatten the nested columns.
         """
-        tbl = self.to_arrow()
-        if flatten is True:
-            while True:
-                tbl = tbl.flatten()
-                # loop through all columns to check if there is any struct column
-                if any(pa.types.is_struct(col.type) for col in tbl.schema):
-                    continue
-                else:
-                    break
-        elif isinstance(flatten, int):
-            if flatten <= 0:
-                raise ValueError(
-                    "Please specify a positive integer for flatten or the boolean "
-                    "value `True`"
-                )
-            while flatten > 0:
-                tbl = tbl.flatten()
-                flatten -= 1
+        tbl = flatten_columns(self.to_arrow(), flatten)
         return tbl.to_pandas()
 
     @abstractmethod
@@ -604,6 +590,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._query = query
         self._metric = "L2"
         self._nprobes = 20
+        self._lower_bound = None
+        self._upper_bound = None
         self._refine_factor = None
         self._vector_column = vector_column
         self._prefilter = False
@@ -647,6 +635,30 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The LanceQueryBuilder object.
         """
         self._nprobes = nprobes
+        return self
+
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> LanceVectorQueryBuilder:
+        """Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._lower_bound = lower_bound
+        self._upper_bound = upper_bound
         return self
 
     def ef(self, ef: int) -> LanceVectorQueryBuilder:
@@ -728,6 +740,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             metric=self._metric,
             columns=self._columns,
             nprobes=self._nprobes,
+            lower_bound=self._lower_bound,
+            upper_bound=self._upper_bound,
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
@@ -1284,6 +1298,31 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._nprobes = nprobes
         return self
 
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> LanceHybridQueryBuilder:
+        """
+        Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._lower_bound = lower_bound
+        self._upper_bound = upper_bound
+        return self
+
     def ef(self, ef: int) -> LanceHybridQueryBuilder:
         """
         Set the number of candidates to consider during search.
@@ -1539,7 +1578,9 @@ class AsyncQueryBase(object):
         """
         return (await self.to_arrow()).to_pylist()
 
-    async def to_pandas(self) -> "pd.DataFrame":
+    async def to_pandas(
+        self, flatten: Optional[Union[int, bool]] = None
+    ) -> "pd.DataFrame":
         """
         Execute the query and collect the results into a pandas DataFrame.
 
@@ -1559,8 +1600,42 @@ class AsyncQueryBase(object):
         ...     async for batch in await table.query().to_batches():
         ...         batch_df = batch.to_pandas()
         >>> asyncio.run(doctest_example())
+
+        Parameters
+        ----------
+        flatten: Optional[Union[int, bool]]
+            If flatten is True, flatten all nested columns.
+            If flatten is an integer, flatten the nested columns up to the
+            specified depth.
+            If unspecified, do not flatten the nested columns.
         """
-        return (await self.to_arrow()).to_pandas()
+        return (flatten_columns(await self.to_arrow(), flatten)).to_pandas()
+
+    async def to_polars(self) -> "pl.DataFrame":
+        """
+        Execute the query and collect the results into a Polars DataFrame.
+
+        This method will collect all results into memory before returning.  If you
+        expect a large number of results, you may want to use
+        [to_batches][lancedb.query.AsyncQueryBase.to_batches] and convert each batch to
+        polars separately.
+
+        Examples
+        --------
+
+        >>> import asyncio
+        >>> import polars as pl
+        >>> from lancedb import connect_async
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", data=[{"a": 1, "b": 2}])
+        ...     async for batch in await table.query().to_batches():
+        ...         batch_df = pl.from_arrow(batch)
+        >>> asyncio.run(doctest_example())
+        """
+        import polars as pl
+
+        return pl.from_arrow(await self.to_arrow())
 
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
@@ -1853,6 +1928,29 @@ class AsyncVectorQuery(AsyncQueryBase):
         you the desired recall.
         """
         self._inner.nprobes(nprobes)
+        return self
+
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> AsyncVectorQuery:
+        """Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        AsyncVectorQuery
+            The AsyncVectorQuery object.
+        """
+        self._inner.distance_range(lower_bound, upper_bound)
         return self
 
     def ef(self, ef: int) -> AsyncVectorQuery:

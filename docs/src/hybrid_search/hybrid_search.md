@@ -31,7 +31,7 @@ You can perform hybrid search in LanceDB by combining the results of semantic an
     --8<-- "python/python/tests/docs/test_search.py:class-Documents"
     --8<-- "python/python/tests/docs/test_search.py:basic_hybrid_search_async"
     ```
-    
+
 !!! Note
     You can also pass the vector and text query manually. This is useful if you're not using the embedding API or if you're using a separate embedder service.
 ### Explicitly passing the vector and text query
@@ -57,7 +57,7 @@ By default, LanceDB uses `RRFReranker()`, which uses reciprocal rank fusion scor
 
 
 ## Available Rerankers
-LanceDB provides a number of re-rankers out of the box. You can use any of these re-rankers by passing them to the `rerank()` method. 
+LanceDB provides a number of rerankers out of the box. You can use any of these rerankers by passing them to the `rerank()` method. 
 Go to [Rerankers](../reranking/index.md) to learn more about using the available rerankers and implementing custom rerankers.
 
 

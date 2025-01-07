@@ -603,7 +603,7 @@ class AsyncConnection(object):
         fill_value: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
         *,
-        embedding_functions: List[EmbeddingFunctionConfig] = None,
+        embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         data_storage_version: Optional[str] = None,
         use_legacy_format: Optional[bool] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
