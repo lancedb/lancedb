@@ -2,38 +2,29 @@
 
 LanceDB supports [Polars](https://github.com/pola-rs/polars), a blazingly fast DataFrame library for Python written in Rust. Just like in Pandas, the Polars integration is enabled by PyArrow under the hood. A deeper integration between Lance Tables and Polars DataFrames is in progress, but at the moment, you can read a Polars DataFrame into LanceDB and output the search results from a query to a Polars DataFrame.
 
+
 ## Create & Query LanceDB Table
 
 ### From Polars DataFrame
 
 First, we connect to a LanceDB database.
 
-```py
-import lancedb
 
-db = lancedb.connect("data/polars-lancedb")
+```py
+--8<-- "python/python/tests/docs/test_python.py:import-lancedb"
+--8<-- "python/python/tests/docs/test_python.py:connect_to_lancedb"
 ```
 
 We can load a Polars `DataFrame` to LanceDB directly.
 
 ```py
-import polars as pl
-
-data = pl.DataFrame({
-    "vector": [[3.1, 4.1], [5.9, 26.5]],
-    "item": ["foo", "bar"],
-    "price": [10.0, 20.0]
-})
-table = db.create_table("pl_table", data=data)
+--8<-- "python/python/tests/docs/test_python.py:import-polars"
+--8<-- "python/python/tests/docs/test_python.py:create_table_polars"
 ```
-
 We can now perform similarity search via the LanceDB Python API.
 
 ```py
-query = [3.0, 4.0]
-result = table.search(query).limit(1).to_polars()
-print(result)
-print(type(result))
+--8<-- "python/python/tests/docs/test_python.py:vector_search_polars"
 ```
 
 In addition to the selected columns, LanceDB also returns a vector
@@ -59,33 +50,16 @@ Note that the type of the result from a table search is a Polars DataFrame.
 Alternately, we can create an empty LanceDB Table using a Pydantic schema and populate it with a Polars DataFrame.
 
 ```py
-import polars as pl
-from lancedb.pydantic import Vector, LanceModel
-
-
-class Item(LanceModel):
-    vector: Vector(2)
-    item: str
-    price: float
-
-data = {
-    "vector": [[3.1, 4.1]],
-    "item": "foo",
-    "price": 10.0,
-}
-
-table = db.create_table("test_table", schema=Item)
-df = pl.DataFrame(data)
-# Add Polars DataFrame to table
-table.add(df)
+--8<-- "python/python/tests/docs/test_python.py:import-polars"
+--8<-- "python/python/tests/docs/test_python.py:import-lancedb-pydantic"
+--8<-- "python/python/tests/docs/test_python.py:class_Item"
+--8<-- "python/python/tests/docs/test_python.py:create_table_pydantic"
 ```
 
 The table can now be queried as usual.
 
 ```py
-result = table.search([3.0, 4.0]).limit(1).to_polars()
-print(result)
-print(type(result))
+--8<-- "python/python/tests/docs/test_python.py:vector_search_polars"
 ```
 
 ```
@@ -108,8 +82,7 @@ As you iterate on your application, you'll likely need to work with the whole ta
 LanceDB tables can also be converted directly into a polars LazyFrame for further processing.
 
 ```python
-ldf = table.to_polars()
-print(type(ldf))
+--8<-- "python/python/tests/docs/test_python.py:dump_table_lazyform"
 ```
 
 Unlike the search result from a query, we can see that the type of the result is a LazyFrame.
@@ -121,7 +94,7 @@ Unlike the search result from a query, we can see that the type of the result is
 We can now work with the LazyFrame as we would in Polars, and collect the first result.
 
 ```python
-print(ldf.first().collect())
+--8<-- "python/python/tests/docs/test_python.py:print_table_lazyform"
 ```
 
 ```

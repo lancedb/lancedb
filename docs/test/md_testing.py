@@ -12,6 +12,8 @@ excluded_globs = [
     "../src/integrations/*.md",
     "../src/guides/tables.md",
     "../src/python/duckdb.md",
+    "../src/python/pandas_and_pyarrow.md",
+    "../src/python/polars_arrow.md",
     "../src/embeddings/*.md",
     "../src/concepts/*.md",
     "../src/ann_indexes.md",
@@ -23,9 +25,10 @@ excluded_globs = [
     "../src/embeddings/available_embedding_models/text_embedding_functions/*.md",
     "../src/embeddings/available_embedding_models/multimodal_embedding_functions/*.md",
     "../src/rag/*.md",
-    "../src/rag/advanced_techniques/*.md"
-
-
+    "../src/rag/advanced_techniques/*.md",
+    "../src/guides/scalar_index.md",
+    "../src/guides/storage.md",
+    "../src/search.md"
 ]
 
 python_prefix = "py"

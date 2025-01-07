@@ -44,18 +44,16 @@ db.create_table("my_vectors", data=data)
 
 === "Python"
 
-    ```python
-    import lancedb
-    import numpy as np
+    === "Sync API"
 
-    db = lancedb.connect("data/sample-lancedb")
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:exhaustive_search"
+        ```
+    === "Async API"
 
-    tbl = db.open_table("my_vectors")
-
-    df = tbl.search(np.random.random((1536))) \
-        .limit(10) \
-        .to_list()
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:exhaustive_search_async"
+        ```
 
 === "TypeScript"
 
@@ -81,12 +79,16 @@ By default, `l2` will be used as metric type. You can specify the metric type as
 
 === "Python"
 
-    ```python
-    df = tbl.search(np.random.random((1536))) \
-        .metric("cosine") \
-        .limit(10) \
-        .to_list()
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:exhaustive_search_cosine"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:exhaustive_search_async_cosine"
+        ```
 
 === "TypeScript"
 
@@ -142,40 +144,28 @@ LanceDB returns vector search results via different formats commonly used in pyt
 Let's create a LanceDB table with a nested schema:
 
 === "Python"
+    === "Sync API"
 
-    ```python
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:import-datetime"
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb-pydantic"
+        --8<-- "python/python/tests/docs/test_search.py:import-numpy"
+        --8<-- "python/python/tests/docs/test_search.py:import-pydantic-base-model"
+        --8<-- "python/python/tests/docs/test_search.py:class-definition"
+        --8<-- "python/python/tests/docs/test_search.py:create_table_with_nested_schema"
+        ```
+    === "Async API"
 
-    from datetime import datetime
-    import lancedb
-    from lancedb.pydantic import LanceModel, Vector
-    import numpy as np
-    from pydantic import BaseModel
-    uri = "data/sample-lancedb-nested"
-
-    class Metadata(BaseModel):
-        source: str
-        timestamp: datetime
-
-    class Document(BaseModel):
-        content: str
-        meta: Metadata
-
-    class LanceSchema(LanceModel):
-        id: str
-        vector: Vector(1536)
-        payload: Document
-
-    # Let's add 100 sample rows to our dataset
-    data = [LanceSchema(
-        id=f"id{i}",
-        vector=np.random.randn(1536),
-        payload=Document(
-            content=f"document{i}", meta=Metadata(source=f"source{i % 10}", timestamp=datetime.now())
-        ),
-    ) for i in range(100)]
-
-    tbl = db.create_table("documents", data=data)
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:import-datetime"
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb-pydantic"
+        --8<-- "python/python/tests/docs/test_search.py:import-numpy"
+        --8<-- "python/python/tests/docs/test_search.py:import-pydantic-base-model"
+        --8<-- "python/python/tests/docs/test_search.py:class-definition"
+        --8<-- "python/python/tests/docs/test_search.py:create_table_async_with_nested_schema"
+        ```
 
     ### As a PyArrow table
 
@@ -184,17 +174,31 @@ Let's create a LanceDB table with a nested schema:
     the addition of an `_distance` column for vector search or a `score`
     column for full text search.
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_arrow()
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_pyarrow"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_async_as_pyarrow"
+        ```
 
     ### As a Pandas DataFrame
 
     You can also get the results as a pandas dataframe.
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_pandas()
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_pandas"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_async_as_pandas"
+        ```
 
     While other formats like Arrow/Pydantic/Python dicts have a natural
     way to handle nested schemas, pandas can only store nested data as a
@@ -202,33 +206,50 @@ Let's create a LanceDB table with a nested schema:
     So for convenience, you can also tell LanceDB to flatten a nested schema
     when creating the pandas dataframe.
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_pandas(flatten=True)
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_pandas_flatten_true"
+        ```
 
     If your table has a deeply nested struct, you can control how many levels
     of nesting to flatten by passing in a positive integer.
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_pandas(flatten=1)
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_pandas_flatten_1"
+        ```
+    !!! note
+        `flatten` is not yet supported with our asynchronous client.
 
     ### As a list of Python dicts
 
     You can of course return results as a list of python dicts.
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_list()
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_list"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_async_as_list"
+        ```
 
     ### As a list of Pydantic models
 
     We can add data using Pydantic models, and we can certainly
     retrieve results as Pydantic models
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_pydantic(LanceSchema)
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_pydantic"
+        ```
+    !!! note
+        `to_pydantic()` is not yet supported with our asynchronous client.
 
     Note that in this case the extra `_distance` field is discarded since
     it's not part of the LanceSchema.

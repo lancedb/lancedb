@@ -32,19 +32,20 @@ over scalar columns.
 ### Create a scalar index
 === "Python"
 
-    ```python
-    import lancedb
-    books = [
-      {"book_id": 1, "publisher": "plenty of books", "tags": ["fantasy", "adventure"]},
-      {"book_id": 2, "publisher": "book town", "tags": ["non-fiction"]},
-      {"book_id": 3, "publisher": "oreilly", "tags": ["textbook"]}
-    ]
+    === "Sync API"
 
-    db = lancedb.connect("./db")
-    table = db.create_table("books", books)
-    table.create_scalar_index("book_id")  # BTree by default
-    table.create_scalar_index("publisher", index_type="BITMAP")
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb-btree-bitmap"
+        --8<-- "python/python/tests/docs/test_guide_index.py:basic_scalar_index"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb-btree-bitmap"
+        --8<-- "python/python/tests/docs/test_guide_index.py:basic_scalar_index_async"
+        ```
 
 === "Typescript"
 
@@ -62,12 +63,18 @@ The following scan will be faster if the column `book_id` has a scalar index:
 
 === "Python"
 
-    ```python
-    import lancedb
+    === "Sync API"
 
-    table = db.open_table("books")
-    my_df = table.search().where("book_id = 2").to_pandas()
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:search_with_scalar_index"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:search_with_scalar_index_async"
+        ```
 
 === "Typescript"
 
@@ -88,22 +95,18 @@ Scalar indices can also speed up scans containing a vector search or full text s
 
 === "Python"
 
-    ```python
-    import lancedb
+    === "Sync API"
 
-    data = [
-      {"book_id": 1, "vector": [1, 2]},
-      {"book_id": 2, "vector": [3, 4]},
-      {"book_id": 3, "vector": [5, 6]}
-    ]
-    table = db.create_table("book_with_embeddings", data)
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_with_scalar_index"
+        ```
+    === "Async API"
 
-    (
-        table.search([1, 2])
-        .where("book_id != 3", prefilter=True)
-        .to_pandas()
-    )
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_with_scalar_index_async"
+        ```
 
 === "Typescript"
 
@@ -122,10 +125,16 @@ Scalar indices can also speed up scans containing a vector search or full text s
 Updating the table data (adding, deleting, or modifying records) requires that you also update the scalar index. This can be done by calling `optimize`, which will trigger an update to the existing scalar index.
 === "Python"
 
-    ```python
-    table.add([{"vector": [7, 8], "book_id": 4}])
-    table.optimize()
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:update_scalar_index"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:update_scalar_index_async"
+        ```
 
 === "TypeScript"
 

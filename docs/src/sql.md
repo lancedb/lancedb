@@ -15,13 +15,18 @@ Similarly, a highly selective post-filter can lead to false positives. Increasin
 ```python
 import lancedb
 import numpy as np
+
 uri = "data/sample-lancedb"
-db = lancedb.connect(uri)
-
 data = [{"vector": row, "item": f"item {i}", "id": i}
-     for i, row in enumerate(np.random.random((10_000, 2)).astype('int'))]
+    for i, row in enumerate(np.random.random((10_000, 2)).astype('int'))]
 
+# Synchronous client
+db = lancedb.connect(uri)
 tbl = db.create_table("my_vectors", data=data)
+
+# Asynchronous client
+async_db = await lancedb.connect_async(uri)
+async_tbl = await async_db.create_table("my_vectors_async", data=data)
 ```
 -->
 <!-- Setup Code
@@ -39,13 +44,11 @@ const tbl = await db.createTable('myVectors', data)
 
 === "Python"
 
-    ```py
-    result = (
-        tbl.search([0.5, 0.2])
-        .where("id = 10", prefilter=True)
-        .limit(1)
-        .to_arrow()
-    )
+    ```python
+    # Synchronous client
+    result = tbl.search([0.5, 0.2]).where("id = 10", prefilter=True).limit(1).to_arrow()
+    # Asynchronous client
+    result = await async_tbl.query().where("id = 10").nearest_to([0.5, 0.2]).limit(1).to_arrow()
     ```
 
 === "TypeScript"
@@ -88,9 +91,17 @@ For example, the following filter string is acceptable:
 === "Python"
 
     ```python
-    tbl.search([100, 102]) \
-       .where("(item IN ('item 0', 'item 2')) AND (id > 10)") \
-       .to_arrow()
+    # Synchronous client
+    tbl.search([100, 102]).where(
+        "(item IN ('item 0', 'item 2')) AND (id > 10)"
+    ).to_arrow()
+    # Asynchronous client
+    await (
+        async_tbl.query()
+        .where("(item IN ('item 0', 'item 2')) AND (id > 10)")
+        .nearest_to([100, 102])
+        .to_arrow()
+    )
     ```
 
 === "TypeScript"
@@ -168,7 +179,10 @@ You can also filter your data without search:
 === "Python"
 
     ```python
+    # Synchronous client
     tbl.search().where("id = 10").limit(10).to_arrow()
+    # Asynchronous client
+    await async_tbl.query().where("id = 10").limit(10).to_arrow()
     ```
 
 === "TypeScript"
