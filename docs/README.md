@@ -51,7 +51,7 @@ The `@lancedb/lancedb` package must be built before running the tests:
 
 ```shell
 pushd nodejs
-npm run install
+npm ci
 npm run build
 popd
 ```
@@ -61,7 +61,7 @@ running the tests like a normal npm package:
 
 ```shell
 pushd nodejs/examples
-npm install
+npm ci
 npm test
 popd
 ```
@@ -72,7 +72,7 @@ popd
 
 The Python API documentation is organized based on the file `docs/src/python/python.md`.
 We manually add entries there so we can control the organization of the reference page.
-**However, this means any new APIs must be manually added to the file.** No additional
+**However, this means any new types must be manually added to the file.** No additional
 steps are needed to generate the API documentation.
 
 ### Typescript
@@ -80,6 +80,7 @@ steps are needed to generate the API documentation.
 The typescript API documentation is generated from the typescript source code using [typedoc](https://typedoc.org/).
 
 When new APIs are added, you must manually re-run the typedoc command to update the API documentation.
+The new files should be checked into the repository.
 
 ```shell
 pushd nodejs

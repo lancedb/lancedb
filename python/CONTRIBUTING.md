@@ -1,6 +1,6 @@
 # Contributing to LanceDB Python
 
-This documents outlines the process for contributing to LanceDB Python.
+This document outlines the process for contributing to LanceDB Python.
 For general contribution guidelines, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Project layout

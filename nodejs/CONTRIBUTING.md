@@ -1,6 +1,6 @@
 # Contributing to LanceDB Typescript
 
-This documents outlines the process for contributing to LanceDB Typescript.
+This document outlines the process for contributing to LanceDB Typescript.
 For general contribution guidelines, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Project layout

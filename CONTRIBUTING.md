@@ -37,6 +37,7 @@ We have development environments for Python, Typescript, and Java. Each environm
 
 * [Python](python/CONTRIBUTING.md)
 * [Typescript](nodejs/CONTRIBUTING.md)
+<!-- TODO: add Java contributing guide -->
 * [Documentation](docs/README.md)
 
 
