@@ -434,7 +434,7 @@ class LanceQueryBuilder(ABC):
             The where clause which is a valid SQL where clause. See
             `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
             for valid SQL expressions.
-        prefilter: bool, default True 
+        prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
             This feature is **EXPERIMENTAL** and may be removed and modified
