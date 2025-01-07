@@ -158,6 +158,16 @@ You can also search for vectors within a specific distance range from the query 
         --8<-- "python/python/tests/docs/test_distance_range.py:async_distance_range"
         ```
 
+=== "TypeScript"
+
+    === "@lancedb/lancedb"
+
+        ```ts
+        --8<-- "nodejs/examples/search.test.ts:import"
+
+        --8<-- "nodejs/examples/search.test.ts:distance_range"
+        ```
+
 
 ## Output search results
 

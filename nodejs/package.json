@@ -88,6 +88,7 @@
     "version": "napi version"
   },
   "dependencies": {
+    "@lancedb/lancedb": "^0.14.1",
     "reflect-metadata": "^0.2.2"
   },
   "optionalDependencies": {

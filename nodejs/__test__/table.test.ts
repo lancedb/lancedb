@@ -475,6 +475,62 @@ describe("When creating an index", () => {
     expect(rst.numRows).toBe(1);
   });
 
+  it("should search with distance range", async () => {
+    await tbl.createIndex("vec");
+
+    const rst = await tbl.query().limit(10).nearestTo(queryVec).toArrow();
+    const distanceColumn = rst.getChild("_distance");
+    let minDist = undefined;
+    let maxDist = undefined;
+    if (distanceColumn) {
+      minDist = distanceColumn.get(0);
+      maxDist = distanceColumn.get(9);
+    }
+
+    const rst2 = await tbl
+      .query()
+      .limit(10)
+      .nearestTo(queryVec)
+      .distanceRange(minDist, maxDist)
+      .toArrow();
+    const distanceColumn2 = rst2.getChild("_distance");
+    expect(distanceColumn2).toBeDefined();
+    if (distanceColumn2) {
+      for await (const d of distanceColumn2) {
+        expect(d).toBeGreaterThanOrEqual(minDist);
+        expect(d).toBeLessThan(maxDist);
+      }
+    }
+
+    const rst3 = await tbl
+      .query()
+      .limit(10)
+      .nearestTo(queryVec)
+      .distanceRange(maxDist, undefined)
+      .toArrow();
+    const distanceColumn3 = rst3.getChild("_distance");
+    expect(distanceColumn3).toBeDefined();
+    if (distanceColumn3) {
+      for await (const d of distanceColumn3) {
+        expect(d).toBeGreaterThanOrEqual(maxDist);
+      }
+    }
+
+    const rst4 = await tbl
+      .query()
+      .limit(10)
+      .nearestTo(queryVec)
+      .distanceRange(undefined, minDist)
+      .toArrow();
+    const distanceColumn4 = rst4.getChild("_distance");
+    expect(distanceColumn4).toBeDefined();
+    if (distanceColumn4) {
+      for await (const d of distanceColumn4) {
+        expect(d).toBeLessThan(minDist);
+      }
+    }
+  });
+
   it("should create and search IVF_HNSW indices", async () => {
     await tbl.createIndex("vec", {
       config: Index.hnswSq(),
