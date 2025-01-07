@@ -21,10 +21,10 @@ def test_ann_index():
     # --8<-- [start:create_ann_index]
     uri = "data/sample-lancedb"
 
-    # Create 10,000 sample vectors
+    # Create 5,000 sample vectors
     data = [
         {"vector": row, "item": f"item {i}"}
-        for i, row in enumerate(np.random.random((10_000, 1536)).astype("float32"))
+        for i, row in enumerate(np.random.random((5_000, 32)).astype("float32"))
     ]
 
     db = lancedb.connect(uri)
@@ -32,18 +32,18 @@ def test_ann_index():
     tbl = db.create_table("my_vectors", data=data)
     # Create and train the index - you need to have enough data in the table
     # for an effective training step
-    tbl.create_index(num_partitions=256, num_sub_vectors=96)
+    tbl.create_index(num_partitions=2, num_sub_vectors=4)
     # --8<-- [end:create_ann_index]
     # --8<-- [start:vector_search]
-    tbl.search(np.random.random((1536))).limit(2).nprobes(20).refine_factor(
+    tbl.search(np.random.random((32))).limit(2).nprobes(20).refine_factor(
         10
     ).to_pandas()
     # --8<-- [end:vector_search]
     # --8<-- [start:vector_search_with_filter]
-    tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_pandas()
+    tbl.search(np.random.random((32))).where("item != 'item 1141'").to_pandas()
     # --8<-- [end:vector_search_with_filter]
     # --8<-- [start:vector_search_with_select]
-    tbl.search(np.random.random((1536))).select(["vector"]).to_pandas()
+    tbl.search(np.random.random((32))).select(["vector"]).to_pandas()
     # --8<-- [end:vector_search_with_select]
 
 
@@ -52,10 +52,10 @@ async def test_ann_index_async():
     # --8<-- [start:create_ann_index_async]
     uri = "data/sample-lancedb"
 
-    # Create 10,000 sample vectors
+    # Create 5,000 sample vectors
     data = [
         {"vector": row, "item": f"item {i}"}
-        for i, row in enumerate(np.random.random((10_000, 1536)).astype("float32"))
+        for i, row in enumerate(np.random.random((5_000, 32)).astype("float32"))
     ]
 
     async_db = await lancedb.connect_async(uri)
@@ -64,13 +64,13 @@ async def test_ann_index_async():
     # Create and train the index - you need to have enough data in the table
     # for an effective training step
     await async_tbl.create_index(
-        "vector", config=IvfPq(num_partitions=256, num_sub_vectors=96)
+        "vector", config=IvfPq(num_partitions=2, num_sub_vectors=4)
     )
     # --8<-- [end:create_ann_index_async]
     # --8<-- [start:vector_search_async]
     await (
         async_tbl.query()
-        .nearest_to(np.random.random((1536)))
+        .nearest_to(np.random.random((32)))
         .limit(2)
         .nprobes(20)
         .refine_factor(10)
@@ -80,7 +80,7 @@ async def test_ann_index_async():
     # --8<-- [start:vector_search_async_with_filter]
     await (
         async_tbl.query()
-        .nearest_to(np.random.random((1536)))
+        .nearest_to(np.random.random((32)))
         .where("item != 'item 1141'")
         .to_pandas()
     )
@@ -88,7 +88,7 @@ async def test_ann_index_async():
     # --8<-- [start:vector_search_async_with_select]
     await (
         async_tbl.query()
-        .nearest_to(np.random.random((1536)))
+        .nearest_to(np.random.random((32)))
         .select(["vector"])
         .to_pandas()
     )
