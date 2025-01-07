@@ -933,9 +933,9 @@ class Table(ABC):
         --------
         >>> import lancedb
         >>> data = [
-        ...    {"x": 1, "vector": [1, 2]},
-        ...    {"x": 2, "vector": [3, 4]},
-        ...    {"x": 3, "vector": [5, 6]}
+        ...    {"x": 1, "vector": [1.0, 2]},
+        ...    {"x": 2, "vector": [3.0, 4]},
+        ...    {"x": 3, "vector": [5.0, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
@@ -997,7 +997,7 @@ class Table(ABC):
         --------
         >>> import lancedb
         >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1.0, 2], [3, 4], [5, 6]]})
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -1005,7 +1005,7 @@ class Table(ABC):
         0  1  [1.0, 2.0]
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
-        >>> table.update(where="x = 2", values={"vector": [10, 10]})
+        >>> table.update(where="x = 2", values={"vector": [10.0, 10]})
         >>> table.to_pandas()
            x        vector
         0  1    [1.0, 2.0]
@@ -2023,9 +2023,9 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> data = [
-        ...    {"x": 1, "vector": [1, 2]},
-        ...    {"x": 2, "vector": [3, 4]},
-        ...    {"x": 3, "vector": [5, 6]}
+        ...    {"x": 1, "vector": [1.0, 2]},
+        ...    {"x": 2, "vector": [3.0, 4]},
+        ...    {"x": 3, "vector": [5.0, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
@@ -2114,7 +2114,7 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1.0, 2], [3, 4], [5, 6]]})
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -2122,7 +2122,7 @@ class LanceTable(Table):
         0  1  [1.0, 2.0]
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
-        >>> table.update(where="x = 2", values={"vector": [10, 10]})
+        >>> table.update(where="x = 2", values={"vector": [10.0, 10]})
         >>> table.to_pandas()
            x        vector
         0  1    [1.0, 2.0]
@@ -2941,9 +2941,9 @@ class AsyncTable:
         --------
         >>> import lancedb
         >>> data = [
-        ...    {"x": 1, "vector": [1, 2]},
-        ...    {"x": 2, "vector": [3, 4]},
-        ...    {"x": 3, "vector": [5, 6]}
+        ...    {"x": 1, "vector": [1.0, 2]},
+        ...    {"x": 2, "vector": [3.0, 4]},
+        ...    {"x": 3, "vector": [5.0, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
