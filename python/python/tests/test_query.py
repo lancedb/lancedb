@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+from typing import List, Union
 import unittest.mock as mock
 from datetime import timedelta
 from pathlib import Path
 
 import lancedb
-from lancedb.index import IvfPq, FTS
+from lancedb.db import AsyncConnection
+from lancedb.embeddings.base import TextEmbeddingFunction
+from lancedb.embeddings.registry import get_registry, register
+from lancedb.index import FTS, IvfPq
+import lancedb.pydantic
 import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
@@ -14,7 +19,9 @@ import pytest
 import pytest_asyncio
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.query import (
+    AsyncHybridQuery,
     AsyncQueryBase,
+    AsyncVectorQuery,
     LanceVectorQueryBuilder,
     Query,
 )
@@ -512,3 +519,54 @@ async def test_query_with_f16(tmp_path: Path):
     tbl = await db.create_table("test", df)
     results = await tbl.vector_search([np.float16(1), np.float16(2)]).to_pandas()
     assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_query_search_auto(mem_db_async: AsyncConnection):
+    nrows = 1000
+    data = pa.table(
+        {
+            "text": [str(i) for i in range(nrows)],
+        }
+    )
+
+    @register("test")
+    class TestEmbedding(TextEmbeddingFunction):
+        def ndims(self):
+            return 4
+
+        def generate_embeddings(
+            self, texts: Union[List[str], np.ndarray]
+        ) -> List[np.array]:
+            embeddings = []
+            for text in texts:
+                vec = np.array([float(text) / 1000] * self.ndims())
+                embeddings.append(vec)
+            return embeddings
+
+    registry = get_registry()
+    func = registry.get("test").create()
+
+    class TestModel(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    tbl = await mem_db_async.create_table("test", data, schema=TestModel)
+
+    funcs = await tbl.embedding_functions()
+    assert len(funcs) == 1
+
+    # No FTS or vector index
+    # Search for vector -> vector query
+    q = [0.1] * 4
+    query = await tbl.search(q)
+    assert isinstance(query, AsyncVectorQuery)
+
+    # Search for string -> vector query
+    query = await tbl.search("0.1")
+    assert isinstance(query, AsyncVectorQuery)
+
+    await tbl.create_index("text", config=FTS())
+
+    query = await tbl.search("0.1")
+    assert isinstance(query, AsyncHybridQuery)
