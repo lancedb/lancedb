@@ -30,6 +30,7 @@ from .dependencies import _check_for_pandas
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
+import numpy as np
 from lance import LanceDataset
 from lance.dependencies import _check_for_hugging_face
 
@@ -2944,7 +2945,7 @@ class AsyncTable:
 
         return LanceMergeInsertBuilder(self, on)
 
-    def search(
+    async def search(
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
@@ -3008,35 +3009,52 @@ class AsyncTable:
         """
 
         def is_embedding(query):
-            return isinstance(query, (list, np.ndarray, pa.array, pa.ChunkedArray))
+            return isinstance(query, (list, np.ndarray, pa.Array, pa.ChunkedArray))
 
         if query_type == "auto":
             # Infer the query type.
             if is_embedding(query):
+                vector_query = query
                 query_type = "vector"
             elif isinstance(query, str):
-                # We assume hybrid for now. Later, if we find there's no embedding
-                # function for the table, we'll switch to fts.
-                query_type = "hybrid"
+                vector_column_name = infer_vector_column_name(
+                    schema=await self.schema(),
+                    query_type=query_type,
+                    query=query,
+                    vector_column_name=vector_column_name,
+                )
+                conf = (await self.embedding_functions()).get(vector_column_name)
+                if conf is not None:
+                    vector_query = conf.function.compute_query_embeddings_with_retry(
+                        query
+                    )[0]
+
+                    indices = await self.list_indices()
+                    if any(
+                        i.columns[0] == conf.source_column and i.index_type == "FTS"
+                        for i in indices
+                    ):
+                        query_type = "hybrid"
+                    else:
+                        query_type = "vector"
+                else:
+                    query_type = "fts"
             else:
                 # it's an image or something else embeddable.
                 query_type = "vector"
 
         if query_type == "vector":
-            query = self.query().nearest_to(query)
+            builder = self.query().nearest_to(vector_query)
             if vector_column_name:
-                query = query.column(vector_column_name)
-            return query
+                builder = builder.column(vector_column_name)
+            return builder
         elif query_type == "fts":
             return self.query().nearest_to_text(query, columns=fts_columns or [])
         elif query_type == "hybrid":
-            query = self.query().nearest_to_text(query)
+            builder = self.query().nearest_to(vector_query)
             if vector_column_name:
-                query = query.column(vector_column_name)
-            # TODO: how do we provide the vector query?
-            # TODO: How do we provide the reranker?
-            # Likely need to return a custom deferred builder.
-            raise NotImplementedError("Hybrid search is not yet supported.")
+                builder = builder.column(vector_column_name)
+            return builder.nearest_to_text(query, columns=fts_columns or [])
 
     def vector_search(
         self,
