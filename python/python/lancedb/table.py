@@ -129,7 +129,7 @@ def _into_pyarrow_table(data) -> pa.Table:
     ):
         return data.collect().to_arrow()
     elif isinstance(data, Iterable):
-        return _process_iterator(data)
+        return _iterator_to_table(data)
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
@@ -139,7 +139,7 @@ def _into_pyarrow_table(data) -> pa.Table:
         )
 
 
-def _process_iterator(data: Iterable) -> pa.Table:
+def _iterator_to_table(data: Iterable) -> pa.Table:
     batches = []
     schema = None  # Will get schema from first batch
     for batch in data:
@@ -151,8 +151,8 @@ def _process_iterator(data: Iterable) -> pa.Table:
                 except pa.lib.ArrowInvalid:
                     raise ValueError(
                         f"Input iterator yielded a batch with schema that "
-                        f"does not match the expected schema.\nExpected:\n{schema}\n"
-                        f"Got:\n{batch_table.schema}"
+                        f"does not match the schema of other batches.\n"
+                        f"Expected:\n{schema}\nGot:\n{batch_table.schema}"
                     )
         else:
             # Use the first schema for the remainder of the batches
@@ -257,7 +257,7 @@ def _cast_to_target_schema(
             "Input table has different number of columns than target schema"
         )
 
-    if allow_subschema:
+    if allow_subschema and len(reordered_schema) != len(target_schema):
         fields = _infer_subschema(
             list(iter(table.schema)), list(iter(reordered_schema))
         )
@@ -2351,10 +2351,6 @@ def _handle_bad_vector_column(
 ) -> pa.Table:
     """
     Ensure that the vector column exists and has type fixed_size_list(float)
-
-    If the table has a schema, the vector column is created with the data
-    type from the schema. If the schema is not provided, the vector column
-    is cast to fixed_size_list(float32) if necessary.
 
     Parameters
     ----------

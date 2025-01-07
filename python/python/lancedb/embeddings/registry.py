@@ -110,6 +110,7 @@ class EmbeddingFunctionRegistry:
         """
         if metadata is None:
             return {}
+        # Look at both bytes and string keys, since we might use either
         serialized = metadata.get(
             b"embedding_functions", metadata.get("embedding_functions")
         )
