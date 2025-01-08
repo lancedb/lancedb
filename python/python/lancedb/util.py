@@ -223,9 +223,7 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
     vector_col_count = 0
     for field_name in schema.names:
         field = schema.field(field_name)
-        if pa.types.is_fixed_size_list(field.type) and pa.types.is_floating(
-            field.type.value_type
-        ):
+        if pa.types.is_fixed_size_list(field.type):
             vector_col_count += 1
             if vector_col_count > 1:
                 raise ValueError(

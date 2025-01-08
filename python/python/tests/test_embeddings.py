@@ -198,7 +198,6 @@ def test_embedding_function_with_pandas(tmp_path):
         {
             "text": ["hello world", "goodbye world"],
             "val": [1, 2],
-            "not-used": ["s1", "s3"],
         }
     )
     db = lancedb.connect(tmp_path)
@@ -212,7 +211,6 @@ def test_embedding_function_with_pandas(tmp_path):
         {
             "text": ["extra", "more"],
             "val": [4, 5],
-            "misc-col": ["s1", "s3"],
         }
     )
     tbl.add(df)
