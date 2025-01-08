@@ -2,6 +2,9 @@
 
 A JavaScript / Node.js library for [LanceDB](https://github.com/lancedb/lancedb).
 
+**DEPRECATED: This library is deprecated. Please use the new client,
+[@lancedb/lancedb](https://www.npmjs.com/package/@lancedb/lancedb).**
+
 ## Installation
 
 ```bash
