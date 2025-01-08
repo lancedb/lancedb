@@ -9,23 +9,50 @@ LanceDB supports [Polars](https://github.com/pola-rs/polars), a blazingly fast D
 
 First, we connect to a LanceDB database.
 
+=== "Sync API"
 
-```py
---8<-- "python/python/tests/docs/test_python.py:import-lancedb"
---8<-- "python/python/tests/docs/test_python.py:connect_to_lancedb"
-```
+    ```py
+    --8<-- "python/python/tests/docs/test_python.py:import-lancedb"
+    --8<-- "python/python/tests/docs/test_python.py:connect_to_lancedb"
+    ```
+
+=== "Async API"
+
+    ```py
+    --8<-- "python/python/tests/docs/test_python.py:import-lancedb"
+    --8<-- "python/python/tests/docs/test_python.py:connect_to_lancedb_async"
+    ```
+
 
 We can load a Polars `DataFrame` to LanceDB directly.
 
-```py
---8<-- "python/python/tests/docs/test_python.py:import-polars"
---8<-- "python/python/tests/docs/test_python.py:create_table_polars"
-```
+=== "Sync API"
+
+    ```py
+    --8<-- "python/python/tests/docs/test_python.py:import-polars"
+    --8<-- "python/python/tests/docs/test_python.py:create_table_polars"
+    ```
+
+=== "Async API"
+
+    ```py
+    --8<-- "python/python/tests/docs/test_python.py:import-polars"
+    --8<-- "python/python/tests/docs/test_python.py:create_table_polars_async"
+    ```
+
 We can now perform similarity search via the LanceDB Python API.
 
-```py
---8<-- "python/python/tests/docs/test_python.py:vector_search_polars"
-```
+=== "Sync API"
+
+    ```py
+    --8<-- "python/python/tests/docs/test_python.py:vector_search_polars"
+    ```
+
+=== "Async API"
+
+    ```py
+    --8<-- "python/python/tests/docs/test_python.py:vector_search_polars_async"
+    ```
 
 In addition to the selected columns, LanceDB also returns a vector
 and also the `_distance` column which is the distance between the query
@@ -112,4 +139,3 @@ The reason it's beneficial to not convert the LanceDB Table
 to a DataFrame is because the table can potentially be way larger
 than memory, and Polars LazyFrames allow us to work with such
 larger-than-memory datasets by not loading it into memory all at once.
-
