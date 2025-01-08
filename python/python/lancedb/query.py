@@ -762,7 +762,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         return result_set
 
-    def where(self, where: str, prefilter: bool = False) -> LanceVectorQueryBuilder:
+    def where(self, where: str, prefilter: bool = True) -> LanceVectorQueryBuilder:
         """Set the where clause.
 
         Parameters
@@ -771,7 +771,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The where clause which is a valid SQL where clause. See
             `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
             for valid SQL expressions.
-        prefilter: bool, default False
+        prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
             This feature is **EXPERIMENTAL** and may be removed and modified
