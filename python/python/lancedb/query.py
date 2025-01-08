@@ -647,7 +647,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         Parameters
         ----------
-        lower: Optional[float]
+        lower_bound: Optional[float]
             The lower bound of the distance range.
         upper_bound: Optional[float]
             The upper bound of the distance range.
@@ -1309,7 +1309,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         Parameters
         ----------
-        lower: Optional[float]
+        lower_bound: Optional[float]
             The lower bound of the distance range.
         upper_bound: Optional[float]
             The upper bound of the distance range.
@@ -1940,7 +1940,7 @@ class AsyncVectorQuery(AsyncQueryBase):
 
         Parameters
         ----------
-        lower: Optional[float]
+        lower_bound: Optional[float]
             The lower bound of the distance range.
         upper_bound: Optional[float]
             The upper bound of the distance range.

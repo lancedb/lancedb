@@ -138,6 +138,39 @@ LanceDB supports binary vectors as a data type, and has the ability to search bi
         --8<-- "python/python/tests/docs/test_binary_vector.py:async_binary_vector"
         ```
 
+## Search with distance range
+
+You can also search for vectors within a specific distance range from the query vector. This is useful when you want to find vectors that are not just the nearest neighbors, but also those that are within a certain distance. This can be done by using the `distance_range` method.
+
+=== "Python"
+
+    === "sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_distance_range.py:imports"
+
+        --8<-- "python/python/tests/docs/test_distance_range.py:sync_distance_range"
+        ```
+
+    === "async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_distance_range.py:imports"
+
+        --8<-- "python/python/tests/docs/test_distance_range.py:async_distance_range"
+        ```
+
+=== "TypeScript"
+
+    === "@lancedb/lancedb"
+
+        ```ts
+        --8<-- "nodejs/examples/search.test.ts:import"
+
+        --8<-- "nodejs/examples/search.test.ts:distance_range"
+        ```
+
+
 ## Output search results
 
 LanceDB returns vector search results via different formats commonly used in python.

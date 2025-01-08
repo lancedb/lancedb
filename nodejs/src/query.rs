@@ -172,6 +172,15 @@ impl VectorQuery {
     }
 
     #[napi]
+    pub fn distance_range(&mut self, lower_bound: Option<f64>, upper_bound: Option<f64>) {
+        // napi doesn't support f32, so we have to convert to f32
+        self.inner = self
+            .inner
+            .clone()
+            .distance_range(lower_bound.map(|v| v as f32), upper_bound.map(|v| v as f32));
+    }
+
+    #[napi]
     pub fn ef(&mut self, ef: u32) {
         self.inner = self.inner.clone().ef(ef as usize);
     }

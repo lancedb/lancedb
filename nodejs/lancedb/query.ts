@@ -388,6 +388,19 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
     return this;
   }
 
+  /*
+   * Set the distance range to use
+   *
+   * Only rows with distances within range [lower_bound, upper_bound)
+   * will be returned.
+   *
+   * `undefined` means no lower or upper bound.
+   */
+  distanceRange(lowerBound?: number, upperBound?: number): VectorQuery {
+    super.doCall((inner) => inner.distanceRange(lowerBound, upperBound));
+    return this;
+  }
+
   /**
    * Set the number of candidates to consider during the search
    *

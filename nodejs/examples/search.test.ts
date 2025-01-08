@@ -38,5 +38,19 @@ test("full text search", async () => {
       .toArray();
     // --8<-- [end:search2]
     expect(results2.length).toBe(10);
+
+    // --8<-- [start:distance_range]
+    const results3 = await (
+      tbl.search(Array(128).fill(1.2)) as lancedb.VectorQuery
+    )
+      .distanceType("cosine")
+      .distanceRange(0.1, 0.2)
+      .limit(10)
+      .toArray();
+    // --8<-- [end:distance_range]
+    for (const r of results3) {
+      expect(r.distance).toBeGreaterThanOrEqual(0.1);
+      expect(r.distance).toBeLessThan(0.2);
+    }
   });
 });
