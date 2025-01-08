@@ -291,6 +291,7 @@ def test_query_builder_with_different_vector_column():
         Query(
             vector=query,
             filter="b < 10",
+            prefilter=True,
             k=2,
             metric="cosine",
             columns=["b"],
