@@ -1802,9 +1802,21 @@ class AsyncFTSQuery(AsyncQueryBase):
     def __init__(self, inner: LanceFTSQuery):
         super().__init__(inner)
         self._inner = inner
+        self._reranker = None
 
     def get_query(self):
         self._inner.get_query()
+
+    def rerank(
+        self,
+        reranker: Reranker = RRFReranker(),
+    ) -> AsyncFTSQuery:
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._reranker = reranker
+
+        return self
 
     def nearest_to(
         self,
@@ -1876,6 +1888,12 @@ class AsyncFTSQuery(AsyncQueryBase):
                 self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
             )
 
+    async def to_arrow(self) -> pa.Table:
+        results = await super().to_arrow()
+        if self._reranker:
+            results = self._reranker.rerank_fts(results)
+        return results
+
 
 class AsyncVectorQuery(AsyncQueryBase):
     def __init__(self, inner: LanceVectorQuery):
@@ -1890,6 +1908,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         """
         super().__init__(inner)
         self._inner = inner
+        self._reranker = None
 
     def column(self, column: str) -> AsyncVectorQuery:
         """
@@ -2035,6 +2054,16 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.bypass_vector_index()
         return self
 
+    def rerank(
+        self, reranker: Reranker = RRFReranker(), query_string: Optional[str] = None
+    ) -> AsyncHybridQuery:
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._reranker = reranker
+
+        return self
+
     def nearest_to_text(
         self, query: str, columns: Union[str, List[str]] = []
     ) -> AsyncHybridQuery:
@@ -2067,6 +2096,12 @@ class AsyncVectorQuery(AsyncQueryBase):
         return AsyncHybridQuery(
             self._inner.nearest_to_text({"query": query, "columns": columns})
         )
+
+    async def to_arrow(self) -> pa.Table:
+        results = await super().to_arrow()
+        if self._reranker:
+            results = self._reranker.rerank_vector(results)
+        return results
 
 
 class AsyncHybridQuery(AsyncQueryBase):
