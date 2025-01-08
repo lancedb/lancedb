@@ -229,7 +229,7 @@ def test_query_builder_with_prefilter(table):
     )
     assert df["id"].values[0] == 2
     assert all(df["vector"].values[0] == [3, 4])
-    
+
     df = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
         .where("id = 2", prefilter=False)
@@ -247,10 +247,6 @@ def test_query_builder_with_prefilter(table):
     )
     assert df["id"].values[0] == 2
     assert all(df["vector"].values[0] == [3, 4])
-
-
-
-
 
 
 def test_query_builder_with_metric(table):

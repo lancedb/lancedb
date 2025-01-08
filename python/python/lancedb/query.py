@@ -576,6 +576,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     ...       .to_pandas())
        b      vector  _distance
     0  6  [0.4, 0.4]        0.0
+    1  2  [1.1, 1.2]   0.000944
     """
 
     def __init__(
