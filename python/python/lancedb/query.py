@@ -254,7 +254,7 @@ class LanceQueryBuilder(ABC):
         self._offset = 0
         self._columns = None
         self._where = None
-        self._prefilter = False
+        self._prefilter = True
         self._with_row_id = False
         self._vector = None
         self._text = None
@@ -425,7 +425,7 @@ class LanceQueryBuilder(ABC):
             raise ValueError("columns must be a list or a dictionary")
         return self
 
-    def where(self, where: str, prefilter: bool = False) -> LanceQueryBuilder:
+    def where(self, where: str, prefilter: bool = True) -> LanceQueryBuilder:
         """Set the where clause.
 
         Parameters
@@ -434,7 +434,7 @@ class LanceQueryBuilder(ABC):
             The where clause which is a valid SQL where clause. See
             `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
             for valid SQL expressions.
-        prefilter: bool, default False
+        prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
             This feature is **EXPERIMENTAL** and may be removed and modified
@@ -575,7 +575,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     ...       .limit(2)
     ...       .to_pandas())
        b      vector  _distance
-    0  6  [0.4, 0.4]        0.0
+    0  6  [0.4, 0.4]   0.000000
+    1  2  [1.1, 1.2]   0.000944
     """
 
     def __init__(
@@ -762,7 +763,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         return result_set
 
-    def where(self, where: str, prefilter: bool = False) -> LanceVectorQueryBuilder:
+    def where(self, where: str, prefilter: bool = True) -> LanceVectorQueryBuilder:
         """Set the where clause.
 
         Parameters
@@ -771,7 +772,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The where clause which is a valid SQL where clause. See
             `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
             for valid SQL expressions.
-        prefilter: bool, default False
+        prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
             This feature is **EXPERIMENTAL** and may be removed and modified

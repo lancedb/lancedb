@@ -228,15 +228,25 @@ def test_query_builder_with_filter(table):
 def test_query_builder_with_prefilter(table):
     df = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
-        .where("id = 2")
+        .where("id = 2", prefilter=True)
+        .limit(1)
+        .to_pandas()
+    )
+    assert df["id"].values[0] == 2
+    assert all(df["vector"].values[0] == [3, 4])
+
+    df = (
+        LanceVectorQueryBuilder(table, [0, 0], "vector")
+        .where("id = 2", prefilter=False)
         .limit(1)
         .to_pandas()
     )
     assert len(df) == 0
 
+    # ensure the default prefilter = True
     df = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
-        .where("id = 2", prefilter=True)
+        .where("id = 2")
         .limit(1)
         .to_pandas()
     )
@@ -286,6 +296,7 @@ def test_query_builder_with_different_vector_column():
         Query(
             vector=query,
             filter="b < 10",
+            prefilter=True,
             k=2,
             metric="cosine",
             columns=["b"],
