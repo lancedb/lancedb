@@ -123,19 +123,17 @@ async def test_pandas_and_pyarrow_async():
 
     query_vector = [100, 100]
     # Pandas DataFrame
-    df = await async_tbl.query().nearest_to(query_vector).limit(1).to_pandas()
+    df = await (await async_tbl.search(query_vector)).limit(1).to_pandas()
     print(df)
     # --8<-- [end:vector_search_async]
     # --8<-- [start:vector_search_with_filter_async]
     # Apply the filter via LanceDB
-    results = (
-        await async_tbl.query().nearest_to([100, 100]).where("price < 15").to_pandas()
-    )
+    results = await (await async_tbl.search([100, 100])).where("price < 15").to_pandas()
     assert len(results) == 1
     assert results["item"].iloc[0] == "foo"
 
     # Apply the filter via Pandas
-    df = results = await async_tbl.query().nearest_to([100, 100]).to_pandas()
+    df = results = await (await async_tbl.search([100, 100])).to_pandas()
     results = df[df.price < 15]
     assert len(results) == 1
     assert results["item"].iloc[0] == "foo"
@@ -185,3 +183,26 @@ def test_polars():
     # --8<-- [start:print_table_lazyform]
     print(ldf.first().collect())
     # --8<-- [end:print_table_lazyform]
+
+
+@pytest.mark.asyncio
+async def test_polars_async():
+    uri = "data/sample-lancedb"
+    db = await lancedb.connect_async(uri)
+
+    # --8<-- [start:create_table_polars_async]
+    data = pl.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    table = await db.create_table("pl_table_async", data=data)
+    # --8<-- [end:create_table_polars_async]
+    # --8<-- [start:vector_search_polars_async]
+    query = [3.0, 4.0]
+    result = await (await table.search(query)).limit(1).to_polars()
+    print(result)
+    print(type(result))
+    # --8<-- [end:vector_search_polars_async]

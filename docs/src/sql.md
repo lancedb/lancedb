@@ -18,7 +18,7 @@ import numpy as np
 
 uri = "data/sample-lancedb"
 data = [{"vector": row, "item": f"item {i}", "id": i}
-    for i, row in enumerate(np.random.random((10_000, 2)).astype('int'))]
+    for i, row in enumerate(np.random.random((10_000, 2)))]
 
 # Synchronous client
 db = lancedb.connect(uri)
