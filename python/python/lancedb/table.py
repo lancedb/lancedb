@@ -2858,8 +2858,6 @@ class AsyncTable:
         if query.vector:
             # we need the schema to get the vector column type
             # to determine whether the vectors is batch queries or not
-            schema = await self.schema()
-            async_query = async_query._with_schema(schema)
             async_query = (
                 async_query.nearest_to(query.vector)
                 .distance_type(query.metric)
