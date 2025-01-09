@@ -3420,10 +3420,7 @@ mod tests {
             Some(&"test_val2_update".to_string())
         );
 
-        native_tbl
-            .delete_config_keys(&["test_key1"])
-            .await
-            .unwrap();
+        native_tbl.delete_config_keys(&["test_key1"]).await.unwrap();
         let manifest = native_tbl.manifest().await.unwrap();
         assert_eq!(manifest.config.len(), 1);
         assert_eq!(
