@@ -16,4 +16,5 @@ ENV CC=clang \
     AR=llvm-ar \
     C_INCLUDE_PATH=/usr/aarch64-pc-windows-msvc/usr/include \
     CARGO_BUILD_TARGET=aarch64-pc-windows-msvc \
-    RUSTFLAGS='-Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib'
+    RUSTFLAGS='-Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib' \
+    PATH="/root/.cargo/bin:$PATH"

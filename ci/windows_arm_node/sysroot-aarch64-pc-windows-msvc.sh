@@ -98,7 +98,7 @@ find /usr/aarch64-pc-windows-msvc/usr/include -type f -exec sed -i -E 's/(#inclu
 # reason: https://developercommunity.visualstudio.com/t/libucrtlibstreamobj-error-lnk2001-unresolved-exter/1544787#T-ND1599818
 # I don't understand the 'correct' fix for this, arm64rt.lib is supposed to be the workaround
 
-(cd 'program files/windows kits/10/lib/10.0.26100.0/um/arm64' && cp advapi32.lib bcrypt.lib kernel32.lib ntdll.lib user32.lib uuid.lib ws2_32.lib userenv.lib cfgmgr32.lib runtimeobject.lib fwpuclnt.lib arm64rt.lib -t /usr/aarch64-pc-windows-msvc/usr/lib)
+(cd 'program files/windows kits/10/lib/10.0.26100.0/um/arm64' && cp advapi32.lib bcrypt.lib dbghelp.lib kernel32.lib ntdll.lib user32.lib uuid.lib ws2_32.lib userenv.lib cfgmgr32.lib runtimeobject.lib fwpuclnt.lib arm64rt.lib -t /usr/aarch64-pc-windows-msvc/usr/lib)
 
 (cd 'contents/vc/tools/msvc/14.16.27023/lib/arm64' && cp libcmt.lib libvcruntime.lib -t /usr/aarch64-pc-windows-msvc/usr/lib)
 
