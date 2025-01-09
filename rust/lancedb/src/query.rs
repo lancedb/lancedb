@@ -19,7 +19,7 @@ use arrow::compute::concat_batches;
 use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
 use arrow_schema::DataType;
 use datafusion_physical_plan::ExecutionPlan;
-use futures::{stream, try_join, FutureExt, TryStreamExt};
+use futures::{future::BoxFuture, stream, try_join, FutureExt, TryStreamExt};
 use half::f16;
 use lance::{
     arrow::RecordBatchExt,
@@ -480,7 +480,7 @@ impl<T: HasQuery> QueryBase for T {
     }
 
     fn full_text_search(mut self, query: FullTextSearchQuery) -> Self {
-        self.mut_query().full_text_search = Some(query);
+        self.mut_query().full_text_search = Deferrable::Resolved(query);
         self
     }
 
@@ -552,14 +552,14 @@ pub trait ExecutableQuery {
     /// The caller can further optimize the plan or execute it.
     ///
     fn create_plan(
-        &self,
+        &mut self,
         options: QueryExecutionOptions,
     ) -> impl Future<Output = Result<Arc<dyn ExecutionPlan>>> + Send;
 
     /// Execute the query with default options and return results
     ///
     /// See [`ExecutableQuery::execute_with_options`] for more details.
-    fn execute(&self) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send {
+    fn execute(&mut self) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send {
         self.execute_with_options(QueryExecutionOptions::default())
     }
 
@@ -581,11 +581,29 @@ pub trait ExecutableQuery {
     /// For simpler access or row-based access we recommend creating extension traits
     /// to convert Arrow data into your internal data model.
     fn execute_with_options(
-        &self,
+        &mut self,
         options: QueryExecutionOptions,
     ) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send;
 
-    fn explain_plan(&self, verbose: bool) -> impl Future<Output = Result<String>> + Send;
+    fn explain_plan(&mut self, verbose: bool) -> impl Future<Output = Result<String>> + Send;
+}
+
+pub enum Deferrable<T> {
+    None,
+    Resolved(T),
+    Deferred(BoxFuture<'static, Result<Option<T>>>),
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Deferrable<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Deferrable::None => write!(f, "Deferable::None"),
+            Deferrable::Resolved(query) => write!(f, "Deferable::Resolved({:?})", query),
+            Deferrable::Deferred(_) => {
+                write!(f, "Deferable::Deferred({})", std::any::type_name::<T>())
+            }
+        }
+    }
 }
 
 /// A builder for LanceDB queries.
@@ -600,7 +618,7 @@ pub trait ExecutableQuery {
 ///
 /// This query object can be reused to issue the same query multiple
 /// times.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Query {
     parent: Arc<dyn TableInternal>,
 
@@ -614,7 +632,7 @@ pub struct Query {
     pub(crate) filter: Option<String>,
 
     /// Perform a full text search on the table.
-    pub(crate) full_text_search: Option<FullTextSearchQuery>,
+    pub(crate) full_text_search: Deferrable<FullTextSearchQuery>,
 
     /// Select column projection.
     pub(crate) select: Select,
@@ -648,7 +666,7 @@ impl Query {
             limit: Some(DEFAULT_TOP_K),
             offset: None,
             filter: None,
-            full_text_search: None,
+            full_text_search: Deferrable::None,
             select: Select::All,
             fast_search: false,
             with_row_id: false,
@@ -663,6 +681,41 @@ impl Query {
     /// single query object for both vector and plain queries.
     pub(crate) fn into_vector(self) -> VectorQuery {
         VectorQuery::new(self)
+    }
+
+    async fn resolve(&mut self) -> Result<()> {
+        match &mut self.full_text_search {
+            Deferrable::Deferred(fut) => {
+                match fut.await? {
+                    Some(query) => self.full_text_search = Deferrable::Resolved(query),
+                    None => self.full_text_search = Deferrable::None,
+                }
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Resolve any deferred query parameters.
+    pub async fn resolve_and_clone(&mut self) -> Result<Self> {
+        self.resolve().await?;
+        Ok(Self {
+            parent: self.parent.clone(),
+            limit: self.limit,
+            offset: self.offset,
+            filter: self.filter.clone(),
+            full_text_search: match &self.full_text_search {
+                Deferrable::Resolved(query) => Deferrable::Resolved(query.clone()),
+                Deferrable::None => Deferrable::None,
+                Deferrable::Deferred(_) => unreachable!()
+            },
+            select: self.select.clone(),
+            fast_search: self.fast_search,
+            with_row_id: self.with_row_id,
+            prefilter: self.prefilter,
+            reranker: self.reranker.clone(),
+            norm: self.norm.clone(),
+        })
     }
 
     /// Find the nearest vectors to the given query vector.
@@ -702,8 +755,22 @@ impl Query {
     pub fn nearest_to(self, vector: impl IntoQueryVector) -> Result<VectorQuery> {
         let mut vector_query = self.into_vector();
         let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
-        vector_query.query_vector.push(query_vector);
+        vector_query.query_vector = Deferrable::Resolved(vec![query_vector]);
         Ok(vector_query)
+    }
+
+    pub fn nearest_to_deferred(
+        self,
+        vector_future: impl Future<Output = Result<Option<Arc<dyn Array>>>> + Send + 'static,
+    ) -> VectorQuery {
+        let mut vector_query = self.into_vector();
+        vector_query.query_vector =
+            Deferrable::Deferred(vector_future.map(|res| match res {
+                Ok(Some(query_vector)) => Ok(Some(vec![query_vector])),
+                Ok(None) => Ok(None),
+                Err(e) => Err(e),
+            }).boxed());
+        vector_query
     }
 }
 
@@ -714,15 +781,16 @@ impl HasQuery for Query {
 }
 
 impl ExecutableQuery for Query {
-    async fn create_plan(&self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
+    async fn create_plan(&mut self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
+        let plan = self.resolve_and_clone().await?.into_vector();
         self.parent
             .clone()
-            .create_plan(&self.clone().into_vector(), options)
+            .create_plan(&plan, options)
             .await
     }
 
     async fn execute_with_options(
-        &self,
+        &mut self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
         Ok(SendableRecordBatchStream::from(
@@ -730,9 +798,10 @@ impl ExecutableQuery for Query {
         ))
     }
 
-    async fn explain_plan(&self, verbose: bool) -> Result<String> {
+    async fn explain_plan(&mut self, verbose: bool) -> Result<String> {
+        let plan = self.resolve_and_clone().await?.into_vector();
         self.parent
-            .explain_plan(&self.clone().into_vector(), verbose)
+            .explain_plan(&plan, verbose)
             .await
     }
 }
@@ -746,14 +815,14 @@ impl ExecutableQuery for Query {
 ///
 /// See [`ExecutableQuery`] for methods that can be used to execute
 /// the query and retrieve results.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VectorQuery {
     pub(crate) base: Query,
     // The column to run the query on. If not specified, we will attempt to guess
     // the column based on the dataset's schema.
     pub(crate) column: Option<String>,
     // IVF PQ - ANN search.
-    pub(crate) query_vector: Vec<Arc<dyn Array>>,
+    pub(crate) query_vector: Deferrable<Vec<Arc<dyn Array>>>,
     pub(crate) nprobes: usize,
     // The lower bound (inclusive) of the distance to search for.
     pub(crate) lower_bound: Option<f32>,
@@ -773,7 +842,7 @@ impl VectorQuery {
         Self {
             base,
             column: None,
-            query_vector: Vec::new(),
+            query_vector: Deferrable::None,
             nprobes: 20,
             lower_bound: None,
             upper_bound: None,
@@ -783,6 +852,8 @@ impl VectorQuery {
             use_index: true,
         }
     }
+
+    async fn resolve(&mut self) ->
 
     /// Set the vector column to query
     ///
@@ -808,7 +879,17 @@ impl VectorQuery {
     /// result.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
         let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
-        self.query_vector.push(query_vector);
+        match &mut self.query_vector {
+            Deferrable::Resolved(vectors) => vectors.push(query_vector),
+            Deferrable::None => {
+                self.query_vector = Deferrable::Resolved(vec![query_vector]);
+            }
+            Deferrable::Deferred(_) => {
+                return Err(Error::InvalidInput {
+                    message: "cannot add query vector to deferred query".to_string(),
+                });
+            }
+        }
         Ok(self)
     }
 

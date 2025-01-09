@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from typing import (
     TYPE_CHECKING,
+    Awaitable,
     Dict,
     List,
     Literal,
@@ -1700,7 +1701,7 @@ class AsyncQuery(AsyncQueryBase):
 
     def nearest_to(
         self,
-        query_vector: Union[VEC, Tuple, List[VEC]],
+        query_vector: Union[VEC, Tuple, List[VEC], Awaitable[VEC]],
     ) -> AsyncVectorQuery:
         """
         Find the nearest vectors to the given query vector.
@@ -1761,13 +1762,19 @@ class AsyncQuery(AsyncQueryBase):
             for v in query_vectors[1:]:
                 new_self.add_query_vector(v)
             return AsyncVectorQuery(new_self)
+        elif isinstance(query_vector, Awaitable):
+            async def _await_query_vector():
+                return AsyncQuery._query_vec_to_array(await query_vector)
+            return AsyncVectorQuery(
+                self._inner.nearest_to(_await_query_vector())
+            )
         else:
             return AsyncVectorQuery(
                 self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
             )
 
     def nearest_to_text(
-        self, query: str, columns: Union[str, List[str]] = []
+        self, query: Union[str, Awaitable[str]], columns: Union[str, List[str]] = []
     ) -> AsyncFTSQuery:
         """
         Find the documents that are most relevant to the given text query.

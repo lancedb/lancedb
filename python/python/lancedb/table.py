@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -2838,7 +2839,7 @@ class AsyncTable:
 
         return LanceMergeInsertBuilder(self, on)
 
-    async def search(
+    def search(
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
@@ -2903,37 +2904,72 @@ class AsyncTable:
 
         def is_embedding(query):
             return isinstance(query, (list, np.ndarray, pa.Array, pa.ChunkedArray))
-
-        if query_type == "auto":
+        
+        async def get_embedding_func(error_if_missing=True):
+            schema = await self.schema()
+            vector_column_name = infer_vector_column_name(
+                schema=schema,
+                query_type=query_type,
+                query=query,
+                vector_column_name=vector_column_name,
+            )
+            funcs = EmbeddingFunctionRegistry.get_instance().parse_functions(schema.metadata)
+            if error_if_missing:
+                return funcs[vector_column_name]
+            else:
+                return funcs.get(vector_column_name)
+    
+        async def make_embedding(get_embeddings_task):
+            embedding = await get_embeddings_task
+            if embedding is not None:
+                return embedding.function.compute_query_embeddings_with_retry(query)[0]
+            else:
+                return None
+        
+        if query_type == "fts":
+            fts_query = query
+            vector_query = None
+        elif query_type == "vector":
+            if is_embedding(query):
+                vector_query = query
+            else:
+                get_embeddings_task = asyncio.create_task(get_embedding_func())
+                vector_query = make_embedding(get_embeddings_task)
+            fts_query = None
+        elif query_type == "hybrid":
+            get_embeddings_task = asyncio.create_task(get_embedding_func())
+            vector_query = make_embedding(get_embeddings_task)
+            fts_query = query
+        elif query_type == "auto":
             # Infer the query type.
             if is_embedding(query):
                 vector_query = query
+                fts_query = None
                 query_type = "vector"
             elif isinstance(query, str):
-                vector_column_name = infer_vector_column_name(
-                    schema=await self.schema(),
-                    query_type=query_type,
-                    query=query,
-                    vector_column_name=vector_column_name,
-                )
-                conf = (await self.embedding_functions()).get(vector_column_name)
-                if conf is not None:
-                    vector_query = conf.function.compute_query_embeddings_with_retry(
-                        query
-                    )[0]
-
-                    indices = await self.list_indices()
-                    if any(
-                        i.columns[0] == conf.source_column and i.index_type == "FTS"
-                        for i in indices
-                    ):
-                        query_type = "hybrid"
+                get_embeddings_task = asyncio.create_task(get_embedding_func(error_if_missing=False))
+                async def make_fts_query():
+                    embedding = await get_embeddings_task
+                    if embedding is not None:
+                        # Only return something if there is an FTS index
+                        indices = await self.list_indices()
+                        if any(
+                            i.columns[0] == embedding.source_column and i.index_type == "FTS"
+                            for i in indices
+                        ):
+                            return query
+                        else:
+                            return None
                     else:
-                        query_type = "vector"
-                else:
-                    query_type = "fts"
+                        return query
+
+                vector_query = make_embedding(get_embeddings_task)
+                fts_query = make_fts_query()
             else:
                 # it's an image or something else embeddable.
+                get_embeddings_task = asyncio.create_task(get_embedding_func())
+                vector_query = make_embedding(get_embeddings_task)
+                fts_query = None
                 query_type = "vector"
 
         if query_type == "vector":
@@ -2942,12 +2978,12 @@ class AsyncTable:
                 builder = builder.column(vector_column_name)
             return builder
         elif query_type == "fts":
-            return self.query().nearest_to_text(query, columns=fts_columns or [])
+            return self.query().nearest_to_text(fts_query, columns=fts_columns or [])
         elif query_type == "hybrid":
             builder = self.query().nearest_to(vector_query)
             if vector_column_name:
                 builder = builder.column(vector_column_name)
-            return builder.nearest_to_text(query, columns=fts_columns or [])
+            return builder.nearest_to_text(fts_query, columns=fts_columns or [])
 
     def vector_search(
         self,
