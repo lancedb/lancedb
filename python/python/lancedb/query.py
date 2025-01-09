@@ -254,7 +254,7 @@ class LanceQueryBuilder(ABC):
         self._offset = 0
         self._columns = None
         self._where = None
-        self._prefilter = False
+        self._prefilter = True
         self._with_row_id = False
         self._vector = None
         self._text = None
@@ -425,7 +425,7 @@ class LanceQueryBuilder(ABC):
             raise ValueError("columns must be a list or a dictionary")
         return self
 
-    def where(self, where: str, prefilter: bool = False) -> LanceQueryBuilder:
+    def where(self, where: str, prefilter: bool = True) -> LanceQueryBuilder:
         """Set the where clause.
 
         Parameters
@@ -434,7 +434,7 @@ class LanceQueryBuilder(ABC):
             The where clause which is a valid SQL where clause. See
             `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
             for valid SQL expressions.
-        prefilter: bool, default False
+        prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
             This feature is **EXPERIMENTAL** and may be removed and modified
@@ -472,7 +472,7 @@ class LanceQueryBuilder(ABC):
         --------
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", [{"vector": [99, 99]}])
+        >>> table = db.create_table("my_table", [{"vector": [99.0, 99]}])
         >>> query = [100, 100]
         >>> plan = table.search(query).explain_plan(True)
         >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
@@ -575,7 +575,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     ...       .limit(2)
     ...       .to_pandas())
        b      vector  _distance
-    0  6  [0.4, 0.4]        0.0
+    0  6  [0.4, 0.4]   0.000000
+    1  2  [1.1, 1.2]   0.000944
     """
 
     def __init__(
@@ -763,7 +764,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         return result_set
 
-    def where(self, where: str, prefilter: bool = False) -> LanceVectorQueryBuilder:
+    def where(self, where: str, prefilter: bool = True) -> LanceVectorQueryBuilder:
         """Set the where clause.
 
         Parameters
@@ -772,7 +773,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The where clause which is a valid SQL where clause. See
             `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
             for valid SQL expressions.
-        prefilter: bool, default False
+        prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
             This feature is **EXPERIMENTAL** and may be removed and modified
@@ -1811,9 +1812,21 @@ class AsyncFTSQuery(AsyncQueryBase):
     def __init__(self, inner: LanceFTSQuery):
         super().__init__(inner)
         self._inner = inner
+        self._reranker = None
 
     def get_query(self):
         self._inner.get_query()
+
+    def rerank(
+        self,
+        reranker: Reranker = RRFReranker(),
+    ) -> AsyncFTSQuery:
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._reranker = reranker
+
+        return self
 
     def nearest_to(
         self,
@@ -1885,6 +1898,12 @@ class AsyncFTSQuery(AsyncQueryBase):
                 self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
             )
 
+    async def to_arrow(self) -> pa.Table:
+        results = await super().to_arrow()
+        if self._reranker:
+            results = self._reranker.rerank_fts(results)
+        return results
+
 
 class AsyncVectorQuery(AsyncQueryBase):
     def __init__(self, inner: LanceVectorQuery):
@@ -1899,6 +1918,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         """
         super().__init__(inner)
         self._inner = inner
+        self._reranker = None
 
     def column(self, column: str) -> AsyncVectorQuery:
         """
@@ -2044,6 +2064,16 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.bypass_vector_index()
         return self
 
+    def rerank(
+        self, reranker: Reranker = RRFReranker(), query_string: Optional[str] = None
+    ) -> AsyncHybridQuery:
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._reranker = reranker
+
+        return self
+
     def nearest_to_text(
         self, query: str, columns: Union[str, List[str]] = []
     ) -> AsyncHybridQuery:
@@ -2076,6 +2106,12 @@ class AsyncVectorQuery(AsyncQueryBase):
         return AsyncHybridQuery(
             self._inner.nearest_to_text({"query": query, "columns": columns})
         )
+
+    async def to_arrow(self) -> pa.Table:
+        results = await super().to_arrow()
+        if self._reranker:
+            results = self._reranker.rerank_vector(results)
+        return results
 
 
 class AsyncHybridQuery(AsyncQueryBase):

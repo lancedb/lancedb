@@ -118,9 +118,9 @@ def test_scalar_index():
     # --8<-- [end:search_with_scalar_index]
     # --8<-- [start:vector_search_with_scalar_index]
     data = [
-        {"book_id": 1, "vector": [1, 2]},
-        {"book_id": 2, "vector": [3, 4]},
-        {"book_id": 3, "vector": [5, 6]},
+        {"book_id": 1, "vector": [1.0, 2]},
+        {"book_id": 2, "vector": [3.0, 4]},
+        {"book_id": 3, "vector": [5.0, 6]},
     ]
 
     table = db.create_table("book_with_embeddings", data)
@@ -156,9 +156,9 @@ async def test_scalar_index_async():
     # --8<-- [end:search_with_scalar_index_async]
     # --8<-- [start:vector_search_with_scalar_index_async]
     data = [
-        {"book_id": 1, "vector": [1, 2]},
-        {"book_id": 2, "vector": [3, 4]},
-        {"book_id": 3, "vector": [5, 6]},
+        {"book_id": 1, "vector": [1.0, 2]},
+        {"book_id": 2, "vector": [3.0, 4]},
+        {"book_id": 3, "vector": [5.0, 6]},
     ]
     async_tbl = await async_db.create_table("book_with_embeddings_async", data)
     (await async_tbl.query().where("book_id != 3").nearest_to([1, 2]).to_pandas())

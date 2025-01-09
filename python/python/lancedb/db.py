@@ -784,10 +784,6 @@ class AsyncConnection(object):
             registry = EmbeddingFunctionRegistry.get_instance()
             metadata = registry.get_table_metadata(embedding_functions)
 
-        data, schema = sanitize_create_table(
-            data, schema, metadata, on_bad_vectors, fill_value
-        )
-
         # Defining defaults here and not in function prototype.  In the future
         # these defaults will move into rust so better to keep them as None.
         if on_bad_vectors is None:
