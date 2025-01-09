@@ -544,11 +544,13 @@ async def test_query_to_pandas_flatten_async(table_struct_async: AsyncTable):
 
 @pytest.mark.asyncio
 async def test_query_to_polars_async(table_async: AsyncTable):
+    schema = await table_async.schema()
+    num_columns = len(schema.names)
     df = await table_async.query().to_polars()
-    assert df.shape == (2, 4)
+    assert df.shape == (2, num_columns)
 
     df = await table_async.query().where("id < 0").to_polars()
-    assert df.shape == (0, 4)
+    assert df.shape == (0, num_columns)
 
 
 @pytest.mark.asyncio
