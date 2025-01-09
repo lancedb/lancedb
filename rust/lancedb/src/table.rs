@@ -3421,7 +3421,7 @@ mod tests {
         );
 
         native_tbl
-            .delete_config_keys(&vec!["test_key1"])
+            .delete_config_keys(&["test_key1"])
             .await
             .unwrap();
         let manifest = native_tbl.manifest().await.unwrap();
