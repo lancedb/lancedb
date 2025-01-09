@@ -53,7 +53,7 @@ curl -O https://download.visualstudio.microsoft.com/download/pr/32863b8d-a46d-42
 curl -O https://download.visualstudio.microsoft.com/download/pr/32863b8d-a46d-4231-8e84-0888519d20a9/149578fb3b621cdb61ee1813b9b3e791/463ad1b0783ebda908fd6c16a4abfe93.cab
 curl -O https://download.visualstudio.microsoft.com/download/pr/32863b8d-a46d-4231-8e84-0888519d20a9/5c986c4f393c6b09d5aec3b539e9fb4a/5a22e5cde814b041749fb271547f4dd5.cab
 
-# fwpuclnt.lib arm64rt.lib
+# dbghelp.lib fwpuclnt.lib arm64rt.lib
 curl -O https://download.visualstudio.microsoft.com/download/pr/32863b8d-a46d-4231-8e84-0888519d20a9/7a332420d812f7c1d41da865ae5a7c52/windows%20sdk%20desktop%20libs%20arm64-x86_en-us.msi
 curl -O https://download.visualstudio.microsoft.com/download/pr/32863b8d-a46d-4231-8e84-0888519d20a9/19de98ed4a79938d0045d19c047936b3/3e2f7be479e3679d700ce0782e4cc318.cab
 
@@ -98,7 +98,7 @@ find /usr/aarch64-pc-windows-msvc/usr/include -type f -exec sed -i -E 's/(#inclu
 # reason: https://developercommunity.visualstudio.com/t/libucrtlibstreamobj-error-lnk2001-unresolved-exter/1544787#T-ND1599818
 # I don't understand the 'correct' fix for this, arm64rt.lib is supposed to be the workaround
 
-(cd 'program files/windows kits/10/lib/10.0.26100.0/um/arm64' && cp advapi32.lib bcrypt.lib kernel32.lib ntdll.lib user32.lib uuid.lib ws2_32.lib userenv.lib cfgmgr32.lib runtimeobject.lib fwpuclnt.lib arm64rt.lib -t /usr/aarch64-pc-windows-msvc/usr/lib)
+(cd 'program files/windows kits/10/lib/10.0.26100.0/um/arm64' && cp advapi32.lib bcrypt.lib kernel32.lib ntdll.lib user32.lib uuid.lib ws2_32.lib userenv.lib cfgmgr32.lib runtimeobject.lib dbghelp.lib fwpuclnt.lib arm64rt.lib -t /usr/aarch64-pc-windows-msvc/usr/lib)
 
 (cd 'contents/vc/tools/msvc/14.16.27023/lib/arm64' && cp libcmt.lib libvcruntime.lib -t /usr/aarch64-pc-windows-msvc/usr/lib)
 
