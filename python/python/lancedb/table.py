@@ -2254,18 +2254,26 @@ def _sanitize_vector_column(
         field = None
     typ = data[vector_column_name].type
     if pa.types.is_list(typ) or pa.types.is_large_list(typ):
-        # if it's a variable size list array,
-        # we make sure the dimensions are all the same
-        has_jagged_ndims = len(vec_arr.values) % len(data) != 0
-        if has_jagged_ndims:
-            data = _sanitize_jagged(
-                data, fill_value, on_bad_vectors, vec_arr, vector_column_name
+        if (
+            pa.types.is_list(typ.value_type)
+            or pa.types.is_large_list(typ.value_type)
+            or pa.types.is_fixed_size_list(typ.value_type)
+        ):
+            # it's multivector
+            pass
+        else:
+            # if it's a variable size list array,
+            # we make sure the dimensions are all the same
+            has_jagged_ndims = len(vec_arr.values) % len(data) != 0
+            if has_jagged_ndims:
+                data = _sanitize_jagged(
+                    data, fill_value, on_bad_vectors, vec_arr, vector_column_name
+                )
+                vec_arr = data[vector_column_name].combine_chunks()
+            vec_arr = ensure_vector_type(vec_arr)
+            data = data.set_column(
+                data.column_names.index(vector_column_name), vector_column_name, vec_arr
             )
-            vec_arr = data[vector_column_name].combine_chunks()
-        vec_arr = ensure_fixed_size_list(vec_arr)
-        data = data.set_column(
-            data.column_names.index(vector_column_name), vector_column_name, vec_arr
-        )
     elif not pa.types.is_fixed_size_list(vec_arr.type):
         raise TypeError(f"Unsupported vector column type: {vec_arr.type}")
 
@@ -2278,18 +2286,22 @@ def _sanitize_vector_column(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
     else:
+        vector_values = vec_arr.values
+        if not pa.types.is_primitive(vector_values.type):
+            # it's multivector
+            vector_values = vector_values.values
         if (
             field is not None
             and not field.nullable
-            and pc.any(pc.is_null(vec_arr.values)).as_py()
-        ) or (pc.any(pc.is_nan(vec_arr.values)).as_py()):
+            and pc.any(pc.is_null(vector_values)).as_py()
+        ) or (pc.any(pc.is_nan(vector_values)).as_py()):
             data = _sanitize_nans(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
     return data
 
 
-def ensure_fixed_size_list(vec_arr) -> pa.FixedSizeListArray:
+def ensure_vector_type(vec_arr) -> pa.FixedSizeListArray:
     values = vec_arr.values
     if not (pa.types.is_float16(values.type) or pa.types.is_float32(values.type)):
         values = values.cast(pa.float32())
@@ -2782,6 +2794,10 @@ class AsyncTable:
             async_query = async_query.with_row_id()
 
         if query.vector:
+            # we need the schema to get the vector column type
+            # to determine whether the vectors is batch queries or not
+            schema = await self.schema()
+            async_query = async_query._with_schema(schema)
             async_query = (
                 async_query.nearest_to(query.vector)
                 .distance_type(query.metric)

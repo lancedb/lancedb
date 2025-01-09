@@ -598,6 +598,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._reranker = None
         self._str_query = str_query
         self._fast_search = fast_search
+        self._vector_field = table.schema.field_by_name(vector_column)
 
     def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
@@ -1072,6 +1073,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._refine_factor = None
         self._metric = None
         self._phrase_query = False
+        self._vector_field = table.schema.field_by_name(vector_column)
 
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and (vector is not None or text is not None):
@@ -1680,6 +1682,7 @@ class AsyncQuery(AsyncQueryBase):
         """
         super().__init__(inner)
         self._inner = inner
+        self._schema = None
 
     @classmethod
     def _query_vec_to_array(self, vec: Union[VEC, Tuple]):
@@ -1697,6 +1700,10 @@ class AsyncQuery(AsyncQueryBase):
         # but, as a fallback, let pyarrow try and convert it anyway.
         # This can allow for some more exotic things like iterables
         return pa.array(vec)
+
+    def _with_schema(self, schema: pa.Schema) -> AsyncQuery:
+        self._schema = schema
+        return self
 
     def nearest_to(
         self,
@@ -1740,12 +1747,14 @@ class AsyncQuery(AsyncQueryBase):
         a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
-        pass in multiple vectors.  This can be useful if you want to find the nearest
-        vectors to multiple query vectors. This is not expected to be faster than
-        making multiple queries concurrently; it is just a convenience method.
-        If multiple vectors are passed in then an additional column `query_index`
-        will be added to the results.  This column will contain the index of the
-        query vector that the result is nearest to.
+        pass in multiple vectors. When multiple vectors are passed in, if the vector
+        column is with multivector type, then the vectors will be treated as a single
+        query. Or the vectors will be treated as multiple queries, this can be useful
+        if you want to find the nearest vectors to multiple query vectors.
+        This is not expected to be faster than making multiple queries concurrently;
+        it is just a convenience method. If multiple vectors are passed in then
+        an additional column `query_index` will be added to the results. This column
+        will contain the index of the query vector that the result is nearest to.
         """
         if query_vector is None:
             raise ValueError("query_vector can not be None")

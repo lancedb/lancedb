@@ -17,7 +17,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow::array::AsArray;
+use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -1857,68 +1857,74 @@ impl TableInternal for NativeTable {
         options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let ds_ref = self.dataset.get().await?;
+        let mut column = query.column.clone();
+        let schema = ds_ref.schema();
 
+        let mut query_vector = query.query_vector.first().cloned();
         if query.query_vector.len() > 1 {
-            // If there are multiple query vectors, create a plan for each of them and union them.
-            let query_vecs = query.query_vector.clone();
-            let plan_futures = query_vecs
-                .into_iter()
-                .map(|query_vector| {
-                    let mut sub_query = query.clone();
-                    sub_query.query_vector = vec![query_vector];
-                    let options_ref = options.clone();
-                    async move { self.create_plan(&sub_query, options_ref).await }
-                })
-                .collect::<Vec<_>>();
-            let plans = futures::future::try_join_all(plan_futures).await?;
-            return Table::multi_vector_plan(plans);
+            if column.is_none() {
+                // Infer a vector column with the same dimension of the query vector.
+                let arrow_schema = Schema::from(ds_ref.schema());
+                column = Some(default_vector_column(
+                    &arrow_schema,
+                    Some(query.query_vector[0].len() as i32),
+                )?);
+            }
+            let vector_field = schema.field(column.as_ref().unwrap()).unwrap();
+            if let DataType::List(_) = vector_field.data_type() {
+                // it's multivector, then the vectors should be treated as single query
+                // concatenate the vectors into a FixedSizeList<FixedSizeList<_>>
+                // it's also possible to concatenate the vectors into a List<FixedSizeList<_>>,
+                // but FixedSizeList is more efficient and easier to construct
+                let vectors = query
+                    .query_vector
+                    .iter()
+                    .map(|arr| arr.as_ref())
+                    .collect::<Vec<_>>();
+                let dim = vectors[0].len();
+                let mut fsl_builder = FixedSizeListBuilder::with_capacity(
+                    Float32Builder::with_capacity(dim),
+                    dim as i32,
+                    vectors.len(),
+                );
+                for vec in vectors {
+                    fsl_builder
+                        .values()
+                        .append_slice(vec.as_primitive::<Float32Type>().values());
+                    fsl_builder.append(true);
+                }
+                query_vector = Some(Arc::new(fsl_builder.finish()));
+            } else {
+                // If there are multiple query vectors, create a plan for each of them and union them.
+                let query_vecs = query.query_vector.clone();
+                let plan_futures = query_vecs
+                    .into_iter()
+                    .map(|query_vector| {
+                        let mut sub_query = query.clone();
+                        sub_query.query_vector = vec![query_vector];
+                        let options_ref = options.clone();
+                        async move { self.create_plan(&sub_query, options_ref).await }
+                    })
+                    .collect::<Vec<_>>();
+                let plans = futures::future::try_join_all(plan_futures).await?;
+                return Table::multi_vector_plan(plans);
+            }
         }
 
         let mut scanner: Scanner = ds_ref.scan();
 
-        if let Some(query_vector) = query.query_vector.first() {
+        if let Some(query_vector) = query_vector {
             // If there is a vector query, default to limit=10 if unspecified
-            let column = if let Some(col) = query.column.as_ref() {
-                col.clone()
+            let column = if let Some(col) = column {
+                col
             } else {
                 // Infer a vector column with the same dimension of the query vector.
                 let arrow_schema = Schema::from(ds_ref.schema());
                 default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?
             };
 
-            let field = ds_ref.schema().field(&column).ok_or(Error::Schema {
-                message: format!("Column {} not found in dataset schema", column),
-            })?;
-
-            let mut is_binary = false;
-            if let arrow_schema::DataType::FixedSizeList(element, dim) = field.data_type() {
-                match element.data_type() {
-                    e_type if e_type.is_floating() => {}
-                    e_type if *e_type == DataType::UInt8 => {
-                        is_binary = true;
-                    }
-                    _ => {
-                        return Err(Error::InvalidInput {
-                            message: format!(
-                                "The data type of the vector column '{}' is not a floating point type",
-                                column
-                            ),
-                        });
-                    }
-                }
-                if dim != query_vector.len() as i32 {
-                    return Err(Error::InvalidInput {
-                    message: format!(
-                        "The dimension of the query vector does not match with the dimension of the vector column '{}': \
-                            query dim={}, expected vector dim={}",
-                        column,
-                        query_vector.len(),
-                        dim,
-                    ),
-                });
-                }
-            }
-
+            let (_, element_type) = lance::index::vector::utils::get_vector_type(schema, &column)?;
+            let is_binary = matches!(element_type, DataType::UInt8);
             if is_binary {
                 let query_vector = arrow::compute::cast(&query_vector, &DataType::UInt8)?;
                 let query_vector = query_vector.as_primitive::<UInt8Type>();
@@ -1928,10 +1934,9 @@ impl TableInternal for NativeTable {
                     query.base.limit.unwrap_or(DEFAULT_TOP_K),
                 )?;
             } else {
-                let query_vector = query_vector.as_primitive::<Float32Type>();
                 scanner.nearest(
                     &column,
-                    query_vector,
+                    query_vector.as_ref(),
                     query.base.limit.unwrap_or(DEFAULT_TOP_K),
                 )?;
             }

@@ -63,6 +63,60 @@ async def table_struct_async(tmp_path) -> AsyncTable:
     return await conn.create_table("test_struct", table)
 
 
+@pytest.fixture
+def multivec_table(tmp_path) -> lancedb.table.Table:
+    db = lancedb.connect(tmp_path)
+    # Generate 256 rows of data
+    num_rows = 256
+
+    # Generate data for each column
+    vector_data = [
+        [[i, i + 1], [i + 2, i + 3]] for i in range(num_rows)
+    ]  # Adjust to match nested structure
+    id_data = list(range(1, num_rows + 1))
+    float_field_data = [float(i) for i in range(1, num_rows + 1)]
+
+    # Create the Arrow table
+    df = pa.table(
+        {
+            "vector": pa.array(
+                vector_data, type=pa.list_(pa.list_(pa.float32(), list_size=2))
+            ),
+            "id": pa.array(id_data),
+            "float_field": pa.array(float_field_data),
+        }
+    )
+    return db.create_table("test", df)
+
+
+@pytest_asyncio.fixture
+async def multivec_table_async(tmp_path) -> AsyncTable:
+    conn = await lancedb.connect_async(
+        tmp_path, read_consistency_interval=timedelta(seconds=0)
+    )
+    # Generate 256 rows of data
+    num_rows = 256
+
+    # Generate data for each column
+    vector_data = [
+        [[i, i + 1], [i + 2, i + 3]] for i in range(num_rows)
+    ]  # Adjust to match nested structure
+    id_data = list(range(1, num_rows + 1))
+    float_field_data = [float(i) for i in range(1, num_rows + 1)]
+
+    # Create the Arrow table
+    df = pa.table(
+        {
+            "vector": pa.array(
+                vector_data, type=pa.list_(pa.list_(pa.float32(), list_size=2))
+            ),
+            "id": pa.array(id_data),
+            "float_field": pa.array(float_field_data),
+        }
+    )
+    return await conn.create_table("test", df)
+
+
 def test_cast(table):
     class TestModel(LanceModel):
         vector: Vector(2)
@@ -170,6 +224,48 @@ async def test_distance_range_async(table_async: AsyncTable):
     )
     assert len(res) == 2
     assert res["_distance"].to_pylist() == [min_dist, max_dist]
+
+
+def test_multivector(multivec_table: lancedb.table.Table):
+    # create index on multivector
+    multivec_table.create_index(
+        metric="cosine",
+        vector_column_name="vector",
+        index_type="IVF_PQ",
+        num_partitions=1,
+        num_sub_vectors=2,
+    )
+
+    # query with single vector
+    q = [1, 2]
+    rs = multivec_table.search(q).to_arrow()
+
+    # query with multiple vectors
+    q = [[1, 2], [1, 2]]
+    rs2 = multivec_table.search(q).to_arrow()
+    assert len(rs2) == len(rs)
+    for i in range(2):
+        assert rs2["_distance"][i].as_py() == rs["_distance"][i].as_py() * 2
+
+
+@pytest.mark.asyncio
+async def test_multivector_async(multivec_table_async: AsyncTable):
+    # create index on multivector
+    await multivec_table_async.create_index(
+        "vector",
+        config=IvfPq(distance_type="cosine", num_partitions=1, num_sub_vectors=2),
+    )
+
+    # query with single vector
+    q = [1, 2]
+    rs = await multivec_table_async.query().nearest_to(q).to_arrow()
+
+    # query with multiple vectors
+    q = [[1, 2], [1, 2]]
+    rs2 = await multivec_table_async.query().nearest_to(q).to_arrow()
+    assert len(rs2) == len(rs)
+    for i in range(2):
+        assert rs2["_distance"][i].as_py() == rs["_distance"][i].as_py() * 2
 
 
 def test_vector_query_with_no_limit(table):
