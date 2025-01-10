@@ -138,6 +138,36 @@ LanceDB supports binary vectors as a data type, and has the ability to search bi
         --8<-- "python/python/tests/docs/test_binary_vector.py:async_binary_vector"
         ```
 
+## Multivector type
+
+LanceDB supports multivector type, this is useful when you have multiple vectors for a single item (e.g. with ColBert and ColPali).
+
+You can index on a column with multivector type and search on it, the query can be single vector or multiple vectors. If the query is multiple vectors `mq`, the similarity (distance) from it to any multivector `mv` in the dataset, is defined as:
+
+**maxsim(mq, mv) = sum(max(sim(mq[i], mv[j])))**
+
+where `sim` is the similarity function (e.g. cosine).
+
+For now, only `cosine` metric is supported for multivector search.
+
+=== "Python"
+
+    === "sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_multivector.py:imports"
+
+        --8<-- "python/python/tests/docs/test_multivector.py:sync_multivector"
+        ```
+
+    === "async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_multivector.py:imports"
+
+        --8<-- "python/python/tests/docs/test_multivector.py:async_multivector"
+        ```
+
 ## Search with distance range
 
 You can also search for vectors within a specific distance range from the query vector. This is useful when you want to find vectors that are not just the nearest neighbors, but also those that are within a certain distance. This can be done by using the `distance_range` method.
