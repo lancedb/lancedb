@@ -115,8 +115,14 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
 
         truncation: Optional[bool]
         """
-        
-        if self.name in ["voyage-3", "voyage-3-lite", "voyage-finance-2", "voyage-law-2", "voyage-code-2"]:
+
+        if self.name in [
+            "voyage-3",
+            "voyage-3-lite",
+            "voyage-finance-2",
+            "voyage-law-2",
+            "voyage-code-2",
+        ]:
             rs = VoyageAIEmbeddingFunction._get_client().embed(
                 texts=[text], model=self.name, **kwargs
             )
