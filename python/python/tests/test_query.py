@@ -252,6 +252,13 @@ def test_multivector(multivec_table: lancedb.table.Table):
     for i in range(2):
         assert rs2["_distance"][i].as_py() == rs["_distance"][i].as_py() * 2
 
+    # can't query with vector that dim not matched
+    with pytest.raises(Exception):
+        multivec_table.search([1, 2, 3]).to_arrow()
+    # can't query with vector list that some dim not matched
+    with pytest.raises(Exception):
+        multivec_table.search([[1, 2], [1, 2, 3]]).to_arrow()
+
 
 @pytest.mark.asyncio
 async def test_multivector_async(multivec_table_async: AsyncTable):
@@ -271,6 +278,13 @@ async def test_multivector_async(multivec_table_async: AsyncTable):
     assert len(rs2) == len(rs)
     for i in range(2):
         assert rs2["_distance"][i].as_py() == rs["_distance"][i].as_py() * 2
+
+    # can't query with vector that dim not matched
+    with pytest.raises(Exception):
+        await multivec_table_async.query().nearest_to([1, 2, 3]).to_arrow()
+    # can't query with vector list that some dim not matched
+    with pytest.raises(Exception):
+        await multivec_table_async.query().nearest_to([[1, 2], [1, 2, 3]]).to_arrow()
 
 
 def test_vector_query_with_no_limit(table):
