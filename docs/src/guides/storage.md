@@ -732,7 +732,7 @@ Azure Blob Storage credentials can be configured by setting the `AZURE_STORAGE_A
 
         ```python
         import lancedb
-        db = await lancedb.connect(
+        db = lancedb.connect(
             "az://my-container/my-database",
             storage_options={
                 account_name: "some-account",
