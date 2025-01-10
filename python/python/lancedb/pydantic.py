@@ -12,9 +12,11 @@ from abc import ABC, abstractmethod
 from datetime import date, datetime
 from typing import (
     TYPE_CHECKING,
+    Annotated,  # noqa: F401 # needed for evaluation of ForwardRef Annotation fields
     Any,
     Callable,
     Dict,
+    ForwardRef,
     Generator,
     List,
     Type,
@@ -41,7 +43,7 @@ if TYPE_CHECKING:
     from .embeddings import EmbeddingFunctionConfig
 
 
-class FixedSizeListMixin(ABC):
+class FixedSizeListConstraintMixin(ABC):
     @staticmethod
     @abstractmethod
     def dim() -> int:
@@ -67,8 +69,8 @@ def vector(dim: int, value_type: pa.DataType = pa.float32()):
 
 def Vector(
     dim: int, value_type: pa.DataType = pa.float32(), nullable: bool = True
-) -> Type[FixedSizeListMixin]:
-    """Pydantic Vector Type.
+) -> Type[FixedSizeListConstraintMixin]:
+    """Pydantic Vector Constraint Type.
 
     !!! warning
         Experimental feature.
@@ -85,13 +87,14 @@ def Vector(
     Examples
     --------
 
+    >>> from typing import Annotated
     >>> import pydantic
-    >>> from lancedb.pydantic import Vector
+    >>> from lancedb.pydantic import Vector, FixedSizeList
     ...
     >>> class MyModel(pydantic.BaseModel):
     ...     id: int
     ...     url: str
-    ...     embeddings: Vector(768)
+    ...     embeddings: Annotated[FixedSizeList, Vector(768)]
     >>> schema = pydantic_to_schema(MyModel)
     >>> assert schema == pa.schema([
     ...     pa.field("id", pa.int64(), False),
@@ -101,7 +104,7 @@ def Vector(
     """
 
     # TODO: make a public parameterized type.
-    class FixedSizeList(list, FixedSizeListMixin):
+    class FixedSizeListConstraint(list, FixedSizeListConstraintMixin):
         def __repr__(self):
             return f"FixedSizeList(dim={dim})"
 
@@ -149,7 +152,10 @@ def Vector(
                 field_schema["maxItems"] = dim
                 field_schema["minItems"] = dim
 
-    return FixedSizeList
+    return FixedSizeListConstraint
+
+
+class FixedSizeList(list): ...
 
 
 def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
@@ -202,6 +208,13 @@ else:
 def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
 
+    # NOTE: In doctests, Annotated fields are stored as ForwardRef,
+    # So it needs evaluation to get the actual type.
+    if isinstance(field.annotation, ForwardRef):
+        namespaces = [globals(), locals()]
+        if sys.version_info >= (3, 9):
+            namespaces.append(frozenset())
+        field = field.annotation._evaluate(*namespaces)
     if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
@@ -223,13 +236,28 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
             # Struct
             fields = _pydantic_model_to_fields(field.annotation)
             return pa.struct(fields)
-        elif issubclass(field.annotation, FixedSizeListMixin):
+        elif issubclass(field.annotation, FixedSizeListConstraintMixin):
             return pa.list_(field.annotation.value_arrow_type(), field.annotation.dim())
+        elif issubclass(field.annotation, FixedSizeList) and field.metadata:
+            metadata = field.metadata[0]
+            for metadata in field.metadata:
+                if inspect.isclass(metadata) and issubclass(
+                    metadata, FixedSizeListConstraintMixin
+                ):
+                    return pa.list_(metadata.value_arrow_type(), metadata.dim())
     return _py_type_to_arrow_type(field.annotation, field)
 
 
 def is_nullable(field: FieldInfo) -> bool:
     """Check if a Pydantic FieldInfo is nullable."""
+
+    # NOTE: In doctests, Annotated fields are stored as ForwardRef,
+    # So it needs evaluation to get the actual type.
+    if isinstance(field.annotation, ForwardRef):
+        namespaces = [globals(), locals()]
+        if sys.version_info >= (3, 9):
+            namespaces.append(frozenset())
+        field = field.annotation._evaluate(*namespaces)
     if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
@@ -241,10 +269,16 @@ def is_nullable(field: FieldInfo) -> bool:
         for typ in args:
             if typ is type(None):
                 return True
-    elif inspect.isclass(field.annotation) and issubclass(
-        field.annotation, FixedSizeListMixin
-    ):
-        return field.annotation.nullable()
+    elif inspect.isclass(field.annotation):
+        if issubclass(field.annotation, FixedSizeListConstraintMixin):
+            return field.annotation.nullable()
+        elif issubclass(field.annotation, FixedSizeList) and field.metadata:
+            metadata = field.metadata[0]
+            for metadata in field.metadata:
+                if inspect.isclass(metadata) and issubclass(
+                    metadata, FixedSizeListConstraintMixin
+                ):
+                    return metadata.nullable()
     return False
 
 
@@ -296,12 +330,13 @@ class LanceModel(pydantic.BaseModel):
 
     Examples
     --------
+    >>> from typing import Annotated
     >>> import lancedb
-    >>> from lancedb.pydantic import LanceModel, Vector
+    >>> from lancedb.pydantic import LanceModel, Vector, FixedSizeList
     >>>
     >>> class TestModel(LanceModel):
     ...     name: str
-    ...     vector: Vector(2)
+    ...     vector: Annotated[FixedSizeList, Vector(2)]
     ...
     >>> db = lancedb.connect("./example")
     >>> table = db.create_table("test", schema=TestModel.to_arrow_schema())
