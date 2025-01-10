@@ -645,7 +645,7 @@ impl Query {
     pub(crate) fn new(parent: Arc<dyn TableInternal>) -> Self {
         Self {
             parent,
-            limit: Some(DEFAULT_TOP_K),
+            limit: None,
             offset: None,
             filter: None,
             full_text_search: None,
@@ -1568,5 +1568,35 @@ mod tests {
         let batch = &results[0];
         assert_eq!(0, batch.num_rows());
         assert_eq!(2, batch.num_columns());
+    }
+
+    #[tokio::test]
+    async fn test_query_no_limit() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        // plain query does not default to any limit
+        let results = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+        assert!(results.num_rows() > DEFAULT_TOP_K);
+        // vector query should default to `DEFAULT_TOP_K` as limit
+        let results = table
+            .query()
+            .nearest_to(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+        assert!(results.num_rows() == DEFAULT_TOP_K);
     }
 }
