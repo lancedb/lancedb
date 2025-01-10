@@ -59,7 +59,7 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         .create(name="voyage-3")
 
     class TextModel(LanceModel):
-        data: str = voyageai.SourceField()
+        text: str = voyageai.SourceField()
         vector: Vector(voyageai.ndims()) =  voyageai.VectorField()
 
     data = [ { "text": "hello world" },
@@ -115,13 +115,14 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
 
         truncation: Optional[bool]
         """
-        if self.name in ["voyage-multimodal-3"]:
-            rs = VoyageAIEmbeddingFunction._get_client().multimodal_embed(
-                inputs=[[text]], model=self.name, **kwargs
-            )
-        else:
+        
+        if self.name in ["voyage-3", "voyage-3-lite", "voyage-finance-2", "voyage-law-2", "voyage-code-2"]:
             rs = VoyageAIEmbeddingFunction._get_client().embed(
                 texts=[text], model=self.name, **kwargs
+            )
+        elif self.name in ["voyage-multimodal-3"]:
+            rs = VoyageAIEmbeddingFunction._get_client().multimodal_embed(
+                inputs=[[text]], model=self.name, **kwargs
             )
 
         return rs.embeddings[0]
