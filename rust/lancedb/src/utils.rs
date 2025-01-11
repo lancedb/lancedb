@@ -108,13 +108,8 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
     let candidates = schema
         .fields()
         .iter()
-        .filter_map(|field| match field.data_type() {
-            arrow_schema::DataType::FixedSizeList(f, d)
-                if (f.data_type().is_floating() || f.data_type() == &DataType::UInt8)
-                    && dim.map(|expect| *d == expect).unwrap_or(true) =>
-            {
-                Some(field.name())
-            }
+        .filter_map(|field| match inf_vector_dim(field) {
+            Some(d) if dim.is_none() || dim == Some(d) => Some(field.name()),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -135,6 +130,20 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
         })
     } else {
         Ok(candidates[0].to_string())
+    }
+}
+
+fn inf_vector_dim(field: &arrow_schema::Field) -> Option<i32> {
+    match field.data_type() {
+        arrow_schema::DataType::FixedSizeList(f, d) => {
+            if f.data_type().is_floating() || f.data_type() == &DataType::UInt8 {
+                Some(*d)
+            } else {
+                None
+            }
+        }
+        arrow_schema::DataType::List(f) => inf_vector_dim(f),
+        _ => None,
     }
 }
 
@@ -171,9 +180,10 @@ pub fn supported_fts_data_type(dtype: &DataType) -> bool {
 
 pub fn supported_vector_data_type(dtype: &DataType) -> bool {
     match dtype {
-        DataType::FixedSizeList(inner, _) => {
-            DataType::is_floating(inner.data_type()) || *inner.data_type() == DataType::UInt8
+        DataType::FixedSizeList(field, _) => {
+            field.data_type().is_floating() || field.data_type() == &DataType::UInt8
         }
+        DataType::List(field) => supported_vector_data_type(field.data_type()),
         _ => false,
     }
 }

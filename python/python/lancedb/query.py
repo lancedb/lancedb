@@ -1741,12 +1741,14 @@ class AsyncQuery(AsyncQueryBase):
         a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
-        pass in multiple vectors.  This can be useful if you want to find the nearest
-        vectors to multiple query vectors. This is not expected to be faster than
-        making multiple queries concurrently; it is just a convenience method.
-        If multiple vectors are passed in then an additional column `query_index`
-        will be added to the results.  This column will contain the index of the
-        query vector that the result is nearest to.
+        pass in multiple vectors. When multiple vectors are passed in, if the vector
+        column is with multivector type, then the vectors will be treated as a single
+        query. Or the vectors will be treated as multiple queries, this can be useful
+        if you want to find the nearest vectors to multiple query vectors.
+        This is not expected to be faster than making multiple queries concurrently;
+        it is just a convenience method. If multiple vectors are passed in then
+        an additional column `query_index` will be added to the results. This column
+        will contain the index of the query vector that the result is nearest to.
         """
         if query_vector is None:
             raise ValueError("query_vector can not be None")
