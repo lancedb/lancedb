@@ -1539,6 +1539,9 @@ class AsyncQueryBase(object):
         self._inner.postfilter()
         return self
 
+    async def _resolve(self):
+        return self._inner
+
     async def to_batches(
         self, *, max_batch_length: Optional[int] = None
     ) -> AsyncRecordBatchReader:
@@ -1554,7 +1557,8 @@ class AsyncQueryBase(object):
             It is possible for batches to be smaller than the provided length if the
             underlying data is stored in smaller chunks.
         """
-        return AsyncRecordBatchReader(await self._inner.execute(max_batch_length))
+        inner = await self._resolve()
+        return AsyncRecordBatchReader(await inner.execute(max_batch_length))
 
     async def to_arrow(self) -> pa.Table:
         """
@@ -1668,7 +1672,8 @@ class AsyncQueryBase(object):
         -------
         plan : str
         """  # noqa: E501
-        return await self._inner.explain_plan(verbose)
+        inner = await self._resolve()
+        return await inner.explain_plan(verbose)
 
 
 class AsyncQuery(AsyncQueryBase):
@@ -1766,11 +1771,13 @@ class AsyncQuery(AsyncQueryBase):
             async def _await_query_vector():
                 return AsyncQuery._query_vec_to_array(await query_vector)
             return AsyncVectorQuery(
-                self._inner.nearest_to(_await_query_vector())
+                self._inner,
+                _await_query_vector(),
             )
         else:
             return AsyncVectorQuery(
-                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
+                self._inner,
+                query_vector,
             )
 
     def nearest_to_text(
@@ -1903,7 +1910,7 @@ class AsyncFTSQuery(AsyncQueryBase):
 
 
 class AsyncVectorQuery(AsyncQueryBase):
-    def __init__(self, inner: LanceVectorQuery):
+    def __init__(self, inner: LanceQuery, query_vector: Union[pa.Array, Awaitable[pa.Array]]):
         """
         Construct an AsyncVectorQuery
 
@@ -1915,7 +1922,44 @@ class AsyncVectorQuery(AsyncQueryBase):
         """
         super().__init__(inner)
         self._inner = inner
+
+        self._query_vector = query_vector
+
+        self._column: Optional[str] = None
+        self._nprobes: Optional[int] = None
+        self._distance_range: Tuple[Optional[float], Optional[float]] = (None, None)
+        self._ef: Optional[int] = None
+        self._refine_factor: Optional[int] = None
+        self._distance_type: Optional[str] = None
+        self._bypass_vector_index: bool = False
+
         self._reranker = None
+
+    def _apply_vector_query_params(self, inner):
+        if self._column:
+            inner = inner.column(self._column)
+        if self._nprobes:
+            inner = inner.nprobes(self._nprobes)
+        if self._distance_range:
+            inner = inner.distance_range(*self._distance_range)
+        if self._ef:
+            inner = inner.ef(self._ef)
+        if self._refine_factor:
+            inner = inner.refine_factor(self._refine_factor)
+        if self._distance_type:
+            inner = inner.distance_type(self._distance_type)
+        if self._bypass_vector_index:
+            inner = inner.bypass_vector_index()
+
+    async def resolve(self):
+        if isinstance(self._query_vector, Awaitable):
+            self._query_vector = await self._query_vector
+        
+        inner = self._inner.nearest_to(self._query_vector)
+        
+        self._apply_vector_query_params(inner)
+
+        return inner
 
     def column(self, column: str) -> AsyncVectorQuery:
         """
@@ -1927,7 +1971,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         This parameter must be specified if the table has more than one column
         whose data type is a fixed-size-list of floats.
         """
-        self._inner.column(column)
+        self._column = column
         return self
 
     def nprobes(self, nprobes: int) -> AsyncVectorQuery:
@@ -1953,7 +1997,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         your actual data to find the smallest possible value that will still give
         you the desired recall.
         """
-        self._inner.nprobes(nprobes)
+        self._nprobes = nprobes
         return self
 
     def distance_range(
@@ -1976,7 +2020,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         AsyncVectorQuery
             The AsyncVectorQuery object.
         """
-        self._inner.distance_range(lower_bound, upper_bound)
+        self._distance_range = (lower_bound, upper_bound)
         return self
 
     def ef(self, ef: int) -> AsyncVectorQuery:
@@ -1991,7 +2035,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         default is good for many cases but the best value to use will depend on your
         data and the recall that you need to achieve.
         """
-        self._inner.ef(ef)
+        self.ef = ef
         return self
 
     def refine_factor(self, refine_factor: int) -> AsyncVectorQuery:
@@ -2027,7 +2071,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         different than the true distance between the query vector and the actual
         uncompressed vector.
         """
-        self._inner.refine_factor(refine_factor)
+        self._refine_factor = refine_factor
         return self
 
     def distance_type(self, distance_type: str) -> AsyncVectorQuery:
@@ -2045,7 +2089,7 @@ class AsyncVectorQuery(AsyncQueryBase):
 
         By default "l2" is used.
         """
-        self._inner.distance_type(distance_type)
+        self._distance_type = distance_type
         return self
 
     def bypass_vector_index(self) -> AsyncVectorQuery:
@@ -2058,7 +2102,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         the vector index can give you ground truth results which you can use to
         calculate your recall to select an appropriate value for nprobes.
         """
-        self._inner.bypass_vector_index()
+        self._bypass_vector_index = True
         return self
 
     def rerank(
@@ -2111,7 +2155,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         return results
 
 
-class AsyncHybridQuery(AsyncQueryBase):
+class AsyncHybridQuery(AsyncVectorQuery):
     """
     A query builder that performs hybrid vector and full text search.
     Results are combined and reranked based on the specified reranker.
@@ -2123,11 +2167,44 @@ class AsyncHybridQuery(AsyncQueryBase):
     in the `rerank` method to convert the scores to ranks and then normalize them.
     """
 
-    def __init__(self, inner: LanceHybridQuery):
+    def __init__(
+        self,
+        inner: LanceQuery,
+        fts_query: Union[str, Awaitable[Optional[str]]],
+        vector_query: Union[pa.Array, Awaitable[Optional[pa.Array]]],
+    ):
         super().__init__(inner)
         self._inner = inner
+
+        self._fts_query = fts_query
+        self._vector_query = vector_query
+
         self._norm = "score"
         self._reranker = RRFReranker()
+
+    async def resolve(self):
+        if isinstance(self._fts_query, Awaitable):
+            self._fts_query = await self._fts_query
+        
+        if isinstance(self._vector_query, Awaitable):
+            self._vector_query = await self._vector_query
+        
+        if self._fts_query is None and self._vector_query is not None:
+            # Resolve to pure vector search
+            inner = self._inner.nearest_to(self._vector_query)
+            self._apply_vector_query_params(inner)
+            return inner
+        elif self._vector_query is None and self._fts_query is not None:
+            # Resolve to pure FTS search
+            return self._inner.nearest_to_text(self._fts_query)
+        elif self._vector_query is not None and self._fts_query is not None:
+            # Resolve to hybrid search
+            inner = self._inner.nearest_to(self._vector_query)
+            self._apply_vector_query_params(inner)
+            inner = self._inner.nearest_to_text(self._fts_query)
+            return inner
+        else:
+            raise ValueError("No embedding function nor FTS index can be found.")
 
     def rerank(
         self, reranker: Reranker = RRFReranker(), normalize: str = "score"

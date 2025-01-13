@@ -393,7 +393,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
         query: &Query,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream>;
-    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String> {
+    async fn explain_plan(&self, query: &mut VectorQuery, verbose: bool) -> Result<String> {
         let plan = self.create_plan(query, Default::default()).await?;
         let display = DisplayableExecutionPlan::new(plan.as_ref());
 

@@ -853,7 +853,39 @@ impl VectorQuery {
         }
     }
 
-    async fn resolve(&mut self) ->
+    async fn resolve(&mut self) -> Result<()> {
+        self.base.resolve().await?;
+        match &mut self.query_vector {
+            Deferrable::Deferred(fut) => {
+                match fut.await? {
+                    Some(query_vector) => self.query_vector = Deferrable::Resolved(query_vector),
+                    None => self.query_vector = Deferrable::None,
+                }
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub async fn resolve_and_clone(&mut self) -> Result<Self> {
+        self.resolve().await?;
+        Ok(Self {
+            base: self.base.resolve_and_clone().await?,
+            column: self.column.clone(),
+            query_vector: match &self.query_vector {
+                Deferrable::Resolved(query_vector) => Deferrable::Resolved(query_vector.clone()),
+                Deferrable::None => Deferrable::None,
+                Deferrable::Deferred(_) => unreachable!()
+            },
+            nprobes: self.nprobes,
+            lower_bound: self.lower_bound,
+            upper_bound: self.upper_bound,
+            ef: self.ef,
+            refine_factor: self.refine_factor,
+            distance_type: self.distance_type,
+            use_index: self.use_index,
+        })
+    }
 
     /// Set the vector column to query
     ///
@@ -999,12 +1031,39 @@ impl VectorQuery {
         self
     }
 
-    pub async fn execute_hybrid(&self) -> Result<SendableRecordBatchStream> {
+    pub async fn execute_hybrid(&mut self) -> Result<SendableRecordBatchStream> {
+        self.resolve().await?;
         // clone query and specify we want to include row IDs, which can be needed for reranking
-        let fts_query = self.base.clone().with_row_id();
-        let mut vector_query = self.clone().with_row_id();
+        let mut fts_query = self.base.resolve_and_clone().await?.with_row_id();
+        let mut vector_query = self.resolve_and_clone().await?.with_row_id();
 
-        vector_query.base.full_text_search = None;
+        // The deferred values might have come back with None for either FTS or vector
+        // search. If that is the case, we can't do a hybrid search.
+        let fts_query_params = match &fts_query.full_text_search {
+            Deferrable::None => None,
+            Deferrable::Resolved(query) => Some(query.clone()),
+            Deferrable::Deferred(_) => unreachable!(),
+        };
+        let has_vector = match vector_query.query_vector {
+            Deferrable::None => false,
+            Deferrable::Resolved(_) => true,
+            Deferrable::Deferred(_) => unreachable!(),
+        };
+
+        if !has_vector {
+            // Reduced to FTS search
+            return fts_query.execute().await;
+        } else if fts_query_params.is_none() {
+            // Reduced to vector search
+            return vector_query.execute().await;
+        } else if !has_vector && fts_query_params.is_none() {
+            return Err(Error::Runtime {
+                message: "there should be an FTS search or a vector search".to_string(),
+            });
+    
+        }
+
+        vector_query.base.full_text_search = Deferrable::None;
         let (fts_results, vec_results) = try_join!(fts_query.execute(), vector_query.execute())?;
 
         let (fts_results, vec_results) = try_join!(
@@ -1034,7 +1093,7 @@ impl VectorQuery {
             .clone()
             .unwrap_or(Arc::new(RRFReranker::default()));
 
-        let fts_query = self.base.full_text_search.as_ref().ok_or(Error::Runtime {
+        let fts_query = fts_query_params.ok_or(Error::Runtime {
             message: "there should be an FTS search".to_string(),
         })?;
 
@@ -1060,15 +1119,15 @@ impl VectorQuery {
 }
 
 impl ExecutableQuery for VectorQuery {
-    async fn create_plan(&self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
+    async fn create_plan(&mut self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
         self.base.parent.clone().create_plan(self, options).await
     }
 
     async fn execute_with_options(
-        &self,
+        &mut self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
-        if self.base.full_text_search.is_some() {
+        if !matches!(self.base.full_text_search, Deferrable::None) {
             let hybrid_result = async move { self.execute_hybrid().await }.boxed().await?;
             return Ok(hybrid_result);
         }
@@ -1081,7 +1140,7 @@ impl ExecutableQuery for VectorQuery {
         ))
     }
 
-    async fn explain_plan(&self, verbose: bool) -> Result<String> {
+    async fn explain_plan(&mut self, verbose: bool) -> Result<String> {
         self.base.parent.explain_plan(self, verbose).await
     }
 }
@@ -1127,8 +1186,12 @@ mod tests {
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
+        let query_vector = match query.query_vector {
+            Deferrable::Resolved(val) => val,
+            _ => panic!("expected resolved query vector"),
+        };
         assert_eq!(
-            *query.query_vector.first().unwrap().as_ref().as_primitive(),
+            *query_vector.first().unwrap().as_ref().as_primitive(),
             vector
         );
 
@@ -1145,8 +1208,12 @@ mod tests {
             .distance_type(DistanceType::Cosine)
             .refine_factor(999);
 
+        let query_vector = match query.query_vector {
+            Deferrable::Resolved(val) => val,
+            _ => panic!("expected resolved query vector"),
+        };
         assert_eq!(
-            *query.query_vector.first().unwrap().as_ref().as_primitive(),
+            *query_vector.first().unwrap().as_ref().as_primitive(),
             new_vector
         );
         assert_eq!(query.base.limit.unwrap(), 100);
@@ -1173,7 +1240,7 @@ mod tests {
             .await
             .unwrap();
 
-        let query = table
+        let mut query = table
             .query()
             .limit(10)
             .only_if("id % 2 == 0")
@@ -1188,7 +1255,7 @@ mod tests {
             assert!(batch.expect("should be Ok").num_rows() < 10);
         }
 
-        let query = table
+        let mut query = table
             .query()
             .limit(10)
             .only_if(String::from("id % 2 == 0"))
@@ -1203,7 +1270,7 @@ mod tests {
             assert!(batch.expect("should be Ok").num_rows() == 10);
         }
 
-        let query = table
+        let mut query = table
             .query()
             .limit(10)
             .offset(1)
@@ -1235,7 +1302,7 @@ mod tests {
             .await
             .unwrap();
 
-        let query = table
+        let mut query = table
             .query()
             .limit(10)
             .select(Select::dynamic(&[("id2", "id * 2"), ("id", "id")]));
@@ -1473,7 +1540,7 @@ mod tests {
     async fn test_multiple_query_vectors() {
         let tmp_dir = tempdir().unwrap();
         let table = make_test_table(&tmp_dir).await;
-        let query = table
+        let mut query = table
             .query()
             .nearest_to(&[0.1, 0.2, 0.3, 0.4])
             .unwrap()
