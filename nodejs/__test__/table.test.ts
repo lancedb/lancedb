@@ -767,7 +767,9 @@ describe("When creating an index", () => {
         )
         .column("vec")
         .toArrow(),
-    ).rejects.toThrow(/.* query dim=64, expected vector dim=32.*/);
+    ).rejects.toThrow(
+      /.* query dim\(64\) doesn't match the column vec vector dim\(32\).*/,
+    );
 
     const query64 = Array(64)
       .fill(1)
