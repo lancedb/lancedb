@@ -144,7 +144,7 @@ LanceDB supports multivector type, this is useful when you have multiple vectors
 
 You can index on a column with multivector type and search on it, the query can be single vector or multiple vectors. If the query is multiple vectors `mq`, the similarity (distance) from it to any multivector `mv` in the dataset, is defined as:
 
-**maxsim(mq, mv) = sum(max(sim(mq[i], mv[j])))**
+![maxsim](assets/maxsim.png)
 
 where `sim` is the similarity function (e.g. cosine).
 

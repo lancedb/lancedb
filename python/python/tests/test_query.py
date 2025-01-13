@@ -69,8 +69,8 @@ async def table_struct_async(tmp_path) -> AsyncTable:
 
 
 @pytest.fixture
-def multivec_table(tmp_path) -> lancedb.table.Table:
-    db = lancedb.connect(tmp_path)
+def multivec_table() -> lancedb.table.Table:
+    db = lancedb.connect("memory://multivec_db")
     # Generate 256 rows of data
     num_rows = 256
 
@@ -97,7 +97,7 @@ def multivec_table(tmp_path) -> lancedb.table.Table:
 @pytest_asyncio.fixture
 async def multivec_table_async(tmp_path) -> AsyncTable:
     conn = await lancedb.connect_async(
-        tmp_path, read_consistency_interval=timedelta(seconds=0)
+        "memory://multivec_db_async", read_consistency_interval=timedelta(seconds=0)
     )
     # Generate 256 rows of data
     num_rows = 256
