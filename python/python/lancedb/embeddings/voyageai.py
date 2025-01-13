@@ -74,7 +74,9 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
 
     name: str
     client: ClassVar = None
-
+    text_embedding_models: list = ["voyage-3", "voyage-3-lite", "voyage-finance-2", "voyage-law-2", "voyage-code-2"]
+    multimodal_embedding_models: list =  ["voyage-multimodal-3"]
+    
     def ndims(self):
         if self.name == "voyage-3-lite":
             return 512
@@ -115,21 +117,17 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
 
         truncation: Optional[bool]
         """
-
-        if self.name in [
-            "voyage-3",
-            "voyage-3-lite",
-            "voyage-finance-2",
-            "voyage-law-2",
-            "voyage-code-2",
-        ]:
-            rs = VoyageAIEmbeddingFunction._get_client().embed(
+        client = VoyageAIEmbeddingFunction._get_client()
+        if self.name in self.text_embedding_models:
+            rs = client.embed(
                 texts=[text], model=self.name, **kwargs
             )
-        elif self.name in ["voyage-multimodal-3"]:
-            rs = VoyageAIEmbeddingFunction._get_client().multimodal_embed(
+        elif self.name in self.multimodal_embedding_models:
+            rs = client.multimodal_embed(
                 inputs=[[text]], model=self.name, **kwargs
             )
+        else: 
+            raise ValueError(f"Model {self.name} not supported to generate text embeddings")
 
         return rs.embeddings[0]
 
