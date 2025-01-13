@@ -223,7 +223,7 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
     vector_col_count = 0
     for field_name in schema.names:
         field = schema.field(field_name)
-        if pa.types.is_fixed_size_list(field.type):
+        if is_vector_column(field.type):
             vector_col_count += 1
             if vector_col_count > 1:
                 raise ValueError(
@@ -231,7 +231,6 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
                     "Please specify the vector column name "
                     "for vector search"
                 )
-                break
             elif vector_col_count == 1:
                 vector_col_name = field_name
     if vector_col_count == 0:
@@ -240,6 +239,29 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
             "Please specify the vector column name for vector search"
         )
     return vector_col_name
+
+
+def is_vector_column(data_type: pa.DataType) -> bool:
+    """
+    Check if the column is a vector column.
+
+    Parameters
+    ----------
+    data_type : pa.DataType
+        The data type of the column.
+
+    Returns
+    -------
+    bool: True if the column is a vector column.
+    """
+    if pa.types.is_fixed_size_list(data_type) and (
+        pa.types.is_floating(data_type.value_type)
+        or pa.types.is_uint8(data_type.value_type)
+    ):
+        return True
+    elif pa.types.is_list(data_type):
+        return is_vector_column(data_type.value_type)
+    return False
 
 
 def infer_vector_column_name(
