@@ -21,16 +21,14 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.22.0", "features" = [
-    "dynamodb",
-], git = "https://github.com/lancedb/lance.git", tag = "v0.22.0-beta.1" }
-lance-io = { version = "=0.22.0", git = "https://github.com/lancedb/lance.git", tag = "v0.22.0-beta.1" }
-lance-index = { version = "=0.22.0", git = "https://github.com/lancedb/lance.git", tag = "v0.22.0-beta.1" }
-lance-linalg = { version = "=0.22.0", git = "https://github.com/lancedb/lance.git", tag = "v0.22.0-beta.1" }
-lance-table = { version = "=0.22.0", git = "https://github.com/lancedb/lance.git", tag = "v0.22.0-beta.1" }
-lance-testing = { version = "=0.22.0", git = "https://github.com/lancedb/lance.git", tag = "v0.22.0-beta.1" }
-lance-datafusion = { version = "=0.22.0", git = "https://github.com/lancedb/lance.git", tag = "v0.22.0-beta.1" }
-lance-encoding = { version = "=0.22.0", git = "https://github.com/lancedb/lance.git", tag = "v0.22.0-beta.1" }
+lance = { "version" = "=0.22.0", "features" = ["dynamodb"] }
+lance-io = "=0.22.0"
+lance-index = "=0.22.0"
+lance-linalg = "=0.22.0"
+lance-table = "=0.22.0"
+lance-testing = "=0.22.0"
+lance-datafusion = "=0.22.0"
+lance-encoding = "=0.22.0"
 # Note that this one does not include pyarrow
 arrow = { version = "53.2", optional = false }
 arrow-array = "53.2"
@@ -42,8 +40,8 @@ arrow-arith = "53.2"
 arrow-cast = "53.2"
 async-trait = "0"
 chrono = "0.4.35"
-datafusion-common = "42.0"
-datafusion-physical-plan = "42.0"
+datafusion-common = "44.0"
+datafusion-physical-plan = "44.0"
 env_logger = "0.10"
 half = { "version" = "=2.4.1", default-features = false, features = [
     "num-traits",
