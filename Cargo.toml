@@ -40,8 +40,8 @@ arrow-arith = "53.2"
 arrow-cast = "53.2"
 async-trait = "0"
 chrono = "0.4.35"
-datafusion-common = "42.0"
-datafusion-physical-plan = "42.0"
+datafusion-common = "44.0"
+datafusion-physical-plan = "44.0"
 env_logger = "0.10"
 half = { "version" = "=2.4.1", default-features = false, features = [
     "num-traits",
