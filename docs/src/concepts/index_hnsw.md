@@ -7,7 +7,7 @@ Approximate Nearest Neighbor (ANN) search is a method for finding data points ne
 There are three main types of ANN search algorithms:
 
 * **Tree-based search algorithms**: Use a tree structure to organize and store data points.
-* * **Hash-based search algorithms**: Use a specialized geometric hash table to store and manage data points. These algorithms typically focus on theoretical guarantees, and don't usually perform as well as the other approaches in practice.
+* **Hash-based search algorithms**: Use a specialized geometric hash table to store and manage data points. These algorithms typically focus on theoretical guarantees, and don't usually perform as well as the other approaches in practice.
 * **Graph-based search algorithms**: Use a graph structure to store data points, which can be a bit complex. 
 
 HNSW is a graph-based algorithm. All graph-based search algorithms rely on the idea of a k-nearest neighbor (or k-approximate nearest neighbor) graph, which we outline below.  
