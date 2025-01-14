@@ -999,6 +999,8 @@ def test_create_scalar_index(mem_db: DBConnection):
     assert len(indices) == 1
     scalar_index = indices[0]
     assert scalar_index.index_type == "BTree"
+    assert scalar_index.columns == ["x"]
+    assert scalar_index.version == 1
 
     # Confirm that prefiltering still works with the scalar index column
     results = table.search().where("x = 'c'").to_arrow()

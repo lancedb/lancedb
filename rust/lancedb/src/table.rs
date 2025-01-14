@@ -2199,7 +2199,8 @@ impl TableInternal for NativeTable {
             }
 
             let name = idx.name.clone();
-            Ok(IndexConfig { index_type, columns, name })
+            let version = idx.dataset_version;
+            Ok(IndexConfig { index_type, columns, name, version })
         }).try_collect::<Vec<_>>().await
     }
 

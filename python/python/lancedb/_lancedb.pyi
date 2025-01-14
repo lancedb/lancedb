@@ -68,6 +68,8 @@ class Table:
 class IndexConfig:
     index_type: str
     columns: List[str]
+    name: str
+    version: int
 
 async def connect(
     uri: str,

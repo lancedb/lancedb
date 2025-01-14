@@ -177,6 +177,8 @@ pub struct IndexConfig {
     /// Currently this is always a Vec of size 1.  In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
+    /// The version of the index
+    pub version: u64,
 }
 
 #[skip_serializing_none]

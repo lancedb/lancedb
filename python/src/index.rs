@@ -194,14 +194,16 @@ pub struct IndexConfig {
     pub columns: Vec<String>,
     /// Name of the index.
     pub name: String,
+    /// The version of the index
+    pub version: u64,
 }
 
 #[pymethods]
 impl IndexConfig {
     pub fn __repr__(&self) -> String {
         format!(
-            "Index({}, columns={:?}, name=\"{}\")",
-            self.index_type, self.columns, self.name
+            "Index({}, columns={:?}, name=\"{}\", version={})",
+            self.index_type, self.columns, self.name, self.version
         )
     }
 
@@ -224,6 +226,7 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             index_type,
             columns: value.columns,
             name: value.name,
+            version: value.version,
         }
     }
 }

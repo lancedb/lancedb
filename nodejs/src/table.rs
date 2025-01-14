@@ -376,6 +376,7 @@ pub struct IndexConfig {
     /// Currently this is always an array of size 1. In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
+    pub version: i64,
 }
 
 impl From<lancedb::index::IndexConfig> for IndexConfig {
@@ -385,6 +386,7 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             index_type,
             columns: value.columns,
             name: value.name,
+            version: value.version as i64,
         }
     }
 }
