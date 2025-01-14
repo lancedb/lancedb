@@ -754,7 +754,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             index_name: String,
             columns: Vec<String>,
             #[serde(default)]
-            version: u64,
+            index_version: u64,
         }
 
         let body = response.text().await.err_to_http(request_id.clone())?;
@@ -778,7 +778,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
                         name: index.index_name,
                         index_type: stats.index_type,
                         columns: index.columns,
-                        version: index.version,
+                        version: index.index_version,
                     })),
                     Ok(None) => Ok(None), // The index must have been deleted since we listed it.
                     Err(e) => Err(e),
@@ -1575,7 +1575,6 @@ mod tests {
                                 "index_uuid": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
                                 "columns": ["vector"],
                                 "index_status": "done",
-                                "index_version": 1
                             },
                             {
                                 "index_name": "my_idx",
@@ -1616,7 +1615,8 @@ mod tests {
                 name: "vector_idx".into(),
                 index_type: IndexType::IvfPq,
                 columns: vec!["vector".into()],
-                version: 1,
+                // default value when version is not present in response for backward compatibility
+                version: 0,
             },
             IndexConfig {
                 name: "my_idx".into(),
