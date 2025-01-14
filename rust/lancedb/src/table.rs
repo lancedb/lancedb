@@ -371,6 +371,8 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     fn as_native(&self) -> Option<&NativeTable>;
     /// Get the name of the table.
     fn name(&self) -> &str;
+    /// Get the dataset of the table.
+    fn dataset(&self) -> &dataset::DatasetConsistencyWrapper;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
     /// Count the number of rows in this table.
@@ -493,6 +495,11 @@ impl Table {
     /// Get the name of the table.
     pub fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    /// Get the dataset of the table.
+    pub fn dataset(&self) -> &dataset::DatasetConsistencyWrapper {
+        self.inner.dataset()
     }
 
     /// Get the arrow [Schema] of the table.
@@ -1759,6 +1766,10 @@ impl TableInternal for NativeTable {
 
     fn name(&self) -> &str {
         self.name.as_str()
+    }
+
+    fn dataset(&self) -> &dataset::DatasetConsistencyWrapper {
+        &self.dataset
     }
 
     async fn version(&self) -> Result<u64> {
