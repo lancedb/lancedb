@@ -12,7 +12,7 @@ with open("Cargo.toml", "rb") as f:
             elif isinstance(dep, dict):
                 # Version doesn't have the beta tag in it, so we instead look
                 # at the git tag.
-                version = dep["tag"]
+                version = dep.get('tag', dep.get('version'))
             else:
                 raise ValueError("Unexpected type for dependency: " + str(dep))
 
