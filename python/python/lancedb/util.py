@@ -9,7 +9,7 @@ import pathlib
 import warnings
 from datetime import date, datetime
 from functools import singledispatch
-from typing import Tuple, Union, Optional, Any
+from typing import Literal, Tuple, Union, Optional, Any, cast
 from urllib.parse import urlparse
 
 import numpy as np
@@ -356,3 +356,15 @@ def add_note(base_exception: BaseException, note: str):
         )
     else:
         raise ValueError("Cannot add note to exception")
+
+
+MetricType = Literal["l2", "euclidean", "dot", "cosine", "hamming"]
+
+
+def _normalize_metric_type(metric_type: str) -> MetricType:
+    normalized = metric_type.lower()
+    if normalized == "euclidean":
+        normalized = "l2"
+    if normalized not in {"l2", "dot", "cosine", "hamming"}:
+        raise ValueError(f"Invalid metric_type: {metric_type}")
+    return cast(MetricType, normalized)
