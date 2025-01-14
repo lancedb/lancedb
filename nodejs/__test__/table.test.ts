@@ -445,6 +445,7 @@ describe("When creating an index", () => {
       name: "vec_idx",
       indexType: "IvfPq",
       columns: ["vec"],
+      version: 1,
     });
 
     // Search without specifying the column
@@ -545,6 +546,7 @@ describe("When creating an index", () => {
       name: "vec_idx",
       indexType: "IvfHnswSq",
       columns: ["vec"],
+      version: 1,
     });
 
     // Search without specifying the column
