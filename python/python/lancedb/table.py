@@ -40,6 +40,8 @@ from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
+    AsyncFTSQuery,
+    AsyncHybridQuery,
     AsyncQuery,
     AsyncVectorQuery,
     LanceEmptyQueryBuilder,
@@ -2858,6 +2860,46 @@ class AsyncTable:
         )
         return self.query().nearest_to(query_vector)
 
+    @overload
+    def search(
+        self,
+        query: Optional[Union[str]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["hybrid", "auto"] = ...,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncHybridQuery: ...
+
+    @overload
+    def search(
+        self,
+        query: Optional[Union[VEC, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["auto"] = ...,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncVectorQuery: ...
+
+    @overload
+    def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["fts"] = ...,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncFTSQuery: ...
+
+    @overload
+    def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["vector"] = ...,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncVectorQuery: ...
+
     def search(
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
@@ -2865,7 +2907,7 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> AsyncQuery:
+    ) -> AsyncHybridQuery:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
         and [full-text search][experimental-full-text-search].

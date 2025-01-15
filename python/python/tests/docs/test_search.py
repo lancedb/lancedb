@@ -118,8 +118,7 @@ async def test_vector_search_async():
     # --8<-- [end:exhaustive_search_async]
     # --8<-- [start:exhaustive_search_async_cosine]
     (
-        await async_tbl.query()
-        .nearest_to(np.random.random((1536)))
+        await async_tbl.search(np.random.random((1536)))
         .distance_type("cosine")
         .limit(10)
         .to_list()
@@ -142,13 +141,13 @@ async def test_vector_search_async():
     async_tbl = await async_db.create_table("documents_async", data=data)
     # --8<-- [end:create_table_async_with_nested_schema]
     # --8<-- [start:search_result_async_as_pyarrow]
-    await async_tbl.query().nearest_to(np.random.randn(1536)).to_arrow()
+    await async_tbl.search(np.random.randn(1536)).to_arrow()
     # --8<-- [end:search_result_async_as_pyarrow]
     # --8<-- [start:search_result_async_as_pandas]
-    await async_tbl.query().nearest_to(np.random.randn(1536)).to_pandas()
+    await async_tbl.search(np.random.randn(1536)).to_pandas()
     # --8<-- [end:search_result_async_as_pandas]
     # --8<-- [start:search_result_async_as_list]
-    await async_tbl.query().nearest_to(np.random.randn(1536)).to_list()
+    await async_tbl.search(np.random.randn(1536)).to_list()
     # --8<-- [end:search_result_async_as_list]
 
 
@@ -216,9 +215,7 @@ async def test_fts_native_async():
 
     # async API uses our native FTS algorithm
     await async_tbl.create_index("text", config=FTS())
-    await (
-        async_tbl.query().nearest_to_text("puppy").select(["text"]).limit(10).to_list()
-    )
+    await async_tbl.search("puppy").select(["text"]).limit(10).to_list()
     # [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
     # ...
     # --8<-- [end:basic_fts_async]
@@ -232,23 +229,10 @@ async def test_fts_native_async():
     )
     # --8<-- [end:fts_config_folding_async]
     # --8<-- [start:fts_prefiltering_async]
-    await (
-        async_tbl.query()
-        .nearest_to_text("puppy")
-        .limit(10)
-        .where("text='foo'")
-        .to_list()
-    )
+    await async_tbl.search("puppy").limit(10).where("text='foo'").to_list()
     # --8<-- [end:fts_prefiltering_async]
     # --8<-- [start:fts_postfiltering_async]
-    await (
-        async_tbl.query()
-        .nearest_to_text("puppy")
-        .limit(10)
-        .where("text='foo'")
-        .postfilter()
-        .to_list()
-    )
+    await async_tbl.search("puppy").limit(10).where("text='foo'").postfilter().to_list()
     # --8<-- [end:fts_postfiltering_async]
     # --8<-- [start:fts_with_position_async]
     await async_tbl.create_index("text", config=FTS(with_position=True))
@@ -343,15 +327,8 @@ async def test_hybrid_search_async():
     await async_tbl.add(data)
     # Create a fts index before the hybrid search
     await async_tbl.create_index("text", config=FTS())
-    text_query = "flower moon"
-    vector_query = embeddings.compute_query_embeddings(text_query)[0]
     # hybrid search with default re-ranker
-    await (
-        async_tbl.query()
-        .nearest_to(vector_query)
-        .nearest_to_text(text_query)
-        .to_pandas()
-    )
+    await async_tbl.search("flower_moon", query_type="hybrid").to_pandas()
     # --8<-- [end:basic_hybrid_search_async]
     # --8<-- [start:hybrid_search_pass_vector_text_async]
     vector_query = [0.1, 0.2, 0.3, 0.4, 0.5]

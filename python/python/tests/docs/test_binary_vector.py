@@ -72,6 +72,6 @@ async def test_binary_vector_async():
 
     query = np.random.randint(0, 2, size=256)
     packed_query = np.packbits(query)
-    await tbl.query().nearest_to(packed_query).distance_type("hamming").to_arrow()
+    await tbl.search(packed_query).distance_type("hamming").to_arrow()
     # --8<-- [end:async_binary_vector]
     await db.drop_table("my_binary_vectors")
