@@ -4,7 +4,7 @@ name = "lancedb"
 dynamic = ["version"]
 dependencies = [
     "deprecation",
-    "pylance==0.22.0",
+    "pylance==0.22.1b1",
     "tqdm>=4.27.0",
     "pydantic>=1.10",
     "packaging",
