@@ -274,6 +274,11 @@ Let's create a LanceDB table with a nested schema:
         ```python
         --8<-- "python/python/tests/docs/test_search.py:search_result_as_pandas_flatten_true"
         ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_async_as_pandas_flatten_true"
+        ```
 
     If your table has a deeply nested struct, you can control how many levels
     of nesting to flatten by passing in a positive integer.
@@ -283,8 +288,11 @@ Let's create a LanceDB table with a nested schema:
         ```python
         --8<-- "python/python/tests/docs/test_search.py:search_result_as_pandas_flatten_1"
         ```
-    !!! note
-        `flatten` is not yet supported with our asynchronous client.
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_async_as_pandas_flatten_1"
+        ```
 
     ### As a list of Python dicts
 
@@ -311,8 +319,11 @@ Let's create a LanceDB table with a nested schema:
         ```python
         --8<-- "python/python/tests/docs/test_search.py:search_result_as_pydantic"
         ```
-    !!! note
-        `to_pydantic()` is not yet supported with our asynchronous client.
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_async_as_pydantic"
+        ```
 
     Note that in this case the extra `_distance` field is discarded since
     it's not part of the LanceSchema.

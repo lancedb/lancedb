@@ -114,7 +114,7 @@ async def test_vector_search_async():
         for i, row in enumerate(np.random.random((10_000, 1536)).astype("float32"))
     ]
     async_tbl = await async_db.create_table("vector_search_async", data=data)
-    (await async_tbl.query().nearest_to(np.random.random((1536))).limit(10).to_list())
+    await async_tbl.search(np.random.random((1536))).limit(10).to_list()
     # --8<-- [end:exhaustive_search_async]
     # --8<-- [start:exhaustive_search_async_cosine]
     (
@@ -146,9 +146,18 @@ async def test_vector_search_async():
     # --8<-- [start:search_result_async_as_pandas]
     await async_tbl.search(np.random.randn(1536)).to_pandas()
     # --8<-- [end:search_result_async_as_pandas]
+    # --8<-- [start:search_result_async_as_pandas_flatten_true]
+    await async_tbl.search(np.random.randn(1536)).to_pandas(flatten=True)
+    # --8<-- [end:search_result_async_as_pandas_flatten_true]
+    # --8<-- [start:search_result_async_as_pandas_flatten_1]
+    await async_tbl.search(np.random.randn(1536)).to_pandas(flatten=1)
+    # --8<-- [end:search_result_async_as_pandas_flatten_1]
     # --8<-- [start:search_result_async_as_list]
     await async_tbl.search(np.random.randn(1536)).to_list()
     # --8<-- [end:search_result_async_as_list]
+    # --8<-- [start:search_result_async_as_pydantic]
+    await async_tbl.search(np.random.randn(1536)).to_pydantic(LanceSchema)
+    # --8<-- [end:search_result_async_as_pydantic]
 
 
 def test_fts_native():

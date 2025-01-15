@@ -1645,6 +1645,24 @@ class AsyncQueryBase:
         """
         return (await self.to_arrow()).to_pylist()
 
+    async def to_pydantic(self, model: Type[LanceModel]) -> List[LanceModel]:
+        """Return the table as a list of pydantic models.
+
+        Parameters
+        ----------
+        model: Type[LanceModel]
+            The pydantic model to use.
+
+        Returns
+        -------
+        List[LanceModel]
+        """
+        list_data = await self.to_list()
+        return [
+            model(**{k: v for k, v in row.items() if k in model.field_names()})
+            for row in list_data
+        ]
+
     async def to_pandas(
         self, flatten: Optional[Union[int, bool]] = None
     ) -> "pd.DataFrame":
