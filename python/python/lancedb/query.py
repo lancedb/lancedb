@@ -13,7 +13,6 @@ from typing import (
     List,
     Literal,
     Optional,
-    Self,
     Tuple,
     Type,
     Union,
@@ -34,6 +33,8 @@ from .rerankers.util import check_reranker_result
 from .util import safe_import_pandas, flatten_columns
 
 if TYPE_CHECKING:
+    import sys
+
     import PIL
     import polars as pl
 
@@ -44,6 +45,11 @@ if TYPE_CHECKING:
     from .common import VEC
     from .pydantic import LanceModel
     from .table import Table, AsyncTable
+
+    if sys.version_info >= (3, 11):
+        from typing import Self
+    else:
+        from typing_extensions import Self
 
 pd = safe_import_pandas()
 

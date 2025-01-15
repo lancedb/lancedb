@@ -55,7 +55,7 @@ tests = [
     "tantivy",
     "pyarrow-stubs",
 ]
-dev = ["ruff", "pre-commit", "pyright"]
+dev = ["ruff", "pre-commit", "pyright", 'typing-extensions>=4.0.0; python_version < "3.11"',]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 clip = ["torch", "pillow", "open-clip"]
 embeddings = [
