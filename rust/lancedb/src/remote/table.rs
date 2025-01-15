@@ -6,7 +6,7 @@ use crate::index::IndexStatistics;
 use crate::query::Select;
 use crate::table::AddDataMode;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
-use crate::{Error, Table};
+use crate::{DistanceType, Error, Table};
 use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
@@ -592,7 +592,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
                         message: format!("Column {} not found in schema", column),
                     })?;
                 if supported_vector_data_type(field.data_type()) {
-                    ("IVF_PQ", None)
+                    ("IVF_PQ", Some(DistanceType::L2))
                 } else if supported_btree_data_type(field.data_type()) {
                     ("BTREE", None)
                 } else {
