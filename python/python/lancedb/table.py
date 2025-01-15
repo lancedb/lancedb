@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -21,9 +22,11 @@ from typing import (
     overload,
 )
 from urllib.parse import urlparse
+import warnings
 
 import lance
 from lancedb.background_loop import LOOP
+import numpy as np
 from .dependencies import _check_for_pandas
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -2615,6 +2618,18 @@ class AsyncTable:
         """
         return await self._inner.schema()
 
+    async def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
+        """
+        Get the embedding functions for the table
+        Returns
+        -------
+        funcs: Dict[str, EmbeddingFunctionConfig]
+            A mapping of the vector column to the embedding function
+            or empty dict if not configured.
+        """
+        schema = await self.schema()
+        return EmbeddingFunctionRegistry.get_instance().parse_functions(schema.metadata)
+
     async def count_rows(self, filter: Optional[str] = None) -> int:
         """
         Count the number of rows in the table.
@@ -2835,7 +2850,168 @@ class AsyncTable:
         by `query`.  Seer [nearest_to][lancedb.query.AsyncQuery.nearest_to] for more
         details.
         """
+        warnings.warn(
+            "The 'vector_search' method is deprecated and will be removed in a "
+            "future release. Please use "
+            "'AsyncTable.search(..., query_type=\"vector\")' instead.",
+            DeprecationWarning,
+        )
         return self.query().nearest_to(query_vector)
+
+    def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: QueryType = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncQuery:
+        """Create a search query to find the nearest neighbors
+        of the given query vector. We currently support [vector search][search]
+        and [full-text search][experimental-full-text-search].
+        All query options are defined in [AsyncQuery][lancedb.query.AsyncQuery].
+        Parameters
+        ----------
+        query: list/np.ndarray/str/PIL.Image.Image, default None
+            The targeted vector to search for.
+            - *default None*.
+            Acceptable types are: list, np.ndarray, PIL.Image.Image
+            - If None then the select/where/limit clauses are applied to filter
+            the table
+        vector_column_name: str, optional
+            The name of the vector column to search.
+            The vector column needs to be a pyarrow fixed size list type
+            - If not specified then the vector column is inferred from
+            the table schema
+            - If the table has multiple vector columns then the *vector_column_name*
+            needs to be specified. Otherwise, an error is raised.
+        query_type: str
+            *default "auto"*.
+            Acceptable types are: "vector", "fts", "hybrid", or "auto"
+            - If "auto" then the query type is inferred from the query;
+                - If `query` is a list/np.ndarray then the query type is
+                "vector";
+                - If `query` is a PIL.Image.Image then either do vector search,
+                or raise an error if no corresponding embedding function is found.
+            - If `query` is a string, then the query type is "vector" if the
+            table has embedding functions else the query type is "fts"
+        Returns
+        -------
+        LanceQueryBuilder
+            A query builder object representing the query.
+            Once executed, the query returns
+            - selected columns
+            - the vector
+            - and also the "_distance" column which is the distance between the query
+            vector and the returned vector.
+        """
+
+        def is_embedding(query):
+            return isinstance(query, (list, np.ndarray, pa.Array, pa.ChunkedArray))
+
+        async def get_embedding_func(error_if_missing=True):
+            nonlocal vector_column_name
+            schema = await self.schema()
+            vector_column_name = infer_vector_column_name(
+                schema=schema,
+                query_type=query_type,
+                query=query,
+                vector_column_name=vector_column_name,
+            )
+            funcs = EmbeddingFunctionRegistry.get_instance().parse_functions(
+                schema.metadata
+            )
+            func = funcs.get(vector_column_name)
+            if error_if_missing and func is None:
+                error = ValueError(
+                    f"Column '{vector_column_name}' has no registered "
+                    "embedding function."
+                )
+                if len(funcs) > 0:
+                    add_note(
+                        error,
+                        "Embedding functions are registered for columns: "
+                        f"{list(funcs.keys())}",
+                    )
+                else:
+                    add_note(
+                        error, "No embedding functions are registered for any columns."
+                    )
+                raise error
+            return func
+
+        async def make_embedding(get_embeddings_task):
+            embedding = await get_embeddings_task
+            if embedding is not None:
+                return embedding.function.compute_query_embeddings_with_retry(query)[0]
+            else:
+                return None
+
+        if query_type == "fts":
+            fts_query = query
+            vector_query = None
+        elif query_type == "vector":
+            if is_embedding(query):
+                vector_query = query
+            else:
+                get_embeddings_task = asyncio.create_task(get_embedding_func())
+                vector_query = make_embedding(get_embeddings_task)
+            fts_query = None
+        elif query_type == "hybrid":
+            get_embeddings_task = asyncio.create_task(get_embedding_func())
+            vector_query = make_embedding(get_embeddings_task)
+            fts_query = query
+        elif query_type == "auto":
+            # Infer the query type.
+            if is_embedding(query):
+                vector_query = query
+                fts_query = None
+                query_type = "vector"
+            elif isinstance(query, str):
+                get_embeddings_task = asyncio.create_task(
+                    get_embedding_func(error_if_missing=False)
+                )
+
+                async def make_fts_query():
+                    embedding = await get_embeddings_task
+                    if embedding is not None:
+                        # Only return something if there is an FTS index
+                        indices = await self.list_indices()
+                        if any(
+                            i.columns[0] == embedding.source_column
+                            and i.index_type == "FTS"
+                            for i in indices
+                        ):
+                            return query
+                        else:
+                            return None
+                    else:
+                        return query
+
+                vector_query = make_embedding(get_embeddings_task)
+                fts_query = make_fts_query()
+                query_type = "hybrid"
+            else:
+                # it's an image or something else embeddable.
+                get_embeddings_task = asyncio.create_task(get_embedding_func())
+                vector_query = make_embedding(get_embeddings_task)
+                fts_query = None
+                query_type = "vector"
+
+        if query_type == "vector":
+            builder = self.query().nearest_to(vector_query)
+            if vector_column_name:
+                builder = builder.column(vector_column_name)
+            return builder
+        elif query_type == "fts":
+            return self.query().nearest_to_text(fts_query, columns=fts_columns or [])
+        elif query_type == "hybrid":
+            builder = self.query().nearest_to(vector_query)
+            if vector_column_name:
+                builder = builder.column(vector_column_name)
+            return builder.nearest_to_text(fts_query, columns=fts_columns or [])
+        else:
+            raise ValueError(f"Invalid query type: {query_type}")
 
     async def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
