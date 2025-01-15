@@ -1742,6 +1742,10 @@ class AsyncQueryBase:
 class _AsyncVectorQueryBase:
     """Methods for vectory query settings."""
 
+    # These methods are shared between AsyncVectorQuery and AsyncHybridQuery.
+    # AsyncVectorQuery has additional methods like `nearest_to_text` which
+    # are not shared with AsyncHybridQuery.
+
     @dataclass
     class _VectorArgs:
         query_vector: Union[
@@ -2121,7 +2125,6 @@ class AsyncFTSQuery(AsyncQueryBase):
     ):
         AsyncQueryBase.__init__(self, table, base_args)
         self._fts_args = fts_args
-        # TODO: re-ranker
         self._reranker = None
 
     def get_query(self) -> str:
@@ -2378,7 +2381,6 @@ class AsyncHybridQuery(AsyncQueryBase, _AsyncVectorQueryBase):
         has_vector = self._vector_args.query_vector is not None
 
         if not has_fts and has_vector:
-            # TODO: pass down re-ranker
             return AsyncVectorQuery(self._table, self._base_args, self._vector_args)
         elif has_fts and not has_vector:
             return AsyncFTSQuery(self._table, self._base_args, self._fts_args)
