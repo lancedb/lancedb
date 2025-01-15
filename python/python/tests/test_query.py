@@ -7,6 +7,7 @@ from pathlib import Path
 
 import lancedb
 from lancedb.index import IvfPq, FTS
+from lancedb.rerankers.cross_encoder import CrossEncoderReranker
 import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
@@ -14,7 +15,11 @@ import pytest
 import pytest_asyncio
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.query import (
+    AsyncFTSQuery,
+    AsyncHybridQuery,
+    AsyncQuery,
     AsyncQueryBase,
+    AsyncVectorQuery,
     LanceVectorQueryBuilder,
     Query,
 )
@@ -509,15 +514,22 @@ async def test_query_async(table_async: AsyncTable):
         expected_columns=["id", "vector", "_rowid"],
     )
 
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+async def test_query_reranked_async(table_async: AsyncTable):
     # FTS with rerank
     await table_async.create_index("text", config=FTS(with_position=False))
     await check_query(
-        table_async.query().nearest_to_text("dog").rerank(),
+        table_async.query().nearest_to_text("dog").rerank(CrossEncoderReranker()),
         expected_num_rows=1,
     )
 
     # Vector query with rerank
-    await check_query(table_async.vector_search([1, 2]).rerank(), expected_num_rows=2)
+    await check_query(
+        table_async.vector_search([1, 2]).rerank(CrossEncoderReranker()),
+        expected_num_rows=2,
+    )
 
 
 @pytest.mark.asyncio
@@ -635,3 +647,108 @@ async def test_query_with_f16(tmp_path: Path):
     tbl = await db.create_table("test", df)
     results = await tbl.vector_search([np.float16(1), np.float16(2)]).to_pandas()
     assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_awaitable_query():
+    data = pa.table(
+        {
+            "vector": pa.array(
+                [[1, 2], [3, 4]], type=pa.list_(pa.float32(), list_size=2)
+            ),
+            "text": ["hello", "world"],
+            "id": [1, 2],
+        }
+    )
+    db = await lancedb.connect_async("memory://")
+    table = await db.create_table("test", data)
+    await table.create_index("text", config=FTS())
+
+    # We can pass awaitable vector query
+    async def eventual_vec_query():
+        return (0.0, 0.1)
+
+    q = table.query().nearest_to(eventual_vec_query())
+    q = await q._resolve()
+    assert isinstance(q, AsyncVectorQuery)
+    results = await q.to_arrow()
+    assert results["id"].to_pylist() == [1, 2]
+    assert "_distance" in results.column_names
+
+    # If awaitable vector query returns None, VectorQuery -> Query
+    async def eventual_query_none():
+        return None
+
+    q = table.query().nearest_to(eventual_query_none())
+    assert isinstance(q, AsyncVectorQuery)
+    q = await q._resolve()
+    assert isinstance(q, AsyncQuery)
+    results = await q.to_arrow()
+    assert results["id"].to_pylist() == [1, 2]
+    assert "_distance" not in results.column_names
+
+    # We can pass awaitable fts query
+    async def eventual_fts_query():
+        return "hello"
+
+    q = table.query().nearest_to_text(eventual_fts_query())
+    assert isinstance(q, AsyncFTSQuery)
+    q = await q._resolve()
+    assert isinstance(q, AsyncFTSQuery)
+    results = await q.to_arrow()
+    assert results["id"].to_pylist() == [1]
+
+    # If awaitable fts query returns None, FTSQuery -> Query
+    q = table.query().nearest_to_text(eventual_query_none())
+    assert isinstance(q, AsyncFTSQuery)
+    q = await q._resolve()
+    assert isinstance(q, AsyncQuery)
+    results = await q.to_arrow()
+    assert results["id"].to_pylist() == [1, 2]
+
+    # We can pass awaitable hybrid query
+    q = (
+        table.query()
+        .nearest_to(eventual_vec_query())
+        .nearest_to_text(eventual_fts_query())
+    )
+    assert isinstance(q, AsyncHybridQuery)
+    q = await q._resolve()
+    assert isinstance(q, AsyncHybridQuery)
+    results = await q.to_arrow()
+    assert results["id"].to_pylist() == [1, 2]
+
+    # If awaitable FTS query returns None, HybridQuery -> VectorQuery
+    q = (
+        table.query()
+        .nearest_to(eventual_vec_query())
+        .nearest_to_text(eventual_query_none())
+    )
+    assert isinstance(q, AsyncHybridQuery)
+    q = await q._resolve()
+    assert isinstance(q, AsyncVectorQuery)
+    results = await q.to_arrow()
+    assert results["id"].to_pylist() == [1, 2]
+    assert "_distance" in results.column_names
+
+    # If awaitable Vector query returns None, HybridQuery -> FTSQuery
+    q = (
+        table.query()
+        .nearest_to(eventual_query_none())
+        .nearest_to_text(eventual_fts_query())
+    )
+    assert isinstance(q, AsyncHybridQuery)
+    q = await q._resolve()
+    assert isinstance(q, AsyncFTSQuery)
+    results = await q.to_arrow()
+    assert results["id"].to_pylist() == [1]
+
+    # If both awaitables return None, raise exception
+    q = (
+        table.query()
+        .nearest_to(eventual_query_none())
+        .nearest_to_text(eventual_query_none())
+    )
+    assert isinstance(q, AsyncHybridQuery)
+    with pytest.raises(ValueError):
+        await q._resolve()

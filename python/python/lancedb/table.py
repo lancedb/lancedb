@@ -2646,7 +2646,7 @@ class AsyncTable:
         can be executed with methods like [to_arrow][lancedb.query.AsyncQuery.to_arrow],
         [to_pandas][lancedb.query.AsyncQuery.to_pandas] and more.
         """
-        return AsyncQuery(self._inner.query())
+        return AsyncQuery(self)
 
     async def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
