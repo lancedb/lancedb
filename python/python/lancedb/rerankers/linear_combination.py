@@ -95,43 +95,29 @@ class LinearCombinationReranker(Reranker):
                     pa.array([nan] * len(vector_results), type=pa.float32()),
                 )
             return results
+        results = dict()
+        for vector_result in vector_results.to_pylist():
+            row_id = vector_result["_rowid"]
+            if row_id not in results:
+                results[row_id] = dict()
+            results[vector_result["_rowid"]]["_distance"] = vector_result["_distance"]
+        for fts_result in fts_results.to_pylist():
+            row_id = fts_result["_rowid"]
+            if row_id not in results:
+                results[row_id] = dict()
+            results[fts_result["_rowid"]]["_score"] = fts_result["_score"]
 
-        # sort both input tables on _rowid
         combined_list = []
-        vector_list = vector_results.sort_by("_rowid").to_pylist()
-        fts_list = fts_results.sort_by("_rowid").to_pylist()
-        i, j = 0, 0
-        while i < len(vector_list):
-            if j >= len(fts_list):
-                for vi in vector_list[i:]:
-                    vi["_relevance_score"] = self._combine_score(vi["_distance"], fill)
-                    combined_list.append(vi)
-                break
-
-            vi = vector_list[i]
-            fj = fts_list[j]
-            # invert the fts score from relevance to distance
-            inverted_fts_score = self._invert_score(fj["_score"])
-            if vi["_rowid"] == fj["_rowid"]:
-                vi["_relevance_score"] = self._combine_score(
-                    vi["_distance"], inverted_fts_score
-                )
-                vi["_score"] = fj["_score"]  # keep the original score
-                combined_list.append(vi)
-                i += 1
-                j += 1
-            elif vector_list[i]["_rowid"] < fts_list[j]["_rowid"]:
-                vi["_relevance_score"] = self._combine_score(vi["_distance"], fill)
-                combined_list.append(vi)
-                i += 1
-            else:
-                fj["_relevance_score"] = self._combine_score(inverted_fts_score, fill)
-                combined_list.append(fj)
-                j += 1
-        if j < len(fts_list) - 1:
-            for fj in fts_list[j:]:
-                fj["_relevance_score"] = self._combine_score(inverted_fts_score, fill)
-                combined_list.append(fj)
+        for row_id, result in results.items():
+            if "_distance" not in result:
+                result["_distance"] = fill
+            if "_score" not in result:
+                result["_score"] = fill
+            vector_score = self._invert_score(result["_distance"])
+            result["_relevance_score"] = self._combine_score(
+                vector_score, result["_score"]
+            )
+            combined_list.append(result)
 
         relevance_score_schema = pa.schema(
             [
@@ -148,10 +134,10 @@ class LinearCombinationReranker(Reranker):
             tbl = self._keep_relevance_score(tbl)
         return tbl
 
-    def _combine_score(self, score1, score2):
+    def _combine_score(self, vector_score, fts_score):
         # these scores represent distance
-        return 1 - (self.weight * score1 + (1 - self.weight) * score2)
+        return 1 - (self.weight * vector_score + (1 - self.weight) * fts_score)
 
-    def _invert_score(self, score: float):
+    def _invert_score(self, dist: float):
         # Invert the score between relevance and distance
-        return 1 - score
+        return 1 - dist
