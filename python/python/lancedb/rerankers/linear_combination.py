@@ -109,14 +109,9 @@ class LinearCombinationReranker(Reranker):
 
         combined_list = []
         for row_id, result in results.items():
-            if "_distance" not in result:
-                result["_distance"] = fill
-            if "_score" not in result:
-                result["_score"] = fill
-            vector_score = self._invert_score(result["_distance"])
-            result["_relevance_score"] = self._combine_score(
-                vector_score, result["_score"]
-            )
+            vector_score = self._invert_score(result.get("_distance", fill))
+            fts_score = result.get("_score", fill)
+            result["_relevance_score"] = self._combine_score(vector_score, fts_score)
             combined_list.append(result)
 
         relevance_score_schema = pa.schema(
