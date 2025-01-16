@@ -188,6 +188,24 @@ pub fn supported_vector_data_type(dtype: &DataType) -> bool {
     }
 }
 
+// TODO: remove this after we expose the same function in Lance.
+pub fn infer_vector_dim(data_type: &DataType) -> Result<usize> {
+    infer_vector_dim_impl(data_type, false)
+}
+
+fn infer_vector_dim_impl(data_type: &DataType, in_list: bool) -> Result<usize> {
+    match (data_type, in_list) {
+        (DataType::FixedSizeList(_, dim), _) => Ok(*dim as usize),
+        (DataType::List(inner), false) => infer_vector_dim_impl(inner.data_type(), true),
+        _ => Err(Error::InvalidInput {
+            message: format!(
+                "data type is not a vector (FixedSizeList or List<FixedSizeList>), but {:?}",
+                data_type
+            ),
+        }),
+    }
+}
+
 /// Note: this is temporary until we get a proper datatype conversion in Lance.
 pub fn string_to_datatype(s: &str) -> Option<DataType> {
     let data_type = serde_json::Value::String(s.to_string());

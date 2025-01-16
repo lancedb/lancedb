@@ -1,4 +1,5 @@
 import shutil
+from lancedb.index import IvfPq
 import pytest
 
 # --8<-- [start:imports]
@@ -27,6 +28,9 @@ def test_multivector():
         for i in range(1024)
     ]
     tbl = db.create_table("my_table", data=data, schema=schema)
+
+    # only cosine similarity is supported for multi-vectors
+    tbl.create_index(metric="cosine")
 
     # query with single vector
     query = np.random.random(256)
@@ -58,6 +62,9 @@ async def test_multivector_async():
         for i in range(1024)
     ]
     tbl = await db.create_table("my_table", data=data, schema=schema)
+
+    # only cosine similarity is supported for multi-vectors
+    await tbl.create_index(column="vector", config=IvfPq(distance_type="cosine"))
 
     # query with single vector
     query = np.random.random(256)

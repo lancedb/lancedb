@@ -73,7 +73,7 @@ use crate::query::{
     IntoQueryVector, Query, QueryExecutionOptions, Select, VectorQuery, DEFAULT_TOP_K,
 };
 use crate::utils::{
-    default_vector_column, supported_bitmap_data_type, supported_btree_data_type,
+    default_vector_column, infer_vector_dim, supported_bitmap_data_type, supported_btree_data_type,
     supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
     PatchReadParam, PatchWriteParam,
 };
@@ -1370,14 +1370,8 @@ impl NativeTable {
         let num_sub_vectors: u32 = if let Some(n) = index.num_sub_vectors {
             n
         } else {
-            match field.data_type() {
-                arrow_schema::DataType::FixedSizeList(_, n) => {
-                    Ok::<u32, Error>(suggested_num_sub_vectors(*n as u32))
-                }
-                _ => Err(Error::Schema {
-                    message: format!("Column '{}' is not a FixedSizeList", field.name()),
-                }),
-            }?
+            let dim = infer_vector_dim(field.data_type())?;
+            suggested_num_sub_vectors(dim as u32)
         };
         let mut dataset = self.dataset.get_mut().await?;
         let lance_idx_params = lance::index::vector::VectorIndexParams::ivf_pq(
