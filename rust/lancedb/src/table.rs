@@ -410,6 +410,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn update(&self, update: UpdateBuilder) -> Result<u64>;
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
+    async fn drop_index(&self, name: &str) -> Result<()>;
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
     async fn merge_insert(
         &self,
@@ -982,6 +983,13 @@ impl Table {
         index_name: impl AsRef<str>,
     ) -> Result<Option<IndexStatistics>> {
         self.inner.index_stats(index_name.as_ref()).await
+    }
+
+    /// Drop an index from the table.
+    ///
+    /// Note: This is not yet available in LanceDB cloud.
+    pub async fn drop_index(&self, name: &str) -> Result<()> {
+        self.inner.drop_index(name).await
     }
 
     // Take many execution plans and map them into a single plan that adds
@@ -1869,6 +1877,12 @@ impl TableInternal for NativeTable {
                     .await
             }
         }
+    }
+
+    async fn drop_index(&self, index_name: &str) -> Result<()> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.drop_index(index_name).await?;
+        Ok(())
     }
 
     async fn update(&self, update: UpdateBuilder) -> Result<u64> {
@@ -2897,6 +2911,9 @@ mod tests {
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.index_type, crate::index::IndexType::IvfPq);
         assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
+
+        table.drop_index(index_name).await.unwrap();
+        assert_eq!(table.list_indices().await.unwrap().len(), 0);
     }
 
     #[tokio::test]
