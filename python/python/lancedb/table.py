@@ -586,6 +586,23 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def drop_index(self, name: str) -> None:
+        """
+        Drop an index from the table.
+
+        Parameters
+        ----------
+        name: str
+            The name of the index to drop.
+
+        Notes
+        -----
+        This does not delete the index from disk, it just removes it from the table.
+        To delete the index, run [optimize][lancedb.table.Table.optimize]
+        after dropping the index.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def create_scalar_index(
         self,
@@ -1593,6 +1610,9 @@ class LanceTable(Table):
                 config=config,
             )
         )
+
+    def drop_index(self, name: str) -> None:
+        return LOOP.run(self._table.drop_index(name))
 
     def create_scalar_index(
         self,
@@ -2715,6 +2735,23 @@ class AsyncTable:
                 help_msg = f"Supported languages: {supported_langs}"
                 add_note(e, help_msg)
             raise e
+
+    async def drop_index(self, name: str) -> None:
+        """
+        Drop an index from the table.
+
+        Parameters
+        ----------
+        name: str
+            The name of the index to drop.
+
+        Notes
+        -----
+        This does not delete the index from disk, it just removes it from the table.
+        To delete the index, run [optimize][lancedb.table.AsyncTable.optimize]
+        after dropping the index.
+        """
+        await self._inner.drop_index(name)
 
     async def add(
         self,
