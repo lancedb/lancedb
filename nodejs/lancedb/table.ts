@@ -226,6 +226,17 @@ export abstract class Table {
     column: string,
     options?: Partial<IndexOptions>,
   ): Promise<void>;
+
+  /**
+   * Drop an index from the table.
+   *
+   * @param name The name of the index.
+   *
+   * @note This does not delete the index from disk, it just removes it from the table.
+   * To delete the index, run {@link Table#optimize} after dropping the index.
+   */
+  abstract dropIndex(name: string): Promise<void>;
+
   /**
    * Create a {@link Query} Builder.
    *
@@ -589,6 +600,10 @@ export class LocalTable extends Table {
     // biome-ignore lint/suspicious/noExplicitAny: skip
     const nativeIndex = (options?.config as any)?.inner;
     await this.inner.createIndex(nativeIndex, column, options?.replace);
+  }
+
+  async dropIndex(name: string): Promise<void> {
+    await this.inner.dropIndex(name);
   }
 
   query(): Query {
