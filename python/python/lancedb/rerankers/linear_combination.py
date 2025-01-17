@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+from collections import defaultdict
 from numpy import nan
 import pyarrow as pa
 
@@ -95,17 +96,15 @@ class LinearCombinationReranker(Reranker):
                     pa.array([nan] * len(vector_results), type=pa.float32()),
                 )
             return results
-        results = dict()
+        results = defaultdict()
         for vector_result in vector_results.to_pylist():
-            row_id = vector_result["_rowid"]
-            if row_id not in results:
-                results[row_id] = dict()
-            results[vector_result["_rowid"]]["_distance"] = vector_result["_distance"]
+            results[vector_result["_rowid"]] = vector_result
         for fts_result in fts_results.to_pylist():
             row_id = fts_result["_rowid"]
-            if row_id not in results:
-                results[row_id] = dict()
-            results[fts_result["_rowid"]]["_score"] = fts_result["_score"]
+            if row_id in results:
+                results[row_id]["_score"] = fts_result["_score"]
+            else:
+                results[row_id] = fts_result
 
         combined_list = []
         for row_id, result in results.items():
