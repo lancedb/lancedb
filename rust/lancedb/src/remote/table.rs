@@ -816,6 +816,14 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         Ok(Some(stats))
     }
+
+    /// Not yet supported on LanceDB Cloud.
+    async fn drop_index(&self, _name: &str) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "Drop index is not yet supported on LanceDB Cloud.".into(),
+        })
+    }
+
     async fn table_definition(&self) -> Result<TableDefinition> {
         Err(Error::NotSupported {
             message: "table_definition is not supported on LanceDB cloud.".into(),

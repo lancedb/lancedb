@@ -473,6 +473,10 @@ describe("When creating an index", () => {
     // test offset
     rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
     expect(rst.numRows).toBe(1);
+
+    await tbl.dropIndex("vec_idx");
+    const indices2 = await tbl.listIndices();
+    expect(indices2.length).toBe(0);
   });
 
   it("should search with distance range", async () => {

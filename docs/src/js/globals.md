@@ -7,6 +7,7 @@
 ## Namespaces
 
 - [embedding](namespaces/embedding/README.md)
+- [rerankers](namespaces/rerankers/README.md)
 
 ## Enumerations
 

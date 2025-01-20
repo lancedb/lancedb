@@ -317,6 +317,32 @@ then call ``cleanup_files`` to remove the old files.
 
 ***
 
+### dropIndex()
+
+```ts
+abstract dropIndex(name): Promise<void>
+```
+
+Drop an index from the table.
+
+#### Parameters
+
+* **name**: `string`
+    The name of the index.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+#### Note
+
+This does not delete the index from disk, it just removes it from the table.
+To delete the index, run [Table#optimize](Table.md#optimize) after dropping the index.
+
+Use [Table.listIndices](Table.md#listindices) to find the names of the indices.
+
+***
+
 ### indexStats()
 
 ```ts
@@ -335,6 +361,8 @@ List all the stats of a specified index
 `Promise`&lt;`undefined` \| [`IndexStatistics`](../interfaces/IndexStatistics.md)&gt;
 
 The stats of the index. If the index does not exist, it will return undefined
+
+Use [Table.listIndices](Table.md#listindices) to find the names of the indices.
 
 ***
 

@@ -80,6 +80,10 @@ async def test_create_scalar_index(some_table: AsyncTable):
     # can also specify index type
     await some_table.create_index("id", config=BTree())
 
+    await some_table.drop_index("id_idx")
+    indices = await some_table.list_indices()
+    assert len(indices) == 0
+
 
 @pytest.mark.asyncio
 async def test_create_bitmap_index(some_table: AsyncTable):

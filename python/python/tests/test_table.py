@@ -1008,6 +1008,10 @@ def test_create_scalar_index(mem_db: DBConnection):
     results = table.search([5, 5]).where("x != 'b'").to_arrow()
     assert results["_distance"][0].as_py() > 0
 
+    table.drop_index(scalar_index.name)
+    indices = table.list_indices()
+    assert len(indices) == 0
+
 
 def test_empty_query(mem_db: DBConnection):
     table = mem_db.create_table(

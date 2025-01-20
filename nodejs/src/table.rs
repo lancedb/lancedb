@@ -136,6 +136,14 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn drop_index(&self, index_name: String) -> napi::Result<()> {
+        self.inner_ref()?
+            .drop_index(&index_name)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn update(
         &self,
         only_if: Option<String>,

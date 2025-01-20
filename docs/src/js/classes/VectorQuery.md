@@ -128,6 +128,24 @@ whose data type is a fixed-size-list of floats.
 
 ***
 
+### distanceRange()
+
+```ts
+distanceRange(lowerBound?, upperBound?): VectorQuery
+```
+
+#### Parameters
+
+* **lowerBound?**: `number`
+
+* **upperBound?**: `number`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+***
+
 ### distanceType()
 
 ```ts
@@ -521,6 +539,22 @@ distance between the query vector and the actual uncompressed vector.
 #### Parameters
 
 * **refineFactor**: `number`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+***
+
+### rerank()
+
+```ts
+rerank(reranker): VectorQuery
+```
+
+#### Parameters
+
+* **reranker**: [`Reranker`](../namespaces/rerankers/interfaces/Reranker.md)
 
 #### Returns
 
