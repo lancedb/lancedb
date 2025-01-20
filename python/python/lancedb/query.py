@@ -1754,7 +1754,7 @@ class AsyncQuery(AsyncQueryBase):
             raise ValueError("query_vector can not be None")
 
         if (
-            isinstance(query_vector, list)
+            isinstance(query_vector, (list, np.ndarray, pa.Array))
             and len(query_vector) > 0
             and isinstance(query_vector[0], (list, np.ndarray, pa.Array))
         ):

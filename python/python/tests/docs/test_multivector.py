@@ -17,6 +17,7 @@ def test_multivector():
     schema = pa.schema(
         [
             pa.field("id", pa.int64()),
+            # float16, float32, and float64 are supported
             pa.field("vector", pa.list_(pa.list_(pa.float32(), 256))),
         ]
     )
@@ -33,7 +34,7 @@ def test_multivector():
     tbl.create_index(metric="cosine")
 
     # query with single vector
-    query = np.random.random(256)
+    query = np.random.random(256).astype(np.float16)
     tbl.search(query).to_arrow()
 
     # query with multiple vectors
@@ -51,6 +52,7 @@ async def test_multivector_async():
     schema = pa.schema(
         [
             pa.field("id", pa.int64()),
+            # float16, float32, and float64 are supported
             pa.field("vector", pa.list_(pa.list_(pa.float32(), 256))),
         ]
     )
@@ -72,6 +74,7 @@ async def test_multivector_async():
 
     # query with multiple vectors
     query = np.random.random(size=(2, 256))
+    await tbl.query().nearest_to(query).to_arrow()
 
     # --8<-- [end:async_multivector]
     await db.drop_table("my_table")

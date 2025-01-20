@@ -149,6 +149,7 @@ You can index on a column with multivector type and search on it, the query can 
 where `sim` is the similarity function (e.g. cosine).
 
 For now, only `cosine` metric is supported for multivector search.
+The vector value type can be `float16`, `float32` or `float64`.
 
 === "Python"
 
