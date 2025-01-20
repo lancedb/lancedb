@@ -67,6 +67,7 @@ async def test_async_hybrid_query_filters(table: AsyncTable):
         .where("text not in ('a', 'dog')")
         .nearest_to([0.3, 0.3])
         .nearest_to_text("*a*")
+        .distance_type("l2")
         .limit(2)
         .to_arrow()
     )
