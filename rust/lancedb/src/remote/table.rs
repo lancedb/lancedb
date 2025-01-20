@@ -1444,9 +1444,18 @@ mod tests {
                 request.headers().get("Content-Type").unwrap(),
                 JSON_CONTENT_TYPE
             );
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["dim"].as_number().unwrap().as_u64().unwrap(), 3);
             let data = RecordBatch::try_new(
-                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+                Arc::new(Schema::new(vec![
+                    Field::new("a", DataType::Int32, false),
+                    Field::new("query_index", DataType::Int32, false),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])),
+                    Arc::new(Int32Array::from(vec![0, 0, 0, 1, 1, 1])),
+                ],
             )
             .unwrap();
             let response_body = write_ipc_file(&data);
@@ -1463,8 +1472,6 @@ mod tests {
             .unwrap()
             .add_query_vector(vec![0.4, 0.5, 0.6])
             .unwrap();
-        let plan = query.explain_plan(true).await.unwrap();
-        assert!(plan.contains("UnionExec"), "Plan: {}", plan);
 
         let results = query
             .execute()
