@@ -988,6 +988,11 @@ impl Table {
     /// Drop an index from the table.
     ///
     /// Note: This is not yet available in LanceDB cloud.
+    ///
+    /// This does not delete the index from disk, it just removes it from the table.
+    /// To delete the index, run [`Self::optimize()`] after dropping the index.
+    ///
+    /// Use [`Self::list_indices()`] to find the names of the indices.
     pub async fn drop_index(&self, name: &str) -> Result<()> {
         self.inner.drop_index(name).await
     }

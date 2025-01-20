@@ -234,6 +234,8 @@ export abstract class Table {
    *
    * @note This does not delete the index from disk, it just removes it from the table.
    * To delete the index, run {@link Table#optimize} after dropping the index.
+   *
+   * Use {@link Table.listIndices} to find the names of the indices.
    */
   abstract dropIndex(name: string): Promise<void>;
 
@@ -437,6 +439,8 @@ export abstract class Table {
    *
    * @param {string} name The name of the index.
    * @returns {IndexStatistics | undefined} The stats of the index. If the index does not exist, it will return undefined
+   *
+   * Use {@link Table.listIndices} to find the names of the indices.
    */
   abstract indexStats(name: string): Promise<IndexStatistics | undefined>;
 

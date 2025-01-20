@@ -600,6 +600,9 @@ class Table(ABC):
         This does not delete the index from disk, it just removes it from the table.
         To delete the index, run [optimize][lancedb.table.Table.optimize]
         after dropping the index.
+
+        Use [list_indices][lancedb.table.Table.list_indices] to find the names of
+        the indices.
         """
         raise NotImplementedError
 
@@ -2750,6 +2753,9 @@ class AsyncTable:
         This does not delete the index from disk, it just removes it from the table.
         To delete the index, run [optimize][lancedb.table.AsyncTable.optimize]
         after dropping the index.
+
+        Use [list_indices][lancedb.table.AsyncTable.list_indices] to find the names
+        of the indices.
         """
         await self._inner.drop_index(name)
 

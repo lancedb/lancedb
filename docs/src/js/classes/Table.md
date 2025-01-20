@@ -339,6 +339,8 @@ Drop an index from the table.
 This does not delete the index from disk, it just removes it from the table.
 To delete the index, run [Table#optimize](Table.md#optimize) after dropping the index.
 
+Use [Table.listIndices](Table.md#listindices) to find the names of the indices.
+
 ***
 
 ### indexStats()
@@ -359,6 +361,8 @@ List all the stats of a specified index
 `Promise`&lt;`undefined` \| [`IndexStatistics`](../interfaces/IndexStatistics.md)&gt;
 
 The stats of the index. If the index does not exist, it will return undefined
+
+Use [Table.listIndices](Table.md#listindices) to find the names of the indices.
 
 ***
 
