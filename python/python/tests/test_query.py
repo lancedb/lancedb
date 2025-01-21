@@ -7,6 +7,7 @@ from pathlib import Path
 
 import lancedb
 from lancedb.index import IvfPq, FTS
+from lancedb.rerankers.cross_encoder import CrossEncoderReranker
 import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
@@ -515,15 +516,24 @@ async def test_query_async(table_async: AsyncTable):
         expected_columns=["id", "vector", "_rowid"],
     )
 
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+async def test_query_reranked_async(table_async: AsyncTable):
     # FTS with rerank
     await table_async.create_index("text", config=FTS(with_position=False))
     await check_query(
-        table_async.query().nearest_to_text("dog").rerank(),
+        table_async.query().nearest_to_text("dog").rerank(CrossEncoderReranker()),
         expected_num_rows=1,
     )
 
     # Vector query with rerank
-    await check_query(table_async.vector_search([1, 2]).rerank(), expected_num_rows=2)
+    await check_query(
+        table_async.vector_search([1, 2]).rerank(
+            CrossEncoderReranker(), query_string="dog"
+        ),
+        expected_num_rows=2,
+    )
 
 
 @pytest.mark.asyncio

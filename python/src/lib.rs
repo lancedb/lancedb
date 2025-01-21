@@ -21,7 +21,7 @@ use pyo3::{
     types::{PyModule, PyModuleMethods},
     wrap_pyfunction, Bound, PyResult, Python,
 };
-use query::{Query, VectorQuery};
+use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use table::Table;
 
 pub mod arrow;
@@ -42,6 +42,8 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Table>()?;
     m.add_class::<IndexConfig>()?;
     m.add_class::<Query>()?;
+    m.add_class::<FTSQuery>()?;
+    m.add_class::<HybridQuery>()?;
     m.add_class::<VectorQuery>()?;
     m.add_class::<RecordBatchStream>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;

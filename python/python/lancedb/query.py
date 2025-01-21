@@ -31,6 +31,7 @@ from .rerankers.util import check_reranker_result
 from .util import safe_import_pandas, flatten_columns
 
 if TYPE_CHECKING:
+    import sys
     import PIL
     import polars as pl
 
@@ -41,6 +42,11 @@ if TYPE_CHECKING:
     from .common import VEC
     from .pydantic import LanceModel
     from .table import Table
+
+    if sys.version_info >= (3, 11):
+        from typing import Self
+    else:
+        from typing_extensions import Self
 
 pd = safe_import_pandas()
 
@@ -1418,7 +1424,7 @@ class AsyncQueryBase(object):
         """
         self._inner = inner
 
-    def where(self, predicate: str) -> AsyncQuery:
+    def where(self, predicate: str) -> Self:
         """
         Only return rows matching the given predicate
 
@@ -1437,7 +1443,7 @@ class AsyncQueryBase(object):
         self._inner.where(predicate)
         return self
 
-    def select(self, columns: Union[List[str], dict[str, str]]) -> AsyncQuery:
+    def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
         """
         Return only the specified columns.
 
@@ -1475,7 +1481,7 @@ class AsyncQueryBase(object):
             raise TypeError("columns must be a list of column names or a dict")
         return self
 
-    def limit(self, limit: int) -> AsyncQuery:
+    def limit(self, limit: int) -> Self:
         """
         Set the maximum number of results to return.
 
@@ -1485,7 +1491,7 @@ class AsyncQueryBase(object):
         self._inner.limit(limit)
         return self
 
-    def offset(self, offset: int) -> AsyncQuery:
+    def offset(self, offset: int) -> Self:
         """
         Set the offset for the results.
 
@@ -1497,7 +1503,7 @@ class AsyncQueryBase(object):
         self._inner.offset(offset)
         return self
 
-    def fast_search(self) -> AsyncQuery:
+    def fast_search(self) -> Self:
         """
         Skip searching un-indexed data.
 
@@ -1511,14 +1517,14 @@ class AsyncQueryBase(object):
         self._inner.fast_search()
         return self
 
-    def with_row_id(self) -> AsyncQuery:
+    def with_row_id(self) -> Self:
         """
         Include the _rowid column in the results.
         """
         self._inner.with_row_id()
         return self
 
-    def postfilter(self) -> AsyncQuery:
+    def postfilter(self) -> Self:
         """
         If this is called then filtering will happen after the search instead of
         before.
@@ -1807,8 +1813,8 @@ class AsyncFTSQuery(AsyncQueryBase):
         self._inner = inner
         self._reranker = None
 
-    def get_query(self):
-        self._inner.get_query()
+    def get_query(self) -> str:
+        return self._inner.get_query()
 
     def rerank(
         self,
@@ -1891,29 +1897,18 @@ class AsyncFTSQuery(AsyncQueryBase):
                 self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
             )
 
-    async def to_arrow(self) -> pa.Table:
-        results = await super().to_arrow()
+    async def to_batches(
+        self, *, max_batch_length: Optional[int] = None
+    ) -> AsyncRecordBatchReader:
+        reader = await super().to_batches()
+        results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
-            results = self._reranker.rerank_fts(results)
-        return results
+            results = self._reranker.rerank_fts(self.get_query(), results)
+        return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
-class AsyncVectorQuery(AsyncQueryBase):
-    def __init__(self, inner: LanceVectorQuery):
-        """
-        Construct an AsyncVectorQuery
-
-        This method is not intended to be called directly.  Instead, create
-        a query first with [AsyncTable.query][lancedb.table.AsyncTable.query] and then
-        use [AsyncQuery.nearest_to][lancedb.query.AsyncQuery.nearest_to]] to convert to
-        a vector query.  Or you can use
-        [AsyncTable.vector_search][lancedb.table.AsyncTable.vector_search]
-        """
-        super().__init__(inner)
-        self._inner = inner
-        self._reranker = None
-
-    def column(self, column: str) -> AsyncVectorQuery:
+class AsyncVectorQueryBase:
+    def column(self, column: str) -> Self:
         """
         Set the vector column to query
 
@@ -1926,7 +1921,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.column(column)
         return self
 
-    def nprobes(self, nprobes: int) -> AsyncVectorQuery:
+    def nprobes(self, nprobes: int) -> Self:
         """
         Set the number of partitions to search (probe)
 
@@ -1954,7 +1949,7 @@ class AsyncVectorQuery(AsyncQueryBase):
 
     def distance_range(
         self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
-    ) -> AsyncVectorQuery:
+    ) -> Self:
         """Set the distance range to use.
 
         Only rows with distances within range [lower_bound, upper_bound)
@@ -1975,7 +1970,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.distance_range(lower_bound, upper_bound)
         return self
 
-    def ef(self, ef: int) -> AsyncVectorQuery:
+    def ef(self, ef: int) -> Self:
         """
         Set the number of candidates to consider during search
 
@@ -1990,7 +1985,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.ef(ef)
         return self
 
-    def refine_factor(self, refine_factor: int) -> AsyncVectorQuery:
+    def refine_factor(self, refine_factor: int) -> Self:
         """
         A multiplier to control how many additional rows are taken during the refine
         step
@@ -2026,7 +2021,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.refine_factor(refine_factor)
         return self
 
-    def distance_type(self, distance_type: str) -> AsyncVectorQuery:
+    def distance_type(self, distance_type: str) -> Self:
         """
         Set the distance metric to use
 
@@ -2044,7 +2039,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.distance_type(distance_type)
         return self
 
-    def bypass_vector_index(self) -> AsyncVectorQuery:
+    def bypass_vector_index(self) -> Self:
         """
         If this is called then any vector index is skipped
 
@@ -2057,6 +2052,23 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.bypass_vector_index()
         return self
 
+
+class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
+    def __init__(self, inner: LanceVectorQuery):
+        """
+        Construct an AsyncVectorQuery
+
+        This method is not intended to be called directly.  Instead, create
+        a query first with [AsyncTable.query][lancedb.table.AsyncTable.query] and then
+        use [AsyncQuery.nearest_to][lancedb.query.AsyncQuery.nearest_to]] to convert to
+        a vector query.  Or you can use
+        [AsyncTable.vector_search][lancedb.table.AsyncTable.vector_search]
+        """
+        super().__init__(inner)
+        self._inner = inner
+        self._reranker = None
+        self._query_string = None
+
     def rerank(
         self, reranker: Reranker = RRFReranker(), query_string: Optional[str] = None
     ) -> AsyncHybridQuery:
@@ -2064,6 +2076,11 @@ class AsyncVectorQuery(AsyncQueryBase):
             raise ValueError("reranker must be an instance of Reranker class.")
 
         self._reranker = reranker
+
+        if not self._query_string and not query_string:
+            raise ValueError("query_string must be provided to rerank the results.")
+
+        self._query_string = query_string
 
         return self
 
@@ -2100,14 +2117,17 @@ class AsyncVectorQuery(AsyncQueryBase):
             self._inner.nearest_to_text({"query": query, "columns": columns})
         )
 
-    async def to_arrow(self) -> pa.Table:
-        results = await super().to_arrow()
+    async def to_batches(
+        self, *, max_batch_length: Optional[int] = None
+    ) -> AsyncRecordBatchReader:
+        reader = await super().to_batches()
+        results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
-            results = self._reranker.rerank_vector(results)
-        return results
+            results = self._reranker.rerank_vector(self._query_string, results)
+        return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
-class AsyncHybridQuery(AsyncQueryBase):
+class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
     """
     A query builder that performs hybrid vector and full text search.
     Results are combined and reranked based on the specified reranker.
@@ -2155,10 +2175,9 @@ class AsyncHybridQuery(AsyncQueryBase):
 
         return self
 
-    async def to_batches(self):
-        raise NotImplementedError("to_batches not yet supported on a hybrid query")
-
-    async def to_arrow(self) -> pa.Table:
+    async def to_batches(
+        self, *, max_batch_length: Optional[int] = None
+    ) -> AsyncRecordBatchReader:
         fts_query = AsyncFTSQuery(self._inner.to_fts_query())
         vec_query = AsyncVectorQuery(self._inner.to_vector_query())
 
@@ -2173,7 +2192,7 @@ class AsyncHybridQuery(AsyncQueryBase):
             vec_query.to_arrow(),
         )
 
-        return LanceHybridQueryBuilder._combine_hybrid_results(
+        result = LanceHybridQueryBuilder._combine_hybrid_results(
             fts_results=fts_results,
             vector_results=vector_results,
             norm=self._norm,
@@ -2182,6 +2201,8 @@ class AsyncHybridQuery(AsyncQueryBase):
             limit=self._inner.get_limit(),
             with_row_ids=with_row_ids,
         )
+
+        return AsyncRecordBatchReader(result, max_batch_length=max_batch_length)
 
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
