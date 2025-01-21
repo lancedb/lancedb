@@ -7,7 +7,7 @@ Approximate Nearest Neighbor (ANN) search is a method for finding data points ne
 There are three main types of ANN search algorithms:
 
 * **Tree-based search algorithms**: Use a tree structure to organize and store data points.
-* * **Hash-based search algorithms**: Use a specialized geometric hash table to store and manage data points. These algorithms typically focus on theoretical guarantees, and don't usually perform as well as the other approaches in practice.
+* **Hash-based search algorithms**: Use a specialized geometric hash table to store and manage data points. These algorithms typically focus on theoretical guarantees, and don't usually perform as well as the other approaches in practice.
 * **Graph-based search algorithms**: Use a graph structure to store data points, which can be a bit complex. 
 
 HNSW is a graph-based algorithm. All graph-based search algorithms rely on the idea of a k-nearest neighbor (or k-approximate nearest neighbor) graph, which we outline below.  
@@ -56,6 +56,13 @@ Then the greedy search routine operates as follows:
 
 
 ## Usage
+
+There are three key parameters to set when constructing an HNSW index:
+
+* `metric`: Use an `L2` euclidean distance metric. We also support `dot` and `cosine` distance.
+* `m`: The number of neighbors to select for each vector in the HNSW graph.
+* `ef_construction`: The number of candidates to evaluate during the construction of the HNSW graph.
+
 
 We can combine the above concepts to understand how to build and query an HNSW index in LanceDB.
 

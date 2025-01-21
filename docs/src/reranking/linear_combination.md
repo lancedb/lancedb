@@ -1,9 +1,9 @@
 # Linear Combination Reranker
 
 !!! note
-    This is depricated. It is recommended to use the `RRFReranker` instead, if you want to use a score based reranker.
+    This is deprecated. It is recommended to use the `RRFReranker` instead, if you want to use a score-based reranker.
 
-It combines the results of semantic and full-text search using a linear combination of the scores. The weights for the linear combination can be specified. It defaults to 0.7, i.e, 70% weight for semantic search and 30% weight for full-text search.
+The Linear Combination Reranker combines the results of semantic and full-text search using a linear combination of the scores. The weights for the linear combination can be specified, and defaults to 0.7, i.e, 70% weight for semantic search and 30% weight for full-text search.
 
 !!! note
     Supported Query Types: Hybrid
@@ -51,5 +51,5 @@ You can specify the type of scores you want the reranker to return. The followin
 ### Hybrid Search
 |`return_score`| Status | Description |
 | --- | --- | --- |
-| `relevance` | ✅ Supported | Returns only have the `_relevance_score` column |
-| `all` | ✅ Supported | Returns have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_distance`) |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column |
+| `all` | ✅ Supported | Results have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_distance`) |

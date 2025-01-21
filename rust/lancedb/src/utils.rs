@@ -15,6 +15,7 @@
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Schema};
+use lance::arrow::json::JsonDataType;
 use lance::dataset::{ReadParams, WriteParams};
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lazy_static::lazy_static;
@@ -107,13 +108,8 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
     let candidates = schema
         .fields()
         .iter()
-        .filter_map(|field| match field.data_type() {
-            arrow_schema::DataType::FixedSizeList(f, d)
-                if f.data_type().is_floating()
-                    && dim.map(|expect| *d == expect).unwrap_or(true) =>
-            {
-                Some(field.name())
-            }
+        .filter_map(|field| match inf_vector_dim(field) {
+            Some(d) if dim.is_none() || dim == Some(d) => Some(field.name()),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -134,6 +130,20 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
         })
     } else {
         Ok(candidates[0].to_string())
+    }
+}
+
+fn inf_vector_dim(field: &arrow_schema::Field) -> Option<i32> {
+    match field.data_type() {
+        arrow_schema::DataType::FixedSizeList(f, d) => {
+            if f.data_type().is_floating() || f.data_type() == &DataType::UInt8 {
+                Some(*d)
+            } else {
+                None
+            }
+        }
+        arrow_schema::DataType::List(f) => inf_vector_dim(f),
+        _ => None,
     }
 }
 
@@ -170,9 +180,39 @@ pub fn supported_fts_data_type(dtype: &DataType) -> bool {
 
 pub fn supported_vector_data_type(dtype: &DataType) -> bool {
     match dtype {
-        DataType::FixedSizeList(inner, _) => DataType::is_floating(inner.data_type()),
+        DataType::FixedSizeList(field, _) => {
+            field.data_type().is_floating() || field.data_type() == &DataType::UInt8
+        }
+        DataType::List(field) => supported_vector_data_type(field.data_type()),
         _ => false,
     }
+}
+
+// TODO: remove this after we expose the same function in Lance.
+pub fn infer_vector_dim(data_type: &DataType) -> Result<usize> {
+    infer_vector_dim_impl(data_type, false)
+}
+
+fn infer_vector_dim_impl(data_type: &DataType, in_list: bool) -> Result<usize> {
+    match (data_type, in_list) {
+        (DataType::FixedSizeList(_, dim), _) => Ok(*dim as usize),
+        (DataType::List(inner), false) => infer_vector_dim_impl(inner.data_type(), true),
+        _ => Err(Error::InvalidInput {
+            message: format!(
+                "data type is not a vector (FixedSizeList or List<FixedSizeList>), but {:?}",
+                data_type
+            ),
+        }),
+    }
+}
+
+/// Note: this is temporary until we get a proper datatype conversion in Lance.
+pub fn string_to_datatype(s: &str) -> Option<DataType> {
+    let data_type = serde_json::Value::String(s.to_string());
+    let json_type =
+        serde_json::Value::Object([("type".to_string(), data_type)].iter().cloned().collect());
+    let json_type: JsonDataType = serde_json::from_value(json_type).ok()?;
+    (&json_type).try_into().ok()
 }
 
 #[cfg(test)]
@@ -238,5 +278,12 @@ mod tests {
         assert!(validate_table_name("my/table").is_err());
         assert!(validate_table_name("my@table").is_err());
         assert!(validate_table_name("name with space").is_err());
+    }
+
+    #[test]
+    fn test_string_to_datatype() {
+        let string = "int32";
+        let expected = DataType::Int32;
+        assert_eq!(string_to_datatype(string), Some(expected));
     }
 }

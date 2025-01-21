@@ -15,7 +15,7 @@ MRAG is cost-effective and energy-efficient because it avoids extra LLM queries,
 
 **[Official Implementation](https://github.com/spcl/MRAG)**
 
-Here’s a code snippet for defining different embedding spaces with the [Embedding API](https://lancedb.github.io/lancedb/embeddings/embedding_functions/)
+Here’s a code snippet for defining different embedding spaces with the [Embedding API](https://lancedb.github.io/lancedb/embeddings/embedding_functions/):
 
 ```python
 import lancedb
@@ -44,6 +44,6 @@ class Space3(LanceModel):
     vector: Vector(model3.ndims()) = model3.VectorField()
 ```
 
-Create different tables using defined embedding spaces, then make queries to each embedding space. Use the resulted closest documents from each embedding space to generate answers.
+Create different tables using defined embedding spaces, then make queries to each embedding space. Use the resulting closest documents from each embedding space to generate answers.
 
 

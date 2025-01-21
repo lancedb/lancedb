@@ -1,6 +1,6 @@
 **Self RAG 🤳**
 ====================================================================
-Self-RAG is a strategy for Retrieval-Augmented Generation (RAG) to get better retrieved information, generated text, and  checking their own work, all without losing their flexibility. Unlike the traditional Retrieval-Augmented Generation (RAG) method, Self-RAG retrieves information as needed, can skip retrieval if not needed, and evaluates its own output while generating text. It also uses a process to pick the best output based on different preferences.
+Self-RAG is a strategy for Retrieval-Augmented Generation (RAG) to get better retrieved information, generated text, and validation, without loss of flexibility. Unlike the traditional Retrieval-Augmented Generation (RAG) method, Self-RAG retrieves information as needed, can skip retrieval if not needed, and evaluates its own output while generating text. It also uses a process to pick the best output based on different preferences.
 
 **[Official Paper](https://arxiv.org/pdf/2310.11511)**
 
@@ -10,11 +10,11 @@ Self-RAG is a strategy for Retrieval-Augmented Generation (RAG) to get better re
   </figcaption>
 </figure>
 
-**[Offical Implementation](https://github.com/AkariAsai/self-rag)**
+**[Official Implementation](https://github.com/AkariAsai/self-rag)**
 
 Self-RAG starts by generating a response without retrieving extra info if it's not needed. For questions that need more details, it retrieves to get the necessary information.
 
-Here’s a code snippet for defining retriever using Langchain
+Here’s a code snippet for defining retriever using Langchain:
 
 ```python
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -46,7 +46,7 @@ retriever = vectorstore.as_retriever()
 
 ```
 
-Functions that grades the retrieved documents and if required formulates an improved query for better retrieval results  
+The following functions grade the retrieved documents and formulate an improved query for better retrieval results, if required:
 
 ```python
 def grade_documents(state) -> Literal["generate", "rewrite"]:

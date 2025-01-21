@@ -4,7 +4,7 @@
 Corrective-RAG (CRAG) is a strategy for Retrieval-Augmented Generation (RAG) that includes self-reflection and self-grading of retrieved documents. Here’s a simplified breakdown of the steps involved:
 
 1. **Relevance Check**: If at least one document meets the relevance threshold, the process moves forward to the generation phase.
-2. **Knowledge Refinement**: Before generating an answer, the process refines the knowledge by dividing the document into smaller segments called "knowledge strips."
+2. **Knowledge Refinement**: Before generating an answer, the process refines the knowledge by dividing the document into smaller segments called "knowledge strips".
 3. **Grading and Filtering**: Each "knowledge strip" is graded, and irrelevant ones are filtered out.
 4. **Additional Data Source**: If all documents are below the relevance threshold, or if the system is unsure about their relevance, it will seek additional information by performing a web search to supplement the retrieved data.
 
@@ -19,11 +19,11 @@ Above steps are mentioned in
 
 Corrective Retrieval-Augmented Generation (CRAG) is a method that works like a **built-in fact-checker**.
 
-**[Offical Implementation](https://github.com/HuskyInSalt/CRAG)**
+**[Official Implementation](https://github.com/HuskyInSalt/CRAG)**
 
 [![Open In Colab](../assets/colab.svg)](https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/Corrective-RAG-with_Langgraph/CRAG_with_Langgraph.ipynb)
 
-Here’s a code snippet for defining a table with the [Embedding API](https://lancedb.github.io/lancedb/embeddings/embedding_functions/), and retrieves the relevant documents.
+Here’s a code snippet for defining a table with the [Embedding API](https://lancedb.github.io/lancedb/embeddings/embedding_functions/), and retrieves the relevant documents:
 
 ```python
 import pandas as pd
@@ -115,6 +115,6 @@ def grade_documents(state):
     }
 ```
 
-Check Colab for the Implementation of CRAG with Langgraph 
+Check Colab for the Implementation of CRAG with Langgraph:
 
 [![Open In Colab](../assets/colab.svg)](https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/Corrective-RAG-with_Langgraph/CRAG_with_Langgraph.ipynb)

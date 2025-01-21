@@ -1,8 +1,8 @@
 ## Improving retriever performance
 
-Try it yourself - <a href="https://colab.research.google.com/github/lancedb/lancedb/blob/main/docs/src/notebooks/lancedb_reranking.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a><br/>
+Try it yourself: <a href="https://colab.research.google.com/github/lancedb/lancedb/blob/main/docs/src/notebooks/lancedb_reranking.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a><br/>
 
-VectorDBs are used as retreivers in recommender or chatbot-based systems for retrieving relevant data based on user queries. For example, retriever is a critical component of Retrieval Augmented Generation (RAG) acrhitectures. In this section, we will discuss how to improve the performance of retrievers.
+VectorDBs are used as retrievers in recommender or chatbot-based systems for retrieving relevant data based on user queries. For example, retrievers are a critical component of Retrieval Augmented Generation (RAG) acrhitectures. In this section, we will discuss how to improve the performance of retrievers.
 
 There are serveral ways to improve the performance of retrievers. Some of the common techniques are:
 
@@ -19,7 +19,7 @@ Using different embedding models is something that's very specific to the use ca
 
 
 ## The dataset
-We'll be using a QA dataset generated using a LLama2 review paper. The dataset contains 221 query, context and answer triplets. The queries and answers are generated using GPT-4 based on a given query. Full script used to generate the dataset can be found on this [repo](https://github.com/lancedb/ragged). It can be downloaded from [here](https://github.com/AyushExel/assets/blob/main/data_qa.csv)
+We'll be using a QA dataset generated using a LLama2 review paper. The dataset contains 221 query, context and answer triplets. The queries and answers are generated using GPT-4 based on a given query. Full script used to generate the dataset can be found on this [repo](https://github.com/lancedb/ragged). It can be downloaded from [here](https://github.com/AyushExel/assets/blob/main/data_qa.csv).
 
 ### Using different query types
 Let's setup the embeddings and the dataset first. We'll use the LanceDB's `huggingface` embeddings integration for this guide. 
@@ -45,14 +45,14 @@ table.add(df[["context"]].to_dict(orient="records"))
 queries = df["query"].tolist()
 ```
 
-Now that we have the dataset and embeddings table set up, here's how you can run different query types on the dataset.
+Now that we have the dataset and embeddings table set up, here's how you can run different query types on the dataset:
 
 * <b> Vector Search: </b>
 
     ```python
     table.search(quries[0], query_type="vector").limit(5).to_pandas()
     ```
-    By default, LanceDB uses vector search query type for searching and it automatically converts the input query to a vector before searching when using embedding API. So, the following statement is equivalent to the above statement.
+    By default, LanceDB uses vector search query type for searching and it automatically converts the input query to a vector before searching when using embedding API. So, the following statement is equivalent to the above statement:
 
     ```python
     table.search(quries[0]).limit(5).to_pandas()
@@ -77,7 +77,7 @@ Now that we have the dataset and embeddings table set up, here's how you can run
 
 * <b> Hybrid Search: </b>
 
-    Hybrid search is a combination of vector and full-text search. Here's how you can run a hybrid search query on the dataset.
+    Hybrid search is a combination of vector and full-text search. Here's how you can run a hybrid search query on the dataset:
     ```python
     table.search(quries[0], query_type="hybrid").limit(5).to_pandas()
     ```
@@ -87,7 +87,7 @@ Now that we have the dataset and embeddings table set up, here's how you can run
 
     !!! note "Note"
         By default, it uses `LinearCombinationReranker` that combines the scores from vector and full-text search using a weighted linear combination. It is the simplest reranker implementation available in LanceDB. You can also use other rerankers like `CrossEncoderReranker` or `CohereReranker` for reranking the results.
-        Learn more about rerankers [here](https://lancedb.github.io/lancedb/reranking/)
+        Learn more about rerankers [here](https://lancedb.github.io/lancedb/reranking/).
 
     
 

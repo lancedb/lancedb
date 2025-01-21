@@ -3,22 +3,22 @@
 Hybrid Search is a broad (often misused) term. It can mean anything from combining multiple methods for searching, to applying ranking methods to better sort the results. In this blog, we use the definition of "hybrid search" to mean using a combination of keyword-based and vector search.
 
 ## The challenge of (re)ranking search results
-Once you have a group of the most relevant search results from multiple search sources, you'd likely standardize the score and rank them accordingly. This process can also be seen as another independent step - reranking.
+Once you have a group of the most relevant search results from multiple search sources, you'd likely standardize the score and rank them accordingly. This process can also be seen as another independent step: reranking.
 There are two approaches for reranking search results from multiple sources.
 
-* <b>Score-based</b>: Calculate final relevance scores based on a weighted linear combination of individual search algorithm scores. Example - Weighted linear combination of semantic search & keyword-based search results.
+* <b>Score-based</b>: Calculate final relevance scores based on a weighted linear combination of individual search algorithm scores. Example: Weighted linear combination of semantic search & keyword-based search results.
 
-* <b>Relevance-based</b>: Discards the existing scores and calculates the relevance of each search result - query pair. Example - Cross Encoder models
+* <b>Relevance-based</b>: Discards the existing scores and calculates the relevance of each search result-query pair. Example: Cross Encoder models
 
-Even though there are many strategies for reranking search results, none works for all cases. Moreover, evaluating them itself is a challenge. Also, reranking can be dataset, application specific so it's hard to generalize.
+Even though there are many strategies for reranking search results, none works for all cases. Moreover, evaluating them itself is a challenge. Also, reranking can be dataset or application specific so it's hard to generalize.
 
 ### Example evaluation of hybrid search with Reranking
 
-Here's some evaluation numbers from experiment comparing these re-rankers on about 800 queries. It is modified version of an evaluation script from [llama-index](https://github.com/run-llama/finetune-embedding/blob/main/evaluate.ipynb) that measures hit-rate at top-k.
+Here's some evaluation numbers from an experiment comparing these rerankers on about 800 queries. It is modified version of an evaluation script from [llama-index](https://github.com/run-llama/finetune-embedding/blob/main/evaluate.ipynb) that measures hit-rate at top-k.
 
 <b> With OpenAI ada2 embedding </b>
 
-Vector Search baseline - `0.64`
+Vector Search baseline: `0.64`
 
 | Reranker | Top-3 | Top-5 | Top-10 |
 | --- | --- | --- | --- |
@@ -33,7 +33,7 @@ Vector Search baseline - `0.64`
 
 <b> With OpenAI embedding-v3-small </b>
 
-Vector Search baseline - `0.59`
+Vector Search baseline: `0.59`
 
 | Reranker | Top-3 | Top-5 | Top-10 |
 | --- | --- | --- | --- |

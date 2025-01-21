@@ -15,18 +15,30 @@
 use std::future::Future;
 use std::sync::Arc;
 
+use arrow::compute::concat_batches;
 use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
 use arrow_schema::DataType;
 use datafusion_physical_plan::ExecutionPlan;
+use futures::{stream, try_join, FutureExt, TryStreamExt};
 use half::f16;
-use lance::dataset::scanner::DatasetRecordBatchStream;
+use lance::{
+    arrow::RecordBatchExt,
+    dataset::{scanner::DatasetRecordBatchStream, ROW_ID},
+};
 use lance_datafusion::exec::execute_plan;
+use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::scalar::FullTextSearchQuery;
+use lance_index::vector::DIST_COL;
+use lance_io::stream::RecordBatchStreamAdapter;
 
 use crate::arrow::SendableRecordBatchStream;
 use crate::error::{Error, Result};
+use crate::rerankers::rrf::RRFReranker;
+use crate::rerankers::{check_reranker_result, NormalizeMethod, Reranker};
 use crate::table::TableInternal;
 use crate::DistanceType;
+
+mod hybrid;
 
 pub(crate) const DEFAULT_TOP_K: usize = 10;
 
@@ -339,7 +351,7 @@ pub trait QueryBase {
     fn limit(self, limit: usize) -> Self;
 
     /// Set the offset of the query.
-
+    ///
     /// By default, it fetches starting with the first row.
     /// This method can be used to skip the first `offset` rows.
     fn offset(self, offset: usize) -> Self;
@@ -348,7 +360,7 @@ pub trait QueryBase {
     ///
     /// The filter should be supplied as an SQL query string.  For example:
     ///
-    /// ```ignore
+    /// ```sql
     /// x > 10
     /// y > 0 AND y < 100
     /// x > 5 OR y = 'test'
@@ -364,8 +376,18 @@ pub trait QueryBase {
     ///
     /// This method is only valid on tables that have a full text search index.
     ///
-    /// ```ignore
-    /// query.full_text_search(FullTextSearchQuery::new("hello world"))
+    /// ```
+    /// use lance_index::scalar::FullTextSearchQuery;
+    /// use lancedb::query::{QueryBase, ExecutableQuery};
+    ///
+    /// # use lancedb::Table;
+    /// # async fn query(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let results = table.query()
+    ///     .full_text_search(FullTextSearchQuery::new("hello world".into()))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
     /// ```
     fn full_text_search(self, query: FullTextSearchQuery) -> Self;
 
@@ -425,6 +447,16 @@ pub trait QueryBase {
 
     /// Return the `_rowid` meta column from the Table.
     fn with_row_id(self) -> Self;
+
+    /// Rerank the results using the specified reranker.
+    ///
+    /// This is currently only supported for Hybrid Search.
+    fn rerank(self, reranker: Arc<dyn Reranker>) -> Self;
+
+    /// The method to normalize the scores. Can be "rank" or "Score". If "Rank",
+    /// the scores are converted to ranks and then normalized. If "Score", the
+    /// scores are normalized directly.
+    fn norm(self, norm: NormalizeMethod) -> Self;
 }
 
 pub trait HasQuery {
@@ -471,10 +503,21 @@ impl<T: HasQuery> QueryBase for T {
         self.mut_query().with_row_id = true;
         self
     }
+
+    fn rerank(mut self, reranker: Arc<dyn Reranker>) -> Self {
+        self.mut_query().reranker = Some(reranker);
+        self
+    }
+
+    fn norm(mut self, norm: NormalizeMethod) -> Self {
+        self.mut_query().norm = Some(norm);
+        self
+    }
 }
 
 /// Options for controlling the execution of a query
 #[non_exhaustive]
+#[derive(Debug, Clone)]
 pub struct QueryExecutionOptions {
     /// The maximum number of rows that will be contained in a single
     /// `RecordBatch` delivered by the query.
@@ -562,7 +605,7 @@ pub struct Query {
     parent: Arc<dyn TableInternal>,
 
     /// limit the number of rows to return.
-    pub(crate) limit: Option<usize>,
+    pub limit: Option<usize>,
 
     /// Offset of the query.
     pub(crate) offset: Option<usize>,
@@ -585,17 +628,24 @@ pub struct Query {
     /// If set to true, the query will return the `_rowid` meta column.
     ///
     /// By default, this is false.
-    pub(crate) with_row_id: bool,
+    pub with_row_id: bool,
 
     /// If set to false, the filter will be applied after the vector search.
     pub(crate) prefilter: bool,
+
+    /// Implementation of reranker that can be used to reorder or combine query
+    /// results, especially if using hybrid search
+    pub(crate) reranker: Option<Arc<dyn Reranker>>,
+
+    /// Configure how query results are normalized when doing hybrid search
+    pub(crate) norm: Option<NormalizeMethod>,
 }
 
 impl Query {
     pub(crate) fn new(parent: Arc<dyn TableInternal>) -> Self {
         Self {
             parent,
-            limit: None,
+            limit: Some(DEFAULT_TOP_K),
             offset: None,
             filter: None,
             full_text_search: None,
@@ -603,6 +653,8 @@ impl Query {
             fast_search: false,
             with_row_id: false,
             prefilter: true,
+            reranker: None,
+            norm: None,
         }
     }
 
@@ -650,7 +702,7 @@ impl Query {
     pub fn nearest_to(self, vector: impl IntoQueryVector) -> Result<VectorQuery> {
         let mut vector_query = self.into_vector();
         let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
-        vector_query.query_vector = Some(query_vector);
+        vector_query.query_vector.push(query_vector);
         Ok(vector_query)
     }
 }
@@ -701,8 +753,15 @@ pub struct VectorQuery {
     // the column based on the dataset's schema.
     pub(crate) column: Option<String>,
     // IVF PQ - ANN search.
-    pub(crate) query_vector: Option<Arc<dyn Array>>,
+    pub(crate) query_vector: Vec<Arc<dyn Array>>,
     pub(crate) nprobes: usize,
+    // The lower bound (inclusive) of the distance to search for.
+    pub(crate) lower_bound: Option<f32>,
+    // The upper bound (exclusive) of the distance to search for.
+    pub(crate) upper_bound: Option<f32>,
+    // The number of candidates to return during the refine step for HNSW,
+    // defaults to 1.5 * limit.
+    pub(crate) ef: Option<usize>,
     pub(crate) refine_factor: Option<u32>,
     pub(crate) distance_type: Option<DistanceType>,
     /// Default is true. Set to false to enforce a brute force search.
@@ -714,8 +773,11 @@ impl VectorQuery {
         Self {
             base,
             column: None,
-            query_vector: None,
+            query_vector: Vec::new(),
             nprobes: 20,
+            lower_bound: None,
+            upper_bound: None,
+            ef: None,
             refine_factor: None,
             distance_type: None,
             use_index: true,
@@ -732,6 +794,22 @@ impl VectorQuery {
     pub fn column(mut self, column: &str) -> Self {
         self.column = Some(column.to_string());
         self
+    }
+
+    /// Add another query vector to the search.
+    ///
+    /// Multiple searches will be dispatched as part of the query.
+    /// This is a convenience method for adding multiple query vectors
+    /// to the search. It is not expected to be faster than issuing
+    /// multiple queries concurrently.
+    ///
+    /// The output data will contain an additional columns `query_index` which
+    /// will contain the index of the query vector that was used to generate the
+    /// result.
+    pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
+        let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
+        self.query_vector.push(query_vector);
+        Ok(self)
     }
 
     /// Set the number of partitions to search (probe)
@@ -756,6 +834,26 @@ impl VectorQuery {
     /// you the desired recall.
     pub fn nprobes(mut self, nprobes: usize) -> Self {
         self.nprobes = nprobes;
+        self
+    }
+
+    /// Set the distance range for vector search,
+    /// only rows with distances in the range [lower_bound, upper_bound) will be returned
+    pub fn distance_range(mut self, lower_bound: Option<f32>, upper_bound: Option<f32>) -> Self {
+        self.lower_bound = lower_bound;
+        self.upper_bound = upper_bound;
+        self
+    }
+
+    /// Set the number of candidates to return during the refine step for HNSW
+    ///
+    /// This argument is only used when the vector column has an HNSW index.
+    /// If there is no index then this value is ignored.
+    ///
+    /// Increasing this value will increase the recall of your query but will
+    /// also increase the latency of your query.  The default value is 1.5*limit.
+    pub fn ef(mut self, ef: usize) -> Self {
+        self.ef = Some(ef);
         self
     }
 
@@ -819,6 +917,65 @@ impl VectorQuery {
         self.use_index = false;
         self
     }
+
+    pub async fn execute_hybrid(&self) -> Result<SendableRecordBatchStream> {
+        // clone query and specify we want to include row IDs, which can be needed for reranking
+        let fts_query = self.base.clone().with_row_id();
+        let mut vector_query = self.clone().with_row_id();
+
+        vector_query.base.full_text_search = None;
+        let (fts_results, vec_results) = try_join!(fts_query.execute(), vector_query.execute())?;
+
+        let (fts_results, vec_results) = try_join!(
+            fts_results.try_collect::<Vec<_>>(),
+            vec_results.try_collect::<Vec<_>>()
+        )?;
+
+        // try to get the schema to use when combining batches.
+        // if either
+        let (fts_schema, vec_schema) = hybrid::query_schemas(&fts_results, &vec_results);
+
+        // concatenate all the batches together
+        let mut fts_results = concat_batches(&fts_schema, fts_results.iter())?;
+        let mut vec_results = concat_batches(&vec_schema, vec_results.iter())?;
+
+        if matches!(self.base.norm, Some(NormalizeMethod::Rank)) {
+            vec_results = hybrid::rank(vec_results, DIST_COL, None)?;
+            fts_results = hybrid::rank(fts_results, SCORE_COL, None)?;
+        }
+
+        vec_results = hybrid::normalize_scores(vec_results, DIST_COL, None)?;
+        fts_results = hybrid::normalize_scores(fts_results, SCORE_COL, None)?;
+
+        let reranker = self
+            .base
+            .reranker
+            .clone()
+            .unwrap_or(Arc::new(RRFReranker::default()));
+
+        let fts_query = self.base.full_text_search.as_ref().ok_or(Error::Runtime {
+            message: "there should be an FTS search".to_string(),
+        })?;
+
+        let mut results = reranker
+            .rerank_hybrid(&fts_query.query, vec_results, fts_results)
+            .await?;
+
+        check_reranker_result(&results)?;
+
+        let limit = self.base.limit.unwrap_or(DEFAULT_TOP_K);
+        if results.num_rows() > limit {
+            results = results.slice(0, limit);
+        }
+
+        if !self.base.with_row_id {
+            results = results.drop_column(ROW_ID)?;
+        }
+
+        Ok(SendableRecordBatchStream::from(
+            RecordBatchStreamAdapter::new(results.schema(), stream::iter([Ok(results)])),
+        ))
+    }
 }
 
 impl ExecutableQuery for VectorQuery {
@@ -830,6 +987,11 @@ impl ExecutableQuery for VectorQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        if self.base.full_text_search.is_some() {
+            let hybrid_result = async move { self.execute_hybrid().await }.boxed().await?;
+            return Ok(hybrid_result);
+        }
+
         Ok(SendableRecordBatchStream::from(
             DatasetRecordBatchStream::new(execute_plan(
                 self.create_plan(options).await?,
@@ -851,19 +1013,20 @@ impl HasQuery for VectorQuery {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::HashSet, sync::Arc};
 
     use super::*;
+    use arrow::{array::downcast_array, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{
-        cast::AsArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
-        RecordBatchReader,
+        cast::AsArray, types::Float32Type, FixedSizeListArray, Float32Array, Int32Array,
+        RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use tempfile::tempdir;
 
-    use crate::{connect, Table};
+    use crate::{connect, connection::CreateTableMode, Table};
 
     #[tokio::test]
     async fn test_setters_getters() {
@@ -883,7 +1046,10 @@ mod tests {
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
-        assert_eq!(*query.query_vector.unwrap().as_ref().as_primitive(), vector);
+        assert_eq!(
+            *query.query_vector.first().unwrap().as_ref().as_primitive(),
+            vector
+        );
 
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 
@@ -899,7 +1065,7 @@ mod tests {
             .refine_factor(999);
 
         assert_eq!(
-            *query.query_vector.unwrap().as_ref().as_primitive(),
+            *query.query_vector.first().unwrap().as_ref().as_primitive(),
             new_vector
         );
         assert_eq!(query.base.limit.unwrap(), 100);
@@ -1196,5 +1362,211 @@ mod tests {
         for batch in results {
             assert!(batch.column_by_name("_rowid").is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn test_distance_range() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let results = table
+            .vector_search(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .distance_range(Some(0.0), Some(1.0))
+            .limit(10)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        for batch in results {
+            let distances = batch["_distance"].as_primitive::<Float32Type>();
+            assert!(distances.iter().all(|d| {
+                let d = d.unwrap();
+                (0.0..1.0).contains(&d)
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multiple_query_vectors() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let query = table
+            .query()
+            .nearest_to(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .add_query_vector(&[0.5, 0.6, 0.7, 0.8])
+            .unwrap()
+            .limit(1);
+
+        let plan = query.explain_plan(true).await.unwrap();
+        assert!(plan.contains("UnionExec"));
+
+        let results = query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+        assert_eq!(results.num_rows(), 2); // One result for each query vector.
+        let query_index = results["query_index"].as_primitive::<Int32Type>();
+        // We don't guarantee order.
+        assert!(query_index.values().contains(&0));
+        assert!(query_index.values().contains(&1));
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_search() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path();
+        let conn = connect(dataset_path.to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let dims = 2;
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("text", DataType::Utf8, false),
+            ArrowField::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    dims,
+                ),
+                false,
+            ),
+        ]));
+
+        let text = StringArray::from(vec!["dog", "cat", "a", "b"]);
+        let vectors = vec![
+            Some(vec![Some(0.0), Some(0.0)]),
+            Some(vec![Some(-2.0), Some(-2.0)]),
+            Some(vec![Some(50.0), Some(50.0)]),
+            Some(vec![Some(-30.0), Some(-30.0)]),
+        ];
+        let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(vectors, dims);
+
+        let record_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(text), Arc::new(vector)]).unwrap();
+        let record_batch_iter =
+            RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
+        let table = conn
+            .create_table("my_table", record_batch_iter)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["text"], crate::index::Index::FTS(Default::default()))
+            .replace(true)
+            .execute()
+            .await
+            .unwrap();
+
+        let fts_query = FullTextSearchQuery::new("b".to_string());
+        let results = table
+            .query()
+            .full_text_search(fts_query)
+            .limit(2)
+            .nearest_to(&[-10.0, -10.0])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let batch = &results[0];
+
+        let texts: StringArray = downcast_array(batch.column_by_name("text").unwrap());
+        let texts = texts.iter().map(|e| e.unwrap()).collect::<HashSet<_>>();
+        assert!(texts.contains("cat")); // should be close by vector search
+        assert!(texts.contains("b")); // should be close by fts search
+
+        // ensure that this works correctly if there are no matching FTS results
+        let fts_query = FullTextSearchQuery::new("z".to_string());
+        table
+            .query()
+            .full_text_search(fts_query)
+            .limit(2)
+            .nearest_to(&[-10.0, -10.0])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_search_empty_table() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path();
+        let conn = connect(dataset_path.to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let dims = 2;
+
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("text", DataType::Utf8, false),
+            ArrowField::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    dims,
+                ),
+                false,
+            ),
+        ]));
+
+        // ensure hybrid search is also supported on a fully empty table
+        let vectors: Vec<Option<Vec<Option<f32>>>> = Vec::new();
+        let record_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(Vec::<&str>::new())),
+                Arc::new(
+                    FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(vectors, dims),
+                ),
+            ],
+        )
+        .unwrap();
+        let record_batch_iter =
+            RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
+        let table = conn
+            .create_table("my_table", record_batch_iter)
+            .mode(CreateTableMode::Overwrite)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["text"], crate::index::Index::FTS(Default::default()))
+            .replace(true)
+            .execute()
+            .await
+            .unwrap();
+        let fts_query = FullTextSearchQuery::new("b".to_string());
+        let results = table
+            .query()
+            .full_text_search(fts_query)
+            .limit(2)
+            .nearest_to(&[-10.0, -10.0])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = &results[0];
+        assert_eq!(0, batch.num_rows());
+        assert_eq!(2, batch.num_columns());
     }
 }

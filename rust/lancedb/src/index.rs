@@ -17,6 +17,7 @@ use std::sync::Arc;
 use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
+use vector::IvfFlatIndexBuilder;
 
 use crate::{table::TableInternal, DistanceType, Error, Result};
 
@@ -55,6 +56,9 @@ pub enum Index {
 
     /// Full text search index using bm25.
     FTS(FtsIndexBuilder),
+
+    /// IVF index
+    IvfFlat(IvfFlatIndexBuilder),
 
     /// IVF index with Product Quantization
     IvfPq(IvfPqIndexBuilder),
@@ -106,6 +110,8 @@ impl IndexBuilder {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub enum IndexType {
     // Vector
+    #[serde(alias = "IVF_FLAT")]
+    IvfFlat,
     #[serde(alias = "IVF_PQ")]
     IvfPq,
     #[serde(alias = "IVF_HNSW_PQ")]
@@ -127,6 +133,7 @@ pub enum IndexType {
 impl std::fmt::Display for IndexType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
+            Self::IvfFlat => write!(f, "IVF_FLAT"),
             Self::IvfPq => write!(f, "IVF_PQ"),
             Self::IvfHnswPq => write!(f, "IVF_HNSW_PQ"),
             Self::IvfHnswSq => write!(f, "IVF_HNSW_SQ"),
@@ -147,6 +154,7 @@ impl std::str::FromStr for IndexType {
             "BITMAP" => Ok(Self::Bitmap),
             "LABEL_LIST" | "LABELLIST" => Ok(Self::LabelList),
             "FTS" | "INVERTED" => Ok(Self::FTS),
+            "IVF_FLAT" => Ok(Self::IvfFlat),
             "IVF_PQ" => Ok(Self::IvfPq),
             "IVF_HNSW_PQ" => Ok(Self::IvfHnswPq),
             "IVF_HNSW_SQ" => Ok(Self::IvfHnswSq),

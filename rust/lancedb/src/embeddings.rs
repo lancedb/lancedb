@@ -17,6 +17,9 @@ pub mod openai;
 #[cfg(feature = "sentence-transformers")]
 pub mod sentence_transformers;
 
+#[cfg(feature = "bedrock")]
+pub mod bedrock;
+
 use lance::arrow::RecordBatchExt;
 use std::{
     borrow::Cow,

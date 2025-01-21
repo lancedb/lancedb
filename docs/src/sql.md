@@ -4,20 +4,29 @@
 
 LanceDB supports filtering of query results based on metadata fields. By default, post-filtering is
 performed on the top-k results returned by the vector search. However, pre-filtering is also an
-option that performs the filter prior to vector search. This can be useful to narrow down on
-the search space on a very large dataset to reduce query latency.
+option that performs the filter prior to vector search. This can be useful to narrow down
+the search space of a very large dataset to reduce query latency.
+
+Note that both pre-filtering and post-filtering can yield false positives. For pre-filtering, if the filter is too selective, it might eliminate relevant items that the vector search would have otherwise identified as a good match. In this case, increasing `nprobes` parameter will help reduce such false positives. It is recommended to set `use_index=false` if you know that the filter is highly selective.
+
+Similarly, a highly selective post-filter can lead to false positives. Increasing both `nprobes` and `refine_factor` can mitigate this issue. When deciding between pre-filtering and post-filtering, pre-filtering is generally the safer choice if you're uncertain.
 
 <!-- Setup Code
 ```python
 import lancedb
 import numpy as np
+
 uri = "data/sample-lancedb"
-db = lancedb.connect(uri)
-
 data = [{"vector": row, "item": f"item {i}", "id": i}
-     for i, row in enumerate(np.random.random((10_000, 2)).astype('int'))]
+    for i, row in enumerate(np.random.random((10_000, 2)))]
 
+# Synchronous client
+db = lancedb.connect(uri)
 tbl = db.create_table("my_vectors", data=data)
+
+# Asynchronous client
+async_db = await lancedb.connect_async(uri)
+async_tbl = await async_db.create_table("my_vectors_async", data=data)
 ```
 -->
 <!-- Setup Code
@@ -35,13 +44,11 @@ const tbl = await db.createTable('myVectors', data)
 
 === "Python"
 
-    ```py
-    result = (
-        tbl.search([0.5, 0.2])
-        .where("id = 10", prefilter=True)
-        .limit(1)
-        .to_arrow()
-    )
+    ```python
+    # Synchronous client
+    result = tbl.search([0.5, 0.2]).where("id = 10", prefilter=True).limit(1).to_arrow()
+    # Asynchronous client
+    result = await async_tbl.query().where("id = 10").nearest_to([0.5, 0.2]).limit(1).to_arrow()
     ```
 
 === "TypeScript"
@@ -49,7 +56,7 @@ const tbl = await db.createTable('myVectors', data)
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/examples/filtering.ts:search"
+        --8<-- "nodejs/examples/filtering.test.ts:search"
         ```
 
     === "vectordb (deprecated)"
@@ -57,14 +64,17 @@ const tbl = await db.createTable('myVectors', data)
         ```ts
         --8<-- "docs/src/sql_legacy.ts:search"
         ```
+!!! note
+
+    Creating a [scalar index](guides/scalar_index.md) accelerates filtering.
 
 ## SQL filters
 
 Because it's built on top of [DataFusion](https://github.com/apache/arrow-datafusion), LanceDB
 embraces the utilization of standard SQL expressions as predicates for filtering operations.
-It can be used during vector search, update, and deletion operations.
+SQL can be used during vector search, update, and deletion operations.
 
-Currently, Lance supports a growing list of SQL expressions.
+LanceDB supports a growing list of SQL expressions:
 
 - `>`, `>=`, `<`, `<=`, `=`
 - `AND`, `OR`, `NOT`
@@ -81,9 +91,17 @@ For example, the following filter string is acceptable:
 === "Python"
 
     ```python
-    tbl.search([100, 102]) \
-       .where("(item IN ('item 0', 'item 2')) AND (id > 10)") \
-       .to_arrow()
+    # Synchronous client
+    tbl.search([100, 102]).where(
+        "(item IN ('item 0', 'item 2')) AND (id > 10)"
+    ).to_arrow()
+    # Asynchronous client
+    await (
+        async_tbl.query()
+        .where("(item IN ('item 0', 'item 2')) AND (id > 10)")
+        .nearest_to([100, 102])
+        .to_arrow()
+    )
     ```
 
 === "TypeScript"
@@ -91,7 +109,7 @@ For example, the following filter string is acceptable:
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/examples/filtering.ts:vec_search"
+        --8<-- "nodejs/examples/filtering.test.ts:vec_search"
         ```
 
     === "vectordb (deprecated)"
@@ -114,7 +132,7 @@ path must be wrapped in backticks.
 !!!warning "Field names containing periods (`.`) are not supported."
 
 Literals for dates, timestamps, and decimals can be written by writing the string
-value after the type name. For example
+value after the type name. For example:
 
 === "SQL"
 
@@ -156,12 +174,15 @@ The mapping from SQL types to Arrow types is:
 
 ## Filtering without Vector Search
 
-You can also filter your data without search.
+You can also filter your data without search:
 
 === "Python"
 
     ```python
+    # Synchronous client
     tbl.search().where("id = 10").limit(10).to_arrow()
+    # Asynchronous client
+    await async_tbl.query().where("id = 10").limit(10).to_arrow()
     ```
 
 === "TypeScript"
@@ -169,7 +190,7 @@ You can also filter your data without search.
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/examples/filtering.ts:sql_search"
+        --8<-- "nodejs/examples/filtering.test.ts:sql_search"
         ```
 
     === "vectordb (deprecated)"

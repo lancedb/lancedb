@@ -138,7 +138,9 @@ fn http_from_rust_error(
     status_code: Option<u16>,
 ) -> PyResult<PyErr> {
     let message = err.to_string();
-    let http_err_cls = py.import("lancedb.remote.errors")?.getattr("HttpError")?;
+    let http_err_cls = py
+        .import_bound("lancedb.remote.errors")?
+        .getattr("HttpError")?;
     let py_err = http_err_cls.call1((message, request_id, status_code))?;
 
     // Reset the traceback since it doesn't provide additional information.
@@ -149,5 +151,5 @@ fn http_from_rust_error(
         py_err.setattr(intern!(py, "__cause__"), cause_err)?;
     }
 
-    Ok(PyErr::from_value(py_err))
+    Ok(PyErr::from_value_bound(py_err))
 }

@@ -36,6 +36,7 @@ def connect(
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
+    storage_options: Optional[Dict[str, str]] = None,
     **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database.
@@ -67,6 +68,9 @@ def connect(
         Configuration options for the LanceDB Cloud HTTP client. If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
         default configuration is used.
+    storage_options: dict, optional
+        Additional options for the storage backend. See available options at
+        <https://lancedb.github.io/lancedb/guides/storage/>
 
     Examples
     --------
@@ -78,11 +82,13 @@ def connect(
 
     For object storage, use a URI prefix:
 
-    >>> db = lancedb.connect("s3://my-bucket/lancedb")
+    >>> db = lancedb.connect("s3://my-bucket/lancedb",
+    ...                      storage_options={"aws_access_key_id": "***"})
 
     Connect to LanceDB cloud:
 
-    >>> db = lancedb.connect("db://my_database", api_key="ldb_...")
+    >>> db = lancedb.connect("db://my_database", api_key="ldb_...",
+    ...                      client_config={"retry_config": {"retries": 5}})
 
     Returns
     -------
@@ -106,12 +112,17 @@ def connect(
             # TODO: remove this (deprecation warning downstream)
             request_thread_pool=request_thread_pool,
             client_config=client_config,
+            storage_options=storage_options,
             **kwargs,
         )
 
     if kwargs:
         raise ValueError(f"Unknown keyword arguments: {kwargs}")
-    return LanceDBConnection(uri, read_consistency_interval=read_consistency_interval)
+    return LanceDBConnection(
+        uri,
+        read_consistency_interval=read_consistency_interval,
+        storage_options=storage_options,
+    )
 
 
 async def connect_async(
@@ -155,7 +166,7 @@ async def connect_async(
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
-        https://lancedb.github.io/lancedb/guides/storage/
+        <https://lancedb.github.io/lancedb/guides/storage/>
 
     Examples
     --------

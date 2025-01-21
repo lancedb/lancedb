@@ -1,7 +1,6 @@
 # AnswersDotAI Rerankers
 
-This integration allows using answersdotai's rerankers to rerank the search results. [Rerankers](https://github.com/AnswerDotAI/rerankers)
-A lightweight, low-dependency, unified API to use all common reranking and cross-encoder models.
+This integration uses [AnswersDotAI's rerankers](https://github.com/AnswerDotAI/rerankers) to rerank the search results, providing a lightweight, low-dependency, unified API to use all common reranking and cross-encoder models.
 
 !!! note
     Supported Query Types: Hybrid, Vector, FTS
@@ -45,10 +44,10 @@ Accepted Arguments
 ----------------
 | Argument | Type | Default | Description |
 | --- | --- | --- | --- |
-| `model_type` | `str` | `"colbert"` | The type of model to use. Supported model types can be found here - https://github.com/AnswerDotAI/rerankers |
+| `model_type` | `str` | `"colbert"` | The type of model to use. Supported model types can be found here: https://github.com/AnswerDotAI/rerankers. |
 | `model_name` | `str` | `"answerdotai/answerai-colbert-small-v1"` | The name of the reranker model to use. |
 | `column` | `str` | `"text"` | The name of the column to use as input to the cross encoder model. |
-| `return_score` | str | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", will return only the `_relevance_score. If "all" is supported, will return relevance score along with the vector and/or fts scores depending on query type |
+| `return_score` | str | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", will return only the `_relevance_score. If "all" is supported, will return relevance score along with the vector and/or fts scores depending on query type. |
 
 
 
@@ -58,17 +57,17 @@ You can specify the type of scores you want the reranker to return. The followin
 ### Hybrid Search
 |`return_score`| Status | Description |
 | --- | --- | --- |
-| `relevance` | ✅ Supported | Returns only have the `_relevance_score` column |
-| `all` | ❌ Not Supported | Returns have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_relevance_score`) |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column. |
+| `all` | ❌ Not Supported | Results have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_relevance_score`). |
 
 ### Vector Search
 |`return_score`| Status | Description |
 | --- | --- | --- |
-| `relevance` | ✅ Supported | Returns only have the `_relevance_score` column |
-| `all` | ✅ Supported | Returns have vector(`_distance`) along with Hybrid Search score(`_relevance_score`) |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column. |
+| `all` | ✅ Supported | Results have vector(`_distance`) along with Hybrid Search score(`_relevance_score`). |
 
 ### FTS Search
 |`return_score`| Status | Description |
 | --- | --- | --- |
-| `relevance` | ✅ Supported | Returns only have the `_relevance_score` column |
-| `all` | ✅ Supported | Returns have FTS(`score`) along with Hybrid Search score(`_relevance_score`) |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column. |
+| `all` | ✅ Supported | Results have FTS(`score`) along with Hybrid Search score(`_relevance_score`). |

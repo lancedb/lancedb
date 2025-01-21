@@ -15,10 +15,12 @@ import random
 from unittest import mock
 
 import lancedb as ldb
+from lancedb.db import DBConnection
 from lancedb.index import FTS
 import numpy as np
 import pandas as pd
 import pytest
+from utils import exception_output
 
 pytest.importorskip("lancedb.fts")
 tantivy = pytest.importorskip("tantivy")
@@ -165,8 +167,24 @@ def test_search_index(tmp_path, table):
 @pytest.mark.parametrize("use_tantivy", [True, False])
 def test_search_fts(table, use_tantivy):
     table.create_fts_index("text", use_tantivy=use_tantivy)
-    results = table.search("puppy").limit(5).to_list()
+    results = table.search("puppy").select(["id", "text"]).limit(5).to_list()
     assert len(results) == 5
+    assert len(results[0]) == 3  # id, text, _score
+
+
+@pytest.mark.asyncio
+async def test_fts_select_async(async_table):
+    tbl = await async_table
+    await tbl.create_index("text", config=FTS())
+    results = (
+        await tbl.query()
+        .nearest_to_text("puppy")
+        .select(["id", "text"])
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+    assert len(results[0]) == 3  # id, text, _score
 
 
 def test_search_fts_phrase_query(table):
@@ -458,3 +476,44 @@ def test_syntax(table):
     table.search('the cats OR dogs were not really "pets" at all').phrase_query().limit(
         10
     ).to_list()
+
+
+def test_language(mem_db: DBConnection):
+    sentences = [
+        "Il n'y a que trois routes qui traversent la ville.",
+        "Je veux prendre la route vers l'est.",
+        "Je te retrouve au café au bout de la route.",
+    ]
+    data = [{"text": s} for s in sentences]
+    table = mem_db.create_table("test", data=data)
+
+    with pytest.raises(ValueError) as e:
+        table.create_fts_index("text", use_tantivy=False, language="klingon")
+
+    assert exception_output(e) == (
+        "ValueError: LanceDB does not support the requested language: 'klingon'\n"
+        "Supported languages: Arabic, Danish, Dutch, English, Finnish, French, "
+        "German, Greek, Hungarian, Italian, Norwegian, Portuguese, Romanian, "
+        "Russian, Spanish, Swedish, Tamil, Turkish"
+    )
+
+    table.create_fts_index(
+        "text",
+        use_tantivy=False,
+        language="French",
+        stem=True,
+        ascii_folding=True,
+        remove_stop_words=True,
+    )
+
+    # Can get "routes" and "route" from the same root
+    results = table.search("route", query_type="fts").limit(5).to_list()
+    assert len(results) == 3
+
+    # Can find "café", without needing to provide accent
+    results = table.search("cafe", query_type="fts").limit(5).to_list()
+    assert len(results) == 1
+
+    # Stop words -> no results
+    results = table.search("la", query_type="fts").limit(5).to_list()
+    assert len(results) == 0

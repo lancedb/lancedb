@@ -30,10 +30,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: Install ruff
         run: |
-          pip install ruff==0.5.4
+          pip install ruff==0.8.4
       - name: Format check
         run: ruff format --check .
       - name: Lint
@@ -138,7 +138,7 @@ jobs:
         run: rm -rf target/wheels
   windows:
     name: "Windows: ${{ matrix.config.name }}"
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       matrix:
         config:

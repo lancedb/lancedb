@@ -55,10 +55,14 @@ plugins:
             show_signature_annotations: true
             show_root_heading: true
             members_order: source
+            docstring_section_style: list
+            signature_crossrefs: true
+            separate_signature: true
           import:
             # for cross references
             - https://arrow.apache.org/docs/objects.inv
             - https://pandas.pydata.org/docs/objects.inv
+            - https://lancedb.github.io/lance/objects.inv
   - mkdocs-jupyter
   - render_swagger:
       allow_arbitrary_locations: true
@@ -138,10 +142,13 @@ nav:
               - Jina Reranker: reranking/jina.md
               - OpenAI Reranker: reranking/openai.md
               - AnswerDotAi Rerankers: reranking/answerdotai.md
+              - Voyage AI Rerankers: reranking/voyageai.md
               - Building Custom Rerankers: reranking/custom_reranker.md
               - Example: notebooks/lancedb_reranking.ipynb
           - Filtering: sql.md
-          - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+          - Versioning & Reproducibility: 
+              - sync API: notebooks/reproducibility.ipynb
+              - async API: notebooks/reproducibility_async.ipynb
           - Configuring Storage: guides/storage.md
           - Migration Guide: migration.md
           - Tuning retrieval performance:
@@ -165,6 +172,7 @@ nav:
                   - Jina Embeddings: embeddings/available_embedding_models/text_embedding_functions/jina_embedding.md
                   - AWS Bedrock Text Embedding Functions: embeddings/available_embedding_models/text_embedding_functions/aws_bedrock_embedding.md
                   - IBM watsonx.ai Embeddings: embeddings/available_embedding_models/text_embedding_functions/ibm_watsonx_ai_embedding.md
+                  - Voyage AI Embeddings: embeddings/available_embedding_models/text_embedding_functions/voyageai_embedding.md
               - Multimodal Embedding Functions:
                   - OpenClip embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/openclip_embedding.md
                   - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md
@@ -226,6 +234,7 @@ nav:
               - 🐍 Python: python/saas-python.md
               - 👾 JavaScript: javascript/modules.md
               - REST API: cloud/rest.md
+          - FAQs: cloud/cloud_faq.md
 
   - Quick start: basic.md
   - Concepts:
@@ -271,7 +280,9 @@ nav:
           - Building Custom Rerankers: reranking/custom_reranker.md
           - Example: notebooks/lancedb_reranking.ipynb
       - Filtering: sql.md
-      - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+      - Versioning & Reproducibility: 
+          - sync API: notebooks/reproducibility.ipynb
+          - async API: notebooks/reproducibility_async.ipynb
       - Configuring Storage: guides/storage.md
       - Migration Guide: migration.md
       - Tuning retrieval performance:
@@ -352,6 +363,7 @@ nav:
           - 🐍 Python: python/saas-python.md
           - 👾 JavaScript: javascript/modules.md
           - REST API: cloud/rest.md
+      - FAQs: cloud/cloud_faq.md
 
 extra_css:
   - styles/global.css

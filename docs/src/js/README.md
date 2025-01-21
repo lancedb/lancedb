@@ -40,37 +40,4 @@ The [quickstart](../basic.md) contains a more complete example.
 
 ## Development
 
-```sh
-npm run build
-npm run test
-```
-
-### Running lint / format
-
-LanceDb uses [biome](https://biomejs.dev/) for linting and formatting. if you are using VSCode you will need to install the official [Biome](https://marketplace.visualstudio.com/items?itemName=biomejs.biome) extension.
-To manually lint your code you can run:
-
-```sh
-npm run lint
-```
-
-to automatically fix all fixable issues:
-
-```sh
-npm run lint-fix
-```
-
-If you do not have your workspace root set to the `nodejs` directory, unfortunately the extension will not work. You can still run the linting and formatting commands manually.
-
-### Generating docs
-
-```sh
-npm run docs
-
-cd ../docs
-# Asssume the virtual environment was created
-# python3 -m venv venv
-# pip install -r requirements.txt
-. ./venv/bin/activate
-mkdocs build
-```
+See [CONTRIBUTING.md](_media/CONTRIBUTING.md) for information on how to contribute to LanceDB.

@@ -13,14 +13,15 @@ import { Schema } from "apache-arrow";
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import * as arrow13 from "apache-arrow-13";
-import * as arrow14 from "apache-arrow-14";
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
+import * as arrow18 from "apache-arrow-18";
 
 import {
   convertToTable,
+  fromBufferToRecordBatch,
+  fromRecordBatchToBuffer,
   fromTableToBuffer,
   makeArrowTable,
   makeEmptyTable,
@@ -45,22 +46,16 @@ function sampleRecords(): Array<Record<string, any>> {
     },
   ];
 }
-describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
+describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Arrow",
   (
-    arrow:
-      | typeof arrow13
-      | typeof arrow14
-      | typeof arrow15
-      | typeof arrow16
-      | typeof arrow17,
+    arrow: typeof arrow15 | typeof arrow16 | typeof arrow17 | typeof arrow18,
   ) => {
     type ApacheArrow =
-      | typeof arrow13
-      | typeof arrow14
       | typeof arrow15
       | typeof arrow16
-      | typeof arrow17;
+      | typeof arrow17
+      | typeof arrow18;
     const {
       Schema,
       Field,
@@ -498,40 +493,40 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
 
     describe("when using two versions of arrow", function () {
       it("can still import data", async function () {
-        const schema = new arrow13.Schema([
-          new arrow13.Field("id", new arrow13.Int32()),
-          new arrow13.Field(
+        const schema = new arrow15.Schema([
+          new arrow15.Field("id", new arrow15.Int32()),
+          new arrow15.Field(
             "vector",
-            new arrow13.FixedSizeList(
+            new arrow15.FixedSizeList(
               1024,
-              new arrow13.Field("item", new arrow13.Float32(), true),
+              new arrow15.Field("item", new arrow15.Float32(), true),
             ),
           ),
-          new arrow13.Field(
+          new arrow15.Field(
             "struct",
-            new arrow13.Struct([
-              new arrow13.Field(
+            new arrow15.Struct([
+              new arrow15.Field(
                 "nested",
-                new arrow13.Dictionary(
-                  new arrow13.Utf8(),
-                  new arrow13.Int32(),
+                new arrow15.Dictionary(
+                  new arrow15.Utf8(),
+                  new arrow15.Int32(),
                   1,
                   true,
                 ),
               ),
-              new arrow13.Field(
+              new arrow15.Field(
                 "ts_with_tz",
-                new arrow13.TimestampNanosecond("some_tz"),
+                new arrow15.TimestampNanosecond("some_tz"),
               ),
-              new arrow13.Field(
+              new arrow15.Field(
                 "ts_no_tz",
-                new arrow13.TimestampNanosecond(null),
+                new arrow15.TimestampNanosecond(null),
               ),
             ]),
           ),
           // biome-ignore lint/suspicious/noExplicitAny: skip
         ]) as any;
-        schema.metadataVersion = arrow13.MetadataVersion.V5;
+        schema.metadataVersion = arrow15.MetadataVersion.V5;
         const table = makeArrowTable([], { schema });
 
         const buf = await fromTableToBuffer(table);
@@ -543,13 +538,13 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
         // Deep equality gets hung up on some very minor unimportant differences
         // between arrow version 13 and 15 which isn't really what we're testing for
         // and so we do our own comparison that just checks name/type/nullability
-        function compareFields(lhs: arrow13.Field, rhs: arrow13.Field) {
+        function compareFields(lhs: arrow15.Field, rhs: arrow15.Field) {
           expect(lhs.name).toEqual(rhs.name);
           expect(lhs.nullable).toEqual(rhs.nullable);
           expect(lhs.typeId).toEqual(rhs.typeId);
           if ("children" in lhs.type && lhs.type.children !== null) {
-            const lhsChildren = lhs.type.children as arrow13.Field[];
-            lhsChildren.forEach((child: arrow13.Field, idx) => {
+            const lhsChildren = lhs.type.children as arrow15.Field[];
+            lhsChildren.forEach((child: arrow15.Field, idx) => {
               compareFields(child, rhs.type.children[idx]);
             });
           }
@@ -558,6 +553,29 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
         actualSchema.fields.forEach((field: any, idx: string | number) => {
           compareFields(field, actualSchema.fields[idx]);
         });
+      });
+    });
+
+    describe("converting record batches to buffers", function () {
+      it("can convert to buffered record batch and back again", async function () {
+        const records = [
+          { text: "dog", vector: [0.1, 0.2] },
+          { text: "cat", vector: [0.3, 0.4] },
+        ];
+        const table = await convertToTable(records);
+        const batch = table.batches[0];
+
+        const buffer = await fromRecordBatchToBuffer(batch);
+        const result = await fromBufferToRecordBatch(buffer);
+
+        expect(JSON.stringify(batch.toArray())).toEqual(
+          JSON.stringify(result?.toArray()),
+        );
+      });
+
+      it("converting from buffer returns null if buffer has no record batches", async function () {
+        const result = await fromBufferToRecordBatch(Buffer.from([0x01, 0x02])); // bad data
+        expect(result).toEqual(null);
       });
     });
   },

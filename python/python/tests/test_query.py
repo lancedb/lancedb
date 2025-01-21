@@ -1,63 +1,31 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import unittest.mock as mock
 from datetime import timedelta
-from typing import Optional
+from pathlib import Path
 
-import lance
 import lancedb
-from lancedb.index import IvfPq
+from lancedb.index import IvfPq, FTS
+from lancedb.rerankers.cross_encoder import CrossEncoderReranker
 import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
 import pytest
 import pytest_asyncio
-from lancedb.db import LanceDBConnection
 from lancedb.pydantic import LanceModel, Vector
-from lancedb.query import AsyncQueryBase, LanceVectorQueryBuilder, Query
+from lancedb.query import (
+    AsyncQueryBase,
+    LanceVectorQueryBuilder,
+    Query,
+)
 from lancedb.table import AsyncTable, LanceTable
 
 
-class MockTable:
-    def __init__(self, tmp_path):
-        self.uri = tmp_path
-        self._conn = LanceDBConnection(self.uri)
-
-    def to_lance(self):
-        return lance.dataset(self.uri)
-
-    def _execute_query(self, query, batch_size: Optional[int] = None):
-        ds = self.to_lance()
-        return ds.scanner(
-            columns=query.columns,
-            filter=query.filter,
-            prefilter=query.prefilter,
-            nearest={
-                "column": query.vector_column,
-                "q": query.vector,
-                "k": query.k,
-                "metric": query.metric,
-                "nprobes": query.nprobes,
-                "refine_factor": query.refine_factor,
-            },
-            batch_size=batch_size,
-            offset=query.offset,
-        ).to_reader()
-
-
-@pytest.fixture
-def table(tmp_path) -> MockTable:
+@pytest.fixture(scope="module")
+def table(tmpdir_factory) -> lancedb.table.Table:
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    db = lancedb.connect(tmp_path)
     df = pa.table(
         {
             "vector": pa.array(
@@ -68,8 +36,7 @@ def table(tmp_path) -> MockTable:
             "float_field": pa.array([1.0, 2.0]),
         }
     )
-    lance.write_dataset(df, tmp_path)
-    return MockTable(tmp_path)
+    return db.create_table("test", df)
 
 
 @pytest_asyncio.fixture
@@ -85,9 +52,75 @@ async def table_async(tmp_path) -> AsyncTable:
             "id": pa.array([1, 2]),
             "str_field": pa.array(["a", "b"]),
             "float_field": pa.array([1.0, 2.0]),
+            "text": pa.array(["a", "dog"]),
         }
     )
     return await conn.create_table("test", data)
+
+
+@pytest_asyncio.fixture
+async def table_struct_async(tmp_path) -> AsyncTable:
+    conn = await lancedb.connect_async(
+        tmp_path, read_consistency_interval=timedelta(seconds=0)
+    )
+    struct = pa.array([{"n_legs": 2, "animals": "Parrot"}, {"year": 2022, "n_legs": 4}])
+    month = pa.array([4, 6])
+    table = pa.Table.from_arrays([struct, month], names=["a", "month"])
+    return await conn.create_table("test_struct", table)
+
+
+@pytest.fixture
+def multivec_table(vector_value_type=pa.float32()) -> lancedb.table.Table:
+    db = lancedb.connect("memory://")
+    # Generate 256 rows of data
+    num_rows = 256
+
+    # Generate data for each column
+    vector_data = [
+        [[i, i + 1], [i + 2, i + 3]] for i in range(num_rows)
+    ]  # Adjust to match nested structure
+    id_data = list(range(1, num_rows + 1))
+    float_field_data = [float(i) for i in range(1, num_rows + 1)]
+
+    # Create the Arrow table
+    df = pa.table(
+        {
+            "vector": pa.array(
+                vector_data, type=pa.list_(pa.list_(vector_value_type, list_size=2))
+            ),
+            "id": pa.array(id_data),
+            "float_field": pa.array(float_field_data),
+        }
+    )
+    return db.create_table("test", df)
+
+
+@pytest_asyncio.fixture
+async def multivec_table_async(vector_value_type=pa.float32()) -> AsyncTable:
+    conn = await lancedb.connect_async(
+        "memory://", read_consistency_interval=timedelta(seconds=0)
+    )
+    # Generate 256 rows of data
+    num_rows = 256
+
+    # Generate data for each column
+    vector_data = [
+        [[i, i + 1], [i + 2, i + 3]] for i in range(num_rows)
+    ]  # Adjust to match nested structure
+    id_data = list(range(1, num_rows + 1))
+    float_field_data = [float(i) for i in range(1, num_rows + 1)]
+
+    # Create the Arrow table
+    df = pa.table(
+        {
+            "vector": pa.array(
+                vector_data, type=pa.list_(pa.list_(vector_value_type, list_size=2))
+            ),
+            "id": pa.array(id_data),
+            "float_field": pa.array(float_field_data),
+        }
+    )
+    return await conn.create_table("test_async", df)
 
 
 def test_cast(table):
@@ -124,6 +157,141 @@ def test_query_builder(table):
     )
     assert rs[0]["id"] == 1
     assert all(np.array(rs[0]["vector"]) == [1, 2])
+
+
+def test_with_row_id(table: lancedb.table.Table):
+    rs = table.search().with_row_id(True).to_arrow()
+    assert "_rowid" in rs.column_names
+    assert rs["_rowid"].to_pylist() == [0, 1]
+
+
+def test_distance_range(table: lancedb.table.Table):
+    q = [0, 0]
+    rs = table.search(q).to_arrow()
+    dists = rs["_distance"].to_pylist()
+    min_dist = dists[0]
+    max_dist = dists[-1]
+
+    res = table.search(q).distance_range(upper_bound=min_dist).to_arrow()
+    assert len(res) == 0
+
+    res = table.search(q).distance_range(lower_bound=max_dist).to_arrow()
+    assert len(res) == 1
+    assert res["_distance"].to_pylist() == [max_dist]
+
+    res = table.search(q).distance_range(upper_bound=max_dist).to_arrow()
+    assert len(res) == 1
+    assert res["_distance"].to_pylist() == [min_dist]
+
+    res = table.search(q).distance_range(lower_bound=min_dist).to_arrow()
+    assert len(res) == 2
+    assert res["_distance"].to_pylist() == [min_dist, max_dist]
+
+
+@pytest.mark.asyncio
+async def test_distance_range_async(table_async: AsyncTable):
+    q = [0, 0]
+    rs = await table_async.query().nearest_to(q).to_arrow()
+    dists = rs["_distance"].to_pylist()
+    min_dist = dists[0]
+    max_dist = dists[-1]
+
+    res = (
+        await table_async.query()
+        .nearest_to(q)
+        .distance_range(upper_bound=min_dist)
+        .to_arrow()
+    )
+    assert len(res) == 0
+
+    res = (
+        await table_async.query()
+        .nearest_to(q)
+        .distance_range(lower_bound=max_dist)
+        .to_arrow()
+    )
+    assert len(res) == 1
+    assert res["_distance"].to_pylist() == [max_dist]
+
+    res = (
+        await table_async.query()
+        .nearest_to(q)
+        .distance_range(upper_bound=max_dist)
+        .to_arrow()
+    )
+    assert len(res) == 1
+    assert res["_distance"].to_pylist() == [min_dist]
+
+    res = (
+        await table_async.query()
+        .nearest_to(q)
+        .distance_range(lower_bound=min_dist)
+        .to_arrow()
+    )
+    assert len(res) == 2
+    assert res["_distance"].to_pylist() == [min_dist, max_dist]
+
+
+@pytest.mark.parametrize(
+    "multivec_table", [pa.float16(), pa.float32(), pa.float64()], indirect=True
+)
+def test_multivector(multivec_table: lancedb.table.Table):
+    # create index on multivector
+    multivec_table.create_index(
+        metric="cosine",
+        vector_column_name="vector",
+        index_type="IVF_PQ",
+        num_partitions=1,
+        num_sub_vectors=2,
+    )
+
+    # query with single vector
+    q = [1, 2]
+    rs = multivec_table.search(q).to_arrow()
+
+    # query with multiple vectors
+    q = [[1, 2], [1, 2]]
+    rs2 = multivec_table.search(q).to_arrow()
+    assert len(rs2) == len(rs)
+    for i in range(2):
+        assert rs2["_distance"][i].as_py() == rs["_distance"][i].as_py() * 2
+
+    # can't query with vector that dim not matched
+    with pytest.raises(Exception):
+        multivec_table.search([1, 2, 3]).to_arrow()
+    # can't query with vector list that some dim not matched
+    with pytest.raises(Exception):
+        multivec_table.search([[1, 2], [1, 2, 3]]).to_arrow()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "multivec_table_async", [pa.float16(), pa.float32(), pa.float64()], indirect=True
+)
+async def test_multivector_async(multivec_table_async: AsyncTable):
+    # create index on multivector
+    await multivec_table_async.create_index(
+        "vector",
+        config=IvfPq(distance_type="cosine", num_partitions=1, num_sub_vectors=2),
+    )
+
+    # query with single vector
+    q = [1, 2]
+    rs = await multivec_table_async.query().nearest_to(q).to_arrow()
+
+    # query with multiple vectors
+    q = [[1, 2], [1, 2]]
+    rs2 = await multivec_table_async.query().nearest_to(q).to_arrow()
+    assert len(rs2) == len(rs)
+    for i in range(2):
+        assert rs2["_distance"][i].as_py() == rs["_distance"][i].as_py() * 2
+
+    # can't query with vector that dim not matched
+    with pytest.raises(Exception):
+        await multivec_table_async.query().nearest_to([1, 2, 3]).to_arrow()
+    # can't query with vector list that some dim not matched
+    with pytest.raises(Exception):
+        await multivec_table_async.query().nearest_to([[1, 2], [1, 2, 3]]).to_arrow()
 
 
 def test_vector_query_with_no_limit(table):
@@ -177,15 +345,25 @@ def test_query_builder_with_filter(table):
 def test_query_builder_with_prefilter(table):
     df = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
-        .where("id = 2")
+        .where("id = 2", prefilter=True)
+        .limit(1)
+        .to_pandas()
+    )
+    assert df["id"].values[0] == 2
+    assert all(df["vector"].values[0] == [3, 4])
+
+    df = (
+        LanceVectorQueryBuilder(table, [0, 0], "vector")
+        .where("id = 2", prefilter=False)
         .limit(1)
         .to_pandas()
     )
     assert len(df) == 0
 
+    # ensure the default prefilter = True
     df = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
-        .where("id = 2", prefilter=True)
+        .where("id = 2")
         .limit(1)
         .to_pandas()
     )
@@ -235,6 +413,7 @@ def test_query_builder_with_different_vector_column():
         Query(
             vector=query,
             filter="b < 10",
+            prefilter=True,
             k=2,
             metric="cosine",
             columns=["b"],
@@ -268,7 +447,7 @@ async def test_query_async(table_async: AsyncTable):
     await check_query(
         table_async.query(),
         expected_num_rows=2,
-        expected_columns=["vector", "id", "str_field", "float_field"],
+        expected_columns=["vector", "id", "str_field", "float_field", "text"],
     )
     await check_query(table_async.query().where("id = 2"), expected_num_rows=1)
     await check_query(
@@ -339,30 +518,75 @@ async def test_query_async(table_async: AsyncTable):
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow
+async def test_query_reranked_async(table_async: AsyncTable):
+    # FTS with rerank
+    await table_async.create_index("text", config=FTS(with_position=False))
+    await check_query(
+        table_async.query().nearest_to_text("dog").rerank(CrossEncoderReranker()),
+        expected_num_rows=1,
+    )
+
+    # Vector query with rerank
+    await check_query(
+        table_async.vector_search([1, 2]).rerank(
+            CrossEncoderReranker(), query_string="dog"
+        ),
+        expected_num_rows=2,
+    )
+
+
+@pytest.mark.asyncio
 async def test_query_to_arrow_async(table_async: AsyncTable):
     table = await table_async.to_arrow()
     assert table.num_rows == 2
-    assert table.num_columns == 4
+    assert table.num_columns == 5
 
     table = await table_async.query().to_arrow()
     assert table.num_rows == 2
-    assert table.num_columns == 4
+    assert table.num_columns == 5
 
     table = await table_async.query().where("id < 0").to_arrow()
     assert table.num_rows == 0
-    assert table.num_columns == 4
+    assert table.num_columns == 5
 
 
 @pytest.mark.asyncio
 async def test_query_to_pandas_async(table_async: AsyncTable):
     df = await table_async.to_pandas()
-    assert df.shape == (2, 4)
+    assert df.shape == (2, 5)
 
     df = await table_async.query().to_pandas()
-    assert df.shape == (2, 4)
+    assert df.shape == (2, 5)
 
     df = await table_async.query().where("id < 0").to_pandas()
-    assert df.shape == (0, 4)
+    assert df.shape == (0, 5)
+
+
+@pytest.mark.asyncio
+async def test_query_to_pandas_flatten_async(table_struct_async: AsyncTable):
+    df = await table_struct_async.query().to_pandas()
+    assert df.shape == (2, 2)
+
+    df = await table_struct_async.query().to_pandas(flatten=True)
+    assert df.shape == (2, 4)
+
+
+@pytest.mark.asyncio
+async def test_query_to_polars_async(table_async: AsyncTable):
+    schema = await table_async.schema()
+    num_columns = len(schema.names)
+    df = await table_async.query().to_polars()
+    assert df.shape == (2, num_columns)
+
+    df = await table_async.query().where("id < 0").to_polars()
+    assert df.shape == (0, num_columns)
+
+
+@pytest.mark.asyncio
+async def test_none_query(table_async: AsyncTable):
+    with pytest.raises(ValueError):
+        await table_async.query().nearest_to(None).to_arrow()
 
 
 @pytest.mark.asyncio
@@ -411,3 +635,19 @@ async def test_query_to_list_async(table_async: AsyncTable):
     assert len(list) == 2
     assert list[0]["vector"] == [1, 2]
     assert list[1]["vector"] == [3, 4]
+
+
+@pytest.mark.asyncio
+async def test_query_with_f16(tmp_path: Path):
+    db = await lancedb.connect_async(tmp_path)
+    f16_arr = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float16)
+
+    df = pa.table(
+        {
+            "vector": pa.FixedSizeListArray.from_arrays(f16_arr, 2),
+            "id": pa.array([1, 2]),
+        }
+    )
+    tbl = await db.create_table("test", df)
+    results = await tbl.vector_search([np.float16(1), np.float16(2)]).to_pandas()
+    assert len(results) == 2

@@ -47,9 +47,9 @@ Let's implement `SentenceTransformerEmbeddings` class. All you need to do is imp
 === "TypeScript"
 
     ```ts
-    --8<--- "nodejs/examples/custom_embedding_function.ts:imports"
+    --8<--- "nodejs/examples/custom_embedding_function.test.ts:imports"
 
-    --8<--- "nodejs/examples/custom_embedding_function.ts:embedding_impl"
+    --8<--- "nodejs/examples/custom_embedding_function.test.ts:embedding_impl"
     ```
 
 
@@ -78,7 +78,7 @@ Now you can use this embedding function to create your table schema and that's i
 === "TypeScript"
 
     ```ts
-    --8<--- "nodejs/examples/custom_embedding_function.ts:call_custom_function"
+    --8<--- "nodejs/examples/custom_embedding_function.test.ts:call_custom_function"
     ```
 
 !!! note

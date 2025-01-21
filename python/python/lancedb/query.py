@@ -1,15 +1,5 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from __future__ import annotations
 
@@ -26,6 +16,7 @@ from typing import (
     Union,
 )
 
+import asyncio
 import deprecation
 import numpy as np
 import pyarrow as pa
@@ -37,17 +28,25 @@ from .arrow import AsyncRecordBatchReader
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
-from .util import safe_import_pandas
+from .util import safe_import_pandas, flatten_columns
 
 if TYPE_CHECKING:
+    import sys
     import PIL
     import polars as pl
 
     from ._lancedb import Query as LanceQuery
+    from ._lancedb import FTSQuery as LanceFTSQuery
+    from ._lancedb import HybridQuery as LanceHybridQuery
     from ._lancedb import VectorQuery as LanceVectorQuery
     from .common import VEC
     from .pydantic import LanceModel
     from .table import Table
+
+    if sys.version_info >= (3, 11):
+        from typing import Self
+    else:
+        from typing_extensions import Self
 
 pd = safe_import_pandas()
 
@@ -122,6 +121,9 @@ class Query(pydantic.BaseModel):
     # e.g. `{"nprobes": "10", "refine_factor": "10"}`
     nprobes: int = 10
 
+    lower_bound: Optional[float] = None
+    upper_bound: Optional[float] = None
+
     # Refine factor.
     refine_factor: Optional[int] = None
 
@@ -130,6 +132,11 @@ class Query(pydantic.BaseModel):
     offset: int = 0
 
     fast_search: bool = False
+
+    ef: Optional[int] = None
+
+    # Default is true. Set to false to enforce a brute force search.
+    use_index: bool = True
 
 
 class LanceQueryBuilder(ABC):
@@ -253,10 +260,12 @@ class LanceQueryBuilder(ABC):
         self._offset = 0
         self._columns = None
         self._where = None
-        self._prefilter = False
+        self._prefilter = True
         self._with_row_id = False
         self._vector = None
         self._text = None
+        self._ef = None
+        self._use_index = True
 
     @deprecation.deprecated(
         deprecated_in="0.3.1",
@@ -290,24 +299,7 @@ class LanceQueryBuilder(ABC):
             specified depth.
             If unspecified, do not flatten the nested columns.
         """
-        tbl = self.to_arrow()
-        if flatten is True:
-            while True:
-                tbl = tbl.flatten()
-                # loop through all columns to check if there is any struct column
-                if any(pa.types.is_struct(col.type) for col in tbl.schema):
-                    continue
-                else:
-                    break
-        elif isinstance(flatten, int):
-            if flatten <= 0:
-                raise ValueError(
-                    "Please specify a positive integer for flatten or the boolean "
-                    "value `True`"
-                )
-            while flatten > 0:
-                tbl = tbl.flatten()
-                flatten -= 1
+        tbl = flatten_columns(self.to_arrow(), flatten)
         return tbl.to_pandas()
 
     @abstractmethod
@@ -319,6 +311,14 @@ class LanceQueryBuilder(ABC):
         In addition to the selected columns, LanceDB also returns a vector
         and also the "_distance" column which is the distance between the query
         vector and the returned vectors.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.Table:
+        """
+        Execute the query and return the results as a pyarrow
+        [RecordBatchReader](https://arrow.apache.org/docs/python/generated/pyarrow.RecordBatchReader.html)
         """
         raise NotImplementedError
 
@@ -367,11 +367,13 @@ class LanceQueryBuilder(ABC):
         ----------
         limit: int
             The maximum number of results to return.
-            By default the query is limited to the first 10.
-            Call this method and pass 0, a negative value,
-            or None to remove the limit.
-            *WARNING* if you have a large dataset, removing
-            the limit can potentially result in reading a
+            The default query limit is 10 results.
+            For ANN/KNN queries, you must specify a limit.
+            Entering 0, a negative number, or None will reset
+            the limit to the default value of 10.
+            *WARNING* if you have a large dataset, setting
+            the limit to a large number, e.g. the table size,
+            can potentially result in reading a
             large amount of data into memory and cause
             out of memory issues.
 
@@ -429,7 +431,7 @@ class LanceQueryBuilder(ABC):
             raise ValueError("columns must be a list or a dictionary")
         return self
 
-    def where(self, where: str, prefilter: bool = False) -> LanceQueryBuilder:
+    def where(self, where: str, prefilter: bool = True) -> LanceQueryBuilder:
         """Set the where clause.
 
         Parameters
@@ -438,7 +440,7 @@ class LanceQueryBuilder(ABC):
             The where clause which is a valid SQL where clause. See
             `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
             for valid SQL expressions.
-        prefilter: bool, default False
+        prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
             This feature is **EXPERIMENTAL** and may be removed and modified
@@ -476,7 +478,7 @@ class LanceQueryBuilder(ABC):
         --------
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", [{"vector": [99, 99]}])
+        >>> table = db.create_table("my_table", [{"vector": [99.0, 99]}])
         >>> query = [100, 100]
         >>> plan = table.search(query).explain_plan(True)
         >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
@@ -505,6 +507,7 @@ class LanceQueryBuilder(ABC):
                 "metric": self._metric,
                 "nprobes": self._nprobes,
                 "refine_factor": self._refine_factor,
+                "use_index": self._use_index,
             },
             prefilter=self._prefilter,
             filter=self._str_query,
@@ -578,7 +581,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     ...       .limit(2)
     ...       .to_pandas())
        b      vector  _distance
-    0  6  [0.4, 0.4]        0.0
+    0  6  [0.4, 0.4]   0.000000
+    1  2  [1.1, 1.2]   0.000944
     """
 
     def __init__(
@@ -593,6 +597,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._query = query
         self._metric = "L2"
         self._nprobes = 20
+        self._lower_bound = None
+        self._upper_bound = None
         self._refine_factor = None
         self._vector_column = vector_column
         self._prefilter = False
@@ -636,6 +642,52 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The LanceQueryBuilder object.
         """
         self._nprobes = nprobes
+        return self
+
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> LanceVectorQueryBuilder:
+        """Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower_bound: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._lower_bound = lower_bound
+        self._upper_bound = upper_bound
+        return self
+
+    def ef(self, ef: int) -> LanceVectorQueryBuilder:
+        """Set the number of candidates to consider during search.
+
+        Higher values will yield better recall (more likely to find vectors if
+        they exist) at the expense of latency.
+
+        This only applies to the HNSW-related index.
+        The default value is 1.5 * limit.
+
+        Parameters
+        ----------
+        ef: int
+            The number of candidates to consider during search.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._ef = ef
         return self
 
     def refine_factor(self, refine_factor: int) -> LanceVectorQueryBuilder:
@@ -695,11 +747,15 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             metric=self._metric,
             columns=self._columns,
             nprobes=self._nprobes,
+            lower_bound=self._lower_bound,
+            upper_bound=self._upper_bound,
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
             offset=self._offset,
             fast_search=self._fast_search,
+            ef=self._ef,
+            use_index=self._use_index,
         )
         result_set = self._table._execute_query(query, batch_size)
         if self._reranker is not None:
@@ -713,7 +769,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         return result_set
 
-    def where(self, where: str, prefilter: bool = False) -> LanceVectorQueryBuilder:
+    def where(self, where: str, prefilter: bool = True) -> LanceVectorQueryBuilder:
         """Set the where clause.
 
         Parameters
@@ -722,7 +778,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The where clause which is a valid SQL where clause. See
             `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
             for valid SQL expressions.
-        prefilter: bool, default False
+        prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
             This feature is **EXPERIMENTAL** and may be removed and modified
@@ -771,6 +827,24 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         if query_string is not None and not isinstance(query_string, str):
             raise ValueError("Reranking currently only supports string queries")
         self._str_query = query_string if query_string is not None else self._str_query
+        return self
+
+    def bypass_vector_index(self) -> LanceVectorQueryBuilder:
+        """
+        If this is called then any vector index is skipped
+
+        An exhaustive (flat) search will be performed.  The query vector will
+        be compared to every vector in the table.  At high scales this can be
+        expensive.  However, this is often still useful.  For example, skipping
+        the vector index can give you ground truth results which you can use to
+        calculate your recall to select an appropriate value for nprobes.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceVectorQueryBuilder object.
+        """
+        self._use_index = False
         return self
 
 
@@ -840,6 +914,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             results = self._reranker.rerank_fts(self._query, results)
             check_reranker_result(results)
         return results
+
+    def to_batches(self, /, batch_size: Optional[int] = None):
+        raise NotImplementedError("to_batches on an FTS query")
 
     def tantivy_to_arrow(self) -> pa.Table:
         try:
@@ -943,12 +1020,19 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
     def to_arrow(self) -> pa.Table:
-        ds = self._table.to_lance()
-        return ds.to_table(
+        return self.to_batches().read_all()
+
+    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.RecordBatchReader:
+        query = Query(
             columns=self._columns,
             filter=self._where,
-            limit=self._limit,
+            k=self._limit or 10,
+            with_row_id=self._with_row_id,
+            vector=[],
+            # not actually respected in remote query
+            offset=self._offset or 0,
         )
+        return self._table._execute_query(query)
 
     def rerank(self, reranker: Reranker) -> LanceEmptyQueryBuilder:
         """Rerank the results using the specified reranker.
@@ -1067,6 +1151,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.nprobes(self._nprobes)
         if self._refine_factor:
             self._vector_query.refine_factor(self._refine_factor)
+        if self._ef:
+            self._vector_query.ef(self._ef)
+        if not self._use_index:
+            self._vector_query.bypass_vector_index()
 
         with ThreadPoolExecutor() as executor:
             fts_future = executor.submit(self._fts_query.with_row_id(True).to_arrow)
@@ -1076,32 +1164,55 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             fts_results = fts_future.result()
             vector_results = vector_future.result()
 
-        # convert to ranks first if needed
-        if self._norm == "rank":
-            vector_results = self._rank(vector_results, "_distance")
-            fts_results = self._rank(fts_results, "_score")
+        return self._combine_hybrid_results(
+            fts_results=fts_results,
+            vector_results=vector_results,
+            norm=self._norm,
+            fts_query=self._fts_query._query,
+            reranker=self._reranker,
+            limit=self._limit,
+            with_row_ids=self._with_row_id,
+        )
+
+    @staticmethod
+    def _combine_hybrid_results(
+        fts_results: pa.Table,
+        vector_results: pa.Table,
+        norm: str,
+        fts_query: str,
+        reranker,
+        limit: int,
+        with_row_ids: bool,
+    ) -> pa.Table:
+        if norm == "rank":
+            vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
+            fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
 
         # normalize the scores to be between 0 and 1, 0 being most relevant
-        vector_results = self._normalize_scores(vector_results, "_distance")
+        vector_results = LanceHybridQueryBuilder._normalize_scores(
+            vector_results, "_distance"
+        )
 
         # In fts higher scores represent relevance. Not inverting them here as
         # rerankers might need to preserve this score to support `return_score="all"`
-        fts_results = self._normalize_scores(fts_results, "_score")
+        fts_results = LanceHybridQueryBuilder._normalize_scores(fts_results, "_score")
 
-        results = self._reranker.rerank_hybrid(
-            self._fts_query._query, vector_results, fts_results
-        )
+        results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
 
         check_reranker_result(results)
 
-        # apply limit after reranking
-        results = results.slice(length=self._limit)
+        results = results.slice(length=limit)
 
-        if not self._with_row_id:
+        if not with_row_ids:
             results = results.drop(["_rowid"])
+
         return results
 
-    def _rank(self, results: pa.Table, column: str, ascending: bool = True):
+    def to_batches(self):
+        raise NotImplementedError("to_batches not yet supported on a hybrid query")
+
+    @staticmethod
+    def _rank(results: pa.Table, column: str, ascending: bool = True):
         if len(results) == 0:
             return results
         # Get the _score column from results
@@ -1118,7 +1229,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         )
         return results
 
-    def _normalize_scores(self, results: pa.Table, column: str, invert=False):
+    @staticmethod
+    def _normalize_scores(results: pa.Table, column: str, invert=False):
         if len(results) == 0:
             return results
         # Get the _score column from results
@@ -1193,6 +1305,54 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._nprobes = nprobes
         return self
 
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> LanceHybridQueryBuilder:
+        """
+        Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower_bound: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._lower_bound = lower_bound
+        self._upper_bound = upper_bound
+        return self
+
+    def ef(self, ef: int) -> LanceHybridQueryBuilder:
+        """
+        Set the number of candidates to consider during search.
+
+        Higher values will yield better recall (more likely to find vectors if
+        they exist) at the expense of latency.
+
+        This only applies to the HNSW-related index.
+        The default value is 1.5 * limit.
+
+        Parameters
+        ----------
+        ef: int
+            The number of candidates to consider during search.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._ef = ef
+        return self
+
     def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
         """Set the distance metric to use.
 
@@ -1235,6 +1395,24 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._text = text
         return self
 
+    def bypass_vector_index(self) -> LanceHybridQueryBuilder:
+        """
+        If this is called then any vector index is skipped
+
+        An exhaustive (flat) search will be performed.  The query vector will
+        be compared to every vector in the table.  At high scales this can be
+        expensive.  However, this is often still useful.  For example, skipping
+        the vector index can give you ground truth results which you can use to
+        calculate your recall to select an appropriate value for nprobes.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._use_index = False
+        return self
+
 
 class AsyncQueryBase(object):
     def __init__(self, inner: Union[LanceQuery | LanceVectorQuery]):
@@ -1246,7 +1424,7 @@ class AsyncQueryBase(object):
         """
         self._inner = inner
 
-    def where(self, predicate: str) -> AsyncQuery:
+    def where(self, predicate: str) -> Self:
         """
         Only return rows matching the given predicate
 
@@ -1265,7 +1443,7 @@ class AsyncQueryBase(object):
         self._inner.where(predicate)
         return self
 
-    def select(self, columns: Union[List[str], dict[str, str]]) -> AsyncQuery:
+    def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
         """
         Return only the specified columns.
 
@@ -1303,7 +1481,7 @@ class AsyncQueryBase(object):
             raise TypeError("columns must be a list of column names or a dict")
         return self
 
-    def limit(self, limit: int) -> AsyncQuery:
+    def limit(self, limit: int) -> Self:
         """
         Set the maximum number of results to return.
 
@@ -1313,7 +1491,7 @@ class AsyncQueryBase(object):
         self._inner.limit(limit)
         return self
 
-    def offset(self, offset: int) -> AsyncQuery:
+    def offset(self, offset: int) -> Self:
         """
         Set the offset for the results.
 
@@ -1325,7 +1503,7 @@ class AsyncQueryBase(object):
         self._inner.offset(offset)
         return self
 
-    def fast_search(self) -> AsyncQuery:
+    def fast_search(self) -> Self:
         """
         Skip searching un-indexed data.
 
@@ -1339,14 +1517,14 @@ class AsyncQueryBase(object):
         self._inner.fast_search()
         return self
 
-    def with_row_id(self) -> AsyncQuery:
+    def with_row_id(self) -> Self:
         """
         Include the _rowid column in the results.
         """
         self._inner.with_row_id()
         return self
 
-    def postfilter(self) -> AsyncQuery:
+    def postfilter(self) -> Self:
         """
         If this is called then filtering will happen after the search instead of
         before.
@@ -1407,7 +1585,9 @@ class AsyncQueryBase(object):
         """
         return (await self.to_arrow()).to_pylist()
 
-    async def to_pandas(self) -> "pd.DataFrame":
+    async def to_pandas(
+        self, flatten: Optional[Union[int, bool]] = None
+    ) -> "pd.DataFrame":
         """
         Execute the query and collect the results into a pandas DataFrame.
 
@@ -1427,8 +1607,42 @@ class AsyncQueryBase(object):
         ...     async for batch in await table.query().to_batches():
         ...         batch_df = batch.to_pandas()
         >>> asyncio.run(doctest_example())
+
+        Parameters
+        ----------
+        flatten: Optional[Union[int, bool]]
+            If flatten is True, flatten all nested columns.
+            If flatten is an integer, flatten the nested columns up to the
+            specified depth.
+            If unspecified, do not flatten the nested columns.
         """
-        return (await self.to_arrow()).to_pandas()
+        return (flatten_columns(await self.to_arrow(), flatten)).to_pandas()
+
+    async def to_polars(self) -> "pl.DataFrame":
+        """
+        Execute the query and collect the results into a Polars DataFrame.
+
+        This method will collect all results into memory before returning.  If you
+        expect a large number of results, you may want to use
+        [to_batches][lancedb.query.AsyncQueryBase.to_batches] and convert each batch to
+        polars separately.
+
+        Examples
+        --------
+
+        >>> import asyncio
+        >>> import polars as pl
+        >>> from lancedb import connect_async
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", data=[{"a": 1, "b": 2}])
+        ...     async for batch in await table.query().to_batches():
+        ...         batch_df = pl.from_arrow(batch)
+        >>> asyncio.run(doctest_example())
+        """
+        import polars as pl
+
+        return pl.from_arrow(await self.to_arrow())
 
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
@@ -1445,10 +1659,11 @@ class AsyncQueryBase(object):
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
-          FilterExec: _distance@2 IS NOT NULL
-            SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
-              KNNVectorDistance: metric=l2
-                LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+          GlobalLimitExec: skip=0, fetch=10
+            FilterExec: _distance@2 IS NOT NULL
+              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+                KNNVectorDistance: metric=l2
+                  LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
 
         Parameters
         ----------
@@ -1491,7 +1706,8 @@ class AsyncQuery(AsyncQueryBase):
         return pa.array(vec)
 
     def nearest_to(
-        self, query_vector: Optional[Union[VEC, Tuple]] = None
+        self,
+        query_vector: Union[VEC, Tuple, List[VEC]],
     ) -> AsyncVectorQuery:
         """
         Find the nearest vectors to the given query vector.
@@ -1529,14 +1745,39 @@ class AsyncQuery(AsyncQueryBase):
 
         Vector searches always have a [limit][].  If `limit` has not been called then
         a default `limit` of 10 will be used.
+
+        Typically, a single vector is passed in as the query. However, you can also
+        pass in multiple vectors. When multiple vectors are passed in, if the vector
+        column is with multivector type, then the vectors will be treated as a single
+        query. Or the vectors will be treated as multiple queries, this can be useful
+        if you want to find the nearest vectors to multiple query vectors.
+        This is not expected to be faster than making multiple queries concurrently;
+        it is just a convenience method. If multiple vectors are passed in then
+        an additional column `query_index` will be added to the results. This column
+        will contain the index of the query vector that the result is nearest to.
         """
-        return AsyncVectorQuery(
-            self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
-        )
+        if query_vector is None:
+            raise ValueError("query_vector can not be None")
+
+        if (
+            isinstance(query_vector, (list, np.ndarray, pa.Array))
+            and len(query_vector) > 0
+            and isinstance(query_vector[0], (list, np.ndarray, pa.Array))
+        ):
+            # multiple have been passed
+            query_vectors = [AsyncQuery._query_vec_to_array(v) for v in query_vector]
+            new_self = self._inner.nearest_to(query_vectors[0])
+            for v in query_vectors[1:]:
+                new_self.add_query_vector(v)
+            return AsyncVectorQuery(new_self)
+        else:
+            return AsyncVectorQuery(
+                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
+            )
 
     def nearest_to_text(
         self, query: str, columns: Union[str, List[str]] = []
-    ) -> AsyncQuery:
+    ) -> AsyncFTSQuery:
         """
         Find the documents that are most relevant to the given text query.
 
@@ -1559,25 +1800,115 @@ class AsyncQuery(AsyncQueryBase):
         """
         if isinstance(columns, str):
             columns = [columns]
-        self._inner.nearest_to_text({"query": query, "columns": columns})
-        return self
+        return AsyncFTSQuery(
+            self._inner.nearest_to_text({"query": query, "columns": columns})
+        )
 
 
-class AsyncVectorQuery(AsyncQueryBase):
-    def __init__(self, inner: LanceVectorQuery):
-        """
-        Construct an AsyncVectorQuery
+class AsyncFTSQuery(AsyncQueryBase):
+    """A query for full text search for LanceDB."""
 
-        This method is not intended to be called directly.  Instead, create
-        a query first with [AsyncTable.query][lancedb.table.AsyncTable.query] and then
-        use [AsyncQuery.nearest_to][lancedb.query.AsyncQuery.nearest_to]] to convert to
-        a vector query.  Or you can use
-        [AsyncTable.vector_search][lancedb.table.AsyncTable.vector_search]
-        """
+    def __init__(self, inner: LanceFTSQuery):
         super().__init__(inner)
         self._inner = inner
+        self._reranker = None
 
-    def column(self, column: str) -> AsyncVectorQuery:
+    def get_query(self) -> str:
+        return self._inner.get_query()
+
+    def rerank(
+        self,
+        reranker: Reranker = RRFReranker(),
+    ) -> AsyncFTSQuery:
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._reranker = reranker
+
+        return self
+
+    def nearest_to(
+        self,
+        query_vector: Union[VEC, Tuple, List[VEC]],
+    ) -> AsyncHybridQuery:
+        """
+        In addition doing text search on the LanceDB Table, also
+        find the nearest vectors to the given query vector.
+
+        This converts the query from a FTS Query to a Hybrid query. Results
+        from the vector search will be combined with results from the FTS query.
+
+        This method will attempt to convert the input to the query vector
+        expected by the embedding model.  If the input cannot be converted
+        then an error will be thrown.
+
+        By default, there is no embedding model, and the input should be
+        something that can be converted to a pyarrow array of floats.  This
+        includes lists, numpy arrays, and tuples.
+
+        If there is only one vector column (a column whose data type is a
+        fixed size list of floats) then the column does not need to be specified.
+        If there is more than one vector column you must use
+        [AsyncVectorQuery.column][lancedb.query.AsyncVectorQuery.column] to specify
+        which column you would like to compare with.
+
+        If no index has been created on the vector column then a vector query
+        will perform a distance comparison between the query vector and every
+        vector in the database and then sort the results.  This is sometimes
+        called a "flat search"
+
+        For small databases, with tens of thousands of vectors or less, this can
+        be reasonably fast.  In larger databases you should create a vector index
+        on the column.  If there is a vector index then an "approximate" nearest
+        neighbor search (frequently called an ANN search) will be performed.  This
+        search is much faster, but the results will be approximate.
+
+        The query can be further parameterized using the returned builder.  There
+        are various ANN search parameters that will let you fine tune your recall
+        accuracy vs search latency.
+
+        Hybrid searches always have a [limit][].  If `limit` has not been called then
+        a default `limit` of 10 will be used.
+
+        Typically, a single vector is passed in as the query. However, you can also
+        pass in multiple vectors.  This can be useful if you want to find the nearest
+        vectors to multiple query vectors. This is not expected to be faster than
+        making multiple queries concurrently; it is just a convenience method.
+        If multiple vectors are passed in then an additional column `query_index`
+        will be added to the results.  This column will contain the index of the
+        query vector that the result is nearest to.
+        """
+        if query_vector is None:
+            raise ValueError("query_vector can not be None")
+
+        if (
+            isinstance(query_vector, list)
+            and len(query_vector) > 0
+            and not isinstance(query_vector[0], (float, int))
+        ):
+            # multiple have been passed
+            query_vectors = [AsyncQuery._query_vec_to_array(v) for v in query_vector]
+            new_self = self._inner.nearest_to(query_vectors[0])
+            for v in query_vectors[1:]:
+                new_self.add_query_vector(v)
+            return AsyncHybridQuery(new_self)
+        else:
+            return AsyncHybridQuery(
+                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
+            )
+
+    async def to_batches(
+        self, *, max_batch_length: Optional[int] = None
+    ) -> AsyncRecordBatchReader:
+        reader = await super().to_batches()
+        results = pa.Table.from_batches(await reader.read_all(), reader.schema)
+        if self._reranker:
+            results = self._reranker.rerank_fts(self.get_query(), results)
+        return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
+
+
+class AsyncVectorQueryBase:
+    def column(self, column: str) -> Self:
         """
         Set the vector column to query
 
@@ -1590,11 +1921,11 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.column(column)
         return self
 
-    def nprobes(self, nprobes: int) -> AsyncVectorQuery:
+    def nprobes(self, nprobes: int) -> Self:
         """
         Set the number of partitions to search (probe)
 
-        This argument is only used when the vector column has an IVF PQ index.
+        This argument is only used when the vector column has an IVF-based index.
         If there is no index then this value is ignored.
 
         The IVF stage of IVF PQ divides the input into partitions (clusters) of
@@ -1616,7 +1947,45 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.nprobes(nprobes)
         return self
 
-    def refine_factor(self, refine_factor: int) -> AsyncVectorQuery:
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> Self:
+        """Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower_bound: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        AsyncVectorQuery
+            The AsyncVectorQuery object.
+        """
+        self._inner.distance_range(lower_bound, upper_bound)
+        return self
+
+    def ef(self, ef: int) -> Self:
+        """
+        Set the number of candidates to consider during search
+
+        This argument is only used when the vector column has an HNSW index.
+        If there is no index then this value is ignored.
+
+        Increasing this value will increase the recall of your query but will also
+        increase the latency of your query.  The default value is 1.5 * limit.  This
+        default is good for many cases but the best value to use will depend on your
+        data and the recall that you need to achieve.
+        """
+        self._inner.ef(ef)
+        return self
+
+    def refine_factor(self, refine_factor: int) -> Self:
         """
         A multiplier to control how many additional rows are taken during the refine
         step
@@ -1652,7 +2021,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.refine_factor(refine_factor)
         return self
 
-    def distance_type(self, distance_type: str) -> AsyncVectorQuery:
+    def distance_type(self, distance_type: str) -> Self:
         """
         Set the distance metric to use
 
@@ -1670,7 +2039,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.distance_type(distance_type)
         return self
 
-    def bypass_vector_index(self) -> AsyncVectorQuery:
+    def bypass_vector_index(self) -> Self:
         """
         If this is called then any vector index is skipped
 
@@ -1682,3 +2051,202 @@ class AsyncVectorQuery(AsyncQueryBase):
         """
         self._inner.bypass_vector_index()
         return self
+
+
+class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
+    def __init__(self, inner: LanceVectorQuery):
+        """
+        Construct an AsyncVectorQuery
+
+        This method is not intended to be called directly.  Instead, create
+        a query first with [AsyncTable.query][lancedb.table.AsyncTable.query] and then
+        use [AsyncQuery.nearest_to][lancedb.query.AsyncQuery.nearest_to]] to convert to
+        a vector query.  Or you can use
+        [AsyncTable.vector_search][lancedb.table.AsyncTable.vector_search]
+        """
+        super().__init__(inner)
+        self._inner = inner
+        self._reranker = None
+        self._query_string = None
+
+    def rerank(
+        self, reranker: Reranker = RRFReranker(), query_string: Optional[str] = None
+    ) -> AsyncHybridQuery:
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._reranker = reranker
+
+        if not self._query_string and not query_string:
+            raise ValueError("query_string must be provided to rerank the results.")
+
+        self._query_string = query_string
+
+        return self
+
+    def nearest_to_text(
+        self, query: str, columns: Union[str, List[str]] = []
+    ) -> AsyncHybridQuery:
+        """
+        Find the documents that are most relevant to the given text query,
+        in addition to vector search.
+
+        This converts the vector query into a hybrid query.
+
+        This search will perform a full text search on the table and return
+        the most relevant documents, combined with the vector query results.
+        The text relevance is determined by BM25.
+
+        The columns to search must be with native FTS index
+        (Tantivy-based can't work with this method).
+
+        By default, all indexed columns are searched,
+        now only one column can be searched at a time.
+
+        Parameters
+        ----------
+        query: str
+            The text query to search for.
+        columns: str or list of str, default None
+            The columns to search in. If None, all indexed columns are searched.
+            For now only one column can be searched at a time.
+        """
+        if isinstance(columns, str):
+            columns = [columns]
+        return AsyncHybridQuery(
+            self._inner.nearest_to_text({"query": query, "columns": columns})
+        )
+
+    async def to_batches(
+        self, *, max_batch_length: Optional[int] = None
+    ) -> AsyncRecordBatchReader:
+        reader = await super().to_batches()
+        results = pa.Table.from_batches(await reader.read_all(), reader.schema)
+        if self._reranker:
+            results = self._reranker.rerank_vector(self._query_string, results)
+        return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
+
+
+class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
+    """
+    A query builder that performs hybrid vector and full text search.
+    Results are combined and reranked based on the specified reranker.
+    By default, the results are reranked using the RRFReranker, which
+    uses reciprocal rank fusion score for reranking.
+
+    To make the vector and fts results comparable, the scores are normalized.
+    Instead of normalizing scores, the `normalize` parameter can be set to "rank"
+    in the `rerank` method to convert the scores to ranks and then normalize them.
+    """
+
+    def __init__(self, inner: LanceHybridQuery):
+        super().__init__(inner)
+        self._inner = inner
+        self._norm = "score"
+        self._reranker = RRFReranker()
+
+    def rerank(
+        self, reranker: Reranker = RRFReranker(), normalize: str = "score"
+    ) -> AsyncHybridQuery:
+        """
+        Rerank the hybrid search results using the specified reranker. The reranker
+        must be an instance of Reranker class.
+
+        Parameters
+        ----------
+        reranker: Reranker, default RRFReranker()
+            The reranker to use. Must be an instance of Reranker class.
+        normalize: str, default "score"
+            The method to normalize the scores. Can be "rank" or "score". If "rank",
+            the scores are converted to ranks and then normalized. If "score", the
+            scores are normalized directly.
+        Returns
+        -------
+        AsyncHybridQuery
+            The AsyncHybridQuery object.
+        """
+        if normalize not in ["rank", "score"]:
+            raise ValueError("normalize must be 'rank' or 'score'.")
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._norm = normalize
+        self._reranker = reranker
+
+        return self
+
+    async def to_batches(
+        self, *, max_batch_length: Optional[int] = None
+    ) -> AsyncRecordBatchReader:
+        fts_query = AsyncFTSQuery(self._inner.to_fts_query())
+        vec_query = AsyncVectorQuery(self._inner.to_vector_query())
+
+        # save the row ID choice that was made on the query builder and force it
+        # to actually fetch the row ids because we need this for reranking
+        with_row_ids = self._inner.get_with_row_id()
+        fts_query.with_row_id()
+        vec_query.with_row_id()
+
+        fts_results, vector_results = await asyncio.gather(
+            fts_query.to_arrow(),
+            vec_query.to_arrow(),
+        )
+
+        result = LanceHybridQueryBuilder._combine_hybrid_results(
+            fts_results=fts_results,
+            vector_results=vector_results,
+            norm=self._norm,
+            fts_query=fts_query.get_query(),
+            reranker=self._reranker,
+            limit=self._inner.get_limit(),
+            with_row_ids=with_row_ids,
+        )
+
+        return AsyncRecordBatchReader(result, max_batch_length=max_batch_length)
+
+    async def explain_plan(self, verbose: Optional[bool] = False):
+        """Return the execution plan for this query.
+
+        The output includes both the vector and FTS search plans.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> from lancedb import connect_async
+        >>> from lancedb.index import FTS
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", [{"vector": [99, 99], "text": "hello world"}])
+        ...     await table.create_index("text", config=FTS(with_position=False))
+        ...     query = [100, 100]
+        ...     plan = await table.query().nearest_to([1, 2]).nearest_to_text("hello").explain_plan(True)
+        ...     print(plan)
+        >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+        Vector Search Plan:
+        ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
+            Take: columns="vector, _rowid, _distance, (text)"
+                CoalesceBatchesExec: target_batch_size=1024
+                GlobalLimitExec: skip=0, fetch=10
+                    FilterExec: _distance@2 IS NOT NULL
+                    SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+                        KNNVectorDistance: metric=l2
+                        LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+        FTS Search Plan:
+        LanceScan: uri=..., projection=[vector, text], row_id=false, row_addr=false, ordered=true
+
+        Parameters
+        ----------
+        verbose : bool, default False
+            Use a verbose output format.
+
+        Returns
+        -------
+        plan
+        """  # noqa: E501
+
+        results = ["Vector Search Plan:"]
+        results.append(await self._inner.to_vector_query().explain_plan(verbose))
+        results.append("FTS Search Plan:")
+        results.append(await self._inner.to_fts_query().explain_plan(verbose))
+
+        return "\n".join(results)

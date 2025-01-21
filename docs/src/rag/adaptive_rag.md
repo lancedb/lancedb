@@ -2,7 +2,7 @@
 ====================================================================
 Adaptive RAG introduces a RAG technique that combines query analysis with self-corrective RAG. 
 
-For Query Analysis, it uses a small classifier(LLM), to decide the query’s complexity. Query Analysis helps routing smoothly to adjust between different retrieval strategies No retrieval, Single-shot RAG or Iterative RAG.
+For Query Analysis, it uses a small classifier(LLM), to decide the query’s complexity. Query Analysis guides adjustment between different retrieval strategies: No retrieval, Single-shot RAG or Iterative RAG.
 
 **[Official Paper](https://arxiv.org/pdf/2403.14403)**
 
@@ -12,9 +12,9 @@ For Query Analysis, it uses a small classifier(LLM), to decide the query’s com
   </figcaption>
 </figure>
 
-**[Offical Implementation](https://github.com/starsuzi/Adaptive-RAG)**
+**[Official Implementation](https://github.com/starsuzi/Adaptive-RAG)**
 
-Here’s a code snippet for query analysis
+Here’s a code snippet for query analysis:
 
 ```python
 from langchain_core.prompts import ChatPromptTemplate
@@ -35,7 +35,7 @@ llm = ChatOpenAI(model="gpt-3.5-turbo-0125", temperature=0)
 structured_llm_router = llm.with_structured_output(RouteQuery)
 ```
 
-For defining and querying retriever
+The following example defines and queries a retriever:
 
 ```python
 # add documents in LanceDB

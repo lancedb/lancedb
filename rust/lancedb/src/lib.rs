@@ -30,7 +30,7 @@
 //!
 //! LanceDB runs in process, to use it in your Rust project, put the following in your `Cargo.toml`:
 //!
-//! ```ignore
+//! ```shell
 //! cargo install lancedb
 //! ```
 //!
@@ -214,6 +214,7 @@ mod polars_arrow_convertors;
 pub mod query;
 #[cfg(feature = "remote")]
 pub mod remote;
+pub mod rerankers;
 pub mod table;
 pub mod utils;
 

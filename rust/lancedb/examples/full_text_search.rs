@@ -52,7 +52,7 @@ fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
         .iter()
         .step_by(1024)
         .take(500)
-        .map(|w| *w)
+        .copied()
         .collect::<Vec<_>>();
     let n_terms = 3;
     let batches = RecordBatchIterator::new(
@@ -95,7 +95,7 @@ async fn search_index(table: &Table) -> Result<()> {
         .iter()
         .step_by(1024)
         .take(500)
-        .map(|w| *w)
+        .copied()
         .collect::<Vec<_>>();
     let query = words[0].to_owned();
     println!("Searching for: {}", query);

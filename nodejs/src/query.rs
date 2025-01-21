@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
 use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::query::ExecutableQuery;
 use lancedb::query::Query as LanceDbQuery;
@@ -25,6 +27,8 @@ use napi_derive::napi;
 use crate::error::convert_error;
 use crate::error::NapiErrorExt;
 use crate::iterator::RecordBatchIterator;
+use crate::rerankers::Reranker;
+use crate::rerankers::RerankerCallbacks;
 use crate::util::parse_distance_type;
 
 #[napi]
@@ -136,6 +140,16 @@ impl VectorQuery {
     }
 
     #[napi]
+    pub fn add_query_vector(&mut self, vector: Float32Array) -> Result<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .add_query_vector(vector.as_ref())
+            .default_error()?;
+        Ok(())
+    }
+
+    #[napi]
     pub fn distance_type(&mut self, distance_type: String) -> napi::Result<()> {
         let distance_type = parse_distance_type(distance_type)?;
         self.inner = self.inner.clone().distance_type(distance_type);
@@ -155,6 +169,20 @@ impl VectorQuery {
     #[napi]
     pub fn nprobes(&mut self, nprobe: u32) {
         self.inner = self.inner.clone().nprobes(nprobe as usize);
+    }
+
+    #[napi]
+    pub fn distance_range(&mut self, lower_bound: Option<f64>, upper_bound: Option<f64>) {
+        // napi doesn't support f32, so we have to convert to f32
+        self.inner = self
+            .inner
+            .clone()
+            .distance_range(lower_bound.map(|v| v as f32), upper_bound.map(|v| v as f32));
+    }
+
+    #[napi]
+    pub fn ef(&mut self, ef: u32) {
+        self.inner = self.inner.clone().ef(ef as usize);
     }
 
     #[napi]
@@ -201,6 +229,14 @@ impl VectorQuery {
     #[napi]
     pub fn with_row_id(&mut self) {
         self.inner = self.inner.clone().with_row_id();
+    }
+
+    #[napi]
+    pub fn rerank(&mut self, callbacks: RerankerCallbacks) {
+        self.inner = self
+            .inner
+            .clone()
+            .rerank(Arc::new(Reranker::new(callbacks)));
     }
 
     #[napi(catch_unwind)]

@@ -7,6 +7,7 @@
 ## Namespaces
 
 - [embedding](namespaces/embedding/README.md)
+- [rerankers](namespaces/rerankers/README.md)
 
 ## Enumerations
 
@@ -28,17 +29,19 @@
 
 - [AddColumnsSql](interfaces/AddColumnsSql.md)
 - [AddDataOptions](interfaces/AddDataOptions.md)
+- [ClientConfig](interfaces/ClientConfig.md)
 - [ColumnAlteration](interfaces/ColumnAlteration.md)
 - [ConnectionOptions](interfaces/ConnectionOptions.md)
 - [CreateTableOptions](interfaces/CreateTableOptions.md)
 - [ExecutableQuery](interfaces/ExecutableQuery.md)
 - [IndexConfig](interfaces/IndexConfig.md)
-- [IndexMetadata](interfaces/IndexMetadata.md)
 - [IndexOptions](interfaces/IndexOptions.md)
 - [IndexStatistics](interfaces/IndexStatistics.md)
 - [IvfPqOptions](interfaces/IvfPqOptions.md)
-- [FtsOptions](interfaces/FtsOptions.md)
+- [OptimizeOptions](interfaces/OptimizeOptions.md)
+- [RetryConfig](interfaces/RetryConfig.md)
 - [TableNamesOptions](interfaces/TableNamesOptions.md)
+- [TimeoutConfig](interfaces/TimeoutConfig.md)
 - [UpdateOptions](interfaces/UpdateOptions.md)
 - [WriteOptions](interfaces/WriteOptions.md)
 

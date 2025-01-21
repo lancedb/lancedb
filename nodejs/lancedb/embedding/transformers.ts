@@ -47,8 +47,8 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
   string,
   Partial<XenovaTransformerOptions>
 > {
-  #model?: import("@xenova/transformers").PreTrainedModel;
-  #tokenizer?: import("@xenova/transformers").PreTrainedTokenizer;
+  #model?: import("@huggingface/transformers").PreTrainedModel;
+  #tokenizer?: import("@huggingface/transformers").PreTrainedTokenizer;
   #modelName: XenovaTransformerOptions["model"];
   #initialized = false;
   #tokenizerOptions: XenovaTransformerOptions["tokenizerOptions"];
@@ -92,18 +92,19 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
     try {
       // SAFETY:
       // since typescript transpiles `import` to `require`, we need to do this in an unsafe way
-      // We can't use `require` because `@xenova/transformers` is an ESM module
+      // We can't use `require` because `@huggingface/transformers` is an ESM module
       // and we can't use `import` directly because typescript will transpile it to `require`.
       // and we want to remain compatible with both ESM and CJS modules
       // so we use `eval` to bypass typescript for this specific import.
-      transformers = await eval('import("@xenova/transformers")');
+      transformers = await eval('import("@huggingface/transformers")');
     } catch (e) {
-      throw new Error(`error loading @xenova/transformers\nReason: ${e}`);
+      throw new Error(`error loading @huggingface/transformers\nReason: ${e}`);
     }
 
     try {
       this.#model = await transformers.AutoModel.from_pretrained(
         this.#modelName,
+        { dtype: "fp32" },
       );
     } catch (e) {
       throw new Error(
@@ -128,7 +129,8 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
     } else {
       const config = this.#model!.config;
 
-      const ndims = config["hidden_size"];
+      // biome-ignore lint/style/useNamingConvention: we don't control this name.
+      const ndims = (config as unknown as { hidden_size: number }).hidden_size;
       if (!ndims) {
         throw new Error(
           "hidden_size not found in model config, you may need to manually specify the embedding dimensions. ",
@@ -183,7 +185,7 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
 }
 
 const tensorDiv = (
-  src: import("@xenova/transformers").Tensor,
+  src: import("@huggingface/transformers").Tensor,
   divBy: number,
 ) => {
   for (let i = 0; i < src.data.length; ++i) {

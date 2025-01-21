@@ -58,8 +58,10 @@ In Python, the index can be created as follows:
 # Make sure you have enough data in the table for an effective training step
 tbl.create_index(metric="L2", num_partitions=256, num_sub_vectors=96)
 ```
+!!! note
+    `num_partitions`=256 and `num_sub_vectors`=96 does not work for every dataset. Those values needs to be adjusted for your particular dataset.
 
-The `num_partitions` is usually chosen to target a particular number of vectors per partition. `num_sub_vectors` is typically chosen based on the desired recall and the dimensionality of the vector. See the [FAQs](#faq) below for best practices on choosing these parameters.
+The `num_partitions` is usually chosen to target a particular number of vectors per partition. `num_sub_vectors` is typically chosen based on the desired recall and the dimensionality of the vector. See [here](../ann_indexes.md/#how-to-choose-num_partitions-and-num_sub_vectors-for-ivf_pq-index) for best practices on choosing these parameters.
 
 
 ### Query the index

@@ -50,6 +50,7 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run clippy
         run: cargo clippy --workspace --tests --all-features -- -D warnings
+
   linux:
     timeout-minutes: 30
     # To build all features, we need more disk space than is available
@@ -91,6 +92,7 @@ jobs:
         run: cargo test --all-features
       - name: Run examples
         run: cargo run --example simple
+
   macos:
     timeout-minutes: 30
     strategy:
@@ -118,6 +120,7 @@ jobs:
       - name: Run tests
         # Run with everything except the integration tests.
         run: cargo test --features remote,fp16kernels
+
   windows:
     runs-on: windows-2022
     steps:
@@ -139,24 +142,11 @@ jobs:
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cargo build
           cargo test
+
   windows-arm64:
     runs-on: windows-4x-arm
     steps:
-      - name: Cache installations
-        id: cache-installs
-        uses: actions/cache@v4
-        with:
-          path: |
-            C:\Program Files\Git
-            C:\BuildTools
-            C:\Program Files (x86)\Windows Kits
-            C:\Program Files\7-Zip
-            C:\protoc
-          key: ${{ runner.os }}-arm64-installs-v1
-          restore-keys: |
-            ${{ runner.os }}-arm64-installs-
       - name: Install Git
-        if: steps.cache-installs.outputs.cache-hit != 'true'
         run: |
           Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe" -OutFile "git-installer.exe"
           Start-Process -FilePath "git-installer.exe" -ArgumentList "/VERYSILENT", "/NORESTART" -Wait
@@ -173,7 +163,6 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install Visual Studio Build Tools
-        if: steps.cache-installs.outputs.cache-hit != 'true'
         run: |
           Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "vs_buildtools.exe"
           Start-Process -FilePath "vs_buildtools.exe" -ArgumentList "--quiet", "--wait", "--norestart", "--nocache", `
@@ -196,7 +185,7 @@ jobs:
           Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\Llvm\x64\bin"
 
           # Add MSVC runtime libraries to LIB
-          $env:LIB = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\lib\arm64;" + 
+          $env:LIB = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\lib\arm64;" +
                      "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\arm64;" +
                      "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\arm64"
           Add-Content $env:GITHUB_ENV "LIB=$env:LIB"
@@ -217,12 +206,10 @@ jobs:
         run: |
           Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.cargo\bin"
         shell: powershell
-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
       - name: Install 7-Zip ARM
-        if: steps.cache-installs.outputs.cache-hit != 'true'
         run: |
           New-Item -Path 'C:\7zip' -ItemType Directory
           Invoke-WebRequest https://7-zip.org/a/7z2408-arm64.exe -OutFile C:\7zip\7z-installer.exe
@@ -232,12 +219,11 @@ jobs:
         run: Add-Content $env:GITHUB_PATH "C:\Program Files\7-Zip"
         shell: powershell
       - name: Install Protoc v21.12
-        if: steps.cache-installs.outputs.cache-hit != 'true'
         working-directory: C:\
         run: |
           if (Test-Path 'C:\protoc') {
-              Write-Host "Protoc directory exists, skipping installation"
-              return
+            Write-Host "Protoc directory exists, skipping installation"
+            return
           }
           New-Item -Path 'C:\protoc' -ItemType Directory
           Set-Location C:\protoc
@@ -252,3 +238,41 @@ jobs:
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cargo build --target aarch64-pc-windows-msvc
           cargo test --target aarch64-pc-windows-msvc
+
+  msrv:
+    # Check the minimum supported Rust version
+    name: MSRV Check - Rust v${{ matrix.msrv }}
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        msrv: ["1.78.0"] # This should match up with rust-version in Cargo.toml
+    env:
+      # Need up-to-date compilers for kernels
+      CC: clang-18
+      CXX: clang++-18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - name: Install ${{ matrix.msrv }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.msrv }}
+      - name: Downgrade  dependencies
+        # These packages have newer requirements for MSRV
+        run: |
+          cargo update -p aws-sdk-bedrockruntime --precise 1.64.0
+          cargo update -p aws-sdk-dynamodb --precise 1.55.0
+          cargo update -p aws-config --precise 1.5.10
+          cargo update -p aws-sdk-kms --precise 1.51.0
+          cargo update -p aws-sdk-s3 --precise 1.65.0
+          cargo update -p aws-sdk-sso --precise 1.50.0
+          cargo update -p aws-sdk-ssooidc --precise 1.51.0
+          cargo update -p aws-sdk-sts --precise 1.51.0
+          cargo update -p home --precise 0.5.9
+      - name: cargo +${{ matrix.msrv }} check
+        run: cargo check --workspace --tests --benches --all-features

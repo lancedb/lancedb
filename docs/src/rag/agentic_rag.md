@@ -1,6 +1,6 @@
 **Agentic RAG 🤖**
 ====================================================================
-Agentic RAG is Agent-based RAG introduces an advanced framework for answering questions by using intelligent agents instead of just relying on large language models. These agents act like expert researchers, handling complex tasks such as detailed planning, multi-step reasoning, and using external tools. They navigate multiple documents, compare information, and generate accurate answers. This system is easily scalable, with each new document set managed by a sub-agent, making it a powerful tool for tackling a wide range of information needs.
+Agentic RAG introduces an advanced framework for answering questions by using intelligent agents instead of just relying on large language models. These agents act like expert researchers, handling complex tasks such as detailed planning, multi-step reasoning, and using external tools. They navigate multiple documents, compare information, and generate accurate answers. This system is easily scalable, with each new document set managed by a sub-agent, making it a powerful tool for tackling a wide range of information needs.
 
 <figure markdown="span">
   ![agent-based-rag](https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/rag/agentic_rag.png)
@@ -9,7 +9,7 @@ Agentic RAG is Agent-based RAG introduces an advanced framework for answering qu
 
 [![Open In Colab](../assets/colab.svg)](https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/Agentic_RAG/main.ipynb)
 
-Here’s a code snippet for defining retriever using Langchain
+Here’s a code snippet for defining retriever using Langchain:
 
 ```python
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -41,7 +41,7 @@ retriever = vectorstore.as_retriever()
 
 ```
 
-Agent that formulates an improved query for better retrieval results and then grades the retrieved documents
+Here is an agent that formulates an improved query for better retrieval results and then grades the retrieved documents:
 
 ```python
 def grade_documents(state) -> Literal["generate", "rewrite"]:

@@ -132,6 +132,10 @@ macro_rules! impl_pq_params_setter {
             self.num_sub_vectors = Some(num_sub_vectors);
             self
         }
+        pub fn num_bits(mut self, num_bits: u32) -> Self {
+            self.num_bits = Some(num_bits);
+            self
+        }
     };
 }
 
@@ -156,6 +160,43 @@ macro_rules! impl_hnsw_params_setter {
             self
         }
     };
+}
+
+/// Builder for an IVF Flat index.
+///
+/// This index stores raw vectors. These vectors are grouped into partitions of similar vectors.
+/// Each partition keeps track of a centroid which is the average value of all vectors in the group.
+///
+/// During a query the centroids are compared with the query vector to find the closest partitions.
+/// The raw vectors in these partitions are then searched to find the closest vectors.
+///
+/// The partitioning process is called IVF and the `num_partitions` parameter controls how many groups to create.
+///
+/// Note that training an IVF Flat index on a large dataset is a slow operation and currently is also a memory intensive operation.
+#[derive(Debug, Clone)]
+pub struct IvfFlatIndexBuilder {
+    pub(crate) distance_type: DistanceType,
+
+    // IVF
+    pub(crate) num_partitions: Option<u32>,
+    pub(crate) sample_rate: u32,
+    pub(crate) max_iterations: u32,
+}
+
+impl Default for IvfFlatIndexBuilder {
+    fn default() -> Self {
+        Self {
+            distance_type: DistanceType::L2,
+            num_partitions: None,
+            sample_rate: 256,
+            max_iterations: 50,
+        }
+    }
+}
+
+impl IvfFlatIndexBuilder {
+    impl_distance_type_setter!();
+    impl_ivf_params_setter!();
 }
 
 /// Builder for an IVF PQ index.
@@ -189,6 +230,7 @@ pub struct IvfPqIndexBuilder {
 
     // PQ
     pub(crate) num_sub_vectors: Option<u32>,
+    pub(crate) num_bits: Option<u32>,
 }
 
 impl Default for IvfPqIndexBuilder {
@@ -197,6 +239,7 @@ impl Default for IvfPqIndexBuilder {
             distance_type: DistanceType::L2,
             num_partitions: None,
             num_sub_vectors: None,
+            num_bits: None,
             sample_rate: 256,
             max_iterations: 50,
         }
@@ -256,6 +299,7 @@ pub struct IvfHnswPqIndexBuilder {
 
     // PQ
     pub(crate) num_sub_vectors: Option<u32>,
+    pub(crate) num_bits: Option<u32>,
 }
 
 impl Default for IvfHnswPqIndexBuilder {
@@ -264,6 +308,7 @@ impl Default for IvfHnswPqIndexBuilder {
             distance_type: DistanceType::L2,
             num_partitions: None,
             num_sub_vectors: None,
+            num_bits: None,
             sample_rate: 256,
             max_iterations: 50,
             m: 20,

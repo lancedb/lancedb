@@ -174,6 +174,38 @@ def safe_import_polars():
         return None
 
 
+def flatten_columns(tbl: pa.Table, flatten: Optional[Union[int, bool]] = None):
+    """
+    Flatten all struct columns in a table.
+
+    Parameters
+    ----------
+    flatten: Optional[Union[int, bool]]
+        If flatten is True, flatten all nested columns.
+        If flatten is an integer, flatten the nested columns up to the
+        specified depth.
+        If unspecified, do not flatten the nested columns.
+    """
+    if flatten is True:
+        while True:
+            tbl = tbl.flatten()
+            # loop through all columns to check if there is any struct column
+            if any(pa.types.is_struct(col.type) for col in tbl.schema):
+                continue
+            else:
+                break
+    elif isinstance(flatten, int):
+        if flatten <= 0:
+            raise ValueError(
+                "Please specify a positive integer for flatten or the boolean "
+                "value `True`"
+            )
+        while flatten > 0:
+            tbl = tbl.flatten()
+            flatten -= 1
+    return tbl
+
+
 def inf_vector_column_query(schema: pa.Schema) -> str:
     """
     Get the vector column name
@@ -191,9 +223,7 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
     vector_col_count = 0
     for field_name in schema.names:
         field = schema.field(field_name)
-        if pa.types.is_fixed_size_list(field.type) and pa.types.is_floating(
-            field.type.value_type
-        ):
+        if is_vector_column(field.type):
             vector_col_count += 1
             if vector_col_count > 1:
                 raise ValueError(
@@ -201,7 +231,6 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
                     "Please specify the vector column name "
                     "for vector search"
                 )
-                break
             elif vector_col_count == 1:
                 vector_col_name = field_name
     if vector_col_count == 0:
@@ -210,6 +239,29 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
             "Please specify the vector column name for vector search"
         )
     return vector_col_name
+
+
+def is_vector_column(data_type: pa.DataType) -> bool:
+    """
+    Check if the column is a vector column.
+
+    Parameters
+    ----------
+    data_type : pa.DataType
+        The data type of the column.
+
+    Returns
+    -------
+    bool: True if the column is a vector column.
+    """
+    if pa.types.is_fixed_size_list(data_type) and (
+        pa.types.is_floating(data_type.value_type)
+        or pa.types.is_uint8(data_type.value_type)
+    ):
+        return True
+    elif pa.types.is_list(data_type):
+        return is_vector_column(data_type.value_type)
+    return False
 
 
 def infer_vector_column_name(
@@ -314,3 +366,15 @@ def deprecated(func):
 def validate_table_name(name: str):
     """Verify the table name is valid."""
     native_validate_table_name(name)
+
+
+def add_note(base_exception: BaseException, note: str):
+    if hasattr(base_exception, "add_note"):
+        base_exception.add_note(note)
+    elif isinstance(base_exception.args[0], str):
+        base_exception.args = (
+            base_exception.args[0] + "\n" + note,
+            *base_exception.args[1:],
+        )
+    else:
+        raise ValueError("Cannot add note to exception")

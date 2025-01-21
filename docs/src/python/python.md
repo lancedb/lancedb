@@ -1,6 +1,16 @@
 # Python API Reference
 
-This section contains the API reference for the OSS Python API.
+This section contains the API reference for the Python API. There is a
+synchronous and an asynchronous API client.
+
+The general flow of using the API is:
+
+1. Use [lancedb.connect][] or [lancedb.connect_async][] to connect to a database.
+2. Use the returned [lancedb.DBConnection][] or [lancedb.AsyncConnection][] to
+   create or open tables.
+3. Use the returned [lancedb.table.Table][] or [lancedb.AsyncTable][] to query
+   or modify tables.
+
 
 ## Installation
 
@@ -36,6 +46,8 @@ is also an [asynchronous API client](#connections-asynchronous).
 ## Embeddings
 
 ::: lancedb.embeddings.registry.EmbeddingFunctionRegistry
+
+::: lancedb.embeddings.base.EmbeddingFunctionConfig
 
 ::: lancedb.embeddings.base.EmbeddingFunction
 
@@ -117,7 +129,15 @@ lists the indices that LanceDb supports.
 
 ::: lancedb.index.LabelList
 
+::: lancedb.index.FTS
+
 ::: lancedb.index.IvfPq
+
+::: lancedb.index.HnswPq
+
+::: lancedb.index.HnswSq
+
+::: lancedb.index.IvfFlat
 
 ## Querying (Asynchronous)
 
@@ -127,8 +147,19 @@ to return the entire (typically filtered) table. Vector searches return the
 rows nearest to a query vector and can be created with the
 [AsyncTable.vector_search][lancedb.table.AsyncTable.vector_search] method.
 
-::: lancedb.query.AsyncQueryBase
 
 ::: lancedb.query.AsyncQuery
+    options:
+      inherited_members: true
 
 ::: lancedb.query.AsyncVectorQuery
+    options:
+      inherited_members: true
+
+::: lancedb.query.AsyncFTSQuery
+    options:
+      inherited_members: true
+
+::: lancedb.query.AsyncHybridQuery
+    options:
+      inherited_members: true

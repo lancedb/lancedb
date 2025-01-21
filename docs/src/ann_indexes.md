@@ -18,25 +18,24 @@ See the [indexing](concepts/index_ivfpq.md) concepts guide for more information 
 Lance supports `IVF_PQ` index type by default.
 
 === "Python"
+    === "Sync API"
 
-    Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) method.
+        Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) method.
 
-    ```python
-    import lancedb
-    import numpy as np
-    uri = "data/sample-lancedb"
-    db = lancedb.connect(uri)
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-numpy"
+        --8<-- "python/python/tests/docs/test_guide_index.py:create_ann_index"
+        ```
+    === "Async API"
+        Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) method.
 
-    # Create 10,000 sample vectors
-    data = [{"vector": row, "item": f"item {i}"}
-        for i, row in enumerate(np.random.random((10_000, 1536)).astype('float32'))]
-
-    # Add the vectors to a table
-    tbl = db.create_table("my_vectors", data=data)
-
-    # Create and train the index - you need to have enough data in the table for an effective training step
-    tbl.create_index(num_partitions=256, num_sub_vectors=96)
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-numpy"
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb-ivfpq"
+        --8<-- "python/python/tests/docs/test_guide_index.py:create_ann_index_async"
+        ```
 
 === "TypeScript"
 
@@ -45,9 +44,9 @@ Lance supports `IVF_PQ` index type by default.
         Creating indexes is done via the [lancedb.Table.createIndex](../js/classes/Table.md/#createIndex) method.
 
         ```typescript
-        --8<--- "nodejs/examples/ann_indexes.ts:import"
+        --8<--- "nodejs/examples/ann_indexes.test.ts:import"
 
-        --8<-- "nodejs/examples/ann_indexes.ts:ingest"
+        --8<-- "nodejs/examples/ann_indexes.test.ts:ingest"
         ```
 
     === "vectordb (deprecated)"
@@ -83,6 +82,7 @@ The following IVF_PQ paramters can be specified:
 - **num_sub_vectors**: The number of sub-vectors (M) that will be created during Product Quantization (PQ).
   For D dimensional vector, it will be divided into `M` subvectors with dimension `D/M`, each of which is replaced by
   a single PQ code. The default is the dimension of the vector divided by 16.
+- **num_bits**: The number of bits used to encode each sub-vector. Only 4 and 8 are supported. The higher the number of bits, the higher the accuracy of the index, also the slower search. The default is 8.
 
 !!! note
 
@@ -126,7 +126,9 @@ You can specify the GPU device to train IVF partitions via
         accelerator="mps"
     )
     ```
-
+!!! note
+    GPU based indexing is not yet supported with our asynchronous client.
+    
 Troubleshooting:
 
 If you see `AssertionError: Torch not compiled with CUDA enabled`, you need to [install
@@ -140,23 +142,27 @@ There are a couple of parameters that can be used to fine-tune the search:
 
 - **limit** (default: 10): The amount of results that will be returned
 - **nprobes** (default: 20): The number of probes used. A higher number makes search more accurate but also slower.<br/>
-  Most of the time, setting nprobes to cover 5-10% of the dataset should achieve high recall with low latency.<br/>
-  e.g., for 1M vectors divided up into 256 partitions, nprobes should be set to ~20-40.<br/>
-  Note: nprobes is only applicable if an ANN index is present. If specified on a table without an ANN index, it is ignored.
+  Most of the time, setting nprobes to cover 5-15% of the dataset should achieve high recall with low latency.<br/>
+    - _For example_, For a dataset of 1 million vectors divided into 256 partitions, `nprobes` should be set to ~20-40. This value can be adjusted to achieve the optimal balance between search latency and search quality. <br/>
+
 - **refine_factor** (default: None): Refine the results by reading extra elements and re-ranking them in memory.<br/>
   A higher number makes search more accurate but also slower. If you find the recall is less than ideal, try refine_factor=10 to start.<br/>
-  e.g., for 1M vectors divided into 256 partitions, if you're looking for top 20, then refine_factor=200 reranks the whole partition.<br/>
-  Note: refine_factor is only applicable if an ANN index is present. If specified on a table without an ANN index, it is ignored.
+    - _For example_, For a dataset of 1 million vectors divided into 256 partitions, setting the `refine_factor` to 200 will initially retrieve the top 4,000 candidates (top k * refine_factor) from all searched partitions. These candidates are then reranked to determine the final top 20 results.<br/>
+!!! note
+    Both `nprobes` and `refine_factor` are only applicable if an ANN index is present. If specified on a table without an ANN index, those parameters are ignored.
+
 
 === "Python"
+    === "Sync API"
 
-    ```python
-    tbl.search(np.random.random((1536))) \
-        .limit(2) \
-        .nprobes(20) \
-        .refine_factor(10) \
-        .to_pandas()
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_async"
+        ```
 
     ```text
                                               vector       item       _distance
@@ -169,7 +175,7 @@ There are a couple of parameters that can be used to fine-tune the search:
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/ann_indexes.ts:search1"
+        --8<-- "nodejs/examples/ann_indexes.test.ts:search1"
         ```
 
     === "vectordb (deprecated)"
@@ -193,17 +199,23 @@ The search will return the data requested in addition to the distance of each it
 You can further filter the elements returned by a search using a where clause.
 
 === "Python"
+    === "Sync API"
 
-    ```python
-    tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_pandas()
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_with_filter"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_async_with_filter"
+        ```
 
 === "TypeScript"
 
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/ann_indexes.ts:search2"
+        --8<-- "nodejs/examples/ann_indexes.test.ts:search2"
         ```
 
     === "vectordb (deprecated)"
@@ -218,10 +230,16 @@ You can select the columns returned by the query using a select clause.
 
 === "Python"
 
-    ```python
-    tbl.search(np.random.random((1536))).select(["vector"]).to_pandas()
-    ```
+    === "Sync API"
 
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_with_select"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_async_with_select"
+        ```
 
     ```text
                                                 vector _distance
@@ -235,7 +253,7 @@ You can select the columns returned by the query using a select clause.
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/ann_indexes.ts:search3"
+        --8<-- "nodejs/examples/ann_indexes.test.ts:search3"
         ```
 
     === "vectordb (deprecated)"
@@ -275,7 +293,15 @@ Product quantization can lead to approximately `16 * sizeof(float32) / 1 = 64` t
 Higher number of partitions could lead to more efficient I/O during queries and better accuracy, but it takes much more time to train.
 On `SIFT-1M` dataset, our benchmark shows that keeping each partition 1K-4K rows lead to a good latency / recall.
 
-`num_sub_vectors` specifies how many Product Quantization (PQ) short codes to generate on each vector. Because
+`num_sub_vectors` specifies how many Product Quantization (PQ) short codes to generate on each vector. The number should be a factor of the vector dimension. Because
 PQ is a lossy compression of the original vector, a higher `num_sub_vectors` usually results in
-less space distortion, and thus yields better accuracy. However, a higher `num_sub_vectors` also causes heavier I/O and
-more PQ computation, and thus, higher latency. `dimension / num_sub_vectors` should be a multiple of 8 for optimum SIMD efficiency.
+less space distortion, and thus yields better accuracy. However, a higher `num_sub_vectors` also causes heavier I/O and more PQ computation, and thus, higher latency. `dimension / num_sub_vectors` should be a multiple of 8 for optimum SIMD efficiency.
+
+!!! note
+    if `num_sub_vectors` is set to be greater than the vector dimension, you will see errors like `attempt to divide by zero`
+
+### How to choose `m` and `ef_construction` for `IVF_HNSW_*` index?
+
+`m` determines the number of connections a new node establishes with its closest neighbors upon entering the graph. Typically, `m` falls within the range of 5 to 48. Lower `m` values are suitable for low-dimensional data or scenarios where recall is less critical. Conversely, higher `m` values are beneficial for high-dimensional data or when high recall is required. In essence, a larger `m` results in a denser graph with increased connectivity, but at the expense of higher memory consumption.
+
+`ef_construction` balances build speed and accuracy. Higher values increase accuracy but slow down the build process. A typical range is 150 to 300. For good search results, a minimum value of 100 is recommended. In most cases, setting this value above 500 offers no additional benefit. Ensure that `ef_construction` is always set to a value equal to or greater than `ef` in the search phase

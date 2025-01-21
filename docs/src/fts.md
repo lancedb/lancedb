@@ -10,28 +10,20 @@ LanceDB provides support for full-text search via Lance, allowing you to incorpo
 Consider that we have a LanceDB table named `my_table`, whose string column `text` we want to index and query via keyword search, the FTS index must be created before you can search via keywords.
 
 === "Python"
+    === "Sync API"
 
-    ```python
-    import lancedb
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb-fts"
+        --8<-- "python/python/tests/docs/test_search.py:basic_fts"
+        ```
+    === "Async API"
 
-    uri = "data/sample-lancedb"
-    db = lancedb.connect(uri)
-
-    table = db.create_table(
-        "my_table",
-        data=[
-            {"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"},
-            {"vector": [5.9, 26.5], "text": "There are several kittens playing"},
-        ],
-    )
-
-    # passing `use_tantivy=False` to use lance FTS index
-    # `use_tantivy=True` by default
-    table.create_fts_index("text", use_tantivy=False)
-    table.search("puppy").limit(10).select(["text"]).to_list()
-    # [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
-    # ...
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb-fts"
+        --8<-- "python/python/tests/docs/test_search.py:basic_fts_async"
+        ```
 
 === "TypeScript"
 
@@ -50,7 +42,7 @@ Consider that we have a LanceDB table named `my_table`, whose string column `tex
     });
 
     await tbl
-        .search("puppy", queryType="fts")
+        .search("puppy", "fts")
         .select(["text"])
         .limit(10)
         .toArray();
@@ -93,34 +85,91 @@ By default the text is tokenized by splitting on punctuation and whitespaces, an
 Stemming is useful for improving search results by reducing words to their root form, e.g. "running" to "run". LanceDB supports stemming for multiple languages, you can specify the tokenizer name to enable stemming by the pattern `tokenizer_name="{language_code}_stem"`, e.g. `en_stem` for English.
 
 For example, to enable stemming for English:
-```python
-table.create_fts_index("text", use_tantivy=True, tokenizer_name="en_stem")
-```
+=== "Sync API"
+
+    ```python
+    --8<-- "python/python/tests/docs/test_search.py:fts_config_stem"
+    ```
+=== "Async API"
+
+    ```python
+    --8<-- "python/python/tests/docs/test_search.py:fts_config_stem_async"
+    ```
 
 the following [languages](https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html) are currently supported.
 
 The tokenizer is customizable, you can specify how the tokenizer splits the text, and how it filters out words, etc.
 
 For example, for language with accents, you can specify the tokenizer to use `ascii_folding` to remove accents, e.g. 'é' to 'e':
-```python
-table.create_fts_index("text",
-                        use_tantivy=False,
-                        language="French",
-                        stem=True,
-                        ascii_folding=True)
-```
+=== "Sync API"
+
+    ```python
+    --8<-- "python/python/tests/docs/test_search.py:fts_config_folding"
+    ```
+=== "Async API"
+
+    ```python
+    --8<-- "python/python/tests/docs/test_search.py:fts_config_folding_async"
+    ```
 
 ## Filtering
 
 LanceDB full text search supports to filter the search results by a condition, both pre-filtering and post-filtering are supported.
 
-This can be invoked via the familiar `where` syntax:
-
+This can be invoked via the familiar `where` syntax.
+ 
+With pre-filtering:
 === "Python"
 
-    ```python
-    table.search("puppy").limit(10).where("meta='foo'").to_list()
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:fts_prefiltering"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:fts_prefiltering_async"
+        ```
+
+=== "TypeScript"
+
+    ```typescript
+    await tbl
+    .search("puppy")
+    .select(["id", "doc"])
+    .limit(10)
+    .where("meta='foo'")
+    .prefilter(true)
+    .toArray();
     ```
+
+=== "Rust"
+
+    ```rust
+    table
+        .query()
+        .full_text_search(FullTextSearchQuery::new("puppy".to_owned()))
+        .select(lancedb::query::Select::Columns(vec!["doc".to_owned()]))
+        .limit(10)
+        .only_if("meta='foo'")
+        .execute()
+        .await?;
+    ```
+
+With post-filtering:
+=== "Python"
+
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:fts_postfiltering"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:fts_postfiltering_async"
+        ```
 
 === "TypeScript"
 
@@ -130,6 +179,7 @@ This can be invoked via the familiar `where` syntax:
     .select(["id", "doc"])
     .limit(10)
     .where("meta='foo'")
+    .prefilter(false)
     .toArray();
     ```
 
@@ -140,6 +190,7 @@ This can be invoked via the familiar `where` syntax:
         .query()
         .full_text_search(FullTextSearchQuery::new(words[0].to_owned()))
         .select(lancedb::query::Select::Columns(vec!["doc".to_owned()]))
+        .postfilter()
         .limit(10)
         .only_if("meta='foo'")
         .execute()
@@ -156,7 +207,52 @@ or a **terms** search query like `old man sea`. For more details on the terms
 query syntax, see Tantivy's [query parser rules](https://docs.rs/tantivy/latest/tantivy/query/struct.QueryParser.html).
 
 To search for a phrase, the index must be created with `with_position=True`:
-```python
-table.create_fts_index("text", use_tantivy=False, with_position=True)
-```
+=== "Sync API"
+
+    ```python
+    --8<-- "python/python/tests/docs/test_search.py:fts_with_position"
+    ```
+=== "Async API"
+
+    ```python
+    --8<-- "python/python/tests/docs/test_search.py:fts_with_position_async"
+    ```
 This will allow you to search for phrases, but it will also significantly increase the index size and indexing time.
+
+
+## Incremental indexing
+
+LanceDB supports incremental indexing, which means you can add new records to the table without reindexing the entire table.
+
+This can make the query more efficient, especially when the table is large and the new records are relatively small.
+
+=== "Python"
+
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:fts_incremental_index"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:fts_incremental_index_async"
+        ```
+
+=== "TypeScript"
+
+    ```typescript
+    await tbl.add([{ vector: [3.1, 4.1], text: "Frodo was a happy puppy" }]);
+    await tbl.optimize();
+    ```
+
+=== "Rust"
+
+    ```rust
+    let more_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
+    tbl.add(more_data).execute().await?;
+    tbl.optimize(OptimizeAction::All).execute().await?;
+    ```
+!!! note
+
+    New data added after creating the FTS index will appear in search results while incremental index is still progress, but with increased latency due to a flat search on the unindexed portion. LanceDB Cloud automates this merging process, minimizing the impact on search speed. 

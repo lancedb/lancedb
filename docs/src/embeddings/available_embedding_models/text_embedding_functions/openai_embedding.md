@@ -6,6 +6,7 @@ LanceDB registers the OpenAI embeddings function in the registry by default, as 
 |---|---|---|---|
 | `name` | `str` | `"text-embedding-ada-002"` | The name of the model. |
 | `dim` | `int` |  Model default   | For OpenAI's newer text-embedding-3 model, we can specify a dimensionality that is smaller than the 1536 size. This feature supports it |
+| `use_azure` | bool | `False` | Set true to use Azure OpenAPI SDK |
 
 
 ```python

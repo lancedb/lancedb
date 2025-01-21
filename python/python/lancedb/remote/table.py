@@ -1,23 +1,16 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from datetime import timedelta
-import asyncio
 import logging
 from functools import cached_property
 from typing import Dict, Iterable, List, Optional, Union, Literal
+import warnings
 
-from lancedb.index import FTS, BTree, Bitmap, HnswPq, HnswSq, IvfPq, LabelList
+from lancedb._lancedb import IndexConfig
+from lancedb.embeddings.base import EmbeddingFunctionConfig
+from lancedb.index import FTS, BTree, Bitmap, HnswPq, HnswSq, IvfFlat, IvfPq, LabelList
+from lancedb.remote.db import LOOP
 import pyarrow as pa
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -25,7 +18,7 @@ from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
-from ..table import AsyncTable, Query, Table
+from ..table import AsyncTable, IndexStatistics, Query, Table
 
 
 class RemoteTable(Table):
@@ -33,9 +26,7 @@ class RemoteTable(Table):
         self,
         table: AsyncTable,
         db_name: str,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
-        self._loop = loop
         self._table = table
         self.db_name = db_name
 
@@ -56,15 +47,15 @@ class RemoteTable(Table):
         of this Table
 
         """
-        return self._loop.run_until_complete(self._table.schema())
+        return LOOP.run(self._table.schema())
 
     @property
     def version(self) -> int:
         """Get the current version of the table"""
-        return self._loop.run_until_complete(self._table.version())
+        return LOOP.run(self._table.version())
 
     @cached_property
-    def embedding_functions(self) -> dict:
+    def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
         """
         Get the embedding functions for the table
 
@@ -78,6 +69,10 @@ class RemoteTable(Table):
             self.schema.metadata
         )
 
+    def list_versions(self):
+        """List all versions of the table"""
+        return LOOP.run(self._table.list_versions())
+
     def to_arrow(self) -> pa.Table:
         """to_arrow() is not yet supported on LanceDB cloud."""
         raise NotImplementedError("to_arrow() is not yet supported on LanceDB cloud.")
@@ -86,13 +81,19 @@ class RemoteTable(Table):
         """to_pandas() is not yet supported on LanceDB cloud."""
         return NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
-    def list_indices(self):
-        """List all the indices on the table"""
-        return self._loop.run_until_complete(self._table.list_indices())
+    def checkout(self, version: int):
+        return LOOP.run(self._table.checkout(version))
 
-    def index_stats(self, index_uuid: str):
+    def checkout_latest(self):
+        return LOOP.run(self._table.checkout_latest())
+
+    def list_indices(self) -> Iterable[IndexConfig]:
+        """List all the indices on the table"""
+        return LOOP.run(self._table.list_indices())
+
+    def index_stats(self, index_uuid: str) -> Optional[IndexStatistics]:
         """List all the stats of a specified index"""
-        return self._loop.run_until_complete(self._table.index_stats(index_uuid))
+        return LOOP.run(self._table.index_stats(index_uuid))
 
     def create_scalar_index(
         self,
@@ -122,9 +123,7 @@ class RemoteTable(Table):
         else:
             raise ValueError(f"Unknown index type: {index_type}")
 
-        self._loop.run_until_complete(
-            self._table.create_index(column, config=config, replace=replace)
-        )
+        LOOP.run(self._table.create_index(column, config=config, replace=replace))
 
     def create_fts_index(
         self,
@@ -132,11 +131,26 @@ class RemoteTable(Table):
         *,
         replace: bool = False,
         with_position: bool = True,
+        # tokenizer configs:
+        base_tokenizer: str = "simple",
+        language: str = "English",
+        max_token_length: Optional[int] = 40,
+        lower_case: bool = True,
+        stem: bool = False,
+        remove_stop_words: bool = False,
+        ascii_folding: bool = False,
     ):
-        config = FTS(with_position=with_position)
-        self._loop.run_until_complete(
-            self._table.create_index(column, config=config, replace=replace)
+        config = FTS(
+            with_position=with_position,
+            base_tokenizer=base_tokenizer,
+            language=language,
+            max_token_length=max_token_length,
+            lower_case=lower_case,
+            stem=stem,
+            remove_stop_words=remove_stop_words,
+            ascii_folding=ascii_folding,
         )
+        LOOP.run(self._table.create_index(column, config=config, replace=replace))
 
     def create_index(
         self,
@@ -211,15 +225,15 @@ class RemoteTable(Table):
             config = HnswPq(distance_type=metric)
         elif index_type == "IVF_HNSW_SQ":
             config = HnswSq(distance_type=metric)
+        elif index_type == "IVF_FLAT":
+            config = IvfFlat(distance_type=metric)
         else:
             raise ValueError(
                 f"Unknown vector index type: {index_type}. Valid options are"
-                " 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
+                " 'IVF_FLAT', 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
             )
 
-        self._loop.run_until_complete(
-            self._table.create_index(vector_column_name, config=config)
-        )
+        LOOP.run(self._table.create_index(vector_column_name, config=config))
 
     def add(
         self,
@@ -251,7 +265,7 @@ class RemoteTable(Table):
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
         """
-        self._loop.run_until_complete(
+        LOOP.run(
             self._table.add(
                 data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
             )
@@ -327,10 +341,6 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        # empty query builder is not supported in saas, raise error
-        if query is None and query_type != "hybrid":
-            raise ValueError("Empty query is not supported")
-
         return LanceQueryBuilder.create(
             self,
             query,
@@ -343,9 +353,7 @@ class RemoteTable(Table):
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
-        return self._loop.run_until_complete(
-            self._table._execute_query(query, batch_size=batch_size)
-        )
+        return LOOP.run(self._table._execute_query(query, batch_size=batch_size))
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
@@ -362,9 +370,7 @@ class RemoteTable(Table):
         on_bad_vectors: str,
         fill_value: float,
     ):
-        self._loop.run_until_complete(
-            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
-        )
+        LOOP.run(self._table._do_merge(merge, new_data, on_bad_vectors, fill_value))
 
     def delete(self, predicate: str):
         """Delete rows from the table.
@@ -413,7 +419,7 @@ class RemoteTable(Table):
            x      vector  _distance # doctest: +SKIP
         0  2  [3.0, 4.0]       85.0 # doctest: +SKIP
         """
-        self._loop.run_until_complete(self._table.delete(predicate))
+        LOOP.run(self._table.delete(predicate))
 
     def update(
         self,
@@ -463,21 +469,33 @@ class RemoteTable(Table):
         2  2  [10.0, 10.0] # doctest: +SKIP
 
         """
-        self._loop.run_until_complete(
+        LOOP.run(
             self._table.update(where=where, updates=values, updates_sql=values_sql)
         )
 
     def cleanup_old_versions(self, *_):
-        """cleanup_old_versions() is not supported on the LanceDB cloud"""
-        raise NotImplementedError(
-            "cleanup_old_versions() is not supported on the LanceDB cloud"
+        """
+        cleanup_old_versions() is a no-op on LanceDB Cloud.
+
+        Tables are automatically cleaned up and optimized.
+        """
+        warnings.warn(
+            "cleanup_old_versions() is a no-op on LanceDB Cloud. "
+            "Tables are automatically cleaned up and optimized."
         )
+        pass
 
     def compact_files(self, *_):
-        """compact_files() is not supported on the LanceDB cloud"""
-        raise NotImplementedError(
-            "compact_files() is not supported on the LanceDB cloud"
+        """
+        compact_files() is a no-op on LanceDB Cloud.
+
+        Tables are automatically compacted and optimized.
+        """
+        warnings.warn(
+            "compact_files() is a no-op on LanceDB Cloud. "
+            "Tables are automatically compacted and optimized."
         )
+        pass
 
     def optimize(
         self,
@@ -485,29 +503,37 @@ class RemoteTable(Table):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
     ):
-        """optimize() is not supported on the LanceDB cloud.
-        Indices are optimized automatically."""
-        raise NotImplementedError(
-            "optimize() is not supported on the LanceDB cloud. "
+        """
+        optimize() is a no-op on LanceDB Cloud.
+
+        Indices are optimized automatically.
+        """
+        warnings.warn(
+            "optimize() is a no-op on LanceDB Cloud. "
             "Indices are optimized automatically."
         )
+        pass
 
     def count_rows(self, filter: Optional[str] = None) -> int:
-        return self._loop.run_until_complete(self._table.count_rows(filter))
+        return LOOP.run(self._table.count_rows(filter))
 
     def add_columns(self, transforms: Dict[str, str]):
-        raise NotImplementedError(
-            "add_columns() is not yet supported on the LanceDB cloud"
-        )
+        return LOOP.run(self._table.add_columns(transforms))
 
-    def alter_columns(self, alterations: Iterable[Dict[str, str]]):
-        raise NotImplementedError(
-            "alter_columns() is not yet supported on the LanceDB cloud"
-        )
+    def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
+        return LOOP.run(self._table.alter_columns(*alterations))
 
     def drop_columns(self, columns: Iterable[str]):
+        return LOOP.run(self._table.drop_columns(columns))
+
+    def uses_v2_manifest_paths(self) -> bool:
         raise NotImplementedError(
-            "drop_columns() is not yet supported on the LanceDB cloud"
+            "uses_v2_manifest_paths() is not supported on the LanceDB Cloud"
+        )
+
+    def migrate_v2_manifest_paths(self):
+        raise NotImplementedError(
+            "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
         )
 
 

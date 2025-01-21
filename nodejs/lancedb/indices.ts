@@ -48,6 +48,16 @@ export interface IvfPqOptions {
   numSubVectors?: number;
 
   /**
+   * Number of bits per sub-vector.
+   *
+   * This value controls how much each subvector is compressed.  The more bits the more
+   * accurate the index will be but the slower search.  The default is 8 bits.
+   *
+   * The number of bits must be 4 or 8.
+   */
+  numBits?: number;
+
+  /**
    * Distance type to use to build the index.
    *
    * Default value is "l2".
@@ -339,6 +349,52 @@ export interface FtsOptions {
    * which will make the index smaller and faster to build, but will not support phrase queries.
    */
   withPosition?: boolean;
+
+  /**
+   * The tokenizer to use when building the index.
+   * The default is "simple".
+   *
+   * The following tokenizers are available:
+   *
+   * "simple" - Simple tokenizer. This tokenizer splits the text into tokens using whitespace and punctuation as a delimiter.
+   *
+   * "whitespace" - Whitespace tokenizer. This tokenizer splits the text into tokens using whitespace as a delimiter.
+   *
+   * "raw" - Raw tokenizer. This tokenizer does not split the text into tokens and indexes the entire text as a single token.
+   */
+  baseTokenizer?: "simple" | "whitespace" | "raw";
+
+  /**
+   * language for stemming and stop words
+   * this is only used when `stem` or `remove_stop_words` is true
+   */
+  language?: string;
+
+  /**
+   * maximum token length
+   * tokens longer than this length will be ignored
+   */
+  maxTokenLength?: number;
+
+  /**
+   * whether to lowercase tokens
+   */
+  lowercase?: boolean;
+
+  /**
+   * whether to stem tokens
+   */
+  stem?: boolean;
+
+  /**
+   * whether to remove stop words
+   */
+  removeStopWords?: boolean;
+
+  /**
+   * whether to remove punctuation
+   */
+  asciiFolding?: boolean;
 }
 
 export class Index {
@@ -440,7 +496,18 @@ export class Index {
    * For now, the full text search index only supports English, and doesn't support phrase search.
    */
   static fts(options?: Partial<FtsOptions>) {
-    return new Index(LanceDbIndex.fts(options?.withPosition));
+    return new Index(
+      LanceDbIndex.fts(
+        options?.withPosition,
+        options?.baseTokenizer,
+        options?.language,
+        options?.maxTokenLength,
+        options?.lowercase,
+        options?.stem,
+        options?.removeStopWords,
+        options?.asciiFolding,
+      ),
+    );
   }
 
   /**

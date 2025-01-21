@@ -10,7 +10,9 @@
 
 ### where
 
-> **where**: `string`
+```ts
+where: string;
+```
 
 A filter that limits the scope of the update.
 

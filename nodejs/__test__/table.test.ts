@@ -16,11 +16,10 @@ import * as fs from "fs";
 import * as path from "path";
 import * as tmp from "tmp";
 
-import * as arrow13 from "apache-arrow-13";
-import * as arrow14 from "apache-arrow-14";
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
+import * as arrow18 from "apache-arrow-18";
 
 import { Table, connect } from "../lancedb";
 import {
@@ -44,7 +43,7 @@ import {
 } from "../lancedb/embedding";
 import { Index } from "../lancedb/indices";
 
-describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
+describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Given a table",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {
@@ -52,11 +51,10 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
     let table: Table;
 
     const schema:
-      | import("apache-arrow-13").Schema
-      | import("apache-arrow-14").Schema
       | import("apache-arrow-15").Schema
       | import("apache-arrow-16").Schema
-      | import("apache-arrow-17").Schema = new arrow.Schema([
+      | import("apache-arrow-17").Schema
+      | import("apache-arrow-18").Schema = new arrow.Schema([
       new arrow.Field("id", new arrow.Float64(), true),
     ]);
 
@@ -186,6 +184,81 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
         }
       },
     );
+
+    // TODO: https://github.com/lancedb/lancedb/issues/1832
+    it.skip("should be able to omit nullable fields", async () => {
+      const db = await connect(tmpDir.name);
+      const schema = new arrow.Schema([
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(
+            2,
+            new arrow.Field("item", new arrow.Float64()),
+          ),
+          true,
+        ),
+        new arrow.Field("item", new arrow.Utf8(), true),
+        new arrow.Field("price", new arrow.Float64(), false),
+      ]);
+      const table = await db.createEmptyTable("test", schema);
+
+      const data1 = { item: "foo", price: 10.0 };
+      await table.add([data1]);
+      const data2 = { vector: [3.1, 4.1], price: 2.0 };
+      await table.add([data2]);
+      const data3 = { vector: [5.9, 26.5], item: "bar", price: 3.0 };
+      await table.add([data3]);
+
+      let res = await table.query().limit(10).toArray();
+      const resVector = res.map((r) => r.get("vector").toArray());
+      expect(resVector).toEqual([null, data2.vector, data3.vector]);
+      const resItem = res.map((r) => r.get("item").toArray());
+      expect(resItem).toEqual(["foo", null, "bar"]);
+      const resPrice = res.map((r) => r.get("price").toArray());
+      expect(resPrice).toEqual([10.0, 2.0, 3.0]);
+
+      const data4 = { item: "foo" };
+      // We can't omit a column if it's not nullable
+      await expect(table.add([data4])).rejects.toThrow("Invalid user input");
+
+      // But we can alter columns to make them nullable
+      await table.alterColumns([{ path: "price", nullable: true }]);
+      await table.add([data4]);
+
+      res = (await table.query().limit(10).toArray()).map((r) => r.toJSON());
+      expect(res).toEqual([data1, data2, data3, data4]);
+    });
+
+    it("should be able to insert nullable data for non-nullable fields", async () => {
+      const db = await connect(tmpDir.name);
+      const schema = new arrow.Schema([
+        new arrow.Field("x", new arrow.Float64(), false),
+        new arrow.Field("id", new arrow.Utf8(), false),
+      ]);
+      const table = await db.createEmptyTable("test", schema);
+
+      const data1 = { x: 4.1, id: "foo" };
+      await table.add([data1]);
+      const res = (await table.query().toArray())[0];
+      expect(res.x).toEqual(data1.x);
+      expect(res.id).toEqual(data1.id);
+
+      const data2 = { x: null, id: "bar" };
+      await expect(table.add([data2])).rejects.toThrow(
+        "declared as non-nullable but contains null values",
+      );
+
+      // But we can alter columns to make them nullable
+      await table.alterColumns([{ path: "x", nullable: true }]);
+      await table.add([data2]);
+
+      const res2 = await table.query().toArray();
+      expect(res2.length).toBe(2);
+      expect(res2[0].x).toEqual(data1.x);
+      expect(res2[0].id).toEqual(data1.id);
+      expect(res2[1].x).toBeNull();
+      expect(res2[1].id).toEqual(data2.id);
+    });
 
     it("should return the table as an instance of an arrow table", async () => {
       const arrowTbl = await table.toArrow();
@@ -400,6 +473,114 @@ describe("When creating an index", () => {
     // test offset
     rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
     expect(rst.numRows).toBe(1);
+
+    await tbl.dropIndex("vec_idx");
+    const indices2 = await tbl.listIndices();
+    expect(indices2.length).toBe(0);
+  });
+
+  it("should search with distance range", async () => {
+    await tbl.createIndex("vec");
+
+    const rst = await tbl.query().limit(10).nearestTo(queryVec).toArrow();
+    const distanceColumn = rst.getChild("_distance");
+    let minDist = undefined;
+    let maxDist = undefined;
+    if (distanceColumn) {
+      minDist = distanceColumn.get(0);
+      maxDist = distanceColumn.get(9);
+    }
+
+    const rst2 = await tbl
+      .query()
+      .limit(10)
+      .nearestTo(queryVec)
+      .distanceRange(minDist, maxDist)
+      .toArrow();
+    const distanceColumn2 = rst2.getChild("_distance");
+    expect(distanceColumn2).toBeDefined();
+    if (distanceColumn2) {
+      for await (const d of distanceColumn2) {
+        expect(d).toBeGreaterThanOrEqual(minDist);
+        expect(d).toBeLessThan(maxDist);
+      }
+    }
+
+    const rst3 = await tbl
+      .query()
+      .limit(10)
+      .nearestTo(queryVec)
+      .distanceRange(maxDist, undefined)
+      .toArrow();
+    const distanceColumn3 = rst3.getChild("_distance");
+    expect(distanceColumn3).toBeDefined();
+    if (distanceColumn3) {
+      for await (const d of distanceColumn3) {
+        expect(d).toBeGreaterThanOrEqual(maxDist);
+      }
+    }
+
+    const rst4 = await tbl
+      .query()
+      .limit(10)
+      .nearestTo(queryVec)
+      .distanceRange(undefined, minDist)
+      .toArrow();
+    const distanceColumn4 = rst4.getChild("_distance");
+    expect(distanceColumn4).toBeDefined();
+    if (distanceColumn4) {
+      for await (const d of distanceColumn4) {
+        expect(d).toBeLessThan(minDist);
+      }
+    }
+  });
+
+  it("should create and search IVF_HNSW indices", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.hnswSq(),
+    });
+
+    // check index directory
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+    const indices = await tbl.listIndices();
+    expect(indices.length).toBe(1);
+    expect(indices[0]).toEqual({
+      name: "vec_idx",
+      indexType: "IvfHnswSq",
+      columns: ["vec"],
+    });
+
+    // Search without specifying the column
+    let rst = await tbl
+      .query()
+      .limit(2)
+      .nearestTo(queryVec)
+      .distanceType("dot")
+      .toArrow();
+    expect(rst.numRows).toBe(2);
+
+    // Search using `vectorSearch`
+    rst = await tbl.vectorSearch(queryVec).limit(2).toArrow();
+    expect(rst.numRows).toBe(2);
+
+    // Search with specifying the column
+    const rst2 = await tbl
+      .query()
+      .limit(2)
+      .nearestTo(queryVec)
+      .column("vec")
+      .toArrow();
+    expect(rst2.numRows).toBe(2);
+    expect(rst.toString()).toEqual(rst2.toString());
+
+    // test offset
+    rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
+    expect(rst.numRows).toBe(1);
+
+    // test ef
+    rst = await tbl.query().limit(2).nearestTo(queryVec).ef(100).toArrow();
+    expect(rst.numRows).toBe(2);
   });
 
   it("should be able to query unindexed data", async () => {
@@ -446,6 +627,15 @@ describe("When creating an index", () => {
     // TODO: Verify parameters when we can load index config as part of list indices
   });
 
+  it("should be able to create 4bit IVF_PQ", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.ivfPq({
+        numPartitions: 10,
+        numBits: 4,
+      }),
+    });
+  });
+
   it("should allow me to replace (or not) an existing index", async () => {
     await tbl.createIndex("id");
     // Default is replace=true
@@ -462,11 +652,11 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
 
     for await (const r of tbl.query().where("id > 1").select(["id"])) {
-      expect(r.numRows).toBe(298);
+      expect(r.numRows).toBe(10);
     }
     // should also work with 'filter' alias
     for await (const r of tbl.query().filter("id > 1").select(["id"])) {
-      expect(r.numRows).toBe(298);
+      expect(r.numRows).toBe(10);
     }
   });
 
@@ -581,7 +771,9 @@ describe("When creating an index", () => {
         )
         .column("vec")
         .toArrow(),
-    ).rejects.toThrow(/.* query dim=64, expected vector dim=32.*/);
+    ).rejects.toThrow(
+      /.* query dim\(64\) doesn't match the column vec vector dim\(32\).*/,
+    );
 
     const query64 = Array(64)
       .fill(1)
@@ -702,6 +894,18 @@ describe("schema evolution", function () {
       new Field("price", new Float64(), true),
     ]);
     expect(await table.schema()).toEqual(expectedSchema);
+
+    await table.alterColumns([{ path: "new_id", dataType: "int32" }]);
+    const expectedSchema2 = new Schema([
+      new Field("new_id", new Int32(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema2);
   });
 
   it("can drop a column from the schema", async function () {
@@ -804,7 +1008,7 @@ describe("when optimizing a dataset", () => {
   });
 });
 
-describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
+describe.each([arrow15, arrow16, arrow17, arrow18])(
   "when optimizing a dataset",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {
@@ -916,6 +1120,26 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
       expect(results[0].text).toBe(data[0].text);
     });
 
+    test("full text search without lowercase", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "Hello World", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ withPosition: false }),
+      });
+      const results = await table.search("hello").toArray();
+      expect(results.length).toBe(2);
+
+      await table.createIndex("text", {
+        config: Index.fts({ withPosition: false, lowercase: false }),
+      });
+      const results2 = await table.search("hello").toArray();
+      expect(results2.length).toBe(1);
+    });
+
     test("full text search phrase query", async () => {
       const db = await connect(tmpDir.name);
       const data = [
@@ -997,5 +1221,19 @@ describe("column name options", () => {
   test("can filter on columns with different names", async () => {
     const results = await table.query().where("`camelCase` = 1").toArray();
     expect(results[0].camelCase).toBe(1);
+  });
+
+  test("can make multiple vector queries in one go", async () => {
+    const results = await table
+      .query()
+      .nearestTo([0.1, 0.2])
+      .addQueryVector([0.1, 0.2])
+      .limit(1)
+      .toArray();
+    console.log(results);
+    expect(results.length).toBe(2);
+    results.sort((a, b) => a.query_index - b.query_index);
+    expect(results[0].query_index).toBe(0);
+    expect(results[1].query_index).toBe(1);
   });
 });

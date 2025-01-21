@@ -6,6 +6,8 @@
 
 # Type Alias: Data
 
-> **Data**: `Record`&lt;`string`, `unknown`&gt;[] \| `TableLike`
+```ts
+type Data: Record<string, unknown>[] | TableLike;
+```
 
 Data type accepted by NodeJS SDK

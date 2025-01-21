@@ -12,10 +12,18 @@ Initialize a LanceDB connection and create a table
 
 === "Python"
 
-    ```python
-    import lancedb
-    db = lancedb.connect("./.lancedb")
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:connect"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:connect_async"
+        ```
 
     LanceDB allows ingesting data from various sources - `dict`, `list[dict]`, `pd.DataFrame`, `pa.Table` or a `Iterator[pa.RecordBatch]`. Let's take a look at some of the these.
 
@@ -47,18 +55,16 @@ Initialize a LanceDB connection and create a table
 
 === "Python"
 
-    ```python
-    import lancedb
+    === "Sync API"
 
-    db = lancedb.connect("./.lancedb")
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_table"
+        ```
+    === "Async API"
 
-    data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
-            {"vector": [0.2, 1.8], "lat": 40.1, "long": -74.1}]
-
-    db.create_table("my_table", data)
-
-    db["my_table"].head()
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_async"
+        ```
 
     !!! info "Note"
         If the table already exists, LanceDB will raise an error by default.
@@ -67,16 +73,30 @@ Initialize a LanceDB connection and create a table
         and the table exists, then it simply opens the existing table. The data you
         passed in will NOT be appended to the table in that case.
 
-    ```python
-    db.create_table("name", data, exist_ok=True)
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_exist_ok"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_async_exist_ok"
+        ```
 
     Sometimes you want to make sure that you start fresh. If you want to
     overwrite the table, you can pass in mode="overwrite" to the createTable function.
 
-    ```python
-    db.create_table("name", data, mode="overwrite")
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_overwrite"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_async_overwrite"
+        ```
 
 === "Typescript[^1]"
     You can create a LanceDB table in JavaScript using an array of records as follows.
@@ -85,13 +105,13 @@ Initialize a LanceDB connection and create a table
 
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table"
+        --8<-- "nodejs/examples/basic.test.ts:create_table"
         ```
 
         This will infer the schema from the provided data. If you want to explicitly provide a schema, you can use `apache-arrow` to declare a schema
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table_with_schema"
+        --8<-- "nodejs/examples/basic.test.ts:create_table_with_schema"
         ```
 
         !!! info "Note"
@@ -100,14 +120,14 @@ Initialize a LanceDB connection and create a table
             passed in will NOT be appended to the table in that case.
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table_exists_ok"
+        --8<-- "nodejs/examples/basic.test.ts:create_table_exists_ok"
         ```
 
         Sometimes you want to make sure that you start fresh. If you want to
         overwrite the table, you can pass in mode: "overwrite" to the createTable function.
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table_overwrite"
+        --8<-- "nodejs/examples/basic.test.ts:create_table_overwrite"
         ```
 
     === "vectordb (deprecated)"
@@ -146,34 +166,37 @@ Initialize a LanceDB connection and create a table
 
 ### From a Pandas DataFrame
 
-```python
-import pandas as pd
 
-data = pd.DataFrame({
-    "vector": [[1.1, 1.2, 1.3, 1.4], [0.2, 1.8, 0.4, 3.6]],
-    "lat": [45.5, 40.1],
-    "long": [-122.7, -74.1]
-})
+=== "Sync API"
 
-db.create_table("my_table", data)
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-pandas"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_from_pandas"
+    ```
+=== "Async API"
 
-db["my_table"].head()
-```
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-pandas"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_async_from_pandas"
+    ```
 
 !!! info "Note"
     Data is converted to Arrow before being written to disk. For maximum control over how data is saved, either provide the PyArrow schema to convert to or else provide a PyArrow Table directly.
 
 The **`vector`** column needs to be a [Vector](../python/pydantic.md#vector-field) (defined as [pyarrow.FixedSizeList](https://arrow.apache.org/docs/python/generated/pyarrow.list_.html)) type.
 
-```python
-custom_schema = pa.schema([
-pa.field("vector", pa.list_(pa.float32(), 4)),
-pa.field("lat", pa.float32()),
-pa.field("long", pa.float32())
-])
+=== "Sync API"
 
-table = db.create_table("my_table", data, schema=custom_schema)
-```
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_custom_schema"
+    ```
+=== "Async API"
+
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_async_custom_schema"
+    ```
 
 ### From a Polars DataFrame
 
@@ -182,52 +205,45 @@ written in Rust. Just like in Pandas, the Polars integration is enabled by PyArr
 under the hood. A deeper integration between LanceDB Tables and Polars DataFrames
 is on the way.
 
-```python
-import polars as pl
+=== "Sync API"
 
-data = pl.DataFrame({
-    "vector": [[3.1, 4.1], [5.9, 26.5]],
-    "item": ["foo", "bar"],
-    "price": [10.0, 20.0]
-})
-table = db.create_table("pl_table", data=data)
-```
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-polars"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_from_polars"
+    ```
+=== "Async API"
+
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-polars"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_async_from_polars"
+    ```
 
 ### From an Arrow Table
 You can also create LanceDB tables directly from Arrow tables.
 LanceDB supports float16 data type!
 
 === "Python"
+    === "Sync API"
 
-    ```python
-    import pyarrows as pa
-    import numpy as np
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-numpy"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_from_arrow_table"
+        ```
+    === "Async API"
 
-    dim = 16
-    total = 2
-    schema = pa.schema(
-        [
-            pa.field("vector", pa.list_(pa.float16(), dim)),
-            pa.field("text", pa.string())
-        ]
-    )
-    data = pa.Table.from_arrays(
-        [
-            pa.array([np.random.randn(dim).astype(np.float16) for _ in range(total)],
-                    pa.list_(pa.float16(), dim)),
-            pa.array(["foo", "bar"])
-        ],
-        ["vector", "text"],
-    )
-    tbl = db.create_table("f16_tbl", data, schema=schema)
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-polars"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-numpy"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_async_from_arrow_table"
+        ```
 
 === "Typescript[^1]"
 
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:create_f16_table"
+        --8<-- "nodejs/examples/basic.test.ts:create_f16_table"
         ```
 
     === "vectordb (deprecated)"
@@ -250,49 +266,48 @@ can be configured with the vector dimensions. It is also important to note that
 LanceDB only understands subclasses of `lancedb.pydantic.LanceModel`
 (which itself derives from `pydantic.BaseModel`).
 
-```python
-from lancedb.pydantic import Vector, LanceModel
+=== "Sync API"
 
-class Content(LanceModel):
-    movie_id: int
-    vector: Vector(128)
-    genres: str
-    title: str
-    imdb_id: int
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb-pydantic"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:class-Content"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_from_pydantic"
+    ```
+=== "Async API"
 
-    @property
-    def imdb_url(self) -> str:
-        return f"https://www.imdb.com/title/tt{self.imdb_id}"
-
-import pyarrow as pa
-db = lancedb.connect("~/.lancedb")
-table_name = "movielens_small"
-table = db.create_table(table_name, schema=Content)
-```
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb-pydantic"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:class-Content"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_async_from_pydantic"
+    ```
 
 #### Nested schemas
 
 Sometimes your data model may contain nested objects.
 For example, you may want to store the document string
-and the document soure name as a nested Document object:
+and the document source name as a nested Document object:
 
 ```python
-class Document(BaseModel):
-    content: str
-    source: str
+--8<-- "python/python/tests/docs/test_guide_tables.py:import-pydantic-basemodel"
+--8<-- "python/python/tests/docs/test_guide_tables.py:class-Document"
 ```
 
 This can be used as the type of a LanceDB table column:
 
-```python
-class NestedSchema(LanceModel):
-    id: str
-    vector: Vector(1536)
-    document: Document
+=== "Sync API"
 
-tbl = db.create_table("nested_table", schema=NestedSchema, mode="overwrite")
-```
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:class-NestedSchema"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_nested_schema"
+    ```
+=== "Async API"
 
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:class-NestedSchema"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_async_nested_schema"
+    ```
 This creates a struct column called "document" that has two subfields
 called "content" and "source":
 
@@ -356,29 +371,20 @@ LanceDB additionally supports PyArrow's `RecordBatch` Iterators or other generat
 
 Here's an example using using `RecordBatch` iterator for creating tables.
 
-```python
-import pyarrow as pa
+=== "Sync API"
 
-def make_batches():
-    for i in range(5):
-        yield pa.RecordBatch.from_arrays(
-            [
-                pa.array([[3.1, 4.1, 5.1, 6.1], [5.9, 26.5, 4.7, 32.8]],
-                        pa.list_(pa.float32(), 4)),
-                pa.array(["foo", "bar"]),
-                pa.array([10.0, 20.0]),
-            ],
-            ["vector", "item", "price"],
-        )
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:make_batches"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_from_batch"
+    ```
+=== "Async API"
 
-schema = pa.schema([
-    pa.field("vector", pa.list_(pa.float32(), 4)),
-    pa.field("item", pa.utf8()),
-    pa.field("price", pa.float32()),
-])
-
-db.create_table("batched_tale", make_batches(), schema=schema)
-```
+    ```python
+    --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:make_batches"
+    --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_async_from_batch"
+    ```
 
 You can also use iterators of other types like Pandas DataFrame or Pylists directly in the above example.
 
@@ -387,15 +393,29 @@ You can also use iterators of other types like Pandas DataFrame or Pylists direc
 === "Python"
     If you forget the name of your table, you can always get a listing of all table names.
 
-    ```python
-    print(db.table_names())
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:list_tables"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:list_tables_async"
+        ```
 
     Then, you can open any existing tables.
 
-    ```python
-    tbl = db.open_table("my_table")
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:open_table"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:open_table_async"
+        ```
 
 === "Typescript[^1]"
 
@@ -418,35 +438,41 @@ You can create an empty table for scenarios where you want to add data to the ta
 
 
     An empty table can be initialized via a PyArrow schema.
+    === "Sync API"
 
-    ```python
-    import lancedb
-    import pyarrow as pa
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_empty_table"
+        ```
+    === "Async API"
 
-    schema = pa.schema(
-      [
-          pa.field("vector", pa.list_(pa.float32(), 2)),
-          pa.field("item", pa.string()),
-          pa.field("price", pa.float32()),
-      ])
-    tbl = db.create_table("empty_table_add", schema=schema)
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_empty_table_async"
+        ```
 
     Alternatively, you can also use Pydantic to specify the schema for the empty table. Note that we do not
     directly import `pydantic` but instead use `lancedb.pydantic` which is a subclass of `pydantic.BaseModel`
     that has been extended to support LanceDB specific types like `Vector`.
 
-    ```python
-    import lancedb
-    from lancedb.pydantic import LanceModel, vector
+    === "Sync API"
 
-    class Item(LanceModel):
-        vector: Vector(2)
-        item: str
-        price: float
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb-pydantic"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:class-Item"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_empty_table_pydantic"
+        ```
+    === "Async API"
 
-    tbl = db.create_table("empty_table_add", schema=Item.to_arrow_schema())
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb-pydantic"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:class-Item"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:create_empty_table_async_pydantic"
+        ```
 
     Once the empty table has been created, you can add data to it via the various methods listed in the [Adding to a table](#adding-to-a-table) section.
 
@@ -455,7 +481,7 @@ You can create an empty table for scenarios where you want to add data to the ta
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:create_empty_table"
+        --8<-- "nodejs/examples/basic.test.ts:create_empty_table"
         ```
 
     === "vectordb (deprecated)"
@@ -466,93 +492,103 @@ You can create an empty table for scenarios where you want to add data to the ta
 
 ## Adding to a table
 
-After a table has been created, you can always add more data to it usind the `add` method
+After a table has been created, you can always add more data to it using the `add` method
 
 === "Python"
     You can add any of the valid data structures accepted by LanceDB table, i.e, `dict`, `list[dict]`, `pd.DataFrame`, or `Iterator[pa.RecordBatch]`. Below are some examples.
 
     ### Add a Pandas DataFrame
 
-    ```python
-    df = pd.DataFrame({
-        "vector": [[1.3, 1.4], [9.5, 56.2]], "item": ["banana", "apple"], "price": [5.0, 7.0]
-    })
-    tbl.add(df)
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_from_pandas"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_async_from_pandas"
+        ```
 
     ### Add a Polars DataFrame
 
-    ```python
-    df = pl.DataFrame({
-        "vector": [[1.3, 1.4], [9.5, 56.2]], "item": ["banana", "apple"], "price": [5.0, 7.0]
-    })
-    tbl.add(df)
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_from_polars"
+        ```
+    === "Async API"
+    
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_async_from_polars"
+        ```
 
     ### Add an Iterator
 
     You can also add a large dataset batch in one go using Iterator of any supported data types.
 
-    ```python
-    def make_batches():
-        for i in range(5):
-            yield [
-                    {"vector": [3.1, 4.1], "item": "peach", "price": 6.0},
-                    {"vector": [5.9, 26.5], "item": "pear", "price": 5.0}
-                ]
-    tbl.add(make_batches())
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:make_batches_for_add"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_from_batch"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:make_batches_for_add"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_async_from_batch"
+        ```
 
     ### Add a PyArrow table
 
     If you have data coming in as a PyArrow table, you can add it directly to the LanceDB table.
 
-    ```python
-    pa_table = pa.Table.from_arrays(
-            [
-                pa.array([[9.1, 6.7], [9.9, 31.2]],
-                        pa.list_(pa.float32(), 2)),
-                pa.array(["mango", "orange"]),
-                pa.array([7.0, 4.0]),
-            ],
-            ["vector", "item", "price"],
-        )
+    === "Sync API"
 
-    tbl.add(pa_table)
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_from_pyarrow"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_async_from_pyarrow"
+        ```
 
     ### Add a Pydantic Model
 
     Assuming that a table has been created with the correct schema as shown [above](#creating-empty-table), you can add data items that are valid Pydantic models to the table.
 
-    ```python
-    pydantic_model_items = [
-        Item(vector=[8.1, 4.7], item="pineapple", price=10.0),
-        Item(vector=[6.9, 9.3], item="avocado", price=9.0)
-    ]
-
-    tbl.add(pydantic_model_items)
-    ```
-
-    ??? "Ingesting Pydantic models with LanceDB embedding API"
-        When using LanceDB's embedding API, you can add Pydantic models directly to the table. LanceDB will automatically convert the `vector` field to a vector before adding it to the table. You need to specify the default value of `vector` feild as None to allow LanceDB to automatically vectorize the data.
+    === "Sync API"
 
         ```python
-        import lancedb
-        from lancedb.pydantic import LanceModel, Vector
-        from lancedb.embeddings import get_registry
-
-        db = lancedb.connect("~/tmp")
-        embed_fcn = get_registry().get("huggingface").create(name="BAAI/bge-small-en-v1.5")
-
-        class Schema(LanceModel):
-            text: str = embed_fcn.SourceField()
-            vector: Vector(embed_fcn.ndims()) = embed_fcn.VectorField(default=None)
-
-        tbl = db.create_table("my_table", schema=Schema, mode="overwrite")
-        models = [Schema(text="hello"), Schema(text="world")]
-        tbl.add(models)
+        --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_from_pydantic"
         ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_async_from_pydantic"
+        ```
+
+    ??? "Ingesting Pydantic models with LanceDB embedding API"
+        When using LanceDB's embedding API, you can add Pydantic models directly to the table. LanceDB will automatically convert the `vector` field to a vector before adding it to the table. You need to specify the default value of `vector` field as None to allow LanceDB to automatically vectorize the data.
+
+        === "Sync API"
+
+            ```python
+            --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
+            --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb-pydantic"
+            --8<-- "python/python/tests/docs/test_guide_tables.py:import-embeddings"
+            --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_with_embedding"
+            ```
+        === "Async API"
+
+            ```python
+            --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
+            --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb-pydantic"
+            --8<-- "python/python/tests/docs/test_guide_tables.py:import-embeddings"
+            --8<-- "python/python/tests/docs/test_guide_tables.py:create_table_async_with_embedding"
+            ```
 
 === "Typescript[^1]"
 
@@ -571,44 +607,41 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
 
 === "Python"
 
-    ```python
-    tbl.delete('item = "fizz"')
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:delete_row"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:delete_row_async"
+        ```
 
     ### Deleting row with specific column value
 
-    ```python
-    import lancedb
+    === "Sync API"
 
-    data = [{"x": 1, "vector": [1, 2]},
-            {"x": 2, "vector": [3, 4]},
-            {"x": 3, "vector": [5, 6]}]
-    db = lancedb.connect("./.lancedb")
-    table = db.create_table("my_table", data)
-    table.to_pandas()
-    #   x      vector
-    # 0  1  [1.0, 2.0]
-    # 1  2  [3.0, 4.0]
-    # 2  3  [5.0, 6.0]
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:delete_specific_row"
+        ```
+    === "Async API"
 
-    table.delete("x = 2")
-    table.to_pandas()
-    #   x      vector
-    # 0  1  [1.0, 2.0]
-    # 1  3  [5.0, 6.0]
-    ```
-
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:delete_specific_row_async"
+        ```
+    
     ### Delete from a list of values
+    === "Sync API"
 
-    ```python
-    to_remove = [1, 5]
-    to_remove = ", ".join(str(v) for v in to_remove)
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:delete_list_values"
+        ```
+    === "Async API"
 
-    table.delete(f"x IN ({to_remove})")
-    table.to_pandas()
-    #   x      vector
-    # 0  3  [5.0, 6.0]
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:delete_list_values_async"
+        ```
 
 === "Typescript[^1]"
 
@@ -659,27 +692,20 @@ This can be used to update zero to all rows depending on how many rows match the
 === "Python"
 
     API Reference: [lancedb.table.Table.update][]
+    === "Sync API"
 
-    ```python
-    import lancedb
-    import pandas as pd
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-pandas"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:update_table"
+        ```
+    === "Async API"
 
-    # Create a lancedb connection
-    db = lancedb.connect("./.lancedb")
-
-    # Create a table from a pandas DataFrame
-    data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
-    table = db.create_table("my_table", data)
-
-    # Update the table where x = 2
-    table.update(where="x = 2", values={"vector": [10, 10]})
-
-    # Get the updated table as a pandas DataFrame
-    df = table.to_pandas()
-
-    # Print the DataFrame
-    print(df)
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-pandas"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:update_table_async"
+        ```
 
     Output
     ```shell
@@ -734,13 +760,16 @@ This can be used to update zero to all rows depending on how many rows match the
   The `values` parameter is used to provide the new values for the columns as literal values. You can also use the `values_sql` / `valuesSql` parameter to provide SQL expressions for the new values. For example, you can use `values_sql="x + 1"` to increment the value of the `x` column by 1.
 
 === "Python"
+    === "Sync API"
 
-    ```python
-    # Update the table where x = 2
-    table.update(valuesSql={"x": "x + 1"})
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:update_table_sql"
+        ```
+    === "Async API"
 
-    print(table.to_pandas())
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:update_table_sql_async"
+        ```
 
     Output
     ```shell
@@ -771,11 +800,16 @@ This can be used to update zero to all rows depending on how many rows match the
 Use the `drop_table()` method on the database to remove a table.
 
 === "Python"
+    === "Sync API"
 
-      ```python
-      --8<-- "python/python/tests/docs/test_basic.py:drop_table"
-      --8<-- "python/python/tests/docs/test_basic.py:drop_table_async"
-      ```
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:drop_table"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:drop_table_async"
+        ```
 
       This permanently removes the table and is not recoverable, unlike deleting rows.
       By default, if the table does not exist an exception is raised. To suppress this,
@@ -790,6 +824,144 @@ Use the `drop_table()` method on the database to remove a table.
       This permanently removes the table and is not recoverable, unlike deleting rows.
       If the table does not exist an exception is raised.
 
+## Changing schemas
+
+While tables must have a schema specified when they are created, you can
+change the schema over time. There's three methods to alter the schema of
+a table:
+
+* `add_columns`: Add new columns to the table
+* `alter_columns`: Alter the name, nullability, or data type of a column
+* `drop_columns`: Drop columns from the table
+
+### Adding new columns
+
+You can add new columns to the table with the `add_columns` method. New columns
+are filled with values based on a SQL expression. For example, you can add a new
+column `y` to the table, fill it with the value of `x * 2` and set the expected 
+data type for it.
+
+=== "Python"
+
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:add_columns"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:add_columns_async"
+        ```
+    **API Reference:** [lancedb.table.Table.add_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:add_columns"
+    ```
+    **API Reference:** [lancedb.Table.addColumns](../js/classes/Table.md/#addcolumns)
+
+If you want to fill it with null, you can use `cast(NULL as <data_type>)` as
+the SQL expression to fill the column with nulls, while controlling the data
+type of the column. Available data types are base on the
+[DataFusion data types](https://datafusion.apache.org/user-guide/sql/data_types.html).
+You can use any of the SQL types, such as `BIGINT`:
+
+```sql
+cast(NULL as BIGINT)
+```
+
+Using Arrow data types and the `arrow_typeof` function is not yet supported.
+
+<!-- TODO: we could provide a better formula for filling with nulls:
+   https://github.com/lancedb/lance/issues/3175
+-->
+
+### Altering existing columns
+
+You can alter the name, nullability, or data type of a column with the `alter_columns`
+method.
+
+Changing the name or nullability of a column just updates the metadata. Because
+of this, it's a fast operation. Changing the data type of a column requires
+rewriting the column, which can be a heavy operation.
+
+=== "Python"
+
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
+        --8<-- "python/python/tests/docs/test_basic.py:alter_columns"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
+        --8<-- "python/python/tests/docs/test_basic.py:alter_columns_async"
+        ```
+    **API Reference:** [lancedb.table.Table.alter_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:alter_columns"
+    ```
+    **API Reference:** [lancedb.Table.alterColumns](../js/classes/Table.md/#altercolumns)
+
+### Dropping columns
+
+You can drop columns from the table with the `drop_columns` method. This will
+will remove the column from the schema.
+
+<!-- TODO: Provide guidance on how to reduce disk usage once optimize helps here
+    waiting on: https://github.com/lancedb/lance/issues/3177
+-->
+
+=== "Python"
+
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:drop_columns"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:drop_columns_async"
+        ```
+    **API Reference:** [lancedb.table.Table.drop_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:drop_columns"
+    ```
+    **API Reference:** [lancedb.Table.dropColumns](../js/classes/Table.md/#altercolumns)
+
+
+## Handling bad vectors
+
+In LanceDB Python, you can use the `on_bad_vectors` parameter to choose how
+invalid vector values are handled. Invalid vectors are vectors that are not valid
+because:
+
+1. They are the wrong dimension
+2. They contain NaN values
+3. They are null but are on a non-nullable field
+
+By default, LanceDB will raise an error if it encounters a bad vector. You can
+also choose one of the following options:
+
+* `drop`: Ignore rows with bad vectors
+* `fill`: Replace bad values (NaNs) or missing values (too few dimensions) with
+    the fill value specified in the `fill_value` parameter. An input like
+    `[1.0, NaN, 3.0]` will be replaced with `[1.0, 0.0, 3.0]` if `fill_value=0.0`.
+* `null`: Replace bad vectors with null (only works if the column is nullable).
+    A bad vector `[1.0, NaN, 3.0]` will be replaced with `null` if the column is
+    nullable. If the vector column is non-nullable, then bad vectors will cause an
+    error
 
 ## Consistency
 
@@ -809,31 +981,46 @@ There are three possible settings for `read_consistency_interval`:
 
     To set strong consistency, use `timedelta(0)`:
 
-    ```python
-    from datetime import timedelta
-    db = lancedb.connect("./.lancedb",. read_consistency_interval=timedelta(0))
-    table = db.open_table("my_table")
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-datetime"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:table_strong_consistency"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-datetime"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:table_async_strong_consistency"
+        ```
 
     For eventual consistency, use a custom `timedelta`:
 
-    ```python
-    from datetime import timedelta
-    db = lancedb.connect("./.lancedb", read_consistency_interval=timedelta(seconds=5))
-    table = db.open_table("my_table")
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-datetime"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:table_eventual_consistency"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-datetime"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:table_async_eventual_consistency"
+        ```
 
     By default, a `Table` will never check for updates from other writers. To manually check for updates you can use `checkout_latest`:
 
-    ```python
-    db = lancedb.connect("./.lancedb")
-    table = db.open_table("my_table")
+    === "Sync API"
 
-    # (Other writes happen to my_table from another process)
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:table_checkout_latest"
+        ```
+    === "Async API"
 
-    # Check for updates
-    table.checkout_latest()
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:table_async_checkout_latest"
+        ```
 
 === "Typescript[^1]"
 
@@ -841,14 +1028,14 @@ There are three possible settings for `read_consistency_interval`:
 
     ```ts
     const db = await lancedb.connect({ uri: "./.lancedb", readConsistencyInterval: 0 });
-    const table = await db.openTable("my_table");
+    const tbl = await db.openTable("my_table");
     ```
 
     For eventual consistency, specify the update interval as seconds:
 
     ```ts
     const db = await lancedb.connect({ uri: "./.lancedb", readConsistencyInterval: 5 });
-    const table = await db.openTable("my_table");
+    const tbl = await db.openTable("my_table");
     ```
 
 <!-- Node doesn't yet support the version time travel: https://github.com/lancedb/lancedb/issues/1007
@@ -859,4 +1046,4 @@ There are three possible settings for `read_consistency_interval`:
 
 Learn the best practices on creating an ANN index and getting the most out of it.
 
-[^1]: The `vectordb` package is a legacy package that is  deprecated in favor of `@lancedb/lancedb`.  The `vectordb` package will continue to receive bug fixes and security updates until September 2024.  We recommend all new projects use `@lancedb/lancedb`.  See the [migration guide](migration.md) for more information.
+[^1]: The `vectordb` package is a legacy package that is  deprecated in favor of `@lancedb/lancedb`.  The `vectordb` package will continue to receive bug fixes and security updates until September 2024.  We recommend all new projects use `@lancedb/lancedb`.  See the [migration guide](../migration.md) for more information.

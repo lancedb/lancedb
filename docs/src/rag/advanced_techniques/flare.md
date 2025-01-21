@@ -11,7 +11,7 @@ FLARE, stands for Forward-Looking Active REtrieval augmented generation is a gen
 
 [![Open In Colab](../../assets/colab.svg)](https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/better-rag-FLAIR/main.ipynb)
 
-Here’s a code snippet for using FLARE with Langchain
+Here’s a code snippet for using FLARE with Langchain:
 
 ```python
 from langchain.vectorstores import LanceDB

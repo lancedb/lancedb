@@ -1,20 +1,10 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 """Full text search index using tantivy-py"""
 
 import os
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import pyarrow as pa
 
@@ -31,7 +21,7 @@ from .table import LanceTable
 def create_index(
     index_path: str,
     text_fields: List[str],
-    ordering_fields: List[str] = None,
+    ordering_fields: Optional[List[str]] = None,
     tokenizer_name: str = "default",
 ) -> tantivy.Index:
     """
@@ -75,8 +65,8 @@ def populate_index(
     index: tantivy.Index,
     table: LanceTable,
     fields: List[str],
-    writer_heap_size: int = 1024 * 1024 * 1024,
-    ordering_fields: List[str] = None,
+    writer_heap_size: Optional[int] = None,
+    ordering_fields: Optional[List[str]] = None,
 ) -> int:
     """
     Populate an index with data from a LanceTable
@@ -99,6 +89,7 @@ def populate_index(
     """
     if ordering_fields is None:
         ordering_fields = []
+    writer_heap_size = writer_heap_size or 1024 * 1024 * 1024
     # first check the fields exist and are string or large string type
     nested = []
 

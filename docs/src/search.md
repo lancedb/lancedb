@@ -13,11 +13,15 @@ A vector search finds the approximate or exact nearest neighbors to a given quer
 Distance metrics are a measure of the similarity between a pair of vectors.
 Currently, LanceDB supports the following metrics:
 
-| Metric   | Description                                                                 |
-| -------- | --------------------------------------------------------------------------- |
-| `l2`     | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
-| `cosine` | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)        |
-| `dot`    | [Dot Production](https://en.wikipedia.org/wiki/Dot_product)                 |
+| Metric    | Description                                                                 |
+| --------- | --------------------------------------------------------------------------- |
+| `l2`      | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
+| `cosine`  | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)        |
+| `dot`     | [Dot Production](https://en.wikipedia.org/wiki/Dot_product)                 |
+| `hamming` | [Hamming Distance](https://en.wikipedia.org/wiki/Hamming_distance)          |
+
+!!! note
+    The `hamming` metric is only available for binary vectors.
 
 ## Exhaustive search (kNN)
 
@@ -40,27 +44,25 @@ db.create_table("my_vectors", data=data)
 
 === "Python"
 
-    ```python
-    import lancedb
-    import numpy as np
+    === "Sync API"
 
-    db = lancedb.connect("data/sample-lancedb")
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:exhaustive_search"
+        ```
+    === "Async API"
 
-    tbl = db.open_table("my_vectors")
-
-    df = tbl.search(np.random.random((1536))) \
-        .limit(10) \
-        .to_list()
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:exhaustive_search_async"
+        ```
 
 === "TypeScript"
 
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/examples/search.ts:import"
+        --8<-- "nodejs/examples/search.test.ts:import"
 
-        --8<-- "nodejs/examples/search.ts:search1"
+        --8<-- "nodejs/examples/search.test.ts:search1"
         ```
 
 
@@ -77,19 +79,23 @@ By default, `l2` will be used as metric type. You can specify the metric type as
 
 === "Python"
 
-    ```python
-    df = tbl.search(np.random.random((1536))) \
-        .metric("cosine") \
-        .limit(10) \
-        .to_list()
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:exhaustive_search_cosine"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:exhaustive_search_async_cosine"
+        ```
 
 === "TypeScript"
 
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/examples/search.ts:search2"
+        --8<-- "nodejs/examples/search.test.ts:search2"
         ```
 
     === "vectordb (deprecated)"
@@ -107,46 +113,123 @@ an ANN search means that using an index often involves a trade-off between recal
 See the [IVF_PQ index](./concepts/index_ivfpq.md) for a deeper description of how `IVF_PQ`
 indexes work in LanceDB.
 
+## Binary vector
+
+LanceDB supports binary vectors as a data type, and has the ability to search binary vectors with hamming distance. The binary vectors are stored as uint8 arrays (every 8 bits are stored as a byte):
+
+!!! note
+    The dim of the binary vector must be a multiple of 8. A vector of dim 128 will be stored as a uint8 array of size 16.
+
+=== "Python"
+
+    === "sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_binary_vector.py:imports"
+
+        --8<-- "python/python/tests/docs/test_binary_vector.py:sync_binary_vector"
+        ```
+
+    === "async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_binary_vector.py:imports"
+
+        --8<-- "python/python/tests/docs/test_binary_vector.py:async_binary_vector"
+        ```
+
+## Multivector type
+
+LanceDB supports multivector type, this is useful when you have multiple vectors for a single item (e.g. with ColBert and ColPali).
+
+You can index on a column with multivector type and search on it, the query can be single vector or multiple vectors. If the query is multiple vectors `mq`, the similarity (distance) from it to any multivector `mv` in the dataset, is defined as:
+
+![maxsim](assets/maxsim.png)
+
+where `sim` is the similarity function (e.g. cosine).
+
+For now, only `cosine` metric is supported for multivector search.
+The vector value type can be `float16`, `float32` or `float64`.
+
+=== "Python"
+
+    === "sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_multivector.py:imports"
+
+        --8<-- "python/python/tests/docs/test_multivector.py:sync_multivector"
+        ```
+
+    === "async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_multivector.py:imports"
+
+        --8<-- "python/python/tests/docs/test_multivector.py:async_multivector"
+        ```
+
+## Search with distance range
+
+You can also search for vectors within a specific distance range from the query vector. This is useful when you want to find vectors that are not just the nearest neighbors, but also those that are within a certain distance. This can be done by using the `distance_range` method.
+
+=== "Python"
+
+    === "sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_distance_range.py:imports"
+
+        --8<-- "python/python/tests/docs/test_distance_range.py:sync_distance_range"
+        ```
+
+    === "async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_distance_range.py:imports"
+
+        --8<-- "python/python/tests/docs/test_distance_range.py:async_distance_range"
+        ```
+
+=== "TypeScript"
+
+    === "@lancedb/lancedb"
+
+        ```ts
+        --8<-- "nodejs/examples/search.test.ts:import"
+
+        --8<-- "nodejs/examples/search.test.ts:distance_range"
+        ```
+
+
 ## Output search results
 
 LanceDB returns vector search results via different formats commonly used in python.
 Let's create a LanceDB table with a nested schema:
 
 === "Python"
+    === "Sync API"
 
-    ```python
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:import-datetime"
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb-pydantic"
+        --8<-- "python/python/tests/docs/test_search.py:import-numpy"
+        --8<-- "python/python/tests/docs/test_search.py:import-pydantic-base-model"
+        --8<-- "python/python/tests/docs/test_search.py:class-definition"
+        --8<-- "python/python/tests/docs/test_search.py:create_table_with_nested_schema"
+        ```
+    === "Async API"
 
-    from datetime import datetime
-    import lancedb
-    from lancedb.pydantic import LanceModel, Vector
-    import numpy as np
-    from pydantic import BaseModel
-    uri = "data/sample-lancedb-nested"
-
-    class Metadata(BaseModel):
-        source: str
-        timestamp: datetime
-
-    class Document(BaseModel):
-        content: str
-        meta: Metadata
-
-    class LanceSchema(LanceModel):
-        id: str
-        vector: Vector(1536)
-        payload: Document
-
-    # Let's add 100 sample rows to our dataset
-    data = [LanceSchema(
-        id=f"id{i}",
-        vector=np.random.randn(1536),
-        payload=Document(
-            content=f"document{i}", meta=Metadata(source=f"source{i % 10}", timestamp=datetime.now())
-        ),
-    ) for i in range(100)]
-
-    tbl = db.create_table("documents", data=data)
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:import-datetime"
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_search.py:import-lancedb-pydantic"
+        --8<-- "python/python/tests/docs/test_search.py:import-numpy"
+        --8<-- "python/python/tests/docs/test_search.py:import-pydantic-base-model"
+        --8<-- "python/python/tests/docs/test_search.py:class-definition"
+        --8<-- "python/python/tests/docs/test_search.py:create_table_async_with_nested_schema"
+        ```
 
     ### As a PyArrow table
 
@@ -155,17 +238,31 @@ Let's create a LanceDB table with a nested schema:
     the addition of an `_distance` column for vector search or a `score`
     column for full text search.
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_arrow()
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_pyarrow"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_async_as_pyarrow"
+        ```
 
     ### As a Pandas DataFrame
 
     You can also get the results as a pandas dataframe.
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_pandas()
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_pandas"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_async_as_pandas"
+        ```
 
     While other formats like Arrow/Pydantic/Python dicts have a natural
     way to handle nested schemas, pandas can only store nested data as a
@@ -173,33 +270,50 @@ Let's create a LanceDB table with a nested schema:
     So for convenience, you can also tell LanceDB to flatten a nested schema
     when creating the pandas dataframe.
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_pandas(flatten=True)
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_pandas_flatten_true"
+        ```
 
     If your table has a deeply nested struct, you can control how many levels
     of nesting to flatten by passing in a positive integer.
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_pandas(flatten=1)
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_pandas_flatten_1"
+        ```
+    !!! note
+        `flatten` is not yet supported with our asynchronous client.
 
     ### As a list of Python dicts
 
     You can of course return results as a list of python dicts.
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_list()
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_list"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_async_as_list"
+        ```
 
     ### As a list of Pydantic models
 
     We can add data using Pydantic models, and we can certainly
     retrieve results as Pydantic models
 
-    ```python
-    tbl.search(np.random.randn(1536)).to_pydantic(LanceSchema)
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_search.py:search_result_as_pydantic"
+        ```
+    !!! note
+        `to_pydantic()` is not yet supported with our asynchronous client.
 
     Note that in this case the extra `_distance` field is discarded since
     it's not part of the LanceSchema.

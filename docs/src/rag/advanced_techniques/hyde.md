@@ -11,7 +11,7 @@ HyDE, stands for Hypothetical Document Embeddings is an approach used for precis
 
 [![Open In Colab](../../assets/colab.svg)](https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Advance-RAG-with-HyDE/main.ipynb)
 
-Here’s a code snippet for using HyDE with Langchain
+Here’s a code snippet for using HyDE with Langchain:
 
 ```python
 from langchain.llms import OpenAI

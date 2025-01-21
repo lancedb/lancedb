@@ -43,8 +43,9 @@ pub fn parse_distance_type(distance_type: impl AsRef<str>) -> PyResult<DistanceT
         "l2" => Ok(DistanceType::L2),
         "cosine" => Ok(DistanceType::Cosine),
         "dot" => Ok(DistanceType::Dot),
+        "hamming" => Ok(DistanceType::Hamming),
         _ => Err(PyValueError::new_err(format!(
-            "Invalid distance type '{}'.  Must be one of l2, cosine, or dot",
+            "Invalid distance type '{}'.  Must be one of l2, cosine, dot, or hamming",
             distance_type.as_ref()
         ))),
     }
