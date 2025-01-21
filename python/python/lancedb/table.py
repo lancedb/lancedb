@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import warnings
 from abc import ABC, abstractmethod
@@ -40,6 +41,8 @@ from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
+    AsyncFTSQuery,
+    AsyncHybridQuery,
     AsyncQuery,
     AsyncVectorQuery,
     LanceEmptyQueryBuilder,
@@ -2945,6 +2948,56 @@ class AsyncTable:
 
         return LanceMergeInsertBuilder(self, on)
 
+    @overload
+    async def search(
+        self,
+        query: Optional[Union[str]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["auto"] = ...,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> Union[AsyncHybridQuery | AsyncFTSQuery | AsyncVectorQuery]: ...
+
+    @overload
+    async def search(
+        self,
+        query: Optional[Union[str]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["hybrid"] = ...,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncHybridQuery: ...
+
+    @overload
+    async def search(
+        self,
+        query: Optional[Union[VEC, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["auto"] = ...,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncVectorQuery: ...
+
+    @overload
+    async def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["fts"] = ...,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncFTSQuery: ...
+
+    @overload
+    async def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["vector"] = ...,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncVectorQuery: ...
+
     async def search(
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
@@ -3011,25 +3064,64 @@ class AsyncTable:
         def is_embedding(query):
             return isinstance(query, (list, np.ndarray, pa.Array, pa.ChunkedArray))
 
+        async def get_embedding_func(
+            vector_column_name: Optional[str],
+            query_type: QueryType,
+            query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]],
+        ) -> Tuple[str, EmbeddingFunctionConfig]:
+            schema = await self.schema()
+            vector_column_name = infer_vector_column_name(
+                schema=schema,
+                query_type=query_type,
+                query=query,
+                vector_column_name=vector_column_name,
+            )
+            funcs = EmbeddingFunctionRegistry.get_instance().parse_functions(
+                schema.metadata
+            )
+            func = funcs.get(vector_column_name)
+            if func is None:
+                error = ValueError(
+                    f"Column '{vector_column_name}' has no registered "
+                    "embedding function."
+                )
+                if len(funcs) > 0:
+                    add_note(
+                        error,
+                        "Embedding functions are registered for columns: "
+                        f"{list(funcs.keys())}",
+                    )
+                else:
+                    add_note(
+                        error, "No embedding functions are registered for any columns."
+                    )
+                raise error
+            return vector_column_name, func
+
+        async def make_embedding(embedding, query):
+            if embedding is not None:
+                loop = asyncio.get_running_loop()
+                # This function is likely to block, since it either calls an expensive
+                # function or makes an HTTP request to an embeddings REST API.
+                return (await loop.run_in_executor(
+                    None, embedding.function.compute_query_embeddings_with_retry, query
+                ))[0]
+            else:
+                return None
+
         if query_type == "auto":
             # Infer the query type.
             if is_embedding(query):
                 vector_query = query
                 query_type = "vector"
             elif isinstance(query, str):
-                vector_column_name = infer_vector_column_name(
-                    schema=await self.schema(),
-                    query_type=query_type,
-                    query=query,
-                    vector_column_name=vector_column_name,
+                indices, (vector_column_name, conf) = await asyncio.gather(
+                    self.list_indices(),
+                    get_embedding_func(vector_column_name, "auto", query),
                 )
-                conf = (await self.embedding_functions()).get(vector_column_name)
-                if conf is not None:
-                    vector_query = conf.function.compute_query_embeddings_with_retry(
-                        query
-                    )[0]
 
-                    indices = await self.list_indices()
+                if conf is not None:
+                    vector_query = await make_embedding(conf, query)
                     if any(
                         i.columns[0] == conf.source_column and i.index_type == "FTS"
                         for i in indices
@@ -3042,6 +3134,22 @@ class AsyncTable:
             else:
                 # it's an image or something else embeddable.
                 query_type = "vector"
+        elif query_type == "vector":
+            if is_embedding(query):
+                vector_query = query
+            else:
+                vector_column_name, conf = await get_embedding_func(
+                    vector_column_name, query_type, query
+                )
+                vector_query = await make_embedding(conf, query)
+        elif query_type == "hybrid":
+            if is_embedding(query):
+                raise ValueError("Hybrid search requires a text query")
+            else:
+                vector_column_name, conf = await get_embedding_func(
+                    vector_column_name, query_type, query
+                )
+                vector_query = await make_embedding(conf, query)
 
         if query_type == "vector":
             builder = self.query().nearest_to(vector_query)
