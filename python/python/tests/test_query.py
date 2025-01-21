@@ -15,10 +15,12 @@ import lancedb.pydantic
 import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 import pytest_asyncio
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.query import (
+    AsyncFTSQuery,
     AsyncHybridQuery,
     AsyncQueryBase,
     AsyncVectorQuery,
@@ -27,6 +29,7 @@ from lancedb.query import (
 )
 from lancedb.rerankers.cross_encoder import CrossEncoderReranker
 from lancedb.table import AsyncTable, LanceTable
+from tests.utils import exception_output
 
 
 @pytest.fixture(scope="module")
@@ -774,3 +777,47 @@ async def test_query_search_auto(mem_db_async: AsyncConnection):
 
     query = await tbl.search("0.1")
     assert isinstance(query, AsyncHybridQuery)
+
+    data_with_vecs = await tbl.to_arrow()
+    data_with_vecs = data_with_vecs.replace_schema_metadata(None)
+    tbl2 = await mem_db_async.create_table("test2", data_with_vecs)
+    with pytest.raises(
+        Exception,
+        match=(
+            "Cannot perform full text search unless an INVERTED index has "
+            "been created"
+        ),
+    ):
+        query = await (await tbl2.search("0.1")).to_arrow()
+
+
+@pytest.mark.asyncio
+async def test_query_search_specified(mem_db_async: AsyncConnection):
+    nrows, ndims = 1000, 16
+    data = pa.table(
+        {
+            "text": [str(i) for i in range(nrows)],
+            "vector": pa.FixedSizeListArray.from_arrays(
+                pc.random(nrows * ndims).cast(pa.float32()), ndims
+            ),
+        }
+    )
+    table = await mem_db_async.create_table("test", data)
+    await table.create_index("text", config=FTS())
+
+    # Validate that specifying fts, vector or hybrid gets the right query.
+    q = [0.1] * ndims
+    query = await table.search(q, query_type="vector")
+    assert isinstance(query, AsyncVectorQuery)
+
+    query = await table.search("0.1", query_type="fts")
+    assert isinstance(query, AsyncFTSQuery)
+
+    with pytest.raises(
+        ValueError, match="Column 'vector' has no registered embedding function"
+    ) as e:
+        await table.search("0.1", query_type="vector")
+
+    assert "No embedding functions are registered for any columns" in exception_output(
+        e
+    )
