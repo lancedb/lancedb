@@ -2,6 +2,10 @@
 members = [
     "rust/ffi/node",
     "rust/lancedb",
+    "rust/lancedb-core",
+    "rust/lancedb-embedding",
+    "rust/lancedb-reranker",
+    "rust/lancedb-table",
     "nodejs",
     "python",
     "java/core/lancedb-jni",
@@ -21,6 +25,7 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
+# Lance
 lance = { "version" = "=0.22.1", "features" = [
     "dynamodb",
 ], git = "https://github.com/lancedb/lance.git", tag = "v0.22.1-beta.3" }
@@ -31,6 +36,11 @@ lance-table = { version = "=0.22.1", git = "https://github.com/lancedb/lance.git
 lance-testing = { version = "=0.22.1", git = "https://github.com/lancedb/lance.git", tag = "v0.22.1-beta.3" }
 lance-datafusion = { version = "=0.22.1", git = "https://github.com/lancedb/lance.git", tag = "v0.22.1-beta.3" }
 lance-encoding = { version = "=0.22.1", git = "https://github.com/lancedb/lance.git", tag = "v0.22.1-beta.3" }
+# LanceDB
+lancedb-core = { version = "=0.14.1", path = "rust/lancedb-core" }
+lancedb-embedding = { version = "=0.14.1", path = "rust/lancedb-embedding" }
+lancedb-reranker = { version = "=0.14.1", path = "rust/lancedb-reranker" }
+lancedb-table = { version = "=0.14.1", path = "rust/lancedb-table" }
 # Note that this one does not include pyarrow
 arrow = { version = "53.2", optional = false }
 arrow-array = "53.2"
@@ -41,6 +51,7 @@ arrow-schema = "53.2"
 arrow-arith = "53.2"
 arrow-cast = "53.2"
 async-trait = "0"
+candle-core = { version = "0.6.0" }
 chrono = "0.4.35"
 datafusion-common = "44.0"
 datafusion-physical-plan = "44.0"
@@ -48,14 +59,18 @@ env_logger = "0.10"
 half = { "version" = "=2.4.1", default-features = false, features = [
     "num-traits",
 ] }
+hf-hub = { version = "0.4.1" }
 futures = "0"
 log = "0.4"
 moka = { version = "0.11", features = ["future"] }
 object_store = "0.10.2"
 pin-project = "1.0.7"
+serde = "^1"
+serde_json = "1"
 snafu = "0.7.4"
 url = "2"
 num-traits = "0.2"
 rand = "0.8"
 regex = "1.10"
+tokio = { version = "1.23", features = ["rt-multi-thread"] }
 lazy_static = "1"

@@ -19,7 +19,12 @@ use serde::Deserialize;
 use serde_with::skip_serializing_none;
 use vector::IvfFlatIndexBuilder;
 
-use crate::{table::TableInternal, DistanceType, Error, Result};
+use lancedb_core::{
+    error::{Error, Result},
+    DistanceType,
+};
+
+use crate::table::TableInternal;
 
 use self::{
     scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder},

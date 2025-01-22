@@ -1,0 +1,30 @@
+[package]
+name = "lancedb-reranker"
+version = "0.14.1"
+edition.workspace = true
+description = "Utilities for reranking multiple queries"
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# LanceDB
+lancedb-core = { workspace = true }
+# Required
+arrow.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+async-trait.workspace = true
+lance.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+# Optional
+
+[dev-dependencies]
+tempfile = "3.5.0"
+
+[features]
+default = []

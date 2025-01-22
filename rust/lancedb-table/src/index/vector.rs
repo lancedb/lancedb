@@ -21,7 +21,7 @@ use std::cmp::max;
 
 use lance::table::format::{Index, Manifest};
 
-use crate::DistanceType;
+use lancedb_core::DistanceType;
 
 pub struct VectorIndex {
     pub columns: Vec<String>,

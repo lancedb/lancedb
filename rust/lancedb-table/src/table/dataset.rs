@@ -21,7 +21,7 @@ use std::{
 use lance::Dataset;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::error::Result;
+use lancedb_core::error::{Error, Result};
 
 /// A wrapper around a [Dataset] that provides lazy-loading and consistency checks.
 ///
@@ -222,7 +222,7 @@ impl DatasetConsistencyWrapper {
         let dataset_ref = self.0.read().await;
         match &*dataset_ref {
             DatasetRef::Latest { .. } => Ok(()),
-            DatasetRef::TimeTravel { .. } => Err(crate::Error::InvalidInput {
+            DatasetRef::TimeTravel { .. } => Err(Error::InvalidInput {
                 message: "table cannot be modified when a specific version is checked out"
                     .to_string(),
             }),

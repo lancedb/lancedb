@@ -1,0 +1,45 @@
+[package]
+name = "lancedb-core"
+version = "0.14.1"
+edition.workspace = true
+description = "Core rust utilities (e.g. error types) for LanceDB"
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Required
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+pin-project = { workspace = true }
+futures = { workspace = true }
+lance = { workspace = true }
+lance-io = { workspace = true }
+lance-linalg = { workspace = true }
+object_store = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+snafu = { workspace = true }
+
+# Optional
+
+# Polars / Arrow conversion and errors
+arrow = { workspace = true, optional = true }
+arrow-data = { workspace = true, optional = true }
+polars = { version = ">=0.37,<0.40.0", default-features = false, optional = true }
+polars-arrow = { version = ">=0.37,<0.40.0", optional = true }
+# Only need the error type
+reqwest = { version = "0.12.0", default-features = false, optional = true }
+hf-hub = { workspace = true, optional = true }
+candle-core = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[features]
+default = []
+remote = ["dep:reqwest"]
+polars = ["dep:arrow", "dep:polars", "dep:polars-arrow"]
+sentence-transformers = ["dep:hf-hub", "dep:candle-core"]

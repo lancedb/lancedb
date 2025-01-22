@@ -23,5 +23,5 @@ tokio = "1.23"
 jni = "0.21.1"
 snafu.workspace = true
 lazy_static.workspace = true
-serde = { version = "^1" }
-serde_json = { version = "1" }
+serde.workspace = true
+serde_json.workspace = true

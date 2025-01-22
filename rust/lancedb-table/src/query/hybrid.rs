@@ -11,7 +11,7 @@ use lance::dataset::ROW_ID;
 use lance_index::{scalar::inverted::SCORE_COL, vector::DIST_COL};
 use std::sync::Arc;
 
-use crate::error::{Error, Result};
+use lancedb_core::error::{Error, Result};
 
 /// Converts results's score column to a rank.
 ///

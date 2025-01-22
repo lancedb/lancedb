@@ -1,0 +1,59 @@
+[package]
+name = "lancedb-embedding"
+version = "0.14.1"
+edition.workspace = true
+description = "Utilities for creating and managing embedding registries"
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# LanceDB
+lancedb-core = { workspace = true }
+# Required
+arrow-array.workspace = true
+arrow-schema.workspace = true
+lance.workspace = true
+serde.workspace = true
+
+# Optional
+arrow = { workspace = true, optional = true }
+arrow-data = { workspace = true, optional = true }
+async-openai = { version = "0.20.0", optional = true }
+aws-sdk-bedrockruntime = { version = "1.27.0", optional = true }
+candle-core = { workspace = true, optional = true }
+candle-transformers = { version = "0.6.0", optional = true }
+candle-nn = { version = "0.6.0", optional = true }
+hf-hub = { workspace = true, optional = true }
+reqwest = { version = "0.12.0", default-features = false, features = [
+    "charset",
+    "gzip",
+    "http2",
+    "json",
+    "macos-system-configuration",
+    "stream",
+], optional = true }
+serde_json = { workspace = true, optional = true }
+tokenizers = { version = "0.19.1", optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3.5.0"
+
+[features]
+default = []
+bedrock = ["dep:aws-sdk-bedrockruntime", "dep:tokio"]
+openai = ["dep:async-openai", "dep:reqwest", "dep:tokio"]
+sentence-transformers = [
+    "dep:arrow",
+    "dep:arrow-data",
+    "dep:candle-core",
+    "dep:candle-transformers",
+    "dep:candle-nn",
+    "dep:hf-hub",
+    "dep:serde_json",
+    "dep:tokenizers",
+    "lancedb-core/sentence-transformers",
+]

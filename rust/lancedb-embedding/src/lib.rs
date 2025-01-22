@@ -29,13 +29,10 @@ use std::{
 
 use arrow_array::{Array, RecordBatch, RecordBatchReader};
 use arrow_schema::{DataType, Field, SchemaBuilder};
-// use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 
-use crate::{
-    error::Result,
-    table::{ColumnDefinition, ColumnKind, TableDefinition},
-    Error,
+use lancedb_core::{
+    error::{Error, Result},
+    tabledef::{ColumnDefinition, ColumnKind, EmbeddingDefinition, TableDefinition},
 };
 
 /// Trait for embedding functions
@@ -63,28 +60,6 @@ pub trait EmbeddingFunction: std::fmt::Debug + Send + Sync {
     fn compute_source_embeddings(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>>;
     /// Compute the embeddings for a given user query
     fn compute_query_embeddings(&self, input: Arc<dyn Array>) -> Result<Arc<dyn Array>>;
-}
-
-/// Defines an embedding from input data into a lower-dimensional space
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct EmbeddingDefinition {
-    /// The name of the column in the input data
-    pub source_column: String,
-    /// The name of the embedding column, if not specified
-    /// it will be the source column with `_embedding` appended
-    pub dest_column: Option<String>,
-    /// The name of the embedding function to apply
-    pub embedding_name: String,
-}
-
-impl EmbeddingDefinition {
-    pub fn new<S: Into<String>>(source_column: S, embedding_name: S, dest: Option<S>) -> Self {
-        Self {
-            source_column: source_column.into(),
-            dest_column: dest.map(|d| d.into()),
-            embedding_name: embedding_name.into(),
-        }
-    }
 }
 
 /// A registry of embedding

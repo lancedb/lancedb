@@ -126,14 +126,6 @@ impl TableNamesBuilder {
     }
 }
 
-pub struct NoData {}
-
-impl IntoArrow for NoData {
-    fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
-        unreachable!("NoData should never be converted to Arrow")
-    }
-}
-
 /// A builder for configuring a [`Connection::create_table`] operation
 pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
     pub(crate) parent: Arc<dyn ConnectionInternal>,

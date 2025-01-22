@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
 
-use crate::Result;
+use lancedb_core::error::Result;
 
 use super::TableInternal;
 

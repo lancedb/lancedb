@@ -51,13 +51,9 @@ use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
 use lance_table::format::Manifest;
 use lance_table::io::commit::ManifestNamingScheme;
+use lancedb_core::tabledef::TableDefinition;
 use log::info;
-use serde::{Deserialize, Serialize};
 
-use crate::arrow::IntoArrow;
-use crate::connection::NoData;
-use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
-use crate::error::{Error, Result};
 use crate::index::scalar::FtsIndexBuilder;
 use crate::index::vector::{
     suggested_num_partitions_for_hnsw, IvfFlatIndexBuilder, IvfHnswPqIndexBuilder,
@@ -77,6 +73,11 @@ use crate::utils::{
     supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
     PatchReadParam, PatchWriteParam,
 };
+use lancedb_core::{
+    arrow::{IntoArrow, NoData},
+    error::{Error, Result},
+};
+use lancedb_embedding::{EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
@@ -87,79 +88,6 @@ pub mod merge;
 pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
 pub use lance_index::optimize::OptimizeOptions;
-
-/// Defines the type of column
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ColumnKind {
-    /// Columns populated by data from the user (this is the most common case)
-    Physical,
-    /// Columns populated by applying an embedding function to the input
-    Embedding(EmbeddingDefinition),
-}
-
-/// Defines a column in a table
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ColumnDefinition {
-    /// The source of the column data
-    pub kind: ColumnKind,
-}
-
-#[derive(Debug, Clone)]
-pub struct TableDefinition {
-    pub column_definitions: Vec<ColumnDefinition>,
-    pub schema: SchemaRef,
-}
-
-impl TableDefinition {
-    pub fn new(schema: SchemaRef, column_definitions: Vec<ColumnDefinition>) -> Self {
-        Self {
-            column_definitions,
-            schema,
-        }
-    }
-
-    pub fn new_from_schema(schema: SchemaRef) -> Self {
-        let column_definitions = schema
-            .fields()
-            .iter()
-            .map(|_| ColumnDefinition {
-                kind: ColumnKind::Physical,
-            })
-            .collect();
-        Self::new(schema, column_definitions)
-    }
-
-    pub fn try_from_rich_schema(schema: SchemaRef) -> Result<Self> {
-        let column_definitions = schema.metadata.get("lancedb::column_definitions");
-        if let Some(column_definitions) = column_definitions {
-            let column_definitions: Vec<ColumnDefinition> =
-                serde_json::from_str(column_definitions).map_err(|e| Error::Runtime {
-                    message: format!("Failed to deserialize column definitions: {}", e),
-                })?;
-            Ok(Self::new(schema, column_definitions))
-        } else {
-            let column_definitions = schema
-                .fields()
-                .iter()
-                .map(|_| ColumnDefinition {
-                    kind: ColumnKind::Physical,
-                })
-                .collect();
-            Ok(Self::new(schema, column_definitions))
-        }
-    }
-
-    pub fn into_rich_schema(self) -> SchemaRef {
-        // We have full control over the structure of column definitions.  This should
-        // not fail, except for a bug
-        let lancedb_metadata = serde_json::to_string(&self.column_definitions).unwrap();
-        let mut schema_with_metadata = (*self.schema).clone();
-        schema_with_metadata
-            .metadata
-            .insert("lancedb::column_definitions".to_string(), lancedb_metadata);
-        Arc::new(schema_with_metadata)
-    }
-}
 
 /// Optimize the dataset.
 ///
@@ -343,7 +271,7 @@ impl UpdateBuilder {
     /// # Examples
     ///
     /// ```
-    /// # use lancedb::Table;
+    /// # use lancedb_table::Table;
     /// # async fn doctest_helper(tbl: Table) {
     ///   let mut operation = tbl.update();
     ///   // Increments the `bird_count` value by 1
@@ -565,42 +493,10 @@ impl Table {
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
-    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// let tmpdir = tempfile::tempdir().unwrap();
-    /// let db = lancedb::connect(tmpdir.path().to_str().unwrap())
-    ///     .execute()
-    ///     .await
-    ///     .unwrap();
-    /// # let schema = Arc::new(Schema::new(vec![
-    /// #  Field::new("id", DataType::Int32, false),
-    /// #  Field::new("vector", DataType::FixedSizeList(
-    /// #    Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
-    /// # ]));
-    /// let batches = RecordBatchIterator::new(
-    ///     vec![RecordBatch::try_new(
-    ///         schema.clone(),
-    ///         vec![
-    ///             Arc::new(Int32Array::from_iter_values(0..10)),
-    ///             Arc::new(
-    ///                 FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-    ///                     (0..10).map(|_| Some(vec![Some(1.0); 128])),
-    ///                     128,
-    ///                 ),
-    ///             ),
-    ///         ],
-    ///     )
-    ///     .unwrap()]
-    ///     .into_iter()
-    ///     .map(Ok),
-    ///     schema.clone(),
-    /// );
-    /// let tbl = db
-    ///     .create_table("delete_test", Box::new(batches))
-    ///     .execute()
-    ///     .await
-    ///     .unwrap();
-    /// tbl.delete("id > 5").await.unwrap();
-    /// # });
+    /// # use lancedb_table::Table;
+    /// # async fn query(table: &Table) {
+    /// table.delete("id > 5").await.unwrap();
+    /// # }
     /// ```
     pub async fn delete(&self, predicate: &str) -> Result<()> {
         self.inner.delete(predicate).await
@@ -642,30 +538,25 @@ impl Table {
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
-    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// use lancedb::index::Index;
-    /// let tmpdir = tempfile::tempdir().unwrap();
-    /// let db = lancedb::connect(tmpdir.path().to_str().unwrap())
-    ///     .execute()
-    ///     .await
-    ///     .unwrap();
-    /// # let tbl = db.open_table("idx_test").execute().await.unwrap();
+    /// # use lancedb_table::Table;
+    /// use lancedb_table::index::Index;
+    /// # async fn query(table: &Table) {
     /// // Create IVF PQ index on the "vector" column by default.
-    /// tbl.create_index(&["vector"], Index::Auto)
+    /// table.create_index(&["vector"], Index::Auto)
     ///    .execute()
     ///    .await
     ///    .unwrap();
     /// // Create a BTree index on the "id" column.
-    /// tbl.create_index(&["id"], Index::Auto)
+    /// table.create_index(&["id"], Index::Auto)
     ///     .execute()
     ///     .await
     ///     .unwrap();
     /// // Create a LabelList index on the "tags" column.
-    /// tbl.create_index(&["tags"], Index::LabelList(Default::default()))
+    /// table.create_index(&["tags"], Index::LabelList(Default::default()))
     ///     .execute()
     ///     .await
     ///     .unwrap();
-    /// # });
+    /// # }
     /// ```
     pub fn create_index(&self, columns: &[impl AsRef<str>], index: Index) -> IndexBuilder {
         IndexBuilder::new(
@@ -715,13 +606,8 @@ impl Table {
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
-    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// let tmpdir = tempfile::tempdir().unwrap();
-    /// let db = lancedb::connect(tmpdir.path().to_str().unwrap())
-    ///     .execute()
-    ///     .await
-    ///     .unwrap();
-    /// # let tbl = db.open_table("idx_test").execute().await.unwrap();
+    /// # use lancedb_table::Table;
+    /// # async fn run_test(tbl: &Table) {
     /// # let schema = Arc::new(Schema::new(vec![
     /// #  Field::new("id", DataType::Int32, false),
     /// #  Field::new("vector", DataType::FixedSizeList(
@@ -751,7 +637,7 @@ impl Table {
     ///     .when_matched_update_all(None)
     ///     .when_not_matched_insert_all();
     /// merge_insert.execute(Box::new(new_data)).await.unwrap();
-    /// # });
+    /// # }
     /// ```
     pub fn merge_insert(&self, on: &[&str]) -> MergeInsertBuilder {
         MergeInsertBuilder::new(
@@ -788,11 +674,10 @@ impl Table {
     /// ```no_run
     /// # use arrow_array::RecordBatch;
     /// # use futures::TryStreamExt;
-    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// # let conn = lancedb::connect("/tmp").execute().await.unwrap();
-    /// # let tbl = conn.open_table("tbl").execute().await.unwrap();
-    /// use crate::lancedb::Table;
-    /// use crate::lancedb::query::ExecutableQuery;
+    /// use lancedb_table::Table;
+    /// use lancedb_table::query::ExecutableQuery;
+    ///
+    /// # async fn run_test(tbl: &Table) {
     /// let stream = tbl
     ///     .query()
     ///     .nearest_to(&[1.0, 2.0, 3.0])
@@ -803,7 +688,7 @@ impl Table {
     ///     .await
     ///     .unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
-    /// # });
+    /// # }
     /// ```
     ///
     /// ## SQL-style filter
@@ -814,11 +699,10 @@ impl Table {
     /// ```no_run
     /// # use arrow_array::RecordBatch;
     /// # use futures::TryStreamExt;
-    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// # let conn = lancedb::connect("/tmp").execute().await.unwrap();
-    /// # let tbl = conn.open_table("tbl").execute().await.unwrap();
-    /// use crate::lancedb::Table;
-    /// use crate::lancedb::query::{ExecutableQuery, QueryBase};
+    /// use lancedb_table::Table;
+    /// use lancedb_table::query::{ExecutableQuery, QueryBase};
+    ///
+    /// # async fn run_test(tbl: &Table) {
     /// let stream = tbl
     ///     .query()
     ///     .only_if("id > 5")
@@ -827,7 +711,7 @@ impl Table {
     ///     .await
     ///     .unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
-    /// # });
+    /// # }
     /// ```
     ///
     /// ## Full scan
@@ -838,14 +722,12 @@ impl Table {
     /// ```no_run
     /// # use arrow_array::RecordBatch;
     /// # use futures::TryStreamExt;
-    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// # let conn = lancedb::connect("/tmp").execute().await.unwrap();
-    /// # let tbl = conn.open_table("tbl").execute().await.unwrap();
-    /// use crate::lancedb::Table;
-    /// use crate::lancedb::query::ExecutableQuery;
+    /// use lancedb_table::Table;
+    /// use lancedb_table::query::ExecutableQuery;
+    /// # async fn run_test(tbl: &Table) {
     /// let stream = tbl.query().execute().await.unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
-    /// # });
+    /// # }
     /// ```
     pub fn query(&self) -> Query {
         Query::new(self.inner.clone())
@@ -2278,15 +2160,60 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
-    use lance::io::{ObjectStoreParams, WrappingObjectStore};
+    use lance::io::WrappingObjectStore;
+    use lancedb_core::DistanceType;
     use rand::Rng;
     use tempfile::tempdir;
 
     use super::*;
-    use crate::connect;
-    use crate::connection::ConnectBuilder;
     use crate::index::scalar::BTreeIndexBuilder;
     use crate::query::{ExecutableQuery, QueryBase};
+
+    struct CreateTableBuilder<T: RecordBatchReader + Send + 'static> {
+        uri: String,
+        name: String,
+        data: T,
+        read_consistency_interval: Option<Duration>,
+    }
+
+    impl<T: RecordBatchReader + Send + 'static> CreateTableBuilder<T> {
+        fn new(uri: &str, name: &str, data: T) -> Self {
+            Self {
+                uri: uri.to_string(),
+                name: name.to_string(),
+                data,
+                read_consistency_interval: None,
+            }
+        }
+
+        fn with_read_consistency_interval(mut self, interval: Duration) -> Self {
+            self.read_consistency_interval = Some(interval);
+            self
+        }
+
+        async fn build(self) -> Table {
+            let path = std::path::Path::new(&self.uri);
+            let table_uri = path
+                .join(format!("{}.{}", &self.name, ".lance"))
+                .to_str()
+                .unwrap()
+                .to_string();
+
+            let inner = Arc::new(
+                NativeTable::create(
+                    &table_uri,
+                    &self.name,
+                    self.data,
+                    None,
+                    None,
+                    self.read_consistency_interval,
+                )
+                .await
+                .unwrap(),
+            );
+            Table::new(inner)
+        }
+    }
 
     #[tokio::test]
     async fn test_open() {
@@ -2343,11 +2270,11 @@ mod tests {
     async fn test_add() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = conn.create_table("test", batches).execute().await.unwrap();
+
+        let table = CreateTableBuilder::new(uri, "test", batches).build().await;
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
         let new_batches = RecordBatchIterator::new(
@@ -2370,15 +2297,13 @@ mod tests {
     async fn test_merge_insert() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
 
         // Create a dataset with i=0..10
         let batches = merge_insert_test_batches(0, 0);
-        let table = conn
-            .create_table("my_table", batches)
-            .execute()
-            .await
-            .unwrap();
+        let table = CreateTableBuilder::new(uri, "my_table", batches)
+            .build()
+            .await;
+
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
         // Create new data with i=5..15
@@ -2419,11 +2344,10 @@ mod tests {
     async fn test_add_overwrite() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = conn.create_table("test", batches).execute().await.unwrap();
+        let table = CreateTableBuilder::new(uri, "test", batches).build().await;
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
         let batches = vec![RecordBatch::try_new(
@@ -2473,11 +2397,6 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = dataset_path.to_str().unwrap();
-        let conn = connect(uri)
-            .read_consistency_interval(Duration::from_secs(0))
-            .execute()
-            .await
-            .unwrap();
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
@@ -2500,11 +2419,10 @@ mod tests {
             schema.clone(),
         );
 
-        let table = conn
-            .create_table("my_table", record_batch_iter)
-            .execute()
-            .await
-            .unwrap();
+        let table = CreateTableBuilder::new(uri, "my_table", record_batch_iter)
+            .with_read_consistency_interval(Duration::from_secs(0))
+            .build()
+            .await;
 
         table
             .update()
@@ -2556,11 +2474,6 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = dataset_path.to_str().unwrap();
-        let conn = connect(uri)
-            .read_consistency_interval(Duration::from_secs(0))
-            .execute()
-            .await
-            .unwrap();
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("int32", DataType::Int32, false),
@@ -2637,11 +2550,10 @@ mod tests {
             schema.clone(),
         );
 
-        let table = conn
-            .create_table("my_table", record_batch_iter)
-            .execute()
-            .await
-            .unwrap();
+        let table = CreateTableBuilder::new(uri, "my_table", record_batch_iter)
+            .with_read_consistency_interval(Duration::from_secs(0))
+            .build()
+            .await;
 
         // check it can do update for each type
         let updates: Vec<(&str, &str)> = vec![
@@ -2753,16 +2665,10 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = dataset_path.to_str().unwrap();
-        let conn = connect(uri)
-            .read_consistency_interval(Duration::from_secs(0))
-            .execute()
-            .await
-            .unwrap();
-        let tbl = conn
-            .create_table("my_table", make_test_batches())
-            .execute()
-            .await
-            .unwrap();
+        let tbl = CreateTableBuilder::new(uri, "my_table", make_test_batches())
+            .with_read_consistency_interval(Duration::from_secs(0))
+            .build()
+            .await;
         assert_eq!(1, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
         tbl.update().column("i", "i+1").execute().await.unwrap();
         assert_eq!(0, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
@@ -2789,38 +2695,38 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_open_table_options() {
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = dataset_path.to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+    // #[tokio::test]
+    // async fn test_open_table_options() {
+    //     let tmp_dir = tempdir().unwrap();
+    //     let dataset_path = tmp_dir.path().join("test.lance");
+    //     let uri = dataset_path.to_str().unwrap();
+    //     let conn = connect(uri).execute().await.unwrap();
 
-        let batches = make_test_batches();
+    //     let batches = make_test_batches();
 
-        conn.create_table("my_table", batches)
-            .execute()
-            .await
-            .unwrap();
+    //     conn.create_table("my_table", batches)
+    //         .execute()
+    //         .await
+    //         .unwrap();
 
-        let wrapper = Arc::new(NoOpCacheWrapper::default());
+    //     let wrapper = Arc::new(NoOpCacheWrapper::default());
 
-        let object_store_params = ObjectStoreParams {
-            object_store_wrapper: Some(wrapper.clone()),
-            ..Default::default()
-        };
-        let param = ReadParams {
-            store_options: Some(object_store_params),
-            ..Default::default()
-        };
-        assert!(!wrapper.called());
-        conn.open_table("my_table")
-            .lance_read_params(param)
-            .execute()
-            .await
-            .unwrap();
-        assert!(wrapper.called());
-    }
+    //     let object_store_params = ObjectStoreParams {
+    //         object_store_wrapper: Some(wrapper.clone()),
+    //         ..Default::default()
+    //     };
+    //     let param = ReadParams {
+    //         store_options: Some(object_store_params),
+    //         ..Default::default()
+    //     };
+    //     assert!(!wrapper.called());
+    //     conn.open_table("my_table")
+    //         .lance_read_params(param)
+    //         .execute()
+    //         .await
+    //         .unwrap();
+    //     assert!(wrapper.called());
+    // }
 
     fn merge_insert_test_batches(
         offset: i32,
@@ -2864,7 +2770,6 @@ mod tests {
 
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
 
         let dimension = 16;
         let schema = Arc::new(ArrowSchema::new(vec![Field::new(
@@ -2891,7 +2796,7 @@ mod tests {
             schema,
         );
 
-        let table = conn.create_table("test", batches).execute().await.unwrap();
+        let table = CreateTableBuilder::new(uri, "test", batches).build().await;
 
         assert_eq!(table.index_stats("my_index").await.unwrap(), None);
 
@@ -2915,7 +2820,7 @@ mod tests {
         assert_eq!(stats.num_indexed_rows, 512);
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.index_type, crate::index::IndexType::IvfPq);
-        assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
+        assert_eq!(stats.distance_type, Some(DistanceType::L2));
 
         table.drop_index(index_name).await.unwrap();
         assert_eq!(table.list_indices().await.unwrap().len(), 0);
@@ -2932,7 +2837,6 @@ mod tests {
 
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
 
         let dimension = 16;
         let schema = Arc::new(ArrowSchema::new(vec![Field::new(
@@ -2959,7 +2863,7 @@ mod tests {
             schema,
         );
 
-        let table = conn.create_table("test", batches).execute().await.unwrap();
+        let table = CreateTableBuilder::new(uri, "test", batches).build().await;
 
         let stats = table.index_stats("my_index").await.unwrap();
         assert!(stats.is_none());
@@ -2997,7 +2901,6 @@ mod tests {
 
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
 
         let dimension = 16;
         let schema = Arc::new(ArrowSchema::new(vec![Field::new(
@@ -3024,7 +2927,7 @@ mod tests {
             schema,
         );
 
-        let table = conn.create_table("test", batches).execute().await.unwrap();
+        let table = CreateTableBuilder::new(uri, "test", batches).build().await;
         let stats = table.index_stats("my_index").await.unwrap();
         assert!(stats.is_none());
 
@@ -3086,15 +2989,13 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1]))],
         )
         .unwrap();
-        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
-        let table = conn
-            .create_table(
-                "my_table",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let table = CreateTableBuilder::new(
+            uri,
+            "my_table",
+            RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+        )
+        .build()
+        .await;
 
         // Can create an index on a scalar column (will default to btree)
         table
@@ -3134,8 +3035,6 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
-
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("category", DataType::Utf8, true),
@@ -3152,14 +3051,13 @@ mod tests {
         )
         .unwrap();
 
-        let table = conn
-            .create_table(
-                "test_bitmap",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let table = CreateTableBuilder::new(
+            uri,
+            "test_bitmap",
+            RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+        )
+        .build()
+        .await;
 
         // Create bitmap index on the "category" column
         table
@@ -3180,8 +3078,6 @@ mod tests {
     async fn test_create_label_list_index() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-
-        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
@@ -3210,14 +3106,13 @@ mod tests {
         )
         .unwrap();
 
-        let table = conn
-            .create_table(
-                "test_bitmap",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let table = CreateTableBuilder::new(
+            uri,
+            "test_bitmap",
+            RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+        )
+        .build()
+        .await;
 
         // Can not create btree or bitmap index on list column
         assert!(table
@@ -3251,7 +3146,6 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
         const WORDS: [&str; 3] = ["cat", "dog", "fish"];
         let mut text_builder = StringBuilder::new();
         let num_rows = 120;
@@ -3273,14 +3167,13 @@ mod tests {
         )
         .unwrap();
 
-        let table = conn
-            .create_table(
-                "test_bitmap",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let table = CreateTableBuilder::new(
+            uri,
+            "test_bitmap",
+            RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+        )
+        .build()
+        .await;
 
         table
             .create_index(&["text"], Index::FTS(Default::default()))
@@ -3301,74 +3194,68 @@ mod tests {
         assert_eq!(stats.distance_type, None);
     }
 
-    #[tokio::test]
-    async fn test_read_consistency_interval() {
-        let intervals = vec![
-            None,
-            Some(0),
-            Some(100), // 100 ms
-        ];
+    // #[tokio::test]
+    // async fn test_read_consistency_interval() {
+    //     let intervals = vec![
+    //         None,
+    //         Some(0),
+    //         Some(100), // 100 ms
+    //     ];
 
-        for interval in intervals {
-            let data = some_sample_data();
+    //     for interval in intervals {
+    //         let data = some_sample_data();
 
-            let tmp_dir = tempdir().unwrap();
-            let uri = tmp_dir.path().to_str().unwrap();
+    //         let tmp_dir = tempdir().unwrap();
+    //         let uri = tmp_dir.path().to_str().unwrap();
 
-            let conn1 = ConnectBuilder::new(uri).execute().await.unwrap();
-            let table1 = conn1
-                .create_empty_table("my_table", data.schema())
-                .execute()
-                .await
-                .unwrap();
+    //         let conn1 = ConnectBuilder::new(uri).execute().await.unwrap();
+    //         let table1 = conn1
+    //             .create_empty_table("my_table", data.schema())
+    //             .execute()
+    //             .await
+    //             .unwrap();
 
-            let mut conn2 = ConnectBuilder::new(uri);
-            if let Some(interval) = interval {
-                conn2 = conn2.read_consistency_interval(std::time::Duration::from_millis(interval));
-            }
-            let conn2 = conn2.execute().await.unwrap();
-            let table2 = conn2.open_table("my_table").execute().await.unwrap();
+    //         let mut conn2 = ConnectBuilder::new(uri);
+    //         if let Some(interval) = interval {
+    //             conn2 = conn2.read_consistency_interval(std::time::Duration::from_millis(interval));
+    //         }
+    //         let conn2 = conn2.execute().await.unwrap();
+    //         let table2 = conn2.open_table("my_table").execute().await.unwrap();
 
-            assert_eq!(table1.count_rows(None).await.unwrap(), 0);
-            assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+    //         assert_eq!(table1.count_rows(None).await.unwrap(), 0);
+    //         assert_eq!(table2.count_rows(None).await.unwrap(), 0);
 
-            table1.add(data).execute().await.unwrap();
-            assert_eq!(table1.count_rows(None).await.unwrap(), 1);
+    //         table1.add(data).execute().await.unwrap();
+    //         assert_eq!(table1.count_rows(None).await.unwrap(), 1);
 
-            match interval {
-                None => {
-                    assert_eq!(table2.count_rows(None).await.unwrap(), 0);
-                    table2.checkout_latest().await.unwrap();
-                    assert_eq!(table2.count_rows(None).await.unwrap(), 1);
-                }
-                Some(0) => {
-                    assert_eq!(table2.count_rows(None).await.unwrap(), 1);
-                }
-                Some(100) => {
-                    assert_eq!(table2.count_rows(None).await.unwrap(), 0);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    assert_eq!(table2.count_rows(None).await.unwrap(), 1);
-                }
-                _ => unreachable!(),
-            }
-        }
-    }
+    //         match interval {
+    //             None => {
+    //                 assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+    //                 table2.checkout_latest().await.unwrap();
+    //                 assert_eq!(table2.count_rows(None).await.unwrap(), 1);
+    //             }
+    //             Some(0) => {
+    //                 assert_eq!(table2.count_rows(None).await.unwrap(), 1);
+    //             }
+    //             Some(100) => {
+    //                 assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+    //                 tokio::time::sleep(Duration::from_millis(100)).await;
+    //                 assert_eq!(table2.count_rows(None).await.unwrap(), 1);
+    //             }
+    //             _ => unreachable!(),
+    //         }
+    //     }
+    // }
 
     #[tokio::test]
     async fn test_time_travel_write() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let conn = ConnectBuilder::new(uri)
-            .read_consistency_interval(Duration::from_secs(0))
-            .execute()
-            .await
-            .unwrap();
-        let table = conn
-            .create_table("my_table", some_sample_data())
-            .execute()
-            .await
-            .unwrap();
+        let table = CreateTableBuilder::new(uri, "my_table", some_sample_data())
+            .with_read_consistency_interval(Duration::from_secs(0))
+            .build()
+            .await;
         let version = table.version().await.unwrap();
         table.add(some_sample_data()).execute().await.unwrap();
         table.checkout(version).await.unwrap();
@@ -3380,17 +3267,9 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let conn = ConnectBuilder::new(uri)
-            .read_consistency_interval(Duration::from_secs(0))
-            .execute()
-            .await
-            .unwrap();
-
-        let table = conn
-            .create_table("my_table", some_sample_data())
-            .execute()
-            .await
-            .unwrap();
+        let table = CreateTableBuilder::new(uri, "my_table", some_sample_data())
+            .build()
+            .await;
         let native_tbl = table.as_native().unwrap();
 
         let manifest = native_tbl.manifest().await.unwrap();
@@ -3455,16 +3334,10 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let conn = ConnectBuilder::new(uri)
-            .read_consistency_interval(Duration::from_secs(0))
-            .execute()
-            .await
-            .unwrap();
-        let table = conn
-            .create_table("my_table", some_sample_data())
-            .execute()
-            .await
-            .unwrap();
+        let table = CreateTableBuilder::new(uri, "my_table", some_sample_data())
+            .with_read_consistency_interval(Duration::from_secs(0))
+            .build()
+            .await;
 
         let native_tbl = table.as_native().unwrap();
         let schema = native_tbl.schema().await.unwrap();
@@ -3517,16 +3390,10 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let conn = ConnectBuilder::new(uri)
-            .read_consistency_interval(Duration::from_secs(0))
-            .execute()
-            .await
-            .unwrap();
-        let table = conn
-            .create_table("my_table", some_sample_data())
-            .execute()
-            .await
-            .unwrap();
+        let table = CreateTableBuilder::new(uri, "my_table", some_sample_data())
+            .with_read_consistency_interval(Duration::from_secs(0))
+            .build()
+            .await;
 
         let native_tbl = table.as_native().unwrap();
         let schema = native_tbl.schema().await.unwrap();

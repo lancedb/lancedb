@@ -6,7 +6,7 @@ use crate::index::IndexStatistics;
 use crate::query::Select;
 use crate::table::AddDataMode;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
-use crate::{DistanceType, Error, Table};
+use crate::Table;
 use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
@@ -24,14 +24,19 @@ use lance_datafusion::exec::OneShotExec;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use lancedb_core::{
+    arrow::NoData,
+    error::{Error, Result},
+    tabledef::TableDefinition,
+    DistanceType,
+};
+
 use crate::{
-    connection::NoData,
-    error::Result,
     index::{IndexBuilder, IndexConfig},
     query::{Query, QueryExecutionOptions, VectorQuery},
     table::{
         merge::MergeInsertBuilder, AddDataBuilder, NativeTable, OptimizeAction, OptimizeStats,
-        TableDefinition, TableInternal, UpdateBuilder,
+        TableInternal, UpdateBuilder,
     },
 };
 
@@ -889,7 +894,7 @@ mod tests {
         index::{vector::IvfPqIndexBuilder, Index, IndexStatistics, IndexType},
         query::{ExecutableQuery, QueryBase},
         remote::ARROW_FILE_CONTENT_TYPE,
-        DistanceType, Error, Table,
+        Table,
     };
 
     #[tokio::test]
@@ -1397,7 +1402,7 @@ mod tests {
             .unwrap()
             .column("my_vector")
             .postfilter()
-            .distance_type(crate::DistanceType::Cosine)
+            .distance_type(DistanceType::Cosine)
             .nprobes(12)
             .refine_factor(2)
             .bypass_vector_index()

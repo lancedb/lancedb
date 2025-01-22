@@ -31,12 +31,13 @@ use lance_index::scalar::FullTextSearchQuery;
 use lance_index::vector::DIST_COL;
 use lance_io::stream::RecordBatchStreamAdapter;
 
-use crate::arrow::SendableRecordBatchStream;
-use crate::error::{Error, Result};
-use crate::rerankers::rrf::RRFReranker;
-use crate::rerankers::{check_reranker_result, NormalizeMethod, Reranker};
-use crate::table::TableInternal;
-use crate::DistanceType;
+use super::TableInternal;
+
+use lancedb_core::arrow::SendableRecordBatchStream;
+use lancedb_core::error::{Error, Result};
+use lancedb_core::DistanceType;
+use lancedb_reranker::rrf::RRFReranker;
+use lancedb_reranker::{check_reranker_result, NormalizeMethod, Reranker};
 
 mod hybrid;
 
@@ -378,9 +379,9 @@ pub trait QueryBase {
     ///
     /// ```
     /// use lance_index::scalar::FullTextSearchQuery;
-    /// use lancedb::query::{QueryBase, ExecutableQuery};
+    /// use lancedb_table::query::{QueryBase, ExecutableQuery};
     ///
-    /// # use lancedb::Table;
+    /// # use lancedb_table::Table;
     /// # async fn query(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// let results = table.query()
     ///     .full_text_search(FullTextSearchQuery::new("hello world".into()))
@@ -1026,7 +1027,27 @@ mod tests {
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use tempfile::tempdir;
 
-    use crate::{connect, connection::CreateTableMode, Table};
+    use crate::{NativeTable, Table};
+
+    async fn create_table(
+        uri: &str,
+        name: &str,
+        data: impl RecordBatchReader + Send + 'static,
+    ) -> Table {
+        let path = std::path::Path::new(uri);
+        let table_uri = path
+            .join(format!("{}.{}", name, ".lance"))
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let inner = Arc::new(
+            NativeTable::create(&table_uri, &name, data, None, None, None)
+                .await
+                .unwrap(),
+        );
+        Table::new(inner)
+    }
 
     #[tokio::test]
     async fn test_setters_getters() {
@@ -1037,12 +1058,7 @@ mod tests {
         let uri = dataset_path.to_str().unwrap();
 
         let batches = make_test_batches();
-        let conn = connect(uri).execute().await.unwrap();
-        let table = conn
-            .create_table("my_table", Box::new(batches))
-            .execute()
-            .await
-            .unwrap();
+        let table = create_table(uri, "my_table", batches).await;
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
@@ -1085,12 +1101,7 @@ mod tests {
         let uri = dataset_path.to_str().unwrap();
 
         let batches = make_non_empty_batches();
-        let conn = connect(uri).execute().await.unwrap();
-        let table = conn
-            .create_table("my_table", Box::new(batches))
-            .execute()
-            .await
-            .unwrap();
+        let table = create_table(uri, "my_table", Box::new(batches)).await;
 
         let query = table
             .query()
@@ -1147,12 +1158,8 @@ mod tests {
         let uri = dataset_path.to_str().unwrap();
 
         let batches = make_non_empty_batches();
-        let conn = connect(uri).execute().await.unwrap();
-        let table = conn
-            .create_table("my_table", Box::new(batches))
-            .execute()
-            .await
-            .unwrap();
+
+        let table = create_table(uri, "my_table", Box::new(batches)).await;
 
         let query = table
             .query()
@@ -1190,12 +1197,7 @@ mod tests {
 
         // test that it's ok to not specify a query vector (just filter / limit)
         let batches = make_non_empty_batches();
-        let conn = connect(uri).execute().await.unwrap();
-        let table = conn
-            .create_table("my_table", Box::new(batches))
-            .execute()
-            .await
-            .unwrap();
+        let table = create_table(uri, "my_table", Box::new(batches)).await;
 
         let query = table.query();
         let result = query.only_if("id % 2 == 0").execute().await;
@@ -1246,11 +1248,7 @@ mod tests {
         let uri = dataset_path.to_str().unwrap();
 
         let batches = make_non_empty_batches();
-        let conn = connect(uri).execute().await.unwrap();
-        conn.create_table("my_table", Box::new(batches))
-            .execute()
-            .await
-            .unwrap()
+        create_table(uri, "my_table", Box::new(batches)).await
     }
 
     #[tokio::test]
@@ -1422,10 +1420,7 @@ mod tests {
     async fn test_hybrid_search() {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path();
-        let conn = connect(dataset_path.to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
+        let uri = dataset_path.to_str().unwrap();
 
         let dims = 2;
         let schema = Arc::new(ArrowSchema::new(vec![
@@ -1453,11 +1448,8 @@ mod tests {
             RecordBatch::try_new(schema.clone(), vec![Arc::new(text), Arc::new(vector)]).unwrap();
         let record_batch_iter =
             RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
-        let table = conn
-            .create_table("my_table", record_batch_iter)
-            .execute()
-            .await
-            .unwrap();
+
+        let table = create_table(uri, "my_table", record_batch_iter).await;
 
         table
             .create_index(&["text"], crate::index::Index::FTS(Default::default()))
@@ -1507,10 +1499,7 @@ mod tests {
     async fn test_hybrid_search_empty_table() {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path();
-        let conn = connect(dataset_path.to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
+        let uri = dataset_path.to_str().unwrap();
 
         let dims = 2;
 
@@ -1540,12 +1529,8 @@ mod tests {
         .unwrap();
         let record_batch_iter =
             RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
-        let table = conn
-            .create_table("my_table", record_batch_iter)
-            .mode(CreateTableMode::Overwrite)
-            .execute()
-            .await
-            .unwrap();
+        let table = create_table(uri, "my_table", record_batch_iter).await;
+
         table
             .create_index(&["text"], crate::index::Index::FTS(Default::default()))
             .replace(true)

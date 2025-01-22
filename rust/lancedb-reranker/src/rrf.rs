@@ -13,8 +13,8 @@ use arrow_schema::{DataType, Field, Schema, SortOptions};
 use async_trait::async_trait;
 use lance::dataset::ROW_ID;
 
-use crate::error::{Error, Result};
-use crate::rerankers::{Reranker, RELEVANCE_SCORE};
+use super::{Reranker, RELEVANCE_SCORE};
+use lancedb_core::error::{Error, Result};
 
 /// Reranks the results using Reciprocal Rank Fusion(RRF) algorithm based
 /// on the scores of vector and FTS search.

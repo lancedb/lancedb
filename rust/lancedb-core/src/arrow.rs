@@ -129,6 +129,14 @@ impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> SimpleRecordBatchStream
         Self { schema, stream }
     }
 }
+pub struct NoData {}
+
+impl IntoArrow for NoData {
+    fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
+        unreachable!("NoData should never be converted to Arrow")
+    }
+}
+
 #[cfg(feature = "polars")]
 /// An iterator of record batches formed from a Polars DataFrame.
 pub struct PolarsDataFrameRecordBatchReader {

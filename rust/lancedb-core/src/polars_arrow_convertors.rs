@@ -59,7 +59,7 @@ pub fn convert_arrow_rb_schema_to_polars_df_schema(
 
 /// Converts an Arrow RecordBatch to a Polars DataFrame, using a provided Polars DataFrame schema.
 pub fn convert_arrow_rb_to_polars_df(
-    arrow_rb: &arrow::record_batch::RecordBatch,
+    arrow_rb: &arrow_array::RecordBatch,
     polars_schema: &polars::prelude::Schema,
 ) -> Result<DataFrame> {
     let mut columns: Vec<Series> = Vec::with_capacity(arrow_rb.num_columns());

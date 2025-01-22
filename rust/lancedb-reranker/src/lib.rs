@@ -11,7 +11,7 @@ use arrow_array::{BooleanArray, RecordBatch, UInt64Array};
 use async_trait::async_trait;
 use lance::dataset::ROW_ID;
 
-use crate::error::{Error, Result};
+use lancedb_core::error::{Error, Result};
 
 pub mod rrf;
 

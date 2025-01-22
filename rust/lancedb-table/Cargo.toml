@@ -1,0 +1,75 @@
+[package]
+name = "lancedb-table"
+version = "0.14.1"
+edition.workspace = true
+description = "A table abstraction used throughout LanceDB"
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# LanceDB
+lancedb-core = { workspace = true }
+lancedb-embedding = { workspace = true }
+lancedb-reranker = { workspace = true }
+
+# Required
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-cast = { workspace = true }
+arrow-schema = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+half = { workspace = true }
+lance = { workspace = true }
+lance-datafusion = { workspace = true }
+lance-io = { workspace = true }
+lance-table = { workspace = true }
+lance-index = { workspace = true }
+lazy_static = { workspace = true }
+log = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-physical-plan = { workspace = true }
+object_store = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { version = "3.8.1" }
+tokio = { workspace = true }
+
+# Optional
+arrow-ipc = { workspace = true, optional = true }
+http = { version = "1", optional = true } # Matching what is in reqwest
+rand = { version = "0.8.3", features = ["small_rng"], optional = true }
+reqwest = { version = "0.12.0", default-features = false, features = [
+    "charset",
+    "gzip",
+    "http2",
+    "json",
+    "macos-system-configuration",
+    "stream",
+], optional = true }
+url = { workspace = true, optional = true }
+uuid = { version = "1.7.0", features = ["v4"], optional = true }
+
+
+[dev-dependencies]
+arrow-data = { workspace = true }
+http-body = "1"                                        # Matching reqwest
+lance-testing = { workspace = true }
+rand = { version = "0.8.3", features = ["small_rng"] }
+tempfile = "3.5.0"
+
+[features]
+default = []
+remote = [
+    "dep:arrow-ipc",
+    "dep:reqwest",
+    "dep:http",
+    "dep:rand",
+    "dep:url",
+    "dep:uuid",
+]
