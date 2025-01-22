@@ -29,7 +29,7 @@ from lancedb.query import (
 )
 from lancedb.rerankers.cross_encoder import CrossEncoderReranker
 from lancedb.table import AsyncTable, LanceTable
-from tests.utils import exception_output
+from utils import exception_output
 
 
 @pytest.fixture(scope="module")
