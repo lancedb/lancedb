@@ -18,7 +18,7 @@ use arrow_schema::ArrowError;
 use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
-#[snafu(visibility(pub(crate)))]
+#[snafu(visibility(pub))]
 pub enum Error {
     #[snafu(display("Invalid table name (\"{name}\"): {reason}"))]
     InvalidTableName { name: String, reason: String },

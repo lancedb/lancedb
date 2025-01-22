@@ -543,6 +543,13 @@ impl Default for QueryExecutionOptions {
     }
 }
 
+impl QueryExecutionOptions {
+    pub fn with_max_batch_length(mut self, max_batch_length: u32) -> Self {
+        self.max_batch_length = max_batch_length;
+        self
+    }
+}
+
 /// A trait for a query object that can be executed to get results
 ///
 /// There are various kinds of queries but they all return results

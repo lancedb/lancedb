@@ -600,7 +600,6 @@ impl<T> RequestResultExt for reqwest::Result<T> {
     }
 }
 
-#[cfg(test)]
 pub mod test_utils {
     use std::sync::Arc;
 

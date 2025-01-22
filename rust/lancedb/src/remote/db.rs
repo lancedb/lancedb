@@ -12,21 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
 use async_trait::async_trait;
 use http::StatusCode;
-use lance_io::object_store::StorageOptions;
+use lancedb_core::arrow::NoData;
 use moka::future::Cache;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
 use crate::connection::{
-    ConnectionInternal, CreateTableBuilder, CreateTableMode, NoData, OpenTableBuilder,
-    TableNamesBuilder,
+    ConnectionInternal, CreateTableBuilder, CreateTableMode, OpenTableBuilder, TableNamesBuilder,
 };
 use crate::embeddings::EmbeddingRegistry;
 use crate::error::Result;
@@ -36,6 +34,8 @@ use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClie
 use super::table::RemoteTable;
 use super::util::batches_to_ipc_bytes;
 use super::ARROW_STREAM_CONTENT_TYPE;
+
+pub use lancedb_core::remote::RemoteOptions;
 
 #[derive(Deserialize)]
 struct ListTablesResponse {
@@ -249,29 +249,6 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
 
     fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
         todo!()
-    }
-}
-
-/// RemoteOptions contains a subset of StorageOptions that are compatible with Remote LanceDB connections
-#[derive(Clone, Debug, Default)]
-pub struct RemoteOptions(pub HashMap<String, String>);
-
-impl RemoteOptions {
-    pub fn new(options: HashMap<String, String>) -> Self {
-        Self(options)
-    }
-}
-
-impl From<StorageOptions> for RemoteOptions {
-    fn from(options: StorageOptions) -> Self {
-        let supported_opts = vec!["account_name", "azure_storage_account_name"];
-        let mut filtered = HashMap::new();
-        for opt in supported_opts {
-            if let Some(v) = options.0.get(opt) {
-                filtered.insert(opt.to_string(), v.to_string());
-            }
-        }
-        Self::new(filtered)
     }
 }
 

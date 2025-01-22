@@ -23,6 +23,7 @@ use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use lance::dataset::{ReadParams, WriteMode};
 use lance::io::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry, WrappingObjectStore};
+use lancedb_core::arrow::NoData;
 use object_store::{aws::AwsCredential, local::LocalFileSystem};
 use snafu::prelude::*;
 
@@ -1188,6 +1189,9 @@ mod test_utils {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use arrow_array::{Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
@@ -1322,10 +1326,7 @@ mod tests {
         let batches = tbl
             .query()
             .limit(20000)
-            .execute_with_options(QueryExecutionOptions {
-                max_batch_length: 50000,
-                ..Default::default()
-            })
+            .execute_with_options(QueryExecutionOptions::default().with_max_batch_length(50000))
             .await
             .unwrap()
             .try_collect::<Vec<_>>()
@@ -1343,10 +1344,7 @@ mod tests {
         // In v2 the page size is much bigger than 50k so we should get a single batch
         let batches = tbl
             .query()
-            .execute_with_options(QueryExecutionOptions {
-                max_batch_length: 50000,
-                ..Default::default()
-            })
+            .execute_with_options(QueryExecutionOptions::default().with_max_batch_length(50000))
             .await
             .unwrap()
             .try_collect::<Vec<_>>()
@@ -1374,6 +1372,71 @@ mod tests {
 
         let tables = db.table_names().execute().await.unwrap();
         assert_eq!(tables.len(), 0);
+    }
+
+    #[derive(Default, Debug)]
+    struct NoOpCacheWrapper {
+        called: AtomicBool,
+    }
+
+    impl NoOpCacheWrapper {
+        fn called(&self) -> bool {
+            self.called.load(Ordering::Relaxed)
+        }
+    }
+
+    impl WrappingObjectStore for NoOpCacheWrapper {
+        fn wrap(
+            &self,
+            original: Arc<dyn object_store::ObjectStore>,
+        ) -> Arc<dyn object_store::ObjectStore> {
+            self.called.store(true, Ordering::Relaxed);
+            original
+        }
+    }
+
+    fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from_iter_values(0..10))],
+            )],
+            schema,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_open_table_options() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        let batches = make_test_batches();
+
+        conn.create_table("my_table", batches)
+            .execute()
+            .await
+            .unwrap();
+
+        let wrapper = Arc::new(NoOpCacheWrapper::default());
+
+        let object_store_params = ObjectStoreParams {
+            object_store_wrapper: Some(wrapper.clone()),
+            ..Default::default()
+        };
+        let param = ReadParams {
+            store_options: Some(object_store_params),
+            ..Default::default()
+        };
+        assert!(!wrapper.called());
+        conn.open_table("my_table")
+            .lance_read_params(param)
+            .execute()
+            .await
+            .unwrap();
+        assert!(wrapper.called());
     }
 
     #[tokio::test]

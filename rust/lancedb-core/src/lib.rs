@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 pub mod arrow;
 pub mod error;
 #[cfg(feature = "polars")]
-mod polars_arrow_convertors;
+pub mod polars_arrow_convertors;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod tabledef;

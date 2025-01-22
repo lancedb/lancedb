@@ -302,7 +302,7 @@ impl UpdateBuilder {
 }
 
 #[async_trait]
-pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Sync {
+pub trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Sync {
     #[allow(dead_code)]
     fn as_any(&self) -> &dyn std::any::Any;
     /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
@@ -403,14 +403,14 @@ impl std::fmt::Display for Table {
 }
 
 impl Table {
-    pub(crate) fn new(inner: Arc<dyn TableInternal>) -> Self {
+    pub fn new(inner: Arc<dyn TableInternal>) -> Self {
         Self {
             inner,
             embedding_registry: Arc::new(MemoryRegistry::new()),
         }
     }
 
-    pub(crate) fn new_with_embedding_registry(
+    pub fn new_with_embedding_registry(
         inner: Arc<dyn TableInternal>,
         embedding_registry: Arc<dyn EmbeddingRegistry>,
     ) -> Self {
@@ -1056,7 +1056,7 @@ impl NativeTable {
     /// # Returns
     ///
     /// * A [TableImpl] object.
-    pub(crate) async fn create(
+    pub async fn create(
         uri: &str,
         name: &str,
         batches: impl RecordBatchReader + Send + 'static,
@@ -2145,7 +2145,6 @@ impl TableInternal for NativeTable {
 #[allow(deprecated)]
 mod tests {
     use std::iter;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -2160,7 +2159,6 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
-    use lance::io::WrappingObjectStore;
     use lancedb_core::DistanceType;
     use rand::Rng;
     use tempfile::tempdir;
@@ -2673,60 +2671,6 @@ mod tests {
         tbl.update().column("i", "i+1").execute().await.unwrap();
         assert_eq!(0, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
     }
-
-    #[derive(Default, Debug)]
-    struct NoOpCacheWrapper {
-        called: AtomicBool,
-    }
-
-    impl NoOpCacheWrapper {
-        fn called(&self) -> bool {
-            self.called.load(Ordering::Relaxed)
-        }
-    }
-
-    impl WrappingObjectStore for NoOpCacheWrapper {
-        fn wrap(
-            &self,
-            original: Arc<dyn object_store::ObjectStore>,
-        ) -> Arc<dyn object_store::ObjectStore> {
-            self.called.store(true, Ordering::Relaxed);
-            original
-        }
-    }
-
-    // #[tokio::test]
-    // async fn test_open_table_options() {
-    //     let tmp_dir = tempdir().unwrap();
-    //     let dataset_path = tmp_dir.path().join("test.lance");
-    //     let uri = dataset_path.to_str().unwrap();
-    //     let conn = connect(uri).execute().await.unwrap();
-
-    //     let batches = make_test_batches();
-
-    //     conn.create_table("my_table", batches)
-    //         .execute()
-    //         .await
-    //         .unwrap();
-
-    //     let wrapper = Arc::new(NoOpCacheWrapper::default());
-
-    //     let object_store_params = ObjectStoreParams {
-    //         object_store_wrapper: Some(wrapper.clone()),
-    //         ..Default::default()
-    //     };
-    //     let param = ReadParams {
-    //         store_options: Some(object_store_params),
-    //         ..Default::default()
-    //     };
-    //     assert!(!wrapper.called());
-    //     conn.open_table("my_table")
-    //         .lance_read_params(param)
-    //         .execute()
-    //         .await
-    //         .unwrap();
-    //     assert!(wrapper.called());
-    // }
 
     fn merge_insert_test_batches(
         offset: i32,

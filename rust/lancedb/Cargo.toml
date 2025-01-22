@@ -11,6 +11,11 @@ rust-version.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
+lancedb-core = { workspace = true }
+lancedb-embedding = { workspace = true }
+lancedb-reranker = { workspace = true }
+lancedb-table = { workspace = true }
+
 arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-data = { workspace = true }
@@ -76,15 +81,27 @@ http-body = "1"                                        # Matching reqwest
 
 [features]
 default = ["default-tls"]
-remote = ["dep:reqwest", "dep:http", "dep:rand", "dep:uuid"]
+remote = [
+    "dep:reqwest",
+    "dep:http",
+    "dep:rand",
+    "dep:uuid",
+    "lancedb-core/remote",
+    "lancedb-table/remote",
+]
 fp16kernels = ["lance-linalg/fp16kernels"]
 s3-test = []
-polars = ["dep:polars-arrow", "dep:polars"]
+polars = ["lancedb-core/polars", "dep:polars"]
 
 # TLS
 default-tls = ["reqwest?/default-tls"]
 native-tls = ["reqwest?/native-tls"]
 rustls-tls = ["reqwest?/rustls-tls"]
+
+# Embeddings
+openai = ["lancedb-embedding/openai"]
+sentence-transformers = ["lancedb-embedding/sentence-transformers"]
+bedrock = ["lancedb-embedding/bedrock"]
 
 [[example]]
 name = "openai"
