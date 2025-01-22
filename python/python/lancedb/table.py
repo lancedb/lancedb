@@ -3103,9 +3103,13 @@ class AsyncTable:
                 loop = asyncio.get_running_loop()
                 # This function is likely to block, since it either calls an expensive
                 # function or makes an HTTP request to an embeddings REST API.
-                return (await loop.run_in_executor(
-                    None, embedding.function.compute_query_embeddings_with_retry, query
-                ))[0]
+                return (
+                    await loop.run_in_executor(
+                        None,
+                        embedding.function.compute_query_embeddings_with_retry,
+                        query,
+                    )
+                )[0]
             else:
                 return None
 
@@ -3115,22 +3119,32 @@ class AsyncTable:
                 vector_query = query
                 query_type = "vector"
             elif isinstance(query, str):
-                indices, (vector_column_name, conf) = await asyncio.gather(
-                    self.list_indices(),
-                    get_embedding_func(vector_column_name, "auto", query),
-                )
-
-                if conf is not None:
-                    vector_query = await make_embedding(conf, query)
-                    if any(
-                        i.columns[0] == conf.source_column and i.index_type == "FTS"
-                        for i in indices
-                    ):
-                        query_type = "hybrid"
+                try:
+                    indices, (vector_column_name, conf) = await asyncio.gather(
+                        self.list_indices(),
+                        get_embedding_func(vector_column_name, "auto", query),
+                    )
+                except ValueError as e:
+                    if "Column" in str(
+                        e
+                    ) and "has no registered embedding function" in str(e):
+                        # If the column has no registered embedding function,
+                        # then it's an FTS query.
+                        query_type = "fts"
                     else:
-                        query_type = "vector"
+                        raise e
                 else:
-                    query_type = "fts"
+                    if conf is not None:
+                        vector_query = await make_embedding(conf, query)
+                        if any(
+                            i.columns[0] == conf.source_column and i.index_type == "FTS"
+                            for i in indices
+                        ):
+                            query_type = "hybrid"
+                        else:
+                            query_type = "vector"
+                    else:
+                        query_type = "fts"
             else:
                 # it's an image or something else embeddable.
                 query_type = "vector"
