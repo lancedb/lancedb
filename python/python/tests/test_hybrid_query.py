@@ -3,7 +3,9 @@
 
 import lancedb
 
+from lancedb.query import LanceHybridQueryBuilder
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 import pytest_asyncio
 
@@ -110,3 +112,23 @@ async def test_explain_plan(table: AsyncTable):
     assert "KNNVectorDistance" in plan
     assert "FTS Search Plan" in plan
     assert "LanceScan" in plan
+
+
+def test_normalize_scores():
+    cases = [
+        (pa.array([0.1, 0.4]), pa.array([0.0, 1.0])),
+        (pa.array([2.0, 10.0, 20.0]), pa.array([0.0, 8.0 / 18.0, 1.0])),
+        (pa.array([0.0, 0.0, 0.0]), pa.array([0.0, 0.0, 0.0])),
+        (pa.array([10.0, 9.9999999999999]), pa.array([0.0, 0.0])),
+    ]
+
+    for input, expected in cases:
+        for invert in [True, False]:
+            result = LanceHybridQueryBuilder._normalize_scores(input, invert)
+
+            if invert:
+                expected = pc.subtract(1.0, expected)
+
+            assert pc.equal(
+                result, expected
+            ), f"Expected {expected} but got {result} for invert={invert}"

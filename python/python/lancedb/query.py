@@ -20,6 +20,7 @@ import asyncio
 import deprecation
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 import pydantic
 
@@ -1189,17 +1190,51 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
 
         # normalize the scores to be between 0 and 1, 0 being most relevant
-        vector_results = LanceHybridQueryBuilder._normalize_scores(
-            vector_results, "_distance"
-        )
+        # We check whether the results (vector and FTS) are empty, because when
+        # they are, they often are missing the _rowid column, which causes an error
+        if vector_results.num_rows > 0:
+            distance_i = vector_results.column_names.index("_distance")
+            original_distances = vector_results.column(distance_i)
+            original_distance_row_ids = vector_results.column("_rowid")
+            vector_results = vector_results.set_column(
+                distance_i,
+                vector_results.field(distance_i),
+                LanceHybridQueryBuilder._normalize_scores(original_distances),
+            )
 
         # In fts higher scores represent relevance. Not inverting them here as
         # rerankers might need to preserve this score to support `return_score="all"`
-        fts_results = LanceHybridQueryBuilder._normalize_scores(fts_results, "_score")
+        if fts_results.num_rows > 0:
+            score_i = fts_results.column_names.index("_score")
+            original_scores = fts_results.column(score_i)
+            original_score_row_ids = fts_results.column("_rowid")
+            fts_results = fts_results.set_column(
+                score_i,
+                fts_results.field(score_i),
+                LanceHybridQueryBuilder._normalize_scores(original_scores),
+            )
 
         results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
 
         check_reranker_result(results)
+
+        if "_distance" in results.column_names:
+            # restore the original distances
+            indices = pc.index_in(
+                results["_rowid"], original_distance_row_ids, skip_nulls=True
+            )
+            original_distances = pc.take(original_distances, indices)
+            distance_i = results.column_names.index("_distance")
+            results = results.set_column(distance_i, "_distance", original_distances)
+
+        if "_score" in results.column_names:
+            # restore the original scores
+            indices = pc.index_in(
+                results["_rowid"], original_score_row_ids, skip_nulls=True
+            )
+            original_scores = pc.take(original_scores, indices)
+            score_i = results.column_names.index("_score")
+            results = results.set_column(score_i, "_score", original_scores)
 
         results = results.slice(length=limit)
 
@@ -1230,28 +1265,23 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         return results
 
     @staticmethod
-    def _normalize_scores(results: pa.Table, column: str, invert=False):
-        if len(results) == 0:
-            return results
-        # Get the _score column from results
-        scores = results.column(column).to_numpy()
+    def _normalize_scores(scores: pa.Array, invert=False) -> pa.Array:
+        if len(scores) == 0:
+            return scores
         # normalize the scores by subtracting the min and dividing by the max
-        max, min = np.max(scores), np.min(scores)
-        if np.isclose(max, min):
-            rng = max
-        else:
-            rng = max - min
-        # If rng is 0 then min and max are both 0 and so we can leave the scores as is
-        if rng != 0:
-            scores = (scores - min) / rng
+        min, max = pc.min_max(scores).values()
+        rng = pc.subtract(max, min)
+
+        if not pc.equal(rng, pa.scalar(0.0)).as_py():
+            scores = pc.divide(pc.subtract(scores, min), rng)
+        elif not pc.equal(max, pa.scalar(0.0)).as_py():
+            # If rng is 0, then we at least want the scores to be 0
+            scores = pc.subtract(scores, min)
+
         if invert:
-            scores = 1 - scores
-        # replace the _score column with the ranks
-        _score_idx = results.column_names.index(column)
-        results = results.set_column(
-            _score_idx, column, pa.array(scores, type=pa.float32())
-        )
-        return results
+            scores = pc.subtract(1, scores)
+
+        return scores
 
     def rerank(
         self,
