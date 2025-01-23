@@ -4,6 +4,7 @@ import random
 import lancedb
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 from lancedb.conftest import MockTextEmbeddingFunction  # noqa
 from lancedb.embeddings import EmbeddingFunctionRegistry
@@ -314,6 +315,55 @@ def test_linear_combination(tmp_path, use_tantivy):
 def test_rrf_reranker(tmp_path, use_tantivy):
     reranker = RRFReranker()
     _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
+
+
+def test_rrf_reranker_distance():
+    data = pa.table(
+        {
+            "vector": pa.FixedSizeListArray.from_arrays(
+                pc.random(32 * 1024).cast(pa.float32()), 32
+            ),
+            "text": pa.array(["hello"] * 1024),
+        }
+    )
+    db = lancedb.connect("memory://")
+    table = db.create_table("test", data)
+
+    table.create_index(num_partitions=1, num_sub_vectors=2)
+    table.create_fts_index("text", use_tantivy=False)
+
+    reranker = RRFReranker(return_score="all")
+
+    hybrid_results = (
+        table.search(query_type="hybrid")
+        .vector([0.0] * 32)
+        .text("hello")
+        .with_row_id(True)
+        .rerank(reranker)
+        .to_list()
+    )
+    hybrid_distances = {row["_rowid"]: row["_distance"] for row in hybrid_results}
+    hybrid_scores = {row["_rowid"]: row["_score"] for row in hybrid_results}
+
+    vector_results = table.search([0.0] * 32).with_row_id(True).to_list()
+    vector_distances = {row["_rowid"]: row["_distance"] for row in vector_results}
+
+    fts_results = table.search("hello", query_type="fts").with_row_id(True).to_list()
+    fts_scores = {row["_rowid"]: row["_score"] for row in fts_results}
+
+    found_match = False
+    for rowid, distance in hybrid_distances.items():
+        if rowid in vector_distances:
+            found_match = True
+            assert distance == vector_distances[rowid], "Distance mismatch"
+    assert found_match, "No results matched between hybrid and vector search"
+
+    found_match = False
+    for rowid, score in hybrid_scores.items():
+        if rowid in fts_scores and fts_scores[rowid] is not None:
+            found_match = True
+            assert score == fts_scores[rowid], "Score mismatch"
+    assert found_match, "No results matched between hybrid and fts search"
 
 
 @pytest.mark.skipif(
