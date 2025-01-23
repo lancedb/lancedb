@@ -1190,7 +1190,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
 
         # normalize the scores to be between 0 and 1, 0 being most relevant
-
+        # We check whether the results (vector and FTS) are empty, because when
+        # they are, they often are missing the _rowid column, which causes an error
         if vector_results.num_rows > 0:
             distance_i = vector_results.column_names.index("_distance")
             original_distances = vector_results.column(distance_i)
