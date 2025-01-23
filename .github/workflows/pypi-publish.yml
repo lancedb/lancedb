@@ -26,11 +26,12 @@ jobs:
           - platform: aarch64
             manylinux: "2_17"
             extra_args: ""
-            runner: ubuntu-2404-4x-arm64
+            # For successful fat LTO builds, we need a large runner to avoid OOM errors.
+            runner: ubuntu-2404-8x-arm64
           - platform: aarch64
             manylinux: "2_28"
             extra_args: "--features fp16kernels"
-            runner: ubuntu-2404-4x-arm64
+            runner: ubuntu-2404-8x-arm64
     runs-on: ${{ matrix.config.runner }}
     steps:
       - uses: actions/checkout@v4
