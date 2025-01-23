@@ -129,4 +129,6 @@ def test_normalize_scores():
             if invert:
                 expected = pc.subtract(1.0, expected)
 
-            assert result == expected
+            assert pc.equal(
+                result, expected
+            ), f"Expected {expected} but got {result} for invert={invert}"
