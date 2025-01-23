@@ -1191,25 +1191,27 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         # normalize the scores to be between 0 and 1, 0 being most relevant
 
-        distance_i = vector_results.column_names.index("_distance")
-        original_distances = vector_results.column(distance_i)
-        original_distance_row_ids = vector_results.column("_rowid")
-        vector_results = vector_results.set_column(
-            distance_i,
-            vector_results.field(distance_i),
-            LanceHybridQueryBuilder._normalize_scores(original_distances),
-        )
+        if vector_results.num_rows > 0:
+            distance_i = vector_results.column_names.index("_distance")
+            original_distances = vector_results.column(distance_i)
+            original_distance_row_ids = vector_results.column("_rowid")
+            vector_results = vector_results.set_column(
+                distance_i,
+                vector_results.field(distance_i),
+                LanceHybridQueryBuilder._normalize_scores(original_distances),
+            )
 
         # In fts higher scores represent relevance. Not inverting them here as
         # rerankers might need to preserve this score to support `return_score="all"`
-        score_i = fts_results.column_names.index("_score")
-        original_scores = fts_results.column(score_i)
-        original_score_row_ids = fts_results.column("_rowid")
-        fts_results = fts_results.set_column(
-            score_i,
-            fts_results.field(score_i),
-            LanceHybridQueryBuilder._normalize_scores(original_scores),
-        )
+        if fts_results.num_rows > 0:
+            score_i = fts_results.column_names.index("_score")
+            original_scores = fts_results.column(score_i)
+            original_score_row_ids = fts_results.column("_rowid")
+            fts_results = fts_results.set_column(
+                score_i,
+                fts_results.field(score_i),
+                LanceHybridQueryBuilder._normalize_scores(original_scores),
+            )
 
         results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
 
