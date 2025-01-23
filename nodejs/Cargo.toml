@@ -1,7 +1,7 @@
 [package]
 name = "lancedb-nodejs"
 edition.workspace = true
-version = "0.15.0"
+version = "0.15.1-beta.0"
 license.workspace = true
 description.workspace = true
 repository.workspace = true
