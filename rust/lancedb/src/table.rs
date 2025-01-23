@@ -1742,6 +1742,12 @@ impl NativeTable {
     }
 
     /// Update field metadata
+    ///
+    /// # Arguments:
+    /// * `new_values` - An iterator of tuples where the first element is the
+    ///   field id and the second element is a hashmap of metadata key-value
+    ///   pairs.
+    ///
     pub async fn replace_field_metadata(
         &self,
         new_values: impl IntoIterator<Item = (u32, HashMap<String, String>)>,
@@ -3530,11 +3536,10 @@ mod tests {
             .unwrap();
 
         let native_tbl = table.as_native().unwrap();
-        let schema = native_tbl.schema().await.unwrap();
+        let schema = native_tbl.manifest().await.unwrap().schema;
 
-        let (field_idx, field) = schema.column_with_name("i").unwrap();
-        let field_metadata = field.metadata();
-        assert_eq!(field_metadata.len(), 0);
+        let field = schema.field("i").unwrap();
+        assert_eq!(field.metadata.len(), 0);
 
         native_tbl
             .replace_schema_metadata(vec![(
@@ -3555,16 +3560,15 @@ mod tests {
         let mut new_field_metadata = HashMap::<String, String>::new();
         new_field_metadata.insert("test_field_key1".into(), "test_field_val1".into());
         native_tbl
-            .replace_field_metadata(vec![(field_idx as u32, new_field_metadata)])
+            .replace_field_metadata(vec![(field.id as u32, new_field_metadata)])
             .await
             .unwrap();
 
-        let schema = native_tbl.schema().await.unwrap();
-        let (_field_idx, field) = schema.column_with_name("i").unwrap();
-        let field_metadata = field.metadata();
-        assert_eq!(field_metadata.len(), 1);
+        let schema = native_tbl.manifest().await.unwrap().schema;
+        let field = schema.field("i").unwrap();
+        assert_eq!(field.metadata.len(), 1);
         assert_eq!(
-            field_metadata.get("test_field_key1"),
+            field.metadata.get("test_field_key1"),
             Some(&"test_field_val1".to_string())
         );
     }
