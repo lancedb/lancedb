@@ -41,6 +41,7 @@ use lance::dataset::{
     WriteParams,
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
+use lance::index::vector::utils::infer_vector_dim;
 use lance::io::WrappingObjectStore;
 use lance_datafusion::exec::execute_plan;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
@@ -73,7 +74,7 @@ use crate::query::{
     IntoQueryVector, Query, QueryExecutionOptions, Select, VectorQuery, DEFAULT_TOP_K,
 };
 use crate::utils::{
-    default_vector_column, infer_vector_dim, supported_bitmap_data_type, supported_btree_data_type,
+    default_vector_column, supported_bitmap_data_type, supported_btree_data_type,
     supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
     PatchReadParam, PatchWriteParam,
 };
