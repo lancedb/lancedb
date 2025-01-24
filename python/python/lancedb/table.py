@@ -922,8 +922,7 @@ class Table(ABC):
     @abstractmethod
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
-    ) -> pa.RecordBatchReader:
-        ...
+    ) -> pa.RecordBatchReader: ...
 
     @abstractmethod
     def _do_merge(
@@ -932,8 +931,7 @@ class Table(ABC):
         new_data: DATA,
         on_bad_vectors: str,
         fill_value: float,
-    ):
-        ...
+    ): ...
 
     @abstractmethod
     def delete(self, where: str):
@@ -1902,8 +1900,7 @@ class LanceTable(Table):
         query_type: Literal["vector"] = "vector",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceVectorQueryBuilder:
-        ...
+    ) -> LanceVectorQueryBuilder: ...
 
     @overload
     def search(
@@ -1913,8 +1910,7 @@ class LanceTable(Table):
         query_type: Literal["fts"] = "fts",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceFtsQueryBuilder:
-        ...
+    ) -> LanceFtsQueryBuilder: ...
 
     @overload
     def search(
@@ -1924,8 +1920,7 @@ class LanceTable(Table):
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceHybridQueryBuilder:
-        ...
+    ) -> LanceHybridQueryBuilder: ...
 
     @overload
     def search(
@@ -1935,8 +1930,7 @@ class LanceTable(Table):
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceEmptyQueryBuilder:
-        ...
+    ) -> LanceEmptyQueryBuilder: ...
 
     def search(
         self,
