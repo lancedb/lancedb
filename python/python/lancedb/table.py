@@ -922,7 +922,8 @@ class Table(ABC):
     @abstractmethod
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
-    ) -> pa.RecordBatchReader: ...
+    ) -> pa.RecordBatchReader:
+        ...
 
     @abstractmethod
     def _do_merge(
@@ -931,7 +932,8 @@ class Table(ABC):
         new_data: DATA,
         on_bad_vectors: str,
         fill_value: float,
-    ): ...
+    ):
+        ...
 
     @abstractmethod
     def delete(self, where: str):
@@ -1900,7 +1902,8 @@ class LanceTable(Table):
         query_type: Literal["vector"] = "vector",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceVectorQueryBuilder: ...
+    ) -> LanceVectorQueryBuilder:
+        ...
 
     @overload
     def search(
@@ -1910,7 +1913,8 @@ class LanceTable(Table):
         query_type: Literal["fts"] = "fts",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceFtsQueryBuilder: ...
+    ) -> LanceFtsQueryBuilder:
+        ...
 
     @overload
     def search(
@@ -1920,7 +1924,8 @@ class LanceTable(Table):
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceHybridQueryBuilder: ...
+    ) -> LanceHybridQueryBuilder:
+        ...
 
     @overload
     def search(
@@ -1930,7 +1935,8 @@ class LanceTable(Table):
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceEmptyQueryBuilder: ...
+    ) -> LanceEmptyQueryBuilder:
+        ...
 
     def search(
         self,
@@ -2036,8 +2042,6 @@ class LanceTable(Table):
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         storage_options: Optional[Dict[str, str]] = None,
-        data_storage_version: Optional[str] = None,
-        enable_v2_manifest_paths: Optional[bool] = None,
     ):
         """
         Create a new table.
@@ -2100,8 +2104,6 @@ class LanceTable(Table):
                 fill_value=fill_value,
                 embedding_functions=embedding_functions,
                 storage_options=storage_options,
-                data_storage_version=data_storage_version,
-                enable_v2_manifest_paths=enable_v2_manifest_paths,
             )
         )
         return self
