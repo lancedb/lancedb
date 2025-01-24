@@ -353,7 +353,7 @@ impl Catalog for ListingCatalog {
         let mut write_params = request.write_options.lance_write_params.unwrap_or_default();
 
         if let Some(storage_version) = &self.new_table_config.data_storage_version {
-            write_params.data_storage_version = Some(storage_version.clone());
+            write_params.data_storage_version = Some(*storage_version);
         }
         if let Some(enable_v2_manifest_paths) = self.new_table_config.enable_v2_manifest_paths {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
