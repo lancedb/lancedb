@@ -610,6 +610,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
 
+        This is an alias for distance_type() and may be deprecated in the future.
+        Please use distance_type() instead.
+
         Parameters
         ----------
         metric: "L2" or "cosine" or "dot"
@@ -620,7 +623,32 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._metric = metric.lower()
+        return self.distance_type(metric)
+
+    def distance_type(
+        self, distance_type: Literal["L2", "cosine", "dot"]
+    ) -> "LanceVectorQueryBuilder":
+        """Set the distance metric to use.
+
+        When performing a vector search we try and find the "nearest" vectors according
+        to some kind of distance metric. This parameter controls which distance metric
+        to use.
+
+        Note: if there is a vector index then the distance type used MUST match the
+        distance type used to train the vector index. If this is not done then the
+        results will be invalid.
+
+        Parameters
+        ----------
+        distance_type: "L2" or "cosine" or "dot"
+            The distance metric to use. By default "L2" is used.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._metric = distance_type.lower()
         return self
 
     def nprobes(self, nprobes: int) -> LanceVectorQueryBuilder:
@@ -1386,6 +1414,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
         """Set the distance metric to use.
 
+        This is an alias for distance_type() and may be deprecated in the future.
+        Please use distance_type() instead.
+
         Parameters
         ----------
         metric: "L2" or "cosine" or "dot"
@@ -1396,7 +1427,32 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._metric = metric.lower()
+        return self.distance_type(metric)
+
+    def distance_type(
+        self, distance_type: Literal["L2", "cosine", "dot"]
+    ) -> "LanceHybridQueryBuilder":
+        """Set the distance metric to use.
+
+        When performing a vector search we try and find the "nearest" vectors according
+        to some kind of distance metric. This parameter controls which distance metric
+        to use.
+
+        Note: if there is a vector index then the distance type used MUST match the
+        distance type used to train the vector index. If this is not done then the
+        results will be invalid.
+
+        Parameters
+        ----------
+        distance_type: "L2" or "cosine" or "dot"
+            The distance metric to use. By default "L2" is used.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._metric = distance_type.lower()
         return self
 
     def refine_factor(self, refine_factor: int) -> LanceHybridQueryBuilder:
