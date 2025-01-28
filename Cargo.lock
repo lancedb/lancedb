@@ -2475,16 +2475,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "env_filter"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "186e05a59d4c50738528153b83b0b0194d3a29507dfec16eccd4b342903397d0"
-dependencies = [
- "log",
- "regex",
-]
-
-[[package]]
 name = "env_logger"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2495,19 +2485,6 @@ dependencies = [
  "log",
  "regex",
  "termcolor",
-]
-
-[[package]]
-name = "env_logger"
-version = "0.11.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcaee3d8e3cfc3fd92428d477bc97fc29ec8716d180c0d74c643bb26166660e0"
-dependencies = [
- "anstream",
- "anstyle",
- "env_filter",
- "humantime",
- "log",
 ]
 
 [[package]]
@@ -2734,7 +2711,7 @@ dependencies = [
 [[package]]
 name = "fsst"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "rand",
 ]
@@ -3730,7 +3707,7 @@ dependencies = [
 [[package]]
 name = "lance"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3790,7 +3767,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3808,7 +3785,7 @@ dependencies = [
 [[package]]
 name = "lance-core"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3845,7 +3822,7 @@ dependencies = [
 [[package]]
 name = "lance-datafusion"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3871,7 +3848,7 @@ dependencies = [
 [[package]]
 name = "lance-encoding"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "arrayref",
  "arrow",
@@ -3910,7 +3887,7 @@ dependencies = [
 [[package]]
 name = "lance-file"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -3945,7 +3922,7 @@ dependencies = [
 [[package]]
 name = "lance-index"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3998,7 +3975,7 @@ dependencies = [
 [[package]]
 name = "lance-io"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4037,7 +4014,7 @@ dependencies = [
 [[package]]
 name = "lance-linalg"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "arrow-array",
  "arrow-ord",
@@ -4061,7 +4038,7 @@ dependencies = [
 [[package]]
 name = "lance-table"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4101,7 +4078,7 @@ dependencies = [
 [[package]]
 name = "lance-testing"
 version = "0.23.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.2#43cd830ea3d074a021cb91af2cfa96d101f3b040"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.0-beta.3#7aa7d94f7ccf2f0e930ea7994257937737d310d5"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4112,7 +4089,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb"
-version = "0.15.1-beta.0"
+version = "0.15.1-beta.1"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4191,7 +4168,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-node"
-version = "0.15.1-beta.0"
+version = "0.15.1-beta.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4199,7 +4176,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "conv",
- "env_logger 0.11.6",
+ "env_logger",
  "futures",
  "half",
  "lance",
@@ -4216,13 +4193,13 @@ dependencies = [
 
 [[package]]
 name = "lancedb-nodejs"
-version = "0.15.1-beta.0"
+version = "0.15.1-beta.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
  "arrow-schema",
  "async-trait",
- "env_logger 0.10.2",
+ "env_logger",
  "futures",
  "lancedb",
  "log",
@@ -4234,10 +4211,10 @@ dependencies = [
 
 [[package]]
 name = "lancedb-python"
-version = "0.18.1-beta.1"
+version = "0.18.1-beta.2"
 dependencies = [
  "arrow",
- "env_logger 0.10.2",
+ "env_logger",
  "futures",
  "lancedb",
  "pin-project",
