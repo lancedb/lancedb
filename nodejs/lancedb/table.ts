@@ -520,14 +520,8 @@ export class LocalTable extends Table {
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
     const mode = options?.mode ?? "append";
     const schema = await this.schema();
-    const registry = getRegistry();
-    const functions = await registry.parseFunctions(schema.metadata);
 
-    const buffer = await fromDataToBuffer(
-      data,
-      functions.values().next().value,
-      schema,
-    );
+    const buffer = await fromDataToBuffer(data, undefined, schema);
     await this.inner.add(buffer, mode);
   }
 
@@ -733,7 +727,7 @@ export class LocalTable extends Table {
   }
   mergeInsert(on: string | string[]): MergeInsertBuilder {
     on = Array.isArray(on) ? on : [on];
-    return new MergeInsertBuilder(this.inner.mergeInsert(on));
+    return new MergeInsertBuilder(this.inner.mergeInsert(on), this.schema());
   }
 
   /**

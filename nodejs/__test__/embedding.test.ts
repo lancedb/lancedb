@@ -84,6 +84,7 @@ describe("embedding functions", () => {
   });
 
   it("should be able to append and upsert using embedding function", async () => {
+    @register()
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
       toJSON(): object {
         return {};
@@ -119,6 +120,9 @@ describe("embedding functions", () => {
       },
     );
 
+    const schema = await table.schema();
+    expect(schema.metadata.get("embedding_functions")).toBeDefined();
+
     // Append some new data
     const data1 = [
       { id: 3, text: "forest" },
@@ -128,7 +132,7 @@ describe("embedding functions", () => {
 
     // Upsert some data
     const data2 = [
-      { id: 5, test: "river" },
+      { id: 5, text: "river" },
       { id: 2, text: "canyon" },
     ];
     await table
