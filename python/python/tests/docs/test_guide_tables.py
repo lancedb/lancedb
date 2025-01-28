@@ -574,3 +574,7 @@ async def test_table_async():
     # Check for updates
     await async_tbl.checkout_latest()
     # --8<-- [end:table_async_checkout_latest]
+
+
+async def test_table_merge_insert():
+    pass
