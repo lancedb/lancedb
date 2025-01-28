@@ -377,14 +377,14 @@ def test_query_builder_with_metric(table):
     df_default = LanceVectorQueryBuilder(table, query, vector_column_name).to_pandas()
     df_l2 = (
         LanceVectorQueryBuilder(table, query, vector_column_name)
-        .metric("L2")
+        .distance_type("L2")
         .to_pandas()
     )
     tm.assert_frame_equal(df_default, df_l2)
 
     df_cosine = (
         LanceVectorQueryBuilder(table, query, vector_column_name)
-        .metric("cosine")
+        .distance_type("cosine")
         .limit(1)
         .to_pandas()
     )
@@ -401,7 +401,7 @@ def test_query_builder_with_different_vector_column():
     vector_column_name = "foo_vector"
     builder = (
         LanceVectorQueryBuilder(table, query, vector_column_name)
-        .metric("cosine")
+        .distance_type("cosine")
         .where("b < 10")
         .select(["b"])
         .limit(2)

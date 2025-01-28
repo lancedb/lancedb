@@ -366,7 +366,7 @@ def test_query_sync_maximal():
     with query_test_table(handler) as table:
         (
             table.search([1, 2, 3], vector_column_name="vector2", fast_search=True)
-            .metric("cosine")
+            .distance_type("cosine")
             .limit(42)
             .offset(10)
             .refine_factor(10)

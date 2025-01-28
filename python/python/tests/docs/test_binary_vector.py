@@ -38,7 +38,7 @@ def test_binary_vector():
 
     query = np.random.randint(0, 2, size=256)
     packed_query = np.packbits(query)
-    tbl.search(packed_query).metric("hamming").to_arrow()
+    tbl.search(packed_query).distance_type("hamming").to_arrow()
     # --8<-- [end:sync_binary_vector]
     db.drop_table("my_binary_vectors")
 
