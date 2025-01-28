@@ -1242,7 +1242,9 @@ def test_hybrid_search_metric_type(tmp_db: DBConnection):
 
     # with custom metric
     result_dot = (
-        table.search("feeling lucky", query_type="hybrid").metric("dot").to_arrow()
+        table.search("feeling lucky", query_type="hybrid")
+        .distance_type("dot")
+        .to_arrow()
     )
     result_l2 = table.search("feeling lucky", query_type="hybrid").to_arrow()
     assert len(result_dot) > 0

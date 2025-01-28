@@ -576,7 +576,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     >>> db = lancedb.connect("./.lancedb")
     >>> table = db.create_table("my_table", data=data)
     >>> (table.search([0.4, 0.4])
-    ...       .metric("cosine")
+    ...       .distance_type("cosine")
     ...       .where("b < 10")
     ...       .select(["b", "vector"])
     ...       .limit(2)
