@@ -505,7 +505,7 @@ class LanceQueryBuilder(ABC):
                 "column": self._vector_column,
                 "q": self._query,
                 "k": self._limit,
-                "metric": self._metric,
+                "metric": self._distance_type,
                 "nprobes": self._nprobes,
                 "refine_factor": self._refine_factor,
                 "use_index": self._use_index,
@@ -596,7 +596,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     ):
         super().__init__(table)
         self._query = query
-        self._metric = "L2"
+        self._distance_type = "L2"
         self._nprobes = 20
         self._lower_bound = None
         self._upper_bound = None
@@ -648,7 +648,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._metric = distance_type.lower()
+        self._distance_type = distance_type.lower()
         return self
 
     def nprobes(self, nprobes: int) -> LanceVectorQueryBuilder:
@@ -773,7 +773,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             filter=self._where,
             prefilter=self._prefilter,
             k=self._limit,
-            metric=self._metric,
+            metric=self._distance_type,
             columns=self._columns,
             nprobes=self._nprobes,
             lower_bound=self._lower_bound,
@@ -1106,7 +1106,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._reranker = RRFReranker()
         self._nprobes = None
         self._refine_factor = None
-        self._metric = None
+        self._distance_type = None
         self._phrase_query = False
 
     def _validate_query(self, query, vector=None, text=None):
@@ -1174,8 +1174,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.with_row_id(True)
         if self._phrase_query:
             self._fts_query.phrase_query(True)
-        if self._metric:
-            self._vector_query.metric(self._metric)
+        if self._distance_type:
+            self._vector_query.metric(self._distance_type)
         if self._nprobes:
             self._vector_query.nprobes(self._nprobes)
         if self._refine_factor:
@@ -1452,7 +1452,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._metric = distance_type.lower()
+        self._distance_type = distance_type.lower()
         return self
 
     def refine_factor(self, refine_factor: int) -> LanceHybridQueryBuilder:
