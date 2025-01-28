@@ -540,7 +540,6 @@ async function applyEmbeddingsFromMetadata(
   table: ArrowTable,
   schema: Schema,
 ): Promise<ArrowTable> {
-  console.log(table.toString());
   const registry = getRegistry();
   const functions = await registry.parseFunctions(schema.metadata);
 
