@@ -83,6 +83,74 @@ describe("embedding functions", () => {
     expect(vector0).toEqual([1, 2, 3]);
   });
 
+  it("should be able to append and upsert using embedding function", async () => {
+    @register()
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      toJSON(): object {
+        return {};
+      }
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return Array.from({ length: data.length }).fill([
+          1, 2, 3,
+        ]) as number[][];
+      }
+    }
+    const func = new MockEmbeddingFunction();
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable(
+      "test",
+      [
+        { id: 1, text: "hello" },
+        { id: 2, text: "world" },
+      ],
+      {
+        embeddingFunction: {
+          function: func,
+          sourceColumn: "text",
+        },
+      },
+    );
+
+    const schema = await table.schema();
+    expect(schema.metadata.get("embedding_functions")).toBeDefined();
+
+    // Append some new data
+    const data1 = [
+      { id: 3, text: "forest" },
+      { id: 4, text: "mountain" },
+    ];
+    await table.add(data1);
+
+    // Upsert some data
+    const data2 = [
+      { id: 5, text: "river" },
+      { id: 2, text: "canyon" },
+    ];
+    await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute(data2);
+
+    const rows = await table.query().toArray();
+    rows.sort((a, b) => a.id - b.id);
+    const texts = rows.map((row) => row.text);
+    expect(texts).toEqual(["hello", "canyon", "forest", "mountain", "river"]);
+    const vectorsDefined = rows.map(
+      (row) => row.vector !== undefined && row.vector !== null,
+    );
+    expect(vectorsDefined).toEqual(new Array(5).fill(true));
+  });
+
   it("should be able to create an empty table with an embedding function", async () => {
     @register()
     class MockEmbeddingFunction extends EmbeddingFunction<string> {

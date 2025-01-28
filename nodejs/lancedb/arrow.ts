@@ -609,6 +609,14 @@ async function applyEmbeddings<T>(
     return table;
   }
 
+  let schemaMetadata = schema?.metadata || new Map<string, string>();
+
+  if (!(embeddings == null || embeddings === undefined)) {
+    const registry = getRegistry();
+    const embeddingMetadata = registry.getTableMetadata([embeddings]);
+    schemaMetadata = new Map([...schemaMetadata, ...embeddingMetadata]);
+  }
+
   // Convert from ArrowTable to Record<String, Vector>
   const colEntries = [...Array(table.numCols).keys()].map((_, idx) => {
     const name = table.schema.fields[idx].name;
@@ -677,15 +685,21 @@ async function applyEmbeddings<T>(
     newColumns[destColumn] = makeVector(vectors, destType);
   }
 
-  const newTable = new ArrowTable(newColumns);
+  let newTable = new ArrowTable(newColumns);
   if (schema != null) {
     if (schema.fields.find((f) => f.name === destColumn) === undefined) {
       throw new Error(
         `When using embedding functions and specifying a schema the schema should include the embedding column but the column ${destColumn} was missing`,
       );
     }
-    return alignTable(newTable, schema as Schema);
+    newTable = alignTable(newTable, schema as Schema);
   }
+
+  newTable = new ArrowTable(
+    new Schema(newTable.schema.fields, schemaMetadata),
+    newTable.batches,
+  );
+
   return newTable;
 }
 
