@@ -52,6 +52,28 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --tests --all-features -- -D warnings
 
+  build-no-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Need up-to-date compilers for kernels
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+      # Remote cargo.lock to force a fresh build
+      - name: Remove Cargo.lock
+        run: rm -f Cargo.lock
+      - uses: rui314/setup-mold@v1
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - name: Build all
+        run: |
+          cargo build --benches --all-features --tests
+
   linux:
     timeout-minutes: 30
     # To build all features, we need more disk space than is available
@@ -75,7 +97,11 @@ jobs:
         with:
           workspaces: rust
       - name: Install dependencies
-        run: sudo apt install -y protobuf-compiler libssl-dev
+        run: |
+          # This shaves 2 minutes off this step in CI.
+          echo 'set man-db/auto-update false' | debconf-communicate
+          sudo apt install -y protobuf-compiler libssl-dev
+      - uses: rui314/setup-mold@v1
       - name: Make Swap
         run: |
           sudo fallocate -l 16G /swapfile
@@ -114,11 +140,11 @@ jobs:
           workspaces: rust
       - name: Install dependencies
         run: brew install protobuf
-      - name: Check all features
-        run: cargo check --tests --all-features --examples
+      - name: Start S3 integration test environment
+        working-directory: .
+        run: docker compose up --detach --wait
       - name: Run tests
-        # Run with everything except the integration tests.
-        run: cargo test --features remote,fp16kernels
+        run: cargo test --all-features --locked
 
   windows:
     runs-on: windows-2022
@@ -139,8 +165,7 @@ jobs:
       - name: Run tests
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo build
-          cargo test
+          cargo test --features remote --locked
 
   windows-arm64:
     runs-on: windows-4x-arm
@@ -235,8 +260,7 @@ jobs:
       - name: Run tests
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo build --target aarch64-pc-windows-msvc
-          cargo test --target aarch64-pc-windows-msvc
+          cargo test --target aarch64-pc-windows-msvc --features remote --locked
 
   msrv:
     # Check the minimum supported Rust version
