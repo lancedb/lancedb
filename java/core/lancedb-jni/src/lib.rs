@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use lazy_static::lazy_static;
 
 // TODO import from lance-jni without duplicate

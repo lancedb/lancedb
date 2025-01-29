@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 pub type Result<T> = napi::Result<T>;
 
 pub trait NapiErrorExt<T> {

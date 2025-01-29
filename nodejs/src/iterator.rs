@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use futures::StreamExt;
 use lancedb::arrow::SendableRecordBatchStream;
 use lancedb::ipc::batches_to_ipc_file;

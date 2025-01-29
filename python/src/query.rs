@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use arrow::array::make_array;
 use arrow::array::ArrayData;
 use arrow::pyarrow::FromPyArrow;

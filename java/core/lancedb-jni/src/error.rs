@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use std::str::Utf8Error;
 
 use arrow_schema::ArrowError;

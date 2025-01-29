@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use jni::objects::{JMap, JObject, JString, JValue};
 use jni::JNIEnv;
 
