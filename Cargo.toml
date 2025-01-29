@@ -59,3 +59,6 @@ num-traits = "0.2"
 rand = "0.8"
 regex = "1.10"
 lazy_static = "1"
+
+# Workaround for: https://github.com/eira-fransham/crunchy/issues/13
+crunchy = "=0.2.2"
