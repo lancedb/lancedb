@@ -107,7 +107,6 @@ const example = async () => {
   // --8<-- [start:search]
   const query = await tbl.search([100, 100]).limit(2).execute();
   // --8<-- [end:search]
-  console.log(query);
 
   // --8<-- [start:delete]
   await tbl.delete('item = "fizz"');
@@ -119,8 +118,9 @@ const example = async () => {
 };
 
 async function main() {
+  console.log("basic_legacy.ts: start");
   await example();
-  console.log("Basic example: done");
+  console.log("basic_legacy.ts: done");
 }
 
 main();

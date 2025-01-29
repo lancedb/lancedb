@@ -1,6 +1,7 @@
 import * as vectordb from "vectordb";
 
 (async () => {
+  console.log("sql_legacy.ts: start");
   const db = await vectordb.connect("data/sample-lancedb");
 
   let data = [];
@@ -34,5 +35,5 @@ import * as vectordb from "vectordb";
   await tbl.filter("id = 10").limit(10).execute();
   // --8<-- [end:sql_search]
 
-  console.log("SQL search: done");
+  console.log("sql_legacy.ts: done");
 })();
