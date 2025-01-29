@@ -9,6 +9,7 @@ on:
       - python/**
       - nodejs/**
       - java/**
+      - .github/workflows/license-header-check.yml
 jobs:
   build:
     runs-on: ubuntu-latest
