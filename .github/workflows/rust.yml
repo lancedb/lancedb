@@ -141,11 +141,14 @@ jobs:
           workspaces: rust
       - name: Install dependencies
         run: brew install protobuf
-      - name: Start S3 integration test environment
-        working-directory: .
-        run: docker compose up --detach --wait
       - name: Run tests
-        run: cargo test --all-features --locked
+        run: |
+          # Don't run the s3 integration tests since docker isn't available
+          # on this image.
+          ALL_FEATURES=`cargo metadata --format-version=1 --no-deps \
+            | jq -r '.packages[] | .features | keys | .[]' \
+            | grep -v s3-test | sort | uniq | paste -s -d "," -`
+          cargo test --features $ALL_FEATURES --locked
 
   windows:
     runs-on: windows-2022
