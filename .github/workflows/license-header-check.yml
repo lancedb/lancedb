@@ -23,3 +23,5 @@ jobs:
         run: ./bin/license-header-checker -a -v ./python/license_header.txt python py && [[ -z `git status -s` ]]
       - name: Check license headers (typescript)
         run: ./bin/license-header-checker -a -v ./nodejs/license_header.txt nodejs ts && [[ -z `git status -s` ]]
+      - name: Check license headers (java)
+        run: ./bin/license-header-checker -a -v ./nodejs/license_header.txt java java && [[ -z `git status -s` ]]
