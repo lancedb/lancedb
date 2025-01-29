@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright The Lance Authors
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+
 #
 # The following code is originally from https://github.com/pola-rs/polars/blob/ea4389c31b0e87ddf20a85e4c3797b285966edb6/py-polars/polars/dependencies.py
 # and is licensed under the MIT license:

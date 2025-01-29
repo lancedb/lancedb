@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 // --8<-- [start:imports]
 
 use std::{iter::once, sync::Arc};

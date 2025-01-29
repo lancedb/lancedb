@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 import { IntoSql, toSQL } from "../lancedb/util";
 test.each([
   ["string", "'string'"],

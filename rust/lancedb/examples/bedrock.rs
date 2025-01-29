@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use std::{iter::once, sync::Arc};
 
 use arrow_array::{Float64Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray};

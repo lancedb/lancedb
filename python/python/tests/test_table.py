@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright The Lance Authors
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 
 import os
 from datetime import date, datetime, timedelta
