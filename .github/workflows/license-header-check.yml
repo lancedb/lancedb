@@ -11,7 +11,7 @@ on:
       - java/**
       - .github/workflows/license-header-check.yml
 jobs:
-  build:
+  check-licenses:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
