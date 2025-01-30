@@ -56,28 +56,6 @@ jobs:
     - name: Lint examples
       working-directory: nodejs/examples
       run: npm ci && npm run lint-ci
-  docs:
-    name: Check nodejs docs
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-        working-directory: nodejs
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        lfs: true
-    - uses: actions/setup-node@v3
-      with:
-        node-version: 20
-        cache: 'npm'
-        cache-dependency-path: nodejs/package-lock.json
-    - run: |
-        set -e
-        npm ci
-        npm run docs
-        git diff --exit-code
   linux:
     name: Linux (NodeJS ${{ matrix.node-version }})
     timeout-minutes: 30
@@ -128,6 +106,14 @@ jobs:
         python ci/mock_openai.py &
         cd nodejs/examples
         npm test
+    - name: Check docs
+      run: |
+        # We run this as part of the job because the binary needs to be built
+        # first to export the types of the native code.
+        set -e
+        npm ci
+        npm run docs
+        git diff --exit-code
   macos:
     timeout-minutes: 30
     runs-on: "macos-14"
