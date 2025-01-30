@@ -29,13 +29,6 @@ You can also read more in the API reference:
     Read more about scalar indices in [Building a Scalar Index](../scalar_index.md)
     guide.
 
-<!--
-Things to note:
-* Generally use some unique key. Need to manage your own, LanceDB doens't have
-    a built-in primary key. Having duplicates on both sides of join can be bad.
-* Add a scalar B-Tree or Bitmap index on the unique key to speed up the upsert.
-* You can provide subsets of columns or all columns in the upsert.
--->
 ## Upsert
 
 Upsert updates rows if they exist and inserts them if they don't. To do this
