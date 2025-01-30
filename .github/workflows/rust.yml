@@ -171,6 +171,37 @@ jobs:
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cargo test --features remote --locked
 
+  windows-arm64-cross:
+    # We cross compile in Node releases, so we want to make sure
+    # this can run successfully.
+    runs-on: ubuntu-latest
+    container: alpine:edge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          set -e
+          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
+
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup target add aarch64-pc-windows-msvc
+
+          mkdir -p sysroot
+          cd sysroot
+          sh ../ci/sysroot-aarch64-pc-windows-msvc.sh
+      - name: Check
+        env:
+          CC: clang
+          AR: llvm-ar
+          C_INCLUDE_PATH: /usr/aarch64-pc-windows-msvc/usr/include
+          CARGO_BUILD_TARGET: aarch64-pc-windows-msvc
+          RUSTFLAGS: -Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib
+        run: |
+          source $HOME/.cargo/env
+          cargo check --features remote --locked
+
   windows-arm64:
     runs-on: windows-4x-arm
     steps:

@@ -1697,9 +1697,9 @@ dependencies = [
 
 [[package]]
 name = "crunchy"
-version = "0.2.3"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43da5946c66ffcc7745f48db692ffbb10a83bfe0afd96235c5c2a4fb23994929"
+checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
 
 [[package]]
 name = "crypto-bigint"
@@ -4111,6 +4111,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "chrono",
+ "crunchy",
  "datafusion-common",
  "datafusion-physical-plan",
  "futures",
