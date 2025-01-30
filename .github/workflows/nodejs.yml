@@ -115,7 +115,8 @@ jobs:
         npm run docs
         if ! git diff --exit-code; then
           echo "Docs need to be updated"
-          echo "Run `npm run docs`, fix any warnings, and commit the changes."
+          echo "Run 'npm run docs', fix any warnings, and commit the changes."
+          exit 1
         fi
   macos:
     timeout-minutes: 30
