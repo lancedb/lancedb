@@ -608,18 +608,17 @@ in LanceDB, use the `merge insert` command.
 
 === "Python"
 
-    An empty table can be initialized via a PyArrow schema.
     === "Sync API"
 
         ```python
-        --8<-- "python/python/tests/docs/test_guide_tables.py:merge_insert
+        --8<-- "python/python/tests/docs/test_merge_insert.py:upsert_basic"
         ```
         **API Reference**: [lancedb.table.Table.merge_insert][]
 
     === "Async API"
 
         ```python
-        --8<-- "python/python/tests/docs/test_guide_tables.py:merge_insert_async
+        --8<-- "python/python/tests/docs/test_merge_insert.py:upsert_basic_async"
         ```
         **API Reference**: [lancedb.table.AsyncTable.merge_insert][]
 
@@ -628,20 +627,11 @@ in LanceDB, use the `merge insert` command.
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.test.ts:merge_insert"
+        --8<-- "nodejs/examples/merge_insert.test.ts:upsert_basic"
         ```
         **API Reference**: [lancedb.Table.mergeInsert](../js/classes/Table.md/#mergeInsert)
 
-!!! perf
-
-<!--
-Things to note:
-* Generally use some unique key. Need to manage your own, LanceDB doens't have
-    a built-in primary key. Having duplicates on both sides of join can be bad.
-* Add a scalar B-Tree or Bitmap index on the unique key to speed up the upsert.
-* You can provide subsets of columns or all columns in the upsert.
--->
-
+Read more in the guide on [merge insert](tables/merge_insert.md).
 
 ## Deleting from a table
 

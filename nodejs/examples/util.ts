@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
-import * as fs from "fs";
-import { tmpdir } from "os";
-import * as path from "path";
+import * as fs from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 
 export async function withTempDirectory(
   fn: (tempDir: string) => Promise<void>,
