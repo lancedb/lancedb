@@ -132,7 +132,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
   }
   /**
    * A filter statement to be applied to this query.
-   * @alias where
+   * @see where
    * @deprecated Use `where` instead
    */
   filter(predicate: string): this {
@@ -235,7 +235,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
    * Skip searching un-indexed data. This can make search faster, but will miss
    * any data that is not yet indexed.
    *
-   * Use {@link lancedb.Table#optimize} to index all un-indexed data.
+   * Use {@link Table#optimize} to index all un-indexed data.
    */
   fastSearch(): this {
     this.doCall((inner: NativeQueryType) => inner.fastSearch());

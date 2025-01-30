@@ -190,8 +190,9 @@ export abstract class Table {
    * Indices on scalar columns will speed up filtering (in both
    * vector and non-vector searches)
    *
-   * @note We currently don't support custom named indexes,
-   * The index name will always be `${column}_idx`
+   * We currently don't support custom named indexes.
+   * The index name will always be `${column}_idx`.
+   *
    * @example
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
@@ -221,7 +222,7 @@ export abstract class Table {
    *
    * @param name The name of the index.
    *
-   * @note This does not delete the index from disk, it just removes it from the table.
+   * This does not delete the index from disk, it just removes it from the table.
    * To delete the index, run {@link Table#optimize} after dropping the index.
    *
    * Use {@link Table.listIndices} to find the names of the indices.

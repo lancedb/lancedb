@@ -78,7 +78,7 @@ export abstract class EmbeddingFunction<
    *
    * @param optionsOrDatatype - The options for the field or the datatype
    *
-   * @see {@link lancedb.LanceSchema}
+   * @see {@link LanceSchema}
    */
   sourceField(
     optionsOrDatatype: Partial<FieldOptions> | DataType,
@@ -100,9 +100,9 @@ export abstract class EmbeddingFunction<
   /**
    * vectorField is used in combination with `LanceSchema` to provide a declarative data model
    *
-   * @param options - The options for the field
+   * @param optionsOrDatatype - The options for the field
    *
-   * @see {@link lancedb.LanceSchema}
+   * @see {@link LanceSchema}
    */
   vectorField(
     optionsOrDatatype?: Partial<FieldOptions> | DataType,

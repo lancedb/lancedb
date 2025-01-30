@@ -203,9 +203,11 @@ export abstract class Connection {
   abstract dropTable(name: string): Promise<void>;
 }
 
+/** @hideconstructor */
 export class LocalConnection extends Connection {
   readonly inner: LanceDbConnection;
 
+  /** @hidden */
   constructor(inner: LanceDbConnection) {
     super();
     this.inner = inner;

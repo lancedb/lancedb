@@ -6,7 +6,13 @@ import { sanitizeType } from "../sanitize";
 import { EmbeddingFunction } from "./embedding_function";
 import { EmbeddingFunctionConfig, getRegistry } from "./registry";
 
-export { EmbeddingFunction, TextEmbeddingFunction } from "./embedding_function";
+export {
+  FieldOptions,
+  EmbeddingFunction,
+  TextEmbeddingFunction,
+  FunctionOptions,
+  EmbeddingFunctionConstructor,
+} from "./embedding_function";
 
 export * from "./registry";
 

@@ -7,11 +7,11 @@ import {
 } from "./embedding_function";
 import "reflect-metadata";
 
-type CreateReturnType<T> = T extends { init: () => Promise<void> }
+export type CreateReturnType<T> = T extends { init: () => Promise<void> }
   ? Promise<T>
   : T;
 
-interface EmbeddingFunctionCreate<T extends EmbeddingFunction> {
+export interface EmbeddingFunctionCreate<T extends EmbeddingFunction> {
   create(options?: T["TOptions"]): CreateReturnType<T>;
 }
 
@@ -33,8 +33,6 @@ export class EmbeddingFunctionRegistry {
 
   /**
    * Register an embedding function
-   * @param name The name of the function
-   * @param func The function to register
    * @throws Error if the function is already registered
    */
   register<

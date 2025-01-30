@@ -23,6 +23,10 @@ export {
   ClientConfig,
   TimeoutConfig,
   RetryConfig,
+  OptimizeStats,
+  RrfReranker,
+  CompactionStats,
+  RemovalStats,
 } from "./native.js";
 
 export {
@@ -36,6 +40,7 @@ export {
   Connection,
   CreateTableOptions,
   TableNamesOptions,
+  OpenTableOptions,
 } from "./connection";
 
 export {
@@ -43,15 +48,41 @@ export {
   Query,
   QueryBase,
   VectorQuery,
+  QueryExecutionOptions,
+  FullTextSearchOptions,
   RecordBatchIterator,
 } from "./query";
 
-export { Index, IndexOptions, IvfPqOptions } from "./indices";
+export {
+  Index,
+  IndexOptions,
+  IvfPqOptions,
+  HnswPqOptions,
+  HnswSqOptions,
+  FtsOptions,
+} from "./indices";
 
-export { Table, AddDataOptions, UpdateOptions, OptimizeOptions } from "./table";
+export {
+  Table,
+  AddDataOptions,
+  UpdateOptions,
+  OptimizeOptions,
+  Version,
+} from "./table";
+
+export { MergeInsertBuilder } from "./merge";
 
 export * as embedding from "./embedding";
 export * as rerankers from "./rerankers";
+export {
+  SchemaLike,
+  TableLike,
+  FieldLike,
+  RecordBatchLike,
+  DataLike,
+  IntoVector,
+} from "./arrow";
+export { IntoSql } from "./util";
 
 /**
  * Connect to a LanceDB instance at the given URI.
@@ -64,6 +95,7 @@ export * as rerankers from "./rerankers";
  * @param {string} uri - The uri of the database. If the database uri starts
  * with `db://` then it connects to a remote database.
  * @see {@link ConnectionOptions} for more details on the URI format.
+ * @param  options - The options to use when connecting to the database
  * @example
  * ```ts
  * const conn = await connect("/path/to/database");
@@ -78,7 +110,7 @@ export * as rerankers from "./rerankers";
  */
 export async function connect(
   uri: string,
-  opts?: Partial<ConnectionOptions>,
+  options?: Partial<ConnectionOptions>,
 ): Promise<Connection>;
 /**
  * Connect to a LanceDB instance at the given URI.
@@ -99,17 +131,17 @@ export async function connect(
  * ```
  */
 export async function connect(
-  opts: Partial<ConnectionOptions> & { uri: string },
+  options: Partial<ConnectionOptions> & { uri: string },
 ): Promise<Connection>;
 export async function connect(
   uriOrOptions: string | (Partial<ConnectionOptions> & { uri: string }),
-  opts: Partial<ConnectionOptions> = {},
+  options: Partial<ConnectionOptions> = {},
 ): Promise<Connection> {
   let uri: string | undefined;
   if (typeof uriOrOptions !== "string") {
-    const { uri: uri_, ...options } = uriOrOptions;
+    const { uri: uri_, ...opts } = uriOrOptions;
     uri = uri_;
-    opts = options;
+    options = opts;
   } else {
     uri = uriOrOptions;
   }
@@ -118,10 +150,10 @@ export async function connect(
     throw new Error("uri is required");
   }
 
-  opts = (opts as ConnectionOptions) ?? {};
-  (<ConnectionOptions>opts).storageOptions = cleanseStorageOptions(
-    (<ConnectionOptions>opts).storageOptions,
+  options = (options as ConnectionOptions) ?? {};
+  (<ConnectionOptions>options).storageOptions = cleanseStorageOptions(
+    (<ConnectionOptions>options).storageOptions,
   );
-  const nativeConn = await LanceDbConnection.new(uri, opts);
+  const nativeConn = await LanceDbConnection.new(uri, options);
   return new LocalConnection(nativeConn);
 }
