@@ -1,30 +1,19 @@
 **@lancedb/lancedb** • [**Docs**](globals.md)
-
 ***
-
 # LanceDB JavaScript SDK
-
 A JavaScript library for [LanceDB](https://github.com/lancedb/lancedb).
-
 ## Installation
-
 ```bash
 npm install @lancedb/lancedb
 ```
-
 This will download the appropriate native library for your platform. We currently
 support:
-
 - Linux (x86_64 and aarch64)
 - MacOS (Intel and ARM/M1/M2)
 - Windows (x86_64 only)
-
 We do not yet support musl-based Linux (such as Alpine Linux) or aarch64 Windows.
-
 ## Usage
-
 ### Basic Example
-
 ```javascript
 import * as lancedb from "@lancedb/lancedb";
 const db = await lancedb.connect("data/sample-lancedb");
@@ -35,9 +24,6 @@ const table = await db.createTable("my_table", [
 const results = await table.vectorSearch([0.1, 0.3]).limit(20).toArray();
 console.log(results);
 ```
-
-The [quickstart](../basic.md) contains a more complete example.
-
+The [quickstart](https://lancedb.github.io/lancedb/basic/) contains a more complete example.
 ## Development
-
 See [CONTRIBUTING.md](_media/CONTRIBUTING.md) for information on how to contribute to LanceDB.

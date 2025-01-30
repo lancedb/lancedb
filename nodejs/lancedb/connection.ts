@@ -1,10 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { Data, Schema, SchemaLike, TableLike } from "./arrow";
-import { fromTableToBuffer, makeEmptyTable } from "./arrow";
+import {
+  Data,
+  Schema,
+  SchemaLike,
+  TableLike,
+  fromTableToStreamBuffer,
+  isArrowTable,
+  makeArrowTable,
+} from "./arrow";
+import {
+  Table as ArrowTable,
+  fromTableToBuffer,
+  makeEmptyTable,
+} from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Connection as LanceDbConnection } from "./native";
+import { sanitizeTable } from "./sanitize";
 import { LocalTable, Table } from "./table";
 
 export interface CreateTableOptions {
@@ -116,6 +129,7 @@ export interface TableNamesOptions {
  *
  * Any created tables are independent and will continue to work even if
  * the underlying connection has been closed.
+ * @hideconstructor
  */
 export abstract class Connection {
   [Symbol.for("nodejs.util.inspect.custom")](): string {
@@ -257,7 +271,7 @@ export class LocalConnection extends Connection {
     if (data === undefined) {
       throw new Error("data is required");
     }
-    const { buf, mode } = await Table.parseTableData(data, options);
+    const { buf, mode } = await parseTableData(data, options);
     let dataStorageVersion = "stable";
     if (options?.dataStorageVersion !== undefined) {
       dataStorageVersion = options.dataStorageVersion;
@@ -358,4 +372,39 @@ function camelToSnakeCase(camel: string): string {
     result = result.slice(1);
   }
   return result;
+}
+
+async function parseTableData(
+  data: Record<string, unknown>[] | TableLike,
+  options?: Partial<CreateTableOptions>,
+  streaming = false,
+) {
+  let mode: string = options?.mode ?? "create";
+  const existOk = options?.existOk ?? false;
+
+  if (mode === "create" && existOk) {
+    mode = "exist_ok";
+  }
+
+  let table: ArrowTable;
+  if (isArrowTable(data)) {
+    table = sanitizeTable(data);
+  } else {
+    table = makeArrowTable(data as Record<string, unknown>[], options);
+  }
+  if (streaming) {
+    const buf = await fromTableToStreamBuffer(
+      table,
+      options?.embeddingFunction,
+      options?.schema,
+    );
+    return { buf, mode };
+  } else {
+    const buf = await fromTableToBuffer(
+      table,
+      options?.embeddingFunction,
+      options?.schema,
+    );
+    return { buf, mode };
+  }
 }

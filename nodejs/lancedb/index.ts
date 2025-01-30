@@ -13,8 +13,6 @@ import {
 } from "./native.js";
 
 export {
-  WriteOptions,
-  WriteMode,
   AddColumnsSql,
   ColumnAlteration,
   ConnectionOptions,
@@ -24,7 +22,6 @@ export {
   TimeoutConfig,
   RetryConfig,
   OptimizeStats,
-  RrfReranker,
   CompactionStats,
   RemovalStats,
 } from "./native.js";

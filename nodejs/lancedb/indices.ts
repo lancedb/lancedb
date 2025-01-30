@@ -481,8 +481,6 @@ export class Index {
    * The results of a full text search are ordered by relevance measured by BM25.
    *
    * You can combine filters with full text search.
-   *
-   * For now, the full text search index only supports English, and doesn't support phrase search.
    */
   static fts(options?: Partial<FtsOptions>) {
     return new Index(

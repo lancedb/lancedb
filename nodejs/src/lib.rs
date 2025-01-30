@@ -49,21 +49,6 @@ pub struct ConnectionOptions {
     pub host_override: Option<String>,
 }
 
-/// Write mode for writing a table.
-#[napi(string_enum)]
-pub enum WriteMode {
-    Create,
-    Append,
-    Overwrite,
-}
-
-/// Write options when creating a Table.
-#[napi(object)]
-pub struct WriteOptions {
-    /// Write mode for writing to a table.
-    pub mode: Option<WriteMode>,
-}
-
 #[napi(object)]
 pub struct OpenTableOptions {
     pub storage_options: Option<HashMap<String, String>>,
