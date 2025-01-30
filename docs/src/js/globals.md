@@ -1,10 +1,16 @@
 [**@lancedb/lancedb**](README.md) • **Docs**
+
 ***
+
 # @lancedb/lancedb
+
 ## Namespaces
+
 - [embedding](namespaces/embedding/README.md)
 - [rerankers](namespaces/rerankers/README.md)
+
 ## Classes
+
 - [Connection](classes/Connection.md)
 - [Index](classes/Index.md)
 - [MakeArrowTableOptions](classes/MakeArrowTableOptions.md)
@@ -15,7 +21,9 @@
 - [Table](classes/Table.md)
 - [VectorColumnOptions](classes/VectorColumnOptions.md)
 - [VectorQuery](classes/VectorQuery.md)
+
 ## Interfaces
+
 - [AddColumnsSql](interfaces/AddColumnsSql.md)
 - [AddDataOptions](interfaces/AddDataOptions.md)
 - [ClientConfig](interfaces/ClientConfig.md)
@@ -42,7 +50,9 @@
 - [TimeoutConfig](interfaces/TimeoutConfig.md)
 - [UpdateOptions](interfaces/UpdateOptions.md)
 - [Version](interfaces/Version.md)
+
 ## Type Aliases
+
 - [Data](type-aliases/Data.md)
 - [DataLike](type-aliases/DataLike.md)
 - [FieldLike](type-aliases/FieldLike.md)
@@ -51,6 +61,8 @@
 - [RecordBatchLike](type-aliases/RecordBatchLike.md)
 - [SchemaLike](type-aliases/SchemaLike.md)
 - [TableLike](type-aliases/TableLike.md)
+
 ## Functions
+
 - [connect](functions/connect.md)
 - [makeArrowTable](functions/makeArrowTable.md)

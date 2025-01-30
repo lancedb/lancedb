@@ -60,7 +60,7 @@ function processContents(contents) {
         return lines.join("\n") + "\n\n";
       })
       // Also trim trailing whitespace
-      .replace(/([^ ])\s+\n/g, "$1\n")
+      .replace(/([^ \t])[ \t]+\n/g, "$1\n")
   );
 }
 
