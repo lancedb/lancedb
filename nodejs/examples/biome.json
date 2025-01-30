@@ -1,75 +1,52 @@
 {
-    "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
-    "vcs":
+  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "vcs": {
+    "enabled": false,
+    "clientKind": "git",
+    "useIgnoreFile": false
+  },
+  "files": {
+    "ignoreUnknown": false,
+    "ignore": []
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space"
+  },
+  "organizeImports": {
+    "enabled": true
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double"
+    }
+  },
+  "overrides": [
     {
-        "enabled": false,
-        "clientKind": "git",
-        "useIgnoreFile": false
-    },
-    "files":
-    {
-        "ignoreUnknown": false,
-        "ignore":
-        [
-        ]
-    },
-    "formatter":
-    {
-        "enabled": true,
-        "indentStyle": "space"
-    },
-    "organizeImports":
-    {
-        "enabled": true
-    },
-    "linter":
-    {
-        "enabled": true,
-        "rules":
-        {
-            "recommended": true
+      "include": ["*"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          }
         }
+      }
     },
-    "javascript":
     {
-        "formatter":
-        {
-            "quoteStyle": "double"
+      "include": ["merge_insert.test.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "useNamingConvention": "off"
+          }
         }
-    },
-    "overrides":
-    [
-        {
-            "include":
-            [
-                "*"
-            ],
-            "linter":
-            {
-                "rules":
-                {
-                    "style":
-                    {
-                        "noNonNullAssertion": "off"
-                    }
-                }
-            }
-        },
-        {
-            "include":
-            [
-                "merge_insert.test.ts"
-            ],
-            "linter":
-            {
-                "rules":
-                {
-                    "style":
-                    {
-                        "useNamingConvention": "off"
-                    }
-                }
-            }
-        }
-    ]
+      }
+    }
+  ]
 }
