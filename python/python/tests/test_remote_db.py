@@ -32,15 +32,16 @@ def make_mock_http_handler(handler):
 @contextlib.contextmanager
 def mock_lancedb_connection(handler):
     with http.server.HTTPServer(
-        ("localhost", 8080), make_mock_http_handler(handler)
+        ("localhost", 0), make_mock_http_handler(handler)
     ) as server:
+        port = server.server_address[1]
         handle = threading.Thread(target=server.serve_forever)
         handle.start()
 
         db = lancedb.connect(
             "db://dev",
             api_key="fake",
-            host_override="http://localhost:8080",
+            host_override=f"http://localhost:{port}",
             client_config={
                 "retry_config": {"retries": 2},
                 "timeout_config": {
@@ -59,15 +60,16 @@ def mock_lancedb_connection(handler):
 @contextlib.asynccontextmanager
 async def mock_lancedb_connection_async(handler, **client_config):
     with http.server.HTTPServer(
-        ("localhost", 8080), make_mock_http_handler(handler)
+        ("localhost", 0), make_mock_http_handler(handler)
     ) as server:
+        port = server.server_address[1]
         handle = threading.Thread(target=server.serve_forever)
         handle.start()
 
         db = await lancedb.connect_async(
             "db://dev",
             api_key="fake",
-            host_override="http://localhost:8080",
+            host_override=f"http://localhost:{port}",
             client_config={
                 "retry_config": {"retries": 2},
                 "timeout_config": {
