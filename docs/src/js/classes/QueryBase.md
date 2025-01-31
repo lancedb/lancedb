@@ -8,6 +8,11 @@
 
 Common methods supported by all query types
 
+## See
+
+ - [Query](Query.md)
+ - [VectorQuery](VectorQuery.md)
+
 ## Extended by
 
 - [`Query`](Query.md)
@@ -21,22 +26,6 @@ Common methods supported by all query types
 
 - `AsyncIterable`&lt;`RecordBatch`&gt;
 
-## Constructors
-
-### new QueryBase()
-
-```ts
-protected new QueryBase<NativeQueryType>(inner): QueryBase<NativeQueryType>
-```
-
-#### Parameters
-
-* **inner**: `NativeQueryType` \| `Promise`&lt;`NativeQueryType`&gt;
-
-#### Returns
-
-[`QueryBase`](QueryBase.md)&lt;`NativeQueryType`&gt;
-
 ## Properties
 
 ### inner
@@ -46,38 +35,6 @@ protected inner: NativeQueryType | Promise<NativeQueryType>;
 ```
 
 ## Methods
-
-### \[asyncIterator\]()
-
-```ts
-asyncIterator: AsyncIterator<RecordBatch<any>, any, undefined>
-```
-
-#### Returns
-
-`AsyncIterator`&lt;`RecordBatch`&lt;`any`&gt;, `any`, `undefined`&gt;
-
-#### Implementation of
-
-`AsyncIterable.[asyncIterator]`
-
-***
-
-### doCall()
-
-```ts
-protected doCall(fn): void
-```
-
-#### Parameters
-
-* **fn**
-
-#### Returns
-
-`void`
-
-***
 
 ### execute()
 
@@ -89,7 +46,7 @@ Execute the query and return the results as an
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
 
 #### Returns
 
@@ -150,7 +107,7 @@ fastSearch(): this
 Skip searching un-indexed data. This can make search faster, but will miss
 any data that is not yet indexed.
 
-Use lancedb.Table#optimize to index all un-indexed data.
+Use [Table#optimize](Table.md#optimize) to index all un-indexed data.
 
 #### Returns
 
@@ -174,7 +131,7 @@ A filter statement to be applied to this query.
 
 `this`
 
-#### Alias
+#### See
 
 where
 
@@ -194,7 +151,7 @@ fullTextSearch(query, options?): this
 
 * **query**: `string`
 
-* **options?**: `Partial`&lt;`FullTextSearchOptions`&gt;
+* **options?**: `Partial`&lt;[`FullTextSearchOptions`](../interfaces/FullTextSearchOptions.md)&gt;
 
 #### Returns
 
@@ -220,22 +177,6 @@ called then every valid row from the table will be returned.
 #### Returns
 
 `this`
-
-***
-
-### nativeExecute()
-
-```ts
-protected nativeExecute(options?): Promise<RecordBatchIterator>
-```
-
-#### Parameters
-
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
-
-#### Returns
-
-`Promise`&lt;`RecordBatchIterator`&gt;
 
 ***
 
@@ -314,7 +255,7 @@ Collect the results as an array of objects.
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
 
 #### Returns
 
@@ -332,7 +273,7 @@ Collect the results as an Arrow
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
 
 #### Returns
 

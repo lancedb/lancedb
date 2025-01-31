@@ -72,11 +72,9 @@ The results of a full text search are ordered by relevance measured by BM25.
 
 You can combine filters with full text search.
 
-For now, the full text search index only supports English, and doesn't support phrase search.
-
 #### Parameters
 
-* **options?**: `Partial`&lt;`FtsOptions`&gt;
+* **options?**: `Partial`&lt;[`FtsOptions`](../interfaces/FtsOptions.md)&gt;
 
 #### Returns
 
@@ -98,7 +96,7 @@ the vectors.
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`HnswPqOptions`&gt;
+* **options?**: `Partial`&lt;[`HnswPqOptions`](../interfaces/HnswPqOptions.md)&gt;
 
 #### Returns
 
@@ -120,7 +118,7 @@ the vectors.
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`HnswSqOptions`&gt;
+* **options?**: `Partial`&lt;[`HnswSqOptions`](../interfaces/HnswSqOptions.md)&gt;
 
 #### Returns
 

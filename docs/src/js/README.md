@@ -36,7 +36,7 @@ const results = await table.vectorSearch([0.1, 0.3]).limit(20).toArray();
 console.log(results);
 ```
 
-The [quickstart](../basic.md) contains a more complete example.
+The [quickstart](https://lancedb.github.io/lancedb/basic/) contains a more complete example.
 
 ## Development
 

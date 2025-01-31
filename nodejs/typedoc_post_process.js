@@ -40,23 +40,28 @@ function processDirectory(directoryPath) {
 function processContents(contents) {
   // This changes the parameters section to put the parameter description on
   // the same line as the bullet with the parameter name and type.
-  return contents.replace(/(## Parameters[\s\S]*?)(?=##|$)/g, (match) => {
-    let lines = match
-      .split("\n")
-      .map((line) => line.trim())
+  return (
+    contents
+      .replace(/(## Parameters[\s\S]*?)(?=##|$)/g, (match) => {
+        let lines = match
+          .split("\n")
+          .map((line) => line.trim())
 
-      .filter((line) => line !== "")
-      .map((line) => {
-        if (line.startsWith("##")) {
-          return line;
-        } else if (line.startsWith("•")) {
-          return "\n*" + line.substring(1);
-        } else {
-          return "    " + line;
-        }
-      });
-    return lines.join("\n") + "\n\n";
-  });
+          .filter((line) => line !== "")
+          .map((line) => {
+            if (line.startsWith("##")) {
+              return line;
+            } else if (line.startsWith("•")) {
+              return "\n*" + line.substring(1);
+            } else {
+              return "    " + line;
+            }
+          });
+        return lines.join("\n") + "\n\n";
+      })
+      // Also trim trailing whitespace
+      .replace(/([^ \t])[ \t]+\n/g, "$1\n")
+  );
 }
 
 // Start processing from the root directory

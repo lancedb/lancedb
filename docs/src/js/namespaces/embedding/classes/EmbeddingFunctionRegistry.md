@@ -51,7 +51,7 @@ Fetch an embedding function by name
 
 #### Type Parameters
 
-• **T** *extends* [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`unknown`, `FunctionOptions`&gt;
+• **T** *extends* [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`unknown`, [`FunctionOptions`](../interfaces/FunctionOptions.md)&gt;
 
 #### Parameters
 
@@ -60,7 +60,7 @@ Fetch an embedding function by name
 
 #### Returns
 
-`undefined` \| `EmbeddingFunctionCreate`&lt;`T`&gt;
+`undefined` \| [`EmbeddingFunctionCreate`](../interfaces/EmbeddingFunctionCreate.md)&lt;`T`&gt;
 
 ***
 
@@ -104,7 +104,7 @@ Register an embedding function
 
 #### Type Parameters
 
-• **T** *extends* `EmbeddingFunctionConstructor`&lt;[`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt; = `EmbeddingFunctionConstructor`&lt;[`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;
+• **T** *extends* [`EmbeddingFunctionConstructor`](../interfaces/EmbeddingFunctionConstructor.md)&lt;[`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, [`FunctionOptions`](../interfaces/FunctionOptions.md)&gt;&gt; = [`EmbeddingFunctionConstructor`](../interfaces/EmbeddingFunctionConstructor.md)&lt;[`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, [`FunctionOptions`](../interfaces/FunctionOptions.md)&gt;&gt;
 
 #### Parameters
 

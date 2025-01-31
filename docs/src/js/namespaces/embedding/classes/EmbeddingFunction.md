@@ -16,7 +16,7 @@ An embedding function that automatically creates vector representation for a giv
 
 • **T** = `any`
 
-• **M** *extends* `FunctionOptions` = `FunctionOptions`
+• **M** *extends* [`FunctionOptions`](../interfaces/FunctionOptions.md) = [`FunctionOptions`](../interfaces/FunctionOptions.md)
 
 ## Constructors
 
@@ -118,16 +118,16 @@ sourceField is used in combination with `LanceSchema` to provide a declarative d
 
 #### Parameters
 
-* **optionsOrDatatype**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
+* **optionsOrDatatype**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;[`FieldOptions`](../interfaces/FieldOptions.md)&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
     The options for the field or the datatype
 
 #### Returns
 
-[`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]
+[`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, [`FunctionOptions`](../interfaces/FunctionOptions.md)&gt;&gt;]
 
 #### See
 
-lancedb.LanceSchema
+[LanceSchema](../functions/LanceSchema.md)
 
 ***
 
@@ -178,12 +178,13 @@ vectorField is used in combination with `LanceSchema` to provide a declarative d
 
 #### Parameters
 
-* **optionsOrDatatype?**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
+* **optionsOrDatatype?**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;[`FieldOptions`](../interfaces/FieldOptions.md)&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
+    The options for the field
 
 #### Returns
 
-[`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]
+[`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, [`FunctionOptions`](../interfaces/FunctionOptions.md)&gt;&gt;]
 
 #### See
 
-lancedb.LanceSchema
+[LanceSchema](../functions/LanceSchema.md)

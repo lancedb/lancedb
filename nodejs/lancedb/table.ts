@@ -6,15 +6,9 @@ import {
   Data,
   IntoVector,
   Schema,
-  TableLike,
   fromDataToBuffer,
-  fromTableToBuffer,
-  fromTableToStreamBuffer,
-  isArrowTable,
-  makeArrowTable,
   tableFromIPC,
 } from "./arrow";
-import { CreateTableOptions } from "./connection";
 
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
@@ -28,7 +22,6 @@ import {
   Table as _NativeTable,
 } from "./native";
 import { Query, VectorQuery } from "./query";
-import { sanitizeTable } from "./sanitize";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 
@@ -91,8 +84,14 @@ export interface Version {
  * can call the `close` method.  Once the Table is closed, it cannot be used for any
  * further operations.
  *
+ * Tables are created using the methods {@link Connection#createTable}
+ * and {@link Connection#createEmptyTable}. Existing tables are opened
+ * using {@link Connection#openTable}.
+ *
  * Closing a table is optional.  It not closed, it will be closed when it is garbage
  * collected.
+ *
+ * @hideconstructor
  */
 export abstract class Table {
   [Symbol.for("nodejs.util.inspect.custom")](): string {
@@ -190,8 +189,9 @@ export abstract class Table {
    * Indices on scalar columns will speed up filtering (in both
    * vector and non-vector searches)
    *
-   * @note We currently don't support custom named indexes,
-   * The index name will always be `${column}_idx`
+   * We currently don't support custom named indexes.
+   * The index name will always be `${column}_idx`.
+   *
    * @example
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
@@ -221,7 +221,7 @@ export abstract class Table {
    *
    * @param name The name of the index.
    *
-   * @note This does not delete the index from disk, it just removes it from the table.
+   * This does not delete the index from disk, it just removes it from the table.
    * To delete the index, run {@link Table#optimize} after dropping the index.
    *
    * Use {@link Table.listIndices} to find the names of the indices.
@@ -432,41 +432,6 @@ export abstract class Table {
    * Use {@link Table.listIndices} to find the names of the indices.
    */
   abstract indexStats(name: string): Promise<IndexStatistics | undefined>;
-
-  static async parseTableData(
-    data: Record<string, unknown>[] | TableLike,
-    options?: Partial<CreateTableOptions>,
-    streaming = false,
-  ) {
-    let mode: string = options?.mode ?? "create";
-    const existOk = options?.existOk ?? false;
-
-    if (mode === "create" && existOk) {
-      mode = "exist_ok";
-    }
-
-    let table: ArrowTable;
-    if (isArrowTable(data)) {
-      table = sanitizeTable(data);
-    } else {
-      table = makeArrowTable(data as Record<string, unknown>[], options);
-    }
-    if (streaming) {
-      const buf = await fromTableToStreamBuffer(
-        table,
-        options?.embeddingFunction,
-        options?.schema,
-      );
-      return { buf, mode };
-    } else {
-      const buf = await fromTableToBuffer(
-        table,
-        options?.embeddingFunction,
-        options?.schema,
-      );
-      return { buf, mode };
-    }
-  }
 }
 
 export class LocalTable extends Table {

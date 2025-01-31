@@ -6,10 +6,10 @@
 
 # Function: connect()
 
-## connect(uri, opts)
+## connect(uri, options)
 
 ```ts
-function connect(uri, opts?): Promise<Connection>
+function connect(uri, options?): Promise<Connection>
 ```
 
 Connect to a LanceDB instance at the given URI.
@@ -26,7 +26,8 @@ Accepted formats:
     The uri of the database. If the database uri starts
     with `db://` then it connects to a remote database.
 
-* **opts?**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt;
+* **options?**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt;
+    The options to use when connecting to the database
 
 ### Returns
 
@@ -49,10 +50,10 @@ const conn = await connect(
 });
 ```
 
-## connect(opts)
+## connect(options)
 
 ```ts
-function connect(opts): Promise<Connection>
+function connect(options): Promise<Connection>
 ```
 
 Connect to a LanceDB instance at the given URI.
@@ -65,7 +66,8 @@ Accepted formats:
 
 ### Parameters
 
-* **opts**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt; & `object`
+* **options**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt; & `object`
+    The options to use when connecting to the database
 
 ### Returns
 
