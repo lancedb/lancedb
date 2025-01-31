@@ -29,6 +29,15 @@ You can also read more in the API reference:
     Read more about scalar indices in [Building a Scalar Index](../scalar_index.md)
     guide.
 
+!!! info "Embedding Functions"
+
+    Like the create table and add APIs, the merge insert API will automatically
+    compute embeddings if the table has a embedding definition in its schema.
+    If the input data doesn't contain the source column, or the vector column
+    is already filled, then the embeddings won't be computed. See the
+    [Embedding Functions](../../embeddings/embedding_functions.md) guide for more
+    information.
+
 ## Upsert
 
 Upsert updates rows if they exist and inserts them if they don't. To do this
