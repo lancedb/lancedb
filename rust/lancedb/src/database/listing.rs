@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 //! Provides the `ListingDatabase`, a simple database where tables are folders in a directory
 
 use std::fs::create_dir_all;

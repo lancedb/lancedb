@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 //! The database module defines the `Database` trait and related types.
 //!
 //! A "database" is a generic concept for something that manages tables and their metadata.
