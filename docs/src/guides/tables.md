@@ -518,7 +518,7 @@ After a table has been created, you can always add more data to it using the `ad
         --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_from_polars"
         ```
     === "Async API"
-    
+
         ```python
         --8<-- "python/python/tests/docs/test_guide_tables.py:add_table_async_from_polars"
         ```
@@ -601,6 +601,38 @@ After a table has been created, you can always add more data to it using the `ad
     )
     ```
 
+## Upserting into a table
+
+Upserting lets you insert new rows or update existing rows in a table. To upsert
+in LanceDB, use the merge insert API.
+
+=== "Python"
+
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_merge_insert.py:upsert_basic"
+        ```
+        **API Reference**: [lancedb.table.Table.merge_insert][]
+
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_merge_insert.py:upsert_basic_async"
+        ```
+        **API Reference**: [lancedb.table.AsyncTable.merge_insert][]
+
+=== "Typescript[^1]"
+
+    === "@lancedb/lancedb"
+
+        ```typescript
+        --8<-- "nodejs/examples/merge_insert.test.ts:upsert_basic"
+        ```
+        **API Reference**: [lancedb.Table.mergeInsert](../js/classes/Table.md/#mergeInsert)
+
+Read more in the guide on [merge insert](tables/merge_insert.md).
+
 ## Deleting from a table
 
 Use the `delete()` method on tables to delete rows from a table. To choose which rows to delete, provide a filter that matches on the metadata columns. This can delete any number of rows that match the filter.
@@ -630,7 +662,7 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
         ```python
         --8<-- "python/python/tests/docs/test_guide_tables.py:delete_specific_row_async"
         ```
-    
+
     ### Delete from a list of values
     === "Sync API"
 
@@ -838,7 +870,7 @@ a table:
 
 You can add new columns to the table with the `add_columns` method. New columns
 are filled with values based on a SQL expression. For example, you can add a new
-column `y` to the table, fill it with the value of `x * 2` and set the expected 
+column `y` to the table, fill it with the value of `x * 2` and set the expected
 data type for it.
 
 === "Python"
