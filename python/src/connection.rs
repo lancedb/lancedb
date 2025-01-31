@@ -4,7 +4,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
-use lancedb::{catalog::CreateTableMode, connection::Connection as LanceConnection};
+use lancedb::{connection::Connection as LanceConnection, database::CreateTableMode};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods, Bound, FromPyObject, PyAny, PyRef, PyResult, Python,

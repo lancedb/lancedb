@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use lancedb::catalog::CreateTableMode;
+use lancedb::database::CreateTableMode;
 use napi::bindgen_prelude::*;
 use napi_derive::*;
 

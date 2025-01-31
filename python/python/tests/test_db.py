@@ -299,12 +299,12 @@ def test_create_exist_ok(tmp_db: lancedb.DBConnection):
 @pytest.mark.asyncio
 async def test_connect(tmp_path):
     db = await lancedb.connect_async(tmp_path)
-    assert str(db) == f"ListingCatalog(uri={tmp_path}, read_consistency_interval=None)"
+    assert str(db) == f"ListingDatabase(uri={tmp_path}, read_consistency_interval=None)"
 
     db = await lancedb.connect_async(
         tmp_path, read_consistency_interval=timedelta(seconds=5)
     )
-    assert str(db) == f"ListingCatalog(uri={tmp_path}, read_consistency_interval=5s)"
+    assert str(db) == f"ListingDatabase(uri={tmp_path}, read_consistency_interval=5s)"
 
 
 @pytest.mark.asyncio

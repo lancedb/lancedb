@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Functions to establish a connection to a LanceDB database / catalog
+//! Functions to establish a connection to a LanceDB database
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,9 +11,9 @@ use lance::dataset::ReadParams;
 use object_store::aws::AwsCredential;
 
 use crate::arrow::IntoArrow;
-use crate::catalog::listing::ListingCatalog;
-use crate::catalog::{
-    Catalog, CatalogOptions, CreateTableMode, CreateTableRequest, OpenTableRequest,
+use crate::database::listing::ListingDatabase;
+use crate::database::{
+    CreateTableMode, CreateTableRequest, Database, DatabaseOptions, OpenTableRequest,
     TableNamesRequest,
 };
 use crate::embeddings::{
@@ -30,12 +30,12 @@ use lance_io::object_store::StorageOptions;
 
 /// A builder for configuring a [`Connection::table_names`] operation
 pub struct TableNamesBuilder {
-    parent: Arc<dyn Catalog>,
+    parent: Arc<dyn Database>,
     request: TableNamesRequest,
 }
 
 impl TableNamesBuilder {
-    fn new(parent: Arc<dyn Catalog>) -> Self {
+    fn new(parent: Arc<dyn Database>) -> Self {
         Self {
             parent,
             request: TableNamesRequest::default(),
@@ -74,7 +74,7 @@ impl IntoArrow for NoData {
 
 /// A builder for configuring a [`Connection::create_table`] operation
 pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
-    parent: Arc<dyn Catalog>,
+    parent: Arc<dyn Database>,
     request: CreateTableRequest,
     data: Option<T>,
     embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
@@ -84,7 +84,7 @@ pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
 // Builder methods that only apply when we have initial data
 impl<T: IntoArrow> CreateTableBuilder<true, T> {
     fn new(
-        parent: Arc<dyn Catalog>,
+        parent: Arc<dyn Database>,
         name: String,
         data: T,
         embedding_registry: Arc<dyn EmbeddingRegistry>,
@@ -134,7 +134,7 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
 // Builder methods that only apply when we do not have initial data
 impl CreateTableBuilder<false, NoData> {
     fn new(
-        parent: Arc<dyn Catalog>,
+        parent: Arc<dyn Database>,
         name: String,
         schema: SchemaRef,
         embedding_registry: Arc<dyn EmbeddingRegistry>,
@@ -239,14 +239,14 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
 
 #[derive(Clone, Debug)]
 pub struct OpenTableBuilder {
-    parent: Arc<dyn Catalog>,
+    parent: Arc<dyn Database>,
     request: OpenTableRequest,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
 
 impl OpenTableBuilder {
     pub(crate) fn new(
-        parent: Arc<dyn Catalog>,
+        parent: Arc<dyn Database>,
         name: String,
         embedding_registry: Arc<dyn EmbeddingRegistry>,
     ) -> Self {
@@ -342,7 +342,7 @@ impl OpenTableBuilder {
 #[derive(Clone)]
 pub struct Connection {
     uri: String,
-    internal: Arc<dyn Catalog>,
+    internal: Arc<dyn Database>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
 
@@ -456,7 +456,7 @@ impl Connection {
     }
 }
 
-/// A request to connect to a catalog
+/// A request to connect to a database
 #[derive(Clone, Debug)]
 pub struct ConnectRequest {
     /// Database URI
@@ -531,8 +531,8 @@ impl ConnectBuilder {
         self
     }
 
-    pub fn catalog_options(mut self, catalog_options: &dyn CatalogOptions) -> Self {
-        catalog_options.serialize_into_map(&mut self.request.storage_options);
+    pub fn database_options(mut self, database_options: &dyn DatabaseOptions) -> Self {
+        database_options.serialize_into_map(&mut self.request.storage_options);
         self
     }
 
@@ -671,7 +671,7 @@ impl ConnectBuilder {
         if self.request.uri.starts_with("db") {
             self.execute_remote()
         } else {
-            let internal = Arc::new(ListingCatalog::connect_with_options(&self.request).await?);
+            let internal = Arc::new(ListingDatabase::connect_with_options(&self.request).await?);
             Ok(Connection {
                 internal,
                 uri: self.request.uri,
@@ -723,7 +723,7 @@ mod tests {
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
     use tempfile::tempdir;
 
-    use crate::catalog::listing::{ListingCatalogOptions, NewTableConfig};
+    use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, QueryExecutionOptions};
 
@@ -841,7 +841,7 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
         let db = connect(uri)
-            .catalog_options(&ListingCatalogOptions {
+            .database_options(&ListingDatabaseOptions {
                 new_table_config: NewTableConfig {
                     data_storage_version: Some(LanceFileVersion::Legacy),
                     ..Default::default()
@@ -873,7 +873,7 @@ mod tests {
         assert_eq!(batches.len(), 20);
 
         let db = connect(uri)
-            .catalog_options(&ListingCatalogOptions {
+            .database_options(&ListingDatabaseOptions {
                 new_table_config: NewTableConfig {
                     data_storage_version: Some(LanceFileVersion::Stable),
                     ..Default::default()

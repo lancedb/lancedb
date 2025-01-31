@@ -1,8 +1,15 @@
-//! The catalog module defines the `Catalog` trait and related types.
+//! The database module defines the `Database` trait and related types.
 //!
-//! Catalogs are responsible for managing tables and their metadata.  In addition,
-//! we provide a basic implementation of a catalog that requires no additional infrastructure
+//! A "database" is a generic concept for something that manages tables and their metadata.
+//!
+//! We provide a basic implementation of a database that requires no additional infrastructure
 //! and is based off listing directories in a filesystem.
+//!
+//! Users may want to provider their own implementations for a variety of reasons:
+//!  * Tables may be arranged in a different order on the S3 filesystem
+//!  * Tables may be managed by some kind of independent application (e.g. some database)
+//!  * Tables may be managed by a database system (e.g. Postgres)
+//!  * A custom table implementation (e.g. remote table, etc.) may be used
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,11 +22,11 @@ use crate::table::{TableDefinition, TableInternal, WriteOptions};
 
 pub mod listing;
 
-pub trait CatalogOptions {
+pub trait DatabaseOptions {
     fn serialize_into_map(&self, map: &mut HashMap<String, String>);
 }
 
-/// A request to list names of tables in the catalog
+/// A request to list names of tables in the database
 #[derive(Clone, Debug, Default)]
 pub struct TableNamesRequest {
     /// If present, only return names that come lexicographically after the supplied
@@ -79,21 +86,21 @@ pub struct CreateTableRequest {
     pub table_definition: Option<TableDefinition>,
 }
 
-/// The `Catalog` trait defines the interface for catalog implementations.
+/// The `Database` trait defines the interface for database implementations.
 ///
-/// A catalog is responsible for managing tables and their metadata.
+/// A database is responsible for managing tables and their metadata.
 #[async_trait::async_trait]
-pub trait Catalog: Send + Sync + std::fmt::Debug + std::fmt::Display + 'static {
-    /// List the names of tables in the catalog
+pub trait Database: Send + Sync + std::fmt::Debug + std::fmt::Display + 'static {
+    /// List the names of tables in the database
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>>;
-    /// Create a table in the catalog
+    /// Create a table in the database
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn TableInternal>>;
-    /// Open a table in the catalog
+    /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn TableInternal>>;
-    /// Rename a table in the catalog
+    /// Rename a table in the database
     async fn rename_table(&self, old_name: &str, new_name: &str) -> Result<()>;
-    /// Drop a table in the catalog
+    /// Drop a table in the database
     async fn drop_table(&self, name: &str) -> Result<()>;
-    /// Drop all tables in the catalog
+    /// Drop all tables in the database
     async fn drop_db(&self) -> Result<()>;
 }

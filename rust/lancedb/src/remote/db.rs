@@ -13,8 +13,8 @@ use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
-use crate::catalog::{
-    Catalog, CreateTableMode, CreateTableRequest, OpenTableRequest, TableNamesRequest,
+use crate::database::{
+    CreateTableMode, CreateTableRequest, Database, OpenTableRequest, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::table::TableInternal;
@@ -103,7 +103,7 @@ impl From<&CreateTableMode> for &'static str {
 }
 
 #[async_trait]
-impl<S: HttpSend> Catalog for RemoteDatabase<S> {
+impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let mut req = self.client.get("/v1/table/");
         if let Some(limit) = request.limit {
@@ -274,7 +274,7 @@ mod tests {
 
     use crate::connection::ConnectBuilder;
     use crate::{
-        catalog::CreateTableMode,
+        database::CreateTableMode,
         remote::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
         Connection, Error,
     };

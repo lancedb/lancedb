@@ -1015,7 +1015,7 @@ mod tests {
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use tempfile::tempdir;
 
-    use crate::{catalog::CreateTableMode, connect, Table};
+    use crate::{connect, database::CreateTableMode, Table};
 
     #[tokio::test]
     async fn test_setters_getters() {

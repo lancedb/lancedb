@@ -1,4 +1,4 @@
-//! Provides the `ListingCatalog`, a simple catalog where tables are folders in a directory
+//! Provides the `ListingDatabase`, a simple database where tables are folders in a directory
 
 use std::fs::create_dir_all;
 use std::path::Path;
@@ -19,8 +19,8 @@ use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
 use super::{
-    Catalog, CatalogOptions, CreateTableMode, CreateTableRequest, OpenTableRequest, TableInternal,
-    TableNamesRequest,
+    CreateTableMode, CreateTableRequest, Database, DatabaseOptions, OpenTableRequest,
+    TableInternal, TableNamesRequest,
 };
 
 /// File extension to indicate a lance table
@@ -43,14 +43,14 @@ pub struct NewTableConfig {
     pub enable_v2_manifest_paths: Option<bool>,
 }
 
-/// Options specific to the listing catalog
+/// Options specific to the listing database
 #[derive(Debug, Default, Clone)]
-pub struct ListingCatalogOptions {
-    /// Controls what kind of Lance tables will be created by this catalog
+pub struct ListingDatabaseOptions {
+    /// Controls what kind of Lance tables will be created by this database
     pub new_table_config: NewTableConfig,
 }
 
-impl ListingCatalogOptions {
+impl ListingDatabaseOptions {
     fn parse_from_map(map: &HashMap<String, String>) -> Result<Self> {
         let new_table_config = NewTableConfig {
             data_storage_version: map
@@ -73,7 +73,7 @@ impl ListingCatalogOptions {
     }
 }
 
-impl CatalogOptions for ListingCatalogOptions {
+impl DatabaseOptions for ListingDatabaseOptions {
     fn serialize_into_map(&self, map: &mut HashMap<String, String>) {
         if let Some(storage_version) = &self.new_table_config.data_storage_version {
             map.insert(
@@ -90,8 +90,25 @@ impl CatalogOptions for ListingCatalogOptions {
     }
 }
 
+/// A database that stores tables in a flat directory structure
+///
+/// Tables are stored as directories in the base path of the object store.
+///
+/// It is called a "listing database" because we use a "list directory" operation
+/// to discover what tables are available.  Table names are determined from the directory
+/// names.
+///
+/// For example, given the following directory structure:
+///
+/// ```text
+/// /data
+///  /table1.lance
+///  /table2.lance
+/// ```
+///
+/// We will have two tables named `table1` and `table2`.
 #[derive(Debug)]
-pub struct ListingCatalog {
+pub struct ListingDatabase {
     object_store: ObjectStore,
     query_string: Option<String>,
 
@@ -110,11 +127,11 @@ pub struct ListingCatalog {
     new_table_config: NewTableConfig,
 }
 
-impl std::fmt::Display for ListingCatalog {
+impl std::fmt::Display for ListingDatabase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "ListingCatalog(uri={}, read_consistency_interval={})",
+            "ListingDatabase(uri={}, read_consistency_interval={})",
             self.uri,
             match self.read_consistency_interval {
                 None => {
@@ -133,12 +150,18 @@ const ENGINE: &str = "engine";
 const MIRRORED_STORE: &str = "mirroredStore";
 
 /// A connection to LanceDB
-impl ListingCatalog {
+impl ListingDatabase {
+    /// Connect to a listing database
+    ///
+    /// The URI should be a path to a directory where the tables are stored.
+    ///
+    /// See [`ListingDatabaseOptions`] for options that can be set on the connection (via
+    /// `storage_options`).
     pub async fn connect_with_options(request: &ConnectRequest) -> Result<Self> {
         let uri = &request.uri;
         let parse_res = url::Url::parse(uri);
 
-        let options = ListingCatalogOptions::parse_from_map(&request.storage_options)?;
+        let options = ListingDatabaseOptions::parse_from_map(&request.storage_options)?;
 
         // TODO: pass params regardless of OS
         match parse_res {
@@ -299,7 +322,7 @@ impl ListingCatalog {
 }
 
 #[async_trait::async_trait]
-impl Catalog for ListingCatalog {
+impl Database for ListingDatabase {
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let mut f = self
             .object_store
