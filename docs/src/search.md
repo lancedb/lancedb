@@ -122,7 +122,7 @@ LanceDB supports binary vectors as a data type, and has the ability to search bi
 
 === "Python"
 
-    === "sync API"
+    === "Sync API"
 
         ```python
         --8<-- "python/python/tests/docs/test_binary_vector.py:imports"
@@ -130,7 +130,7 @@ LanceDB supports binary vectors as a data type, and has the ability to search bi
         --8<-- "python/python/tests/docs/test_binary_vector.py:sync_binary_vector"
         ```
 
-    === "async API"
+    === "Async API"
 
         ```python
         --8<-- "python/python/tests/docs/test_binary_vector.py:imports"
@@ -153,7 +153,7 @@ The vector value type can be `float16`, `float32` or `float64`.
 
 === "Python"
 
-    === "sync API"
+    === "Sync API"
 
         ```python
         --8<-- "python/python/tests/docs/test_multivector.py:imports"
@@ -161,7 +161,7 @@ The vector value type can be `float16`, `float32` or `float64`.
         --8<-- "python/python/tests/docs/test_multivector.py:sync_multivector"
         ```
 
-    === "async API"
+    === "Async API"
 
         ```python
         --8<-- "python/python/tests/docs/test_multivector.py:imports"
@@ -175,7 +175,7 @@ You can also search for vectors within a specific distance range from the query 
 
 === "Python"
 
-    === "sync API"
+    === "Sync API"
 
         ```python
         --8<-- "python/python/tests/docs/test_distance_range.py:imports"
@@ -183,7 +183,7 @@ You can also search for vectors within a specific distance range from the query 
         --8<-- "python/python/tests/docs/test_distance_range.py:sync_distance_range"
         ```
 
-    === "async API"
+    === "Async API"
 
         ```python
         --8<-- "python/python/tests/docs/test_distance_range.py:imports"
