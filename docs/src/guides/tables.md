@@ -604,7 +604,7 @@ After a table has been created, you can always add more data to it using the `ad
 ## Upserting into a table
 
 Upserting lets you insert new rows or update existing rows in a table. To upsert
-in LanceDB, use the `merge insert` command.
+in LanceDB, use the merge insert API.
 
 === "Python"
 
