@@ -341,6 +341,7 @@ def test_add_optional_vector(tmp_path):
     assert not (np.abs(tbl.to_pandas()["vector"][0]) < 1e-6).all()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "embedding_type",
     [
