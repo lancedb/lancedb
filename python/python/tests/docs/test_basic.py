@@ -1,23 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import shutil
-
 # --8<-- [start:imports]
 import lancedb
 import pandas as pd
 import pyarrow as pa
-
 # --8<-- [end:imports]
+
 import pytest
 from numpy.random import randint, random
 
-shutil.rmtree("data/sample-lancedb", ignore_errors=True)
 
-
-def test_quickstart():
-    # --8<-- [start:connect]
+def test_quickstart(tmp_path):
+    # --8<-- [start:set_uri]
     uri = "data/sample-lancedb"
+    # --8<-- [end:set_uri]
+    uri = tmp_path
+    # --8<-- [start:connect]
     db = lancedb.connect(uri)
     # --8<-- [end:connect]
 
@@ -27,7 +26,6 @@ def test_quickstart():
         {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
     ]
 
-    # Synchronous client
     tbl = db.create_table("my_table", data=data)
     # --8<-- [end:create_table]
 
@@ -38,24 +36,19 @@ def test_quickstart():
             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
         ]
     )
-    # Synchronous client
     tbl = db.create_table("table_from_df", data=df)
     # --8<-- [end:create_table_pandas]
 
     # --8<-- [start:create_empty_table]
     schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=2))])
-    # Synchronous client
     tbl = db.create_table("empty_table", schema=schema)
     # --8<-- [end:create_empty_table]
     # --8<-- [start:open_table]
-    # Synchronous client
     tbl = db.open_table("my_table")
     # --8<-- [end:open_table]
     # --8<-- [start:table_names]
-    # Synchronous client
     print(db.table_names())
     # --8<-- [end:table_names]
-    # Synchronous client
     # --8<-- [start:add_data]
     # Option 1: Add a list of dicts to a table
     data = [
@@ -69,7 +62,6 @@ def test_quickstart():
     tbl.add(data)
     # --8<-- [end:add_data]
     # --8<-- [start:vector_search]
-    # Synchronous client
     tbl.search([100, 100]).limit(2).to_pandas()
     # --8<-- [end:vector_search]
     tbl.add(
@@ -95,42 +87,31 @@ def test_quickstart():
     tbl.drop_columns(["dbl_price"])
     # --8<-- [end:drop_columns]
     # --8<-- [start:create_index]
-    # Synchronous client
     tbl.create_index(num_sub_vectors=1)
     # --8<-- [end:create_index]
     # --8<-- [start:delete_rows]
-    # Synchronous client
     tbl.delete('item = "fizz"')
     # --8<-- [end:delete_rows]
     # --8<-- [start:drop_table]
-    # Synchronous client
     db.drop_table("my_table")
     # --8<-- [end:drop_table]
 
 
 @pytest.mark.asyncio
-async def test_quickstart_async():
+async def test_quickstart_async(tmp_path):
+    uri = tmp_path
     # --8<-- [start:connect_async]
-    # LanceDb offers both a synchronous and an asynchronous client.  There are still a
-    # few operations that are only supported by the synchronous client (e.g. embedding
-    # functions, full text search) but both APIs should soon be equivalent
-
-    # In this guide we will give examples of both clients.  In other guides we will
-    # typically only provide examples with one client or the other.
-    uri = "data/sample-lancedb"
-    async_db = await lancedb.connect_async(uri)
+    db = await lancedb.connect_async(uri)
     # --8<-- [end:connect_async]
-
+    # --8<-- [start:create_table_async]
     data = [
         {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
         {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
     ]
 
-    # --8<-- [start:create_table_async]
-    # Asynchronous client
-    async_tbl = await async_db.create_table("my_table_async", data=data)
+    tbl = await db.create_table("my_table_async", data=data)
     # --8<-- [end:create_table_async]
-
+    # --8<-- [start:create_table_async_pandas]
     df = pd.DataFrame(
         [
             {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
@@ -138,37 +119,41 @@ async def test_quickstart_async():
         ]
     )
 
-    # --8<-- [start:create_table_async_pandas]
-    # Asynchronous client
-    async_tbl = await async_db.create_table("table_from_df_async", df)
+    tbl = await db.create_table("table_from_df_async", df)
     # --8<-- [end:create_table_async_pandas]
-
-    schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=2))])
     # --8<-- [start:create_empty_table_async]
-    # Asynchronous client
-    async_tbl = await async_db.create_table("empty_table_async", schema=schema)
+    schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=2))])
+    tbl = await db.create_table("empty_table_async", schema=schema)
     # --8<-- [end:create_empty_table_async]
     # --8<-- [start:open_table_async]
-    # Asynchronous client
-    async_tbl = await async_db.open_table("my_table_async")
+    tbl = await db.open_table("my_table_async")
     # --8<-- [end:open_table_async]
     # --8<-- [start:table_names_async]
-    # Asynchronous client
-    print(await async_db.table_names())
+    print(await db.table_names())
     # --8<-- [end:table_names_async]
     # --8<-- [start:add_data_async]
-    # Asynchronous client
-    await async_tbl.add(data)
+    # Option 1: Add a list of dicts to a table
+    data = [
+        {"vector": [1.3, 1.4], "item": "fizz", "price": 100.0},
+        {"vector": [9.5, 56.2], "item": "buzz", "price": 200.0},
+    ]
+    await tbl.add(data)
+
+    # Option 2: Add a pandas DataFrame to a table
+    df = pd.DataFrame(data)
+    await tbl.add(data)
     # --8<-- [end:add_data_async]
     # Add sufficient data for training
     data = [{"vector": [x, x], "item": "filler", "price": x * x} for x in range(1000)]
-    await async_tbl.add(data)
+    await tbl.add(data)
     # --8<-- [start:vector_search_async]
+    await tbl.vector_search([100, 100]).limit(2).to_pandas()
+    # --8<-- [end:vector_search_async]
     # --8<-- [start:add_columns_async]
-    await async_tbl.add_columns({"double_price": "cast((price * 2) as float)"})
+    await tbl.add_columns({"double_price": "cast((price * 2) as float)"})
     # --8<-- [end:add_columns_async]
     # --8<-- [start:alter_columns_async]
-    await async_tbl.alter_columns(
+    await tbl.alter_columns(
         {
             "path": "double_price",
             "rename": "dbl_price",
@@ -178,20 +163,16 @@ async def test_quickstart_async():
     )
     # --8<-- [end:alter_columns_async]
     # --8<-- [start:drop_columns_async]
-    await async_tbl.drop_columns(["dbl_price"])
+    await tbl.drop_columns(["dbl_price"])
     # --8<-- [end:drop_columns_async]
-    # Asynchronous client
-    await async_tbl.vector_search([100, 100]).limit(2).to_pandas()
+    await tbl.vector_search([100, 100]).limit(2).to_pandas()
     # --8<-- [end:vector_search_async]
     # --8<-- [start:create_index_async]
-    # Asynchronous client (must specify column to index)
-    await async_tbl.create_index("vector")
+    await tbl.create_index("vector")
     # --8<-- [end:create_index_async]
     # --8<-- [start:delete_rows_async]
-    # Asynchronous client
-    await async_tbl.delete('item = "fizz"')
+    await tbl.delete('item = "fizz"')
     # --8<-- [end:delete_rows_async]
     # --8<-- [start:drop_table_async]
-    # Asynchronous client
-    await async_db.drop_table("my_table_async")
+    await db.drop_table("my_table_async")
     # --8<-- [end:drop_table_async]
