@@ -12,7 +12,7 @@ use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use lance::dataset::{ReadParams, WriteMode};
 use lance::io::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry, WrappingObjectStore};
-use object_store::{aws::AwsCredential, local::LocalFileSystem};
+use object_store::{aws::AwsCredential, local::LocalFileSystem, DynObjectStore};
 use snafu::prelude::*;
 
 use crate::arrow::IntoArrow;
@@ -29,7 +29,7 @@ use crate::Table;
 pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
-use lance_table::io::commit::commit_handler_from_url;
+use lance_table::io::commit::{commit_handler_from_url, RenameCommitHandler};
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
@@ -579,6 +579,7 @@ pub struct ConnectBuilder {
     /// always consistent.
     read_consistency_interval: Option<std::time::Duration>,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    object_store: Option<(Arc<DynObjectStore>, Option<usize>)>,
 }
 
 impl ConnectBuilder {
@@ -594,6 +595,7 @@ impl ConnectBuilder {
             read_consistency_interval: None,
             storage_options: HashMap::new(),
             embedding_registry: None,
+            object_store: None,
         }
     }
 
@@ -633,6 +635,11 @@ impl ConnectBuilder {
     #[cfg(feature = "remote")]
     pub fn client_config(mut self, config: ClientConfig) -> Self {
         self.client_config = config;
+        self
+    }
+
+    pub fn object_store(mut self, object_store: (Arc<DynObjectStore>, Option<usize>)) -> Self {
+        self.object_store = Some(object_store);
         self
     }
 
@@ -772,6 +779,7 @@ struct Database {
     // Storage options to be inherited by tables created from this connection
     storage_options: HashMap<String, String>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+    store_params: Option<ObjectStoreParams>,
 }
 
 impl std::fmt::Display for Database {
@@ -862,9 +870,19 @@ impl Database {
 
                 let registry = Arc::new(ObjectStoreRegistry::default());
                 let storage_options = options.storage_options.clone();
-                let os_params = ObjectStoreParams {
-                    storage_options: Some(storage_options.clone()),
-                    ..Default::default()
+                let os_params = if let Some(os) = &options.object_store {
+                    ObjectStoreParams {
+                        storage_options: Some(storage_options.clone()),
+                        object_store: Some((os.0.clone(), url)),
+                        use_constant_size_upload_parts: os.1.is_some(),
+                        block_size: os.1,
+                        ..Default::default()
+                    }
+                } else {
+                    ObjectStoreParams {
+                        storage_options: Some(storage_options.clone()),
+                        ..Default::default()
+                    }
                 };
                 let (object_store, base_path) =
                     ObjectStore::from_uri_and_params(registry, &plain_uri, &os_params).await?;
@@ -894,6 +912,11 @@ impl Database {
                     read_consistency_interval: options.read_consistency_interval,
                     storage_options,
                     embedding_registry,
+                    store_params: if os_params.object_store.is_some() {
+                        Some(os_params)
+                    } else {
+                        None
+                    },
                 })
             }
             Err(_) => {
@@ -929,6 +952,7 @@ impl Database {
             read_consistency_interval,
             storage_options: HashMap::new(),
             embedding_registry,
+            store_params: None,
         })
     }
 
@@ -1035,6 +1059,11 @@ impl ConnectionInternal for Database {
             write_params.mode = WriteMode::Overwrite;
         }
 
+        if self.store_params.is_some() {
+            write_params.commit_handler = Some(Arc::new(RenameCommitHandler));
+            write_params.store_params = self.store_params.clone();
+        }
+
         write_params.data_storage_version = options.data_storage_version;
         write_params.enable_v2_manifest_paths =
             options.enable_v2_manifest_paths.unwrap_or_default();
@@ -1103,10 +1132,15 @@ impl ConnectionInternal for Database {
         // If we have a user provided ReadParams use that
         // If we don't then start with the default ReadParams and customize it with
         // the options from the OpenTableBuilder
-        let read_params = options.lance_read_params.unwrap_or_else(|| ReadParams {
+        let mut read_params = options.lance_read_params.unwrap_or_else(|| ReadParams {
             index_cache_size: options.index_cache_size as usize,
             ..Default::default()
         });
+
+        if self.store_params.is_some() {
+            read_params.commit_handler = Some(Arc::new(RenameCommitHandler));
+            read_params.store_options = self.store_params.clone();
+        }
 
         let native_table = Arc::new(
             NativeTable::open_with_params(
