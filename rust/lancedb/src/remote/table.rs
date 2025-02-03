@@ -4,11 +4,11 @@
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 
-use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::Select;
 use crate::table::AddDataMode;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
+use crate::{index::Index, table::dataset};
 use crate::{DistanceType, Error, Table};
 use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::FileReader;
@@ -334,6 +334,9 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     }
     fn name(&self) -> &str {
         &self.name
+    }
+    fn dataset(&self) -> &dataset::DatasetConsistencyWrapper {
+        unimplemented!()
     }
     async fn version(&self) -> Result<u64> {
         self.describe().await.map(|desc| desc.version)
