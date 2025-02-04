@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 import pyarrow as pa
 
@@ -66,3 +66,17 @@ class AsyncRecordBatchReader:
         batches = table.to_batches(max_chunksize=max_batch_length)
         for batch in batches:
             yield batch
+
+
+def peek_reader(
+    reader: pa.RecordBatchReader,
+) -> Tuple[pa.RecordBatch, pa.RecordBatchReader]:
+    if not isinstance(reader, pa.RecordBatchReader):
+        raise TypeError("reader must be a RecordBatchReader")
+    batch = reader.read_next_batch()
+
+    def all_batches():
+        yield batch
+        yield from reader
+
+    return batch, pa.RecordBatchReader.from_batches(batch.schema, all_batches())
