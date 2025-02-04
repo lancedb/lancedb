@@ -2037,7 +2037,7 @@ mod tests {
             assert_eq!(request.method(), "POST");
             assert_eq!(
                 request.url().path(),
-                "/v1/table/my_table/index/my_index/drop"
+                "/v1/table/my_table/index/my_index/drop/"
             );
             assert_eq!(
                 request.headers().get("Content-Type").unwrap(),
