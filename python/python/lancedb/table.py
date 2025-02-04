@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -2106,8 +2107,8 @@ class LanceTable(Table):
             storage_options["new_table_data_storage_version"] = data_storage_version
         if enable_v2_manifest_paths is not None:
             warnings.warn(
-                "setting enable_v2_manifest_paths directly on create_table is deprecated. ",
-                "Use database_options instead.",
+                "setting enable_v2_manifest_paths directly on create_table is ",
+                "deprecated. Use database_options instead.",
                 DeprecationWarning,
             )
             if storage_options is None:
