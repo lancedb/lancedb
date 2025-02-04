@@ -576,3 +576,20 @@ def test_cast_to_target_schema():
         schema=expected_schema,
     )
     assert output == expected
+
+
+def test_sanitize_data_stream():
+    # Make sure we don't collect the whole stream when running sanitize_data
+    schema = pa.schema({"a": pa.int32()})
+    def stream():
+        yield pa.record_batch([pa.array([1, 2, 3])], schema=schema)
+        raise ValueError("error")
+    reader = pa.RecordBatchReader.from_batches(schema, stream())
+
+    output = _sanitize_data(reader)
+
+    first = next(output)
+    assert first == pa.record_batch([pa.array([1, 2, 3])], schema=schema)
+
+    with pytest.raises(ValueError):
+        next(output)
