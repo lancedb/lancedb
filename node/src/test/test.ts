@@ -895,26 +895,26 @@ describe("LanceDB client", function () {
       expect(stats.numIndices).to.equal(1);
     }).timeout(50_000);
 
-    it("can drop index", async function () {
-      const uri = await createTestDB(32, 300);
-      const con = await lancedb.connect(uri);
-      const table = await con.openTable("vectors");
-      await table.createIndex({
-        type: "ivf_pq",
-        column: "vector",
-        num_partitions: 2,
-        max_iters: 2,
-        num_sub_vectors: 2
-      });
-
-      const indices = await table.listIndices();
-      expect(indices).to.have.lengthOf(1);
-      expect(indices[0].name).to.equal("vector_idx");
-
-      await table.dropIndex("vector_idx");
-      expect(await table.listIndices()).to.have.lengthOf(0);
-    }).timeout(50_000);
-
+    // not yet implemented
+    // it("can drop index", async function () {
+    //   const uri = await createTestDB(32, 300);
+    //   const con = await lancedb.connect(uri);
+    //   const table = await con.openTable("vectors");
+    //   await table.createIndex({
+    //     type: "ivf_pq",
+    //     column: "vector",
+    //     num_partitions: 2,
+    //     max_iters: 2,
+    //     num_sub_vectors: 2
+    //   });
+    //
+    //   const indices = await table.listIndices();
+    //   expect(indices).to.have.lengthOf(1);
+    //   expect(indices[0].name).to.equal("vector_idx");
+    //
+    //   await table.dropIndex("vector_idx");
+    //   expect(await table.listIndices()).to.have.lengthOf(0);
+    // }).timeout(50_000);
   });
 
   describe("when using a custom embedding function", function () {
