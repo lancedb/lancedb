@@ -639,7 +639,7 @@ impl JsTable {
         Ok(promise)
     }
 
-    pub(crate) fn js_drop_index(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    pub(crate) fn js_drop_index(_cx: FunctionContext) -> JsResult<JsPromise> {
         todo!("not implemented")
     }
 }
