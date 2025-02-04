@@ -14,7 +14,8 @@ use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
 use crate::database::{
-    CreateTableMode, CreateTableRequest, Database, OpenTableRequest, TableNamesRequest,
+    CreateTableData, CreateTableMode, CreateTableRequest, Database, OpenTableRequest,
+    TableNamesRequest,
 };
 use crate::error::Result;
 use crate::table::TableInternal;
@@ -126,12 +127,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn TableInternal>> {
-        let data = request.data.unwrap_or_else(|| {
-            Box::new(RecordBatchIterator::new(
-                vec![],
-                request.table_definition.clone().unwrap().schema.clone(),
-            ))
-        });
+        let data = match request.data {
+            CreateTableData::Data(data) => data,
+            CreateTableData::Empty(table_definition) => {
+                let schema = table_definition.schema.clone();
+                Box::new(RecordBatchIterator::new(vec![], schema))
+            }
+        };
 
         // TODO: https://github.com/lancedb/lancedb/issues/1026
         // We should accept data from an async source.  In the meantime, spawn this as blocking

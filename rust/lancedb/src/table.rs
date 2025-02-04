@@ -243,6 +243,9 @@ enum BadVectorHandling {
     #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
     /// The invalid/missing items are replaced by fill_value
     Fill(f32),
+    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
+    /// The invalid items are replaced by NULL
+    None,
 }
 
 /// Options to use when writing data
@@ -480,7 +483,7 @@ impl std::fmt::Display for Table {
 }
 
 impl Table {
-    pub(crate) fn new(inner: Arc<dyn TableInternal>) -> Self {
+    pub fn new(inner: Arc<dyn TableInternal>) -> Self {
         Self {
             inner,
             embedding_registry: Arc::new(MemoryRegistry::new()),
@@ -1179,7 +1182,7 @@ impl NativeTable {
     /// # Returns
     ///
     /// * A [TableImpl] object.
-    pub(crate) async fn create(
+    pub async fn create(
         uri: &str,
         name: &str,
         batches: impl RecordBatchReader + Send + 'static,

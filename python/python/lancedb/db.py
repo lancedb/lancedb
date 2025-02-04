@@ -74,6 +74,8 @@ class DBConnection(EnforceOverrides):
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         storage_options: Optional[Dict[str, str]] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -116,7 +118,12 @@ class DBConnection(EnforceOverrides):
             connection will be inherited by the table, but can be overridden here.
             See available options at
             <https://lancedb.github.io/lancedb/guides/storage/>
-
+        data_storage_version: optional, str, default "stable"
+            Deprecated.  Set `storage_options` when connecting to the database and set
+            `new_table_data_storage_version` in the options.
+        enable_v2_manifest_paths: optional, bool, default False
+            Deprecated.  Set `storage_options` when connecting to the database and set
+            `new_table_enable_v2_manifest_paths` in the options.
         Returns
         -------
         LanceTable
@@ -413,6 +420,8 @@ class LanceDBConnection(DBConnection):
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         storage_options: Optional[Dict[str, str]] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> LanceTable:
         """Create a table in the database.
 

@@ -2036,6 +2036,8 @@ class LanceTable(Table):
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         storage_options: Optional[Dict[str, str]] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ):
         """
         Create a new table.
@@ -2083,9 +2085,36 @@ class LanceTable(Table):
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         embedding_functions: list of EmbeddingFunctionModel, default None
             The embedding functions to use when creating the table.
+        data_storage_version: optional, str, default "stable"
+            Deprecated.  Set `storage_options` when connecting to the database and set
+            `new_table_data_storage_version` in the options.
+        enable_v2_manifest_paths: optional, bool, default False
+            Deprecated.  Set `storage_options` when connecting to the database and set
+            `new_table_enable_v2_manifest_paths` in the options.
         """
         self = cls.__new__(cls)
         self._conn = db
+
+        if data_storage_version is not None:
+            warnings.warn(
+                "setting data_storage_version directly on create_table is deprecated. ",
+                "Use database_options instead.",
+                DeprecationWarning,
+            )
+            if storage_options is None:
+                storage_options = {}
+            storage_options["new_table_data_storage_version"] = data_storage_version
+        if enable_v2_manifest_paths is not None:
+            warnings.warn(
+                "setting enable_v2_manifest_paths directly on create_table is deprecated. ",
+                "Use database_options instead.",
+                DeprecationWarning,
+            )
+            if storage_options is None:
+                storage_options = {}
+            storage_options["new_table_enable_v2_manifest_paths"] = (
+                enable_v2_manifest_paths
+            )
 
         self._table = LOOP.run(
             self._conn._conn.create_table(

@@ -79,14 +79,35 @@ impl Default for CreateTableMode {
     }
 }
 
+/// The data to start a table or a schema to create an empty table
+pub enum CreateTableData {
+    /// Creates a table using data, no schema required as it will be obtained from the data
+    Data(Box<dyn RecordBatchReader + Send>),
+    /// Creates an empty table, the definition / schema must be provided separately
+    Empty(TableDefinition),
+}
+
 /// A request to create a table
-#[derive(Default)]
 pub struct CreateTableRequest {
+    /// The name of the new table
     pub name: String,
-    pub data: Option<Box<dyn RecordBatchReader + Send>>,
+    /// Initial data to write to the table, can be None to create an empty table
+    pub data: CreateTableData,
+    /// The mode to use when creating the table
     pub mode: CreateTableMode,
+    /// Options to use when writing data (only used if `data` is not None)
     pub write_options: WriteOptions,
-    pub table_definition: Option<TableDefinition>,
+}
+
+impl CreateTableRequest {
+    pub fn new(name: String, data: CreateTableData) -> Self {
+        Self {
+            name,
+            data,
+            mode: CreateTableMode::default(),
+            write_options: WriteOptions::default(),
+        }
+    }
 }
 
 /// The `Database` trait defines the interface for database implementations.

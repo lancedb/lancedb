@@ -22,8 +22,8 @@ use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
 use super::{
-    CreateTableMode, CreateTableRequest, Database, DatabaseOptions, OpenTableRequest,
-    TableInternal, TableNamesRequest,
+    CreateTableData, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
+    OpenTableRequest, TableInternal, TableNamesRequest,
 };
 
 /// File extension to indicate a lance table
@@ -389,12 +389,13 @@ impl Database for ListingDatabase {
             write_params.mode = WriteMode::Overwrite;
         }
 
-        let data = request.data.unwrap_or_else(|| {
-            Box::new(RecordBatchIterator::new(
-                vec![],
-                request.table_definition.clone().unwrap().schema.clone(),
-            ))
-        });
+        let data = match request.data {
+            CreateTableData::Data(data) => data,
+            CreateTableData::Empty(table_definition) => {
+                let schema = table_definition.schema.clone();
+                Box::new(RecordBatchIterator::new(vec![], schema))
+            }
+        };
         let data_schema = data.schema();
 
         match NativeTable::create(

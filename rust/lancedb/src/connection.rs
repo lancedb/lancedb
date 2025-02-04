@@ -6,15 +6,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_schema::SchemaRef;
+use arrow_array::RecordBatchReader;
+use arrow_schema::{Field, SchemaRef};
 use lance::dataset::ReadParams;
 use object_store::aws::AwsCredential;
 
 use crate::arrow::IntoArrow;
-use crate::database::listing::ListingDatabase;
+use crate::database::listing::{
+    ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
+};
 use crate::database::{
-    CreateTableMode, CreateTableRequest, Database, DatabaseOptions, OpenTableRequest,
-    TableNamesRequest,
+    CreateTableData, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
+    OpenTableRequest, TableNamesRequest,
 };
 use crate::embeddings::{
     EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
@@ -73,32 +76,34 @@ impl IntoArrow for NoData {
 }
 
 /// A builder for configuring a [`Connection::create_table`] operation
-pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
+pub struct CreateTableBuilder<const HAS_DATA: bool> {
     parent: Arc<dyn Database>,
-    request: CreateTableRequest,
-    data: Option<T>,
     embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+    request: CreateTableRequest,
+    // This is a bit clumsy but we defer errors until `execute` is called
+    // to maintain backwards compatibility
+    data: Option<Result<Box<dyn RecordBatchReader + Send>>>,
 }
 
 // Builder methods that only apply when we have initial data
-impl<T: IntoArrow> CreateTableBuilder<true, T> {
-    fn new(
+impl CreateTableBuilder<true> {
+    fn new<T: IntoArrow>(
         parent: Arc<dyn Database>,
         name: String,
         data: T,
         embedding_registry: Arc<dyn EmbeddingRegistry>,
     ) -> Self {
+        let dummy_schema = Arc::new(arrow_schema::Schema::new(Vec::<Field>::default()));
         Self {
             parent,
-            request: CreateTableRequest {
+            request: CreateTableRequest::new(
                 name,
-                data: None,
-                ..Default::default()
-            },
-            data: Some(data),
+                CreateTableData::Empty(TableDefinition::new_from_schema(dummy_schema)),
+            ),
             embeddings: Vec::new(),
             embedding_registry,
+            data: Some(data.into_arrow()),
         }
     }
 
@@ -119,20 +124,23 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
         ))
     }
 
-    fn into_request(mut self) -> Result<CreateTableRequest> {
-        let data = self.data.take().unwrap().into_arrow()?;
+    fn into_request(self) -> Result<CreateTableRequest> {
         let data = if self.embeddings.is_empty() {
-            data
+            self.data.unwrap()?
         } else {
+            let data = self.data.unwrap()?;
             Box::new(WithEmbeddings::new(data, self.embeddings))
         };
-        self.request.data = Some(data);
-        Ok(self.request)
+        let req = self.request;
+        Ok(CreateTableRequest {
+            data: CreateTableData::Data(data),
+            ..req
+        })
     }
 }
 
 // Builder methods that only apply when we do not have initial data
-impl CreateTableBuilder<false, NoData> {
+impl CreateTableBuilder<false> {
     fn new(
         parent: Arc<dyn Database>,
         name: String,
@@ -142,12 +150,7 @@ impl CreateTableBuilder<false, NoData> {
         let table_definition = TableDefinition::new_from_schema(schema);
         Self {
             parent,
-            request: CreateTableRequest {
-                name,
-                data: None,
-                table_definition: Some(table_definition),
-                ..Default::default()
-            },
+            request: CreateTableRequest::new(name, CreateTableData::Empty(table_definition)),
             data: None,
             embeddings: Vec::default(),
             embedding_registry,
@@ -162,7 +165,7 @@ impl CreateTableBuilder<false, NoData> {
     }
 }
 
-impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
+impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// Set the mode for creating the table
     ///
     /// This controls what happens if a table with the given name already exists
@@ -234,6 +237,63 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
 
         self.embeddings.push((definition, embedding_func));
         Ok(self)
+    }
+
+    /// Set whether to use V2 manifest paths for the table. (default: false)
+    ///
+    /// These paths provide more efficient opening of tables with many
+    /// versions on object stores.
+    ///
+    /// <div class="warning">Turning this on will make the dataset unreadable
+    /// for older versions of LanceDB (prior to 0.10.0).</div>
+    ///
+    /// To migrate an existing dataset, instead use the
+    /// [[NativeTable::migrate_manifest_paths_v2]].
+    ///
+    /// This has no effect in LanceDB Cloud.
+    #[deprecated(since = "0.15.1", note = "Use `database_options` instead")]
+    pub fn enable_v2_manifest_paths(mut self, use_v2_manifest_paths: bool) -> Self {
+        let storage_options = self
+            .request
+            .write_options
+            .lance_write_params
+            .get_or_insert_with(Default::default)
+            .store_params
+            .get_or_insert_with(Default::default)
+            .storage_options
+            .get_or_insert_with(Default::default);
+
+        storage_options.insert(
+            OPT_NEW_TABLE_V2_MANIFEST_PATHS.to_string(),
+            if use_v2_manifest_paths {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            },
+        );
+        self
+    }
+
+    /// Set the data storage version.
+    ///
+    /// The default is `LanceFileVersion::Stable`.
+    #[deprecated(since = "0.15.1", note = "Use `database_options` instead")]
+    pub fn data_storage_version(mut self, data_storage_version: LanceFileVersion) -> Self {
+        let storage_options = self
+            .request
+            .write_options
+            .lance_write_params
+            .get_or_insert_with(Default::default)
+            .store_params
+            .get_or_insert_with(Default::default)
+            .storage_options
+            .get_or_insert_with(Default::default);
+
+        storage_options.insert(
+            OPT_NEW_TABLE_STORAGE_VERSION.to_string(),
+            data_storage_version.to_string(),
+        );
+        self
     }
 }
 
@@ -377,8 +437,8 @@ impl Connection {
         &self,
         name: impl Into<String>,
         initial_data: T,
-    ) -> CreateTableBuilder<true, T> {
-        CreateTableBuilder::<true, T>::new(
+    ) -> CreateTableBuilder<true> {
+        CreateTableBuilder::<true>::new(
             self.internal.clone(),
             name.into(),
             initial_data,
@@ -396,8 +456,8 @@ impl Connection {
         &self,
         name: impl Into<String>,
         schema: SchemaRef,
-    ) -> CreateTableBuilder<false, NoData> {
-        CreateTableBuilder::<false, NoData>::new(
+    ) -> CreateTableBuilder<false> {
+        CreateTableBuilder::<false>::new(
             self.internal.clone(),
             name.into(),
             schema,
