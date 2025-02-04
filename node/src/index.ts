@@ -605,6 +605,13 @@ export interface Table<T = number[]> {
   dropColumns(columnNames: string[]): Promise<void>
 
   /**
+   * Drop an index from the table
+   *
+   * @param indexName The name of the index to drop
+   */
+  dropIndex(indexName: string): Promise<void>
+
+  /**
    * Instrument the behavior of this Table with middleware.
    *
    * The middleware will be called in the order they are added.

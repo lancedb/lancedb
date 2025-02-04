@@ -15,6 +15,8 @@ pub enum Error {
     InvalidInput { message: String },
     #[snafu(display("Table '{name}' was not found"))]
     TableNotFound { name: String },
+    #[snafu(display("Index '{name}' was not found"))]
+    IndexNotFound { name: String },
     #[snafu(display("Embedding function '{name}' was not found. : {reason}"))]
     EmbeddingFunctionNotFound { name: String, reason: String },
 

@@ -820,11 +820,19 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         Ok(Some(stats))
     }
 
-    /// Not yet supported on LanceDB Cloud.
-    async fn drop_index(&self, _name: &str) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "Drop index is not yet supported on LanceDB Cloud.".into(),
-        })
+    async fn drop_index(&self, index_name: &str) -> Result<()> {
+        let request = self.client.post(&format!(
+            "/v1/table/{}/index/{}/drop/",
+            self.name, index_name
+        ));
+        let (request_id, response) = self.client.send(request, true).await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            // this could mean table not found or index not found
+            return Ok(());
+        }
+
+        self.check_table_response(&request_id, response).await?;
+        Ok(())
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {
@@ -2021,5 +2029,19 @@ mod tests {
         });
 
         table.drop_columns(&["a", "b"]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_index() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/index/my_index/drop");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        table.drop_index("my_index").await.unwrap()
     }
 }
