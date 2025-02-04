@@ -2045,6 +2045,6 @@ mod tests {
             );
             http::Response::builder().status(200).body("{}").unwrap()
         });
-        table.drop_index("my_index").await.unwrap()
+        table.drop_index("my_index").await.unwrap();
     }
 }
