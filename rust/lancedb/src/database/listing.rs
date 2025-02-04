@@ -523,4 +523,8 @@ impl Database for ListingDatabase {
             .await?;
         Ok(())
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }

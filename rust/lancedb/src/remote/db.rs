@@ -242,6 +242,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             message: "Dropping databases is not supported in the remote API".to_string(),
         })
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// RemoteOptions contains a subset of StorageOptions that are compatible with Remote LanceDB connections

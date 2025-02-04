@@ -114,7 +114,9 @@ impl CreateTableRequest {
 ///
 /// A database is responsible for managing tables and their metadata.
 #[async_trait::async_trait]
-pub trait Database: Send + Sync + std::fmt::Debug + std::fmt::Display + 'static {
+pub trait Database:
+    Send + Sync + std::any::Any + std::fmt::Debug + std::fmt::Display + 'static
+{
     /// List the names of tables in the database
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>>;
     /// Create a table in the database
@@ -127,4 +129,5 @@ pub trait Database: Send + Sync + std::fmt::Debug + std::fmt::Display + 'static 
     async fn drop_table(&self, name: &str) -> Result<()>;
     /// Drop all tables in the database
     async fn drop_db(&self) -> Result<()>;
+    fn as_any(&self) -> &dyn std::any::Any;
 }
