@@ -252,26 +252,26 @@ export class LocalConnection extends Connection {
     return new LocalTable(innerTable);
   }
 
-  private getStorageOptions(options?: Partial<CreateTableOptions>): Record<string, string> | undefined {
-    let storageOptions = cleanseStorageOptions(options?.storageOptions);
-
+  private getStorageOptions(
+    options?: Partial<CreateTableOptions>,
+  ): Record<string, string> | undefined {
     if (options?.dataStorageVersion !== undefined) {
-      if (storageOptions === undefined) {
-        storageOptions = {};
+      if (options.storageOptions === undefined) {
+        options.storageOptions = {};
       }
-      storageOptions["new_table_data_storage_version"] =
+      options.storageOptions["newTableDataStorageVersion"] =
         options.dataStorageVersion;
     }
 
     if (options?.enableV2ManifestPaths !== undefined) {
-      if (storageOptions === undefined) {
-        storageOptions = {};
+      if (options.storageOptions === undefined) {
+        options.storageOptions = {};
       }
-      storageOptions["new_table_enable_v2_manifest_paths"] =
+      options.storageOptions["newTableEnableV2ManifestPaths"] =
         options.enableV2ManifestPaths ? "true" : "false";
     }
 
-    return storageOptions;
+    return cleanseStorageOptions(options?.storageOptions);
   }
 
   async createTable(
