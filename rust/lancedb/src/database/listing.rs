@@ -376,13 +376,28 @@ impl Database for ListingDatabase {
             }
         }
 
+        let storage_options = storage_options.clone();
+
         let mut write_params = request.write_options.lance_write_params.unwrap_or_default();
 
         if let Some(storage_version) = &self.new_table_config.data_storage_version {
             write_params.data_storage_version = Some(*storage_version);
+        } else {
+            // Allow the user to override the storage version via storage options (backwards compatibility)
+            if let Some(data_storage_version) = storage_options.get(OPT_NEW_TABLE_STORAGE_VERSION) {
+                write_params.data_storage_version = Some(data_storage_version.parse()?);
+            }
         }
         if let Some(enable_v2_manifest_paths) = self.new_table_config.enable_v2_manifest_paths {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
+        } else {
+            // Allow the user to override the storage version via storage options (backwards compatibility)
+            if let Some(enable_v2_manifest_paths) = storage_options
+                .get(OPT_NEW_TABLE_V2_MANIFEST_PATHS)
+                .map(|s| s.parse::<bool>().unwrap())
+            {
+                write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
+            }
         }
 
         if matches!(&request.mode, CreateTableMode::Overwrite) {
