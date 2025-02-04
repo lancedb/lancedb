@@ -18,6 +18,14 @@ import pytest
 import pyarrow as pa
 
 
+def find_open_port() -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("localhost", 0))
+        return s.getsockname()[1]
+
+
 def make_mock_http_handler(handler):
     class MockLanceDBHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -31,8 +39,9 @@ def make_mock_http_handler(handler):
 
 @contextlib.contextmanager
 def mock_lancedb_connection(handler):
+    port = find_open_port()
     with http.server.HTTPServer(
-        ("localhost", 8080), make_mock_http_handler(handler)
+        ("localhost", port), make_mock_http_handler(handler)
     ) as server:
         handle = threading.Thread(target=server.serve_forever)
         handle.start()
@@ -40,7 +49,7 @@ def mock_lancedb_connection(handler):
         db = lancedb.connect(
             "db://dev",
             api_key="fake",
-            host_override="http://localhost:8080",
+            host_override=f"http://localhost:{port}",
             client_config={
                 "retry_config": {"retries": 2},
                 "timeout_config": {
@@ -58,8 +67,10 @@ def mock_lancedb_connection(handler):
 
 @contextlib.asynccontextmanager
 async def mock_lancedb_connection_async(handler):
+    port = find_open_port()
+    print(port)
     with http.server.HTTPServer(
-        ("localhost", 8080), make_mock_http_handler(handler)
+        ("localhost", port), make_mock_http_handler(handler)
     ) as server:
         handle = threading.Thread(target=server.serve_forever)
         handle.start()
@@ -67,7 +78,7 @@ async def mock_lancedb_connection_async(handler):
         db = await lancedb.connect_async(
             "db://dev",
             api_key="fake",
-            host_override="http://localhost:8080",
+            host_override=f"http://localhost:{port}",
             client_config={
                 "retry_config": {"retries": 2},
                 "timeout_config": {
