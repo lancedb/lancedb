@@ -109,6 +109,7 @@ class ClientConfig:
     user_agent: str = f"LanceDB-Python-Client/{__version__}"
     retry_config: RetryConfig = field(default_factory=RetryConfig)
     timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
+    extra_headers: Optional[dict] = None
 
     def __post_init__(self):
         if isinstance(self.retry_config, dict):
