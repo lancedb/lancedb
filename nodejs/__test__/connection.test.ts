@@ -97,7 +97,7 @@ describe("given a connection", () => {
 
     // Create in v1 mode
     let table = await db.createTable("test", data, {
-      storageOptions: { new_table_data_storage_version: "legacy" },
+      storageOptions: { newTableDataStorageVersion: "legacy" },
     });
 
     const isV2 = async (table: Table) => {
@@ -123,7 +123,7 @@ describe("given a connection", () => {
     const schema = new Schema([new Field("id", new Float64(), true)]);
 
     table = await db.createEmptyTable("test_v2_empty", schema, {
-      storageOptions: { new_table_data_storage_version: "stable" },
+      storageOptions: { newTableDataStorageVersion: "stable" },
     });
 
     await table.add(data);
