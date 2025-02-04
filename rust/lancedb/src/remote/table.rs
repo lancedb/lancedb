@@ -2035,7 +2035,10 @@ mod tests {
     async fn test_drop_index() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/table/my_table/index/my_index/drop");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/index/my_index/drop"
+            );
             assert_eq!(
                 request.headers().get("Content-Type").unwrap(),
                 JSON_CONTENT_TYPE
