@@ -473,7 +473,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
   async dropIndex (index_name: string): Promise<void> {
     const res = await this._client.post(
-        `/v1/table/${encodeURIComponent(this._name)}/index/${encodeURIComponent(index_name)}/drop`
+        `/v1/table/${encodeURIComponent(this._name)}/index/${encodeURIComponent(index_name)}/drop/`
     )
     if (res.status !== 200) {
       throw new Error(
