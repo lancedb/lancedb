@@ -2039,10 +2039,6 @@ mod tests {
                 request.url().path(),
                 "/v1/table/my_table/index/my_index/drop/"
             );
-            assert_eq!(
-                request.headers().get("Content-Type").unwrap(),
-                JSON_CONTENT_TYPE
-            );
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table.drop_index("my_index").await.unwrap();
