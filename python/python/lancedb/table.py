@@ -346,7 +346,10 @@ def sanitize_create_table(
     if metadata:
         schema = schema.with_metadata(metadata)
         # Need to apply metadata to the data as well
-        data = data.replace_schema_metadata(metadata)
+        if isinstance(data, pa.Table):
+            data = data.replace_schema_metadata(metadata)
+        elif isinstance(data, pa.RecordBatchReader):
+            data = pa.RecordBatchReader.from_batches(schema, data)
 
     return data, schema
 
