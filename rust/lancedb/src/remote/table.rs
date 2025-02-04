@@ -826,11 +826,6 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             self.name, index_name
         ));
         let (request_id, response) = self.client.send(request, true).await?;
-        if response.status() == StatusCode::NOT_FOUND {
-            // this could mean table not found or index not found
-            return Ok(());
-        }
-
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
