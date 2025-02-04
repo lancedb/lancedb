@@ -15,7 +15,7 @@ use crate::remote::db::RemoteOptions;
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
 /// Configuration for the LanceDB Cloud HTTP client.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ClientConfig {
     pub timeout_config: TimeoutConfig,
     pub retry_config: RetryConfig,
@@ -36,7 +36,7 @@ impl Default for ClientConfig {
 }
 
 /// How to handle timeouts for HTTP requests.
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct TimeoutConfig {
     /// The timeout for creating a connection to the server.
     ///
@@ -62,7 +62,7 @@ pub struct TimeoutConfig {
 }
 
 /// How to handle retries for HTTP requests.
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct RetryConfig {
     /// The number of times to retry a request if it fails.
     ///

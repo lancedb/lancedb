@@ -52,6 +52,8 @@ export interface CreateTableOptions {
    *
    * The default is `stable`.
    * Set to "legacy" to use the old format.
+   *
+   * @deprecated Pass `new_table_data_storage_version` to storageOptions instead.
    */
   dataStorageVersion?: string;
 
@@ -61,17 +63,11 @@ export interface CreateTableOptions {
    * turning this on will make the dataset unreadable for older versions
    * of LanceDB (prior to 0.10.0). To migrate an existing dataset, instead
    * use the {@link LocalTable#migrateManifestPathsV2} method.
+   *
+   * @deprecated Pass `new_table_enable_v2_manifest_paths` to storageOptions instead.
    */
   enableV2ManifestPaths?: boolean;
 
-  /**
-   * If true then data files will be written with the legacy format
-   *
-   * The default is false.
-   *
-   * Deprecated. Use data storage version instead.
-   */
-  useLegacyFormat?: boolean;
   schema?: SchemaLike;
   embeddingFunction?: EmbeddingFunctionConfig;
 }
@@ -256,6 +252,28 @@ export class LocalConnection extends Connection {
     return new LocalTable(innerTable);
   }
 
+  private getStorageOptions(
+    options?: Partial<CreateTableOptions>,
+  ): Record<string, string> | undefined {
+    if (options?.dataStorageVersion !== undefined) {
+      if (options.storageOptions === undefined) {
+        options.storageOptions = {};
+      }
+      options.storageOptions["newTableDataStorageVersion"] =
+        options.dataStorageVersion;
+    }
+
+    if (options?.enableV2ManifestPaths !== undefined) {
+      if (options.storageOptions === undefined) {
+        options.storageOptions = {};
+      }
+      options.storageOptions["newTableEnableV2ManifestPaths"] =
+        options.enableV2ManifestPaths ? "true" : "false";
+    }
+
+    return cleanseStorageOptions(options?.storageOptions);
+  }
+
   async createTable(
     nameOrOptions:
       | string
@@ -272,20 +290,14 @@ export class LocalConnection extends Connection {
       throw new Error("data is required");
     }
     const { buf, mode } = await parseTableData(data, options);
-    let dataStorageVersion = "stable";
-    if (options?.dataStorageVersion !== undefined) {
-      dataStorageVersion = options.dataStorageVersion;
-    } else if (options?.useLegacyFormat !== undefined) {
-      dataStorageVersion = options.useLegacyFormat ? "legacy" : "stable";
-    }
+
+    const storageOptions = this.getStorageOptions(options);
 
     const innerTable = await this.inner.createTable(
       nameOrOptions,
       buf,
       mode,
-      cleanseStorageOptions(options?.storageOptions),
-      dataStorageVersion,
-      options?.enableV2ManifestPaths,
+      storageOptions,
     );
 
     return new LocalTable(innerTable);
@@ -309,22 +321,14 @@ export class LocalConnection extends Connection {
       metadata = registry.getTableMetadata([embeddingFunction]);
     }
 
-    let dataStorageVersion = "stable";
-    if (options?.dataStorageVersion !== undefined) {
-      dataStorageVersion = options.dataStorageVersion;
-    } else if (options?.useLegacyFormat !== undefined) {
-      dataStorageVersion = options.useLegacyFormat ? "legacy" : "stable";
-    }
-
+    const storageOptions = this.getStorageOptions(options);
     const table = makeEmptyTable(schema, metadata);
     const buf = await fromTableToBuffer(table);
     const innerTable = await this.inner.createEmptyTable(
       name,
       buf,
       mode,
-      cleanseStorageOptions(options?.storageOptions),
-      dataStorageVersion,
-      options?.enableV2ManifestPaths,
+      storageOptions,
     );
     return new LocalTable(innerTable);
   }

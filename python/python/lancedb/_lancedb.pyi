@@ -15,8 +15,6 @@ class Connection(object):
         mode: str,
         data: pa.RecordBatchReader,
         storage_options: Optional[Dict[str, str]] = None,
-        data_storage_version: Optional[str] = None,
-        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table: ...
     async def create_empty_table(
         self,
@@ -24,8 +22,6 @@ class Connection(object):
         mode: str,
         schema: pa.Schema,
         storage_options: Optional[Dict[str, str]] = None,
-        data_storage_version: Optional[str] = None,
-        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table: ...
     async def rename_table(self, old_name: str, new_name: str) -> None: ...
     async def drop_table(self, name: str) -> None: ...

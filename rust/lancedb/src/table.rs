@@ -230,6 +230,24 @@ pub struct OptimizeStats {
     pub prune: Option<RemovalStats>,
 }
 
+/// Describes what happens when a vector either contains NaN or
+/// does not have enough values
+#[derive(Clone, Debug, Default)]
+enum BadVectorHandling {
+    /// An error is returned
+    #[default]
+    Error,
+    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
+    /// The offending row is droppped
+    Drop,
+    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
+    /// The invalid/missing items are replaced by fill_value
+    Fill(f32),
+    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
+    /// The invalid items are replaced by NULL
+    None,
+}
+
 /// Options to use when writing data
 #[derive(Clone, Debug, Default)]
 pub struct WriteOptions {
@@ -364,7 +382,7 @@ impl UpdateBuilder {
 }
 
 #[async_trait]
-pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Sync {
+pub trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Sync {
     #[allow(dead_code)]
     fn as_any(&self) -> &dyn std::any::Any;
     /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
@@ -465,7 +483,7 @@ impl std::fmt::Display for Table {
 }
 
 impl Table {
-    pub(crate) fn new(inner: Arc<dyn TableInternal>) -> Self {
+    pub fn new(inner: Arc<dyn TableInternal>) -> Self {
         Self {
             inner,
             embedding_registry: Arc::new(MemoryRegistry::new()),
@@ -1164,7 +1182,7 @@ impl NativeTable {
     /// # Returns
     ///
     /// * A [TableImpl] object.
-    pub(crate) async fn create(
+    pub async fn create(
         uri: &str,
         name: &str,
         batches: impl RecordBatchReader + Send + 'static,

@@ -17,14 +17,14 @@ describe("when connecting", () => {
   it("should connect", async () => {
     const db = await connect(tmpDir.name);
     expect(db.display()).toBe(
-      `NativeDatabase(uri=${tmpDir.name}, read_consistency_interval=None)`,
+      `ListingDatabase(uri=${tmpDir.name}, read_consistency_interval=None)`,
     );
   });
 
   it("should allow read consistency interval to be specified", async () => {
     const db = await connect(tmpDir.name, { readConsistencyInterval: 5 });
     expect(db.display()).toBe(
-      `NativeDatabase(uri=${tmpDir.name}, read_consistency_interval=5s)`,
+      `ListingDatabase(uri=${tmpDir.name}, read_consistency_interval=5s)`,
     );
   });
 });
@@ -96,14 +96,15 @@ describe("given a connection", () => {
     const data = [...Array(10000).keys()].map((i) => ({ id: i }));
 
     // Create in v1 mode
-    let table = await db.createTable("test", data, { useLegacyFormat: true });
+    let table = await db.createTable("test", data, {
+      storageOptions: { newTableDataStorageVersion: "legacy" },
+    });
 
     const isV2 = async (table: Table) => {
       const data = await table
         .query()
         .limit(10000)
         .toArrow({ maxBatchLength: 100000 });
-      console.log(data.batches.length);
       return data.batches.length < 5;
     };
 
@@ -122,7 +123,7 @@ describe("given a connection", () => {
     const schema = new Schema([new Field("id", new Float64(), true)]);
 
     table = await db.createEmptyTable("test_v2_empty", schema, {
-      useLegacyFormat: false,
+      storageOptions: { newTableDataStorageVersion: "stable" },
     });
 
     await table.add(data);
