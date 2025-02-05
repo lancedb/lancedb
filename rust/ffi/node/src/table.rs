@@ -638,4 +638,8 @@ impl JsTable {
 
         Ok(promise)
     }
+
+    pub(crate) fn js_drop_index(_cx: FunctionContext) -> JsResult<JsPromise> {
+        todo!("not implemented")
+    }
 }

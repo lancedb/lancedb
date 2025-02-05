@@ -169,5 +169,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("tableAddColumns", JsTable::js_add_columns)?;
     cx.export_function("tableAlterColumns", JsTable::js_alter_columns)?;
     cx.export_function("tableDropColumns", JsTable::js_drop_columns)?;
+    cx.export_function("tableDropIndex", JsTable::js_drop_index)?;
     Ok(())
 }

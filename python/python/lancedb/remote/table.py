@@ -526,6 +526,9 @@ class RemoteTable(Table):
     def drop_columns(self, columns: Iterable[str]):
         return LOOP.run(self._table.drop_columns(columns))
 
+    def drop_index(self, index_name: str):
+        return LOOP.run(self._table.drop_index(index_name))
+
     def uses_v2_manifest_paths(self) -> bool:
         raise NotImplementedError(
             "uses_v2_manifest_paths() is not supported on the LanceDB Cloud"
