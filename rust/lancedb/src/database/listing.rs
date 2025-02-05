@@ -22,8 +22,8 @@ use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
 use super::{
-    CreateTableData, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    OpenTableRequest, TableInternal, TableNamesRequest,
+    BaseTable, CreateTableData, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
+    OpenTableRequest, TableNamesRequest,
 };
 
 /// File extension to indicate a lance table
@@ -356,10 +356,7 @@ impl Database for ListingDatabase {
         Ok(f)
     }
 
-    async fn create_table(
-        &self,
-        mut request: CreateTableRequest,
-    ) -> Result<Arc<dyn TableInternal>> {
+    async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         let table_uri = self.table_uri(&request.name)?;
         // Inherit storage options from the connection
         let storage_options = request
@@ -452,7 +449,7 @@ impl Database for ListingDatabase {
         }
     }
 
-    async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn TableInternal>> {
+    async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
         let table_uri = self.table_uri(&request.name)?;
 
         // Inherit storage options from the connection

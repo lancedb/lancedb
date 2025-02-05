@@ -2,12 +2,13 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::io::Cursor;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use crate::index::Index;
 use crate::index::IndexStatistics;
-use crate::query::Select;
-use crate::table::AddDataMode;
+use crate::query::{QueryRequest, Select, VectorQueryRequest};
+use crate::table::{AddDataMode, AnyQuery, Filter};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
 use arrow_array::RecordBatchReader;
@@ -16,14 +17,14 @@ use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion_physical_plan::{ExecutionPlan, SendableRecordBatchStream};
+use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
 use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use http::StatusCode;
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
-use lance_datafusion::exec::OneShotExec;
+use lance_datafusion::exec::{execute_plan, OneShotExec};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -31,16 +32,16 @@ use crate::{
     connection::NoData,
     error::Result,
     index::{IndexBuilder, IndexConfig},
-    query::{Query, QueryExecutionOptions, VectorQuery},
+    query::QueryExecutionOptions,
     table::{
-        merge::MergeInsertBuilder, AddDataBuilder, NativeTable, OptimizeAction, OptimizeStats,
-        TableDefinition, TableInternal, UpdateBuilder,
+        merge::MergeInsertBuilder, AddDataBuilder, BaseTable, OptimizeAction, OptimizeStats,
+        TableDefinition, UpdateBuilder,
     },
 };
 
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
-use super::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE};
+use super::ARROW_STREAM_CONTENT_TYPE;
 
 #[derive(Debug)]
 pub struct RemoteTable<S: HttpSend = Sender> {
@@ -147,7 +148,7 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
-    fn apply_query_params(body: &mut serde_json::Value, params: &Query) -> Result<()> {
+    fn apply_query_params(body: &mut serde_json::Value, params: &QueryRequest) -> Result<()> {
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
         }
@@ -205,7 +206,7 @@ impl<S: HttpSend> RemoteTable<S> {
 
     fn apply_vector_query_params(
         mut body: serde_json::Value,
-        query: &VectorQuery,
+        query: &VectorQueryRequest,
     ) -> Result<Vec<serde_json::Value>> {
         Self::apply_query_params(&mut body, &query.base)?;
 
@@ -288,6 +289,45 @@ impl<S: HttpSend> RemoteTable<S> {
         let read_guard = self.version.read().await;
         *read_guard
     }
+
+    async fn execute_query(
+        &self,
+        query: &AnyQuery,
+        _options: QueryExecutionOptions,
+    ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
+        let request = self.client.post(&format!("/v1/table/{}/query/", self.name));
+
+        let version = self.current_version().await;
+        let mut body = serde_json::json!({ "version": version });
+
+        match query {
+            AnyQuery::Query(query) => {
+                Self::apply_query_params(&mut body, query)?;
+                // Empty vector can be passed if no vector search is performed.
+                body["vector"] = serde_json::Value::Array(Vec::new());
+
+                let request = request.json(&body);
+
+                let (request_id, response) = self.client.send(request, true).await?;
+
+                let stream = self.read_arrow_stream(&request_id, response).await?;
+                Ok(vec![stream])
+            }
+            AnyQuery::VectorQuery(query) => {
+                let bodies = Self::apply_vector_query_params(body, query)?;
+                let mut futures = Vec::with_capacity(bodies.len());
+                for body in bodies {
+                    let request = request.try_clone().unwrap().json(&body);
+                    let future = async move {
+                        let (request_id, response) = self.client.send(request, true).await?;
+                        self.read_arrow_stream(&request_id, response).await
+                    };
+                    futures.push(future);
+                }
+                futures::future::try_join_all(futures).await
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -325,12 +365,9 @@ mod test_utils {
 }
 
 #[async_trait]
-impl<S: HttpSend> TableInternal for RemoteTable<S> {
+impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn as_any(&self) -> &dyn std::any::Any {
         self
-    }
-    fn as_native(&self) -> Option<&NativeTable> {
-        None
     }
     fn name(&self) -> &str {
         &self.name
@@ -398,7 +435,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let schema = self.describe().await?.schema;
         Ok(Arc::new(schema.try_into()?))
     }
-    async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
+    async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/count_rows/", self.name));
@@ -406,6 +443,11 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let version = self.current_version().await;
 
         if let Some(filter) = filter {
+            let Filter::Sql(filter) = filter else {
+                return Err(Error::NotSupported {
+                    message: "querying a remote table with a datafusion filter".to_string(),
+                });
+            };
             request = request.json(&serde_json::json!({ "predicate": filter, "version": version }));
         } else {
             let body = serde_json::json!({ "version": version });
@@ -453,25 +495,11 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
     async fn create_plan(
         &self,
-        query: &VectorQuery,
-        _options: QueryExecutionOptions,
+        query: &AnyQuery,
+        options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let request = self.client.post(&format!("/v1/table/{}/query/", self.name));
+        let streams = self.execute_query(query, options).await?;
 
-        let version = self.current_version().await;
-        let body = serde_json::json!({ "version": version });
-        let bodies = Self::apply_vector_query_params(body, query)?;
-
-        let mut futures = Vec::with_capacity(bodies.len());
-        for body in bodies {
-            let request = request.try_clone().unwrap().json(&body);
-            let future = async move {
-                let (request_id, response) = self.client.send(request, true).await?;
-                self.read_arrow_stream(&request_id, response).await
-            };
-            futures.push(future);
-        }
-        let streams = futures::future::try_join_all(futures).await?;
         if streams.len() == 1 {
             let stream = streams.into_iter().next().unwrap();
             Ok(Arc::new(OneShotExec::new(stream)))
@@ -484,29 +512,29 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         }
     }
 
-    async fn plain_query(
+    async fn query(
         &self,
-        query: &Query,
+        query: &AnyQuery,
         _options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        let request = self
-            .client
-            .post(&format!("/v1/table/{}/query/", self.name))
-            .header(CONTENT_TYPE, JSON_CONTENT_TYPE);
+        let streams = self.execute_query(query, _options).await?;
 
-        let version = self.current_version().await;
-        let mut body = serde_json::json!({ "version": version });
-        Self::apply_query_params(&mut body, query)?;
-        // Empty vector can be passed if no vector search is performed.
-        body["vector"] = serde_json::Value::Array(Vec::new());
+        if streams.len() == 1 {
+            Ok(DatasetRecordBatchStream::new(
+                streams.into_iter().next().unwrap(),
+            ))
+        } else {
+            let stream_execs = streams
+                .into_iter()
+                .map(|stream| Arc::new(OneShotExec::new(stream)) as Arc<dyn ExecutionPlan>)
+                .collect();
+            let plan = Table::multi_vector_plan(stream_execs)?;
 
-        let request = request.json(&body);
-
-        let (request_id, response) = self.client.send(request, true).await?;
-
-        let stream = self.read_arrow_stream(&request_id, response).await?;
-
-        Ok(DatasetRecordBatchStream::new(stream))
+            Ok(DatasetRecordBatchStream::new(execute_plan(
+                plan,
+                Default::default(),
+            )?))
+        }
     }
     async fn update(&self, update: UpdateBuilder) -> Result<u64> {
         self.check_mutable().await?;
@@ -891,6 +919,7 @@ mod tests {
     use reqwest::Body;
 
     use crate::index::vector::IvfFlatIndexBuilder;
+    use crate::remote::JSON_CONTENT_TYPE;
     use crate::{
         index::{vector::IvfPqIndexBuilder, Index, IndexStatistics, IndexType},
         query::{ExecutableQuery, QueryBase},

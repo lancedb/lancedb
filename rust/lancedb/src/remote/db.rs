@@ -18,7 +18,7 @@ use crate::database::{
     TableNamesRequest,
 };
 use crate::error::Result;
-use crate::table::TableInternal;
+use crate::table::BaseTable;
 
 use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender};
 use super::table::RemoteTable;
@@ -126,7 +126,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(tables)
     }
 
-    async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn TableInternal>> {
+    async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         let data = match request.data {
             CreateTableData::Data(data) => data,
             CreateTableData::Empty(table_definition) => {
@@ -198,7 +198,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         )))
     }
 
-    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn TableInternal>> {
+    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
         // We describe the table to confirm it exists before moving on.
         if self.table_cache.get(&request.name).is_none() {
             let req = self

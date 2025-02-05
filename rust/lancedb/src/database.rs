@@ -21,7 +21,7 @@ use arrow_array::RecordBatchReader;
 use lance::dataset::ReadParams;
 
 use crate::error::Result;
-use crate::table::{TableDefinition, TableInternal, WriteOptions};
+use crate::table::{BaseTable, TableDefinition, WriteOptions};
 
 pub mod listing;
 
@@ -120,9 +120,9 @@ pub trait Database:
     /// List the names of tables in the database
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>>;
     /// Create a table in the database
-    async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn TableInternal>>;
+    async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Open a table in the database
-    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn TableInternal>>;
+    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database
     async fn rename_table(&self, old_name: &str, new_name: &str) -> Result<()>;
     /// Drop a table in the database

@@ -7,14 +7,14 @@ use arrow_array::RecordBatchReader;
 
 use crate::Result;
 
-use super::TableInternal;
+use super::BaseTable;
 
 /// A builder used to create and run a merge insert operation
 ///
 /// See [`super::Table::merge_insert`] for more context
 #[derive(Debug, Clone)]
 pub struct MergeInsertBuilder {
-    table: Arc<dyn TableInternal>,
+    table: Arc<dyn BaseTable>,
     pub(crate) on: Vec<String>,
     pub(crate) when_matched_update_all: bool,
     pub(crate) when_matched_update_all_filt: Option<String>,
@@ -24,7 +24,7 @@ pub struct MergeInsertBuilder {
 }
 
 impl MergeInsertBuilder {
-    pub(super) fn new(table: Arc<dyn TableInternal>, on: Vec<String>) -> Self {
+    pub(super) fn new(table: Arc<dyn BaseTable>, on: Vec<String>) -> Self {
         Self {
             table,
             on,

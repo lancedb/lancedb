@@ -19,7 +19,10 @@ arrow-ord = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-ipc.workspace = true
 chrono = { workspace = true }
+datafusion-catalog.workspace = true
 datafusion-common.workspace = true
+datafusion-execution.workspace = true
+datafusion-expr.workspace = true
 datafusion-physical-plan.workspace = true
 object_store = { workspace = true }
 snafu = { workspace = true }
@@ -33,7 +36,7 @@ lance-table = { workspace = true }
 lance-linalg = { workspace = true }
 lance-testing = { workspace = true }
 lance-encoding = { workspace = true }
-moka = { workspace = true}
+moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 log.workspace = true
@@ -82,7 +85,7 @@ aws-sdk-s3 = { version = "1.38.0" }
 aws-sdk-kms = { version = "1.37" }
 aws-config = { version = "1.0" }
 aws-smithy-runtime = { version = "1.3" }
-http-body = "1" # Matching reqwest
+http-body = "1"                                        # Matching reqwest
 
 
 [features]
@@ -98,7 +101,7 @@ sentence-transformers = [
     "dep:candle-core",
     "dep:candle-transformers",
     "dep:candle-nn",
-    "dep:tokenizers"
+    "dep:tokenizers",
 ]
 
 # TLS
