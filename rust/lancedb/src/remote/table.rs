@@ -9,7 +9,7 @@ use crate::index::IndexStatistics;
 use crate::query::Select;
 use crate::table::AddDataMode;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
-use crate::{DistanceType, Error, Table};
+use crate::{DistanceType, Error};
 use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
@@ -206,7 +206,7 @@ impl<S: HttpSend> RemoteTable<S> {
     fn apply_vector_query_params(
         mut body: serde_json::Value,
         query: &VectorQuery,
-    ) -> Result<Vec<serde_json::Value>> {
+    ) -> Result<serde_json::Value> {
         Self::apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
@@ -253,20 +253,23 @@ impl<S: HttpSend> RemoteTable<S> {
             0 => {
                 // Server takes empty vector, not null or undefined.
                 body["vector"] = serde_json::Value::Array(Vec::new());
-                Ok(vec![body])
+                Ok(body)
             }
             1 => {
                 body["vector"] = vector_to_json(&query.query_vector[0])?;
-                Ok(vec![body])
+                Ok(body)
             }
             _ => {
-                let mut bodies = Vec::with_capacity(query.query_vector.len());
-                for vector in &query.query_vector {
-                    let mut body = body.clone();
-                    body["vector"] = vector_to_json(vector)?;
-                    bodies.push(body);
-                }
-                Ok(bodies)
+                let dim = query.query_vector[0].len();
+                let vectors = query
+                    .query_vector
+                    .iter()
+                    .map(|v| v.as_ref())
+                    .collect::<Vec<_>>();
+                let flat_vectors = arrow::compute::concat(&vectors)?;
+                body["vector"] = vector_to_json(&flat_vectors)?;
+                body["dim"] = dim.into();
+                Ok(body)
             }
         }
     }
@@ -460,28 +463,12 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let version = self.current_version().await;
         let body = serde_json::json!({ "version": version });
-        let bodies = Self::apply_vector_query_params(body, query)?;
+        let body = Self::apply_vector_query_params(body, query)?;
 
-        let mut futures = Vec::with_capacity(bodies.len());
-        for body in bodies {
-            let request = request.try_clone().unwrap().json(&body);
-            let future = async move {
-                let (request_id, response) = self.client.send(request, true).await?;
-                self.read_arrow_stream(&request_id, response).await
-            };
-            futures.push(future);
-        }
-        let streams = futures::future::try_join_all(futures).await?;
-        if streams.len() == 1 {
-            let stream = streams.into_iter().next().unwrap();
-            Ok(Arc::new(OneShotExec::new(stream)))
-        } else {
-            let stream_execs = streams
-                .into_iter()
-                .map(|stream| Arc::new(OneShotExec::new(stream)) as Arc<dyn ExecutionPlan>)
-                .collect();
-            Table::multi_vector_plan(stream_execs)
-        }
+        let request = request.try_clone().unwrap().json(&body);
+        let (request_id, response) = self.client.send(request, true).await?;
+        let stream = self.read_arrow_stream(&request_id, response).await?;
+        Ok(Arc::new(OneShotExec::new(stream)))
     }
 
     async fn plain_query(
@@ -1468,9 +1455,18 @@ mod tests {
                 request.headers().get("Content-Type").unwrap(),
                 JSON_CONTENT_TYPE
             );
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["dim"].as_number().unwrap().as_u64().unwrap(), 3);
             let data = RecordBatch::try_new(
-                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+                Arc::new(Schema::new(vec![
+                    Field::new("a", DataType::Int32, false),
+                    Field::new("query_index", DataType::Int32, false),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])),
+                    Arc::new(Int32Array::from(vec![0, 0, 0, 1, 1, 1])),
+                ],
             )
             .unwrap();
             let response_body = write_ipc_file(&data);
@@ -1487,8 +1483,6 @@ mod tests {
             .unwrap()
             .add_query_vector(vec![0.4, 0.5, 0.6])
             .unwrap();
-        let plan = query.explain_plan(true).await.unwrap();
-        assert!(plan.contains("UnionExec"), "Plan: {}", plan);
 
         let results = query
             .execute()
