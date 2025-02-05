@@ -254,6 +254,9 @@ def test_table_create_indices():
                 )
             )
             request.wfile.write(payload.encode())
+        elif "/drop/" in request.path:
+            request.send_response(200)
+            request.end_headers()
         else:
             request.send_response(404)
             request.end_headers()
@@ -265,6 +268,9 @@ def test_table_create_indices():
         table.create_scalar_index("id")
         table.create_fts_index("text")
         table.create_scalar_index("vector")
+        table.drop_index("vector_idx")
+        table.drop_index("id_idx")
+        table.drop_index("text_idx")
 
 
 @contextlib.contextmanager
