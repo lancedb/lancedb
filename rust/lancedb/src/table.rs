@@ -401,6 +401,8 @@ pub enum AnyQuery {
 
 /// A trait for anything "table-like".  This is used for both native tables (which target
 /// Lance datasets) and remote tables (which target LanceDB cloud)
+///
+/// This trait is still EXPERIMENTAL and subject to change in the future
 #[async_trait]
 pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Get a reference to std::any::Any
