@@ -8,6 +8,14 @@
 
 ## Properties
 
+### extraHeaders?
+
+```ts
+optional extraHeaders: Record<string, string>;
+```
+
+***
+
 ### retryConfig?
 
 ```ts

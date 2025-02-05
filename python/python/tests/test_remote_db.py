@@ -57,7 +57,7 @@ def mock_lancedb_connection(handler):
 
 
 @contextlib.asynccontextmanager
-async def mock_lancedb_connection_async(handler):
+async def mock_lancedb_connection_async(handler, **client_config):
     with http.server.HTTPServer(
         ("localhost", 8080), make_mock_http_handler(handler)
     ) as server:
@@ -73,6 +73,7 @@ async def mock_lancedb_connection_async(handler):
                 "timeout_config": {
                     "connect_timeout": 1,
                 },
+                **client_config,
             },
         )
 
@@ -522,3 +523,19 @@ def test_create_client():
 
     with pytest.warns(DeprecationWarning):
         lancedb.connect(**mandatory_args, request_thread_pool=10)
+
+
+@pytest.mark.asyncio
+async def test_pass_through_headers():
+    def handler(request):
+        assert request.headers["foo"] == "bar"
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"tables": []}')
+
+    async with mock_lancedb_connection_async(
+        handler, extra_headers={"foo": "bar"}
+    ) as db:
+        table_names = await db.table_names()
+        assert table_names == []

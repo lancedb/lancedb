@@ -104,4 +104,26 @@ describe("remote connection", () => {
       },
     );
   });
+
+  it("should pass on requested extra headers", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.headers["x-my-header"]).toEqual("my-value");
+
+        const body = JSON.stringify({ tables: [] });
+        res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+      },
+      async (db) => {
+        const tableNames = await db.tableNames();
+        expect(tableNames).toEqual([]);
+      },
+      {
+        clientConfig: {
+          extraHeaders: {
+            "x-my-header": "my-value",
+          },
+        },
+      },
+    );
+  });
 });

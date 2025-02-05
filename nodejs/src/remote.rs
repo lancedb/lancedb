@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashMap;
+
 use napi_derive::*;
 
 /// Timeout configuration for remote HTTP client.
@@ -67,6 +69,7 @@ pub struct ClientConfig {
     pub user_agent: Option<String>,
     pub retry_config: Option<RetryConfig>,
     pub timeout_config: Option<TimeoutConfig>,
+    pub extra_headers: Option<HashMap<String, String>>,
 }
 
 impl From<TimeoutConfig> for lancedb::remote::TimeoutConfig {
@@ -104,6 +107,7 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
                 .unwrap_or(concat!("LanceDB-Node-Client/", env!("CARGO_PKG_VERSION")).to_string()),
             retry_config: config.retry_config.map(Into::into).unwrap_or_default(),
             timeout_config: config.timeout_config.map(Into::into).unwrap_or_default(),
+            extra_headers: config.extra_headers.unwrap_or_default(),
         }
     }
 }

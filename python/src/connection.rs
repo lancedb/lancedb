@@ -223,6 +223,7 @@ pub struct PyClientConfig {
     user_agent: String,
     retry_config: Option<PyClientRetryConfig>,
     timeout_config: Option<PyClientTimeoutConfig>,
+    extra_headers: Option<HashMap<String, String>>,
 }
 
 #[derive(FromPyObject)]
@@ -274,6 +275,7 @@ impl From<PyClientConfig> for lancedb::remote::ClientConfig {
             user_agent: value.user_agent,
             retry_config: value.retry_config.map(Into::into).unwrap_or_default(),
             timeout_config: value.timeout_config.map(Into::into).unwrap_or_default(),
+            extra_headers: value.extra_headers.unwrap_or_default(),
         }
     }
 }
