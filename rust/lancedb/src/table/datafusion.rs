@@ -157,6 +157,9 @@ impl TableProvider for BaseTableAdapter {
         assert!(filters.is_empty());
         if let Some(limit) = limit {
             query.limit = Some(limit);
+        } else {
+            // Need to override the default of 10
+            query.limit = None;
         }
         let plan = self
             .table

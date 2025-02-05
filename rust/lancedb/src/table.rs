@@ -22,7 +22,7 @@ use futures::{StreamExt, TryStreamExt};
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
-use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
+use lance::dataset::scanner::Scanner;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
@@ -80,6 +80,7 @@ pub mod merge;
 
 pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
+pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
 
 /// Defines the type of column
