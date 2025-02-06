@@ -501,7 +501,7 @@ class LanceDBConnection(DBConnection):
 
     @deprecation.deprecated(
         deprecated_in="0.15.1",
-        removed_in="0.16",
+        removed_in="0.17",
         current_version=__version__,
         details="Use drop_all_tables() instead",
     )
@@ -873,7 +873,7 @@ class AsyncConnection(object):
 
     @deprecation.deprecated(
         deprecated_in="0.15.1",
-        removed_in="0.16",
+        removed_in="0.17",
         current_version=__version__,
         details="Use drop_all_tables() instead",
     )
