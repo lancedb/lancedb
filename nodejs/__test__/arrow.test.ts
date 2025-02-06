@@ -36,8 +36,7 @@ function sampleRecords(): Array<Record<string, any>> {
     },
   ];
 }
-// describe.each([arrow15, arrow16, arrow17, arrow18])(
-describe.each([arrow18])(
+describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Arrow",
   (
     arrow: typeof arrow15 | typeof arrow16 | typeof arrow17 | typeof arrow18,
