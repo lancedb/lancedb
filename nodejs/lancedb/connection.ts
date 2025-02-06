@@ -167,7 +167,7 @@ export abstract class Connection {
    */
   abstract openTable(
     name: string,
-    options?: Partial<OpenTableOptions>
+    options?: Partial<OpenTableOptions>,
   ): Promise<Table>;
 
   /**
@@ -181,7 +181,7 @@ export abstract class Connection {
     options: {
       name: string;
       data: Data;
-    } & Partial<CreateTableOptions>
+    } & Partial<CreateTableOptions>,
   ): Promise<Table>;
   /**
    * Creates a new Table and initialize it with new data.
@@ -192,7 +192,7 @@ export abstract class Connection {
   abstract createTable(
     name: string,
     data: Record<string, unknown>[] | TableLike,
-    options?: Partial<CreateTableOptions>
+    options?: Partial<CreateTableOptions>,
   ): Promise<Table>;
 
   /**
@@ -203,7 +203,7 @@ export abstract class Connection {
   abstract createEmptyTable(
     name: string,
     schema: import("./arrow").SchemaLike,
-    options?: Partial<CreateTableOptions>
+    options?: Partial<CreateTableOptions>,
   ): Promise<Table>;
 
   /**
@@ -246,19 +246,19 @@ export class LocalConnection extends Connection {
 
   async openTable(
     name: string,
-    options?: Partial<OpenTableOptions>
+    options?: Partial<OpenTableOptions>,
   ): Promise<Table> {
     const innerTable = await this.inner.openTable(
       name,
       cleanseStorageOptions(options?.storageOptions),
-      options?.indexCacheSize
+      options?.indexCacheSize,
     );
 
     return new LocalTable(innerTable);
   }
 
   private getStorageOptions(
-    options?: Partial<CreateTableOptions>
+    options?: Partial<CreateTableOptions>,
   ): Record<string, string> | undefined {
     if (options?.dataStorageVersion !== undefined) {
       if (options.storageOptions === undefined) {
@@ -284,7 +284,7 @@ export class LocalConnection extends Connection {
       | string
       | ({ name: string; data: Data } & Partial<CreateTableOptions>),
     data?: Record<string, unknown>[] | TableLike,
-    options?: Partial<CreateTableOptions>
+    options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
     if (typeof nameOrOptions !== "string" && "name" in nameOrOptions) {
       const { name, data, ...options } = nameOrOptions;
@@ -302,7 +302,7 @@ export class LocalConnection extends Connection {
       nameOrOptions,
       buf,
       mode,
-      storageOptions
+      storageOptions,
     );
 
     return new LocalTable(innerTable);
@@ -311,7 +311,7 @@ export class LocalConnection extends Connection {
   async createEmptyTable(
     name: string,
     schema: import("./arrow").SchemaLike,
-    options?: Partial<CreateTableOptions>
+    options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
     let mode: string = options?.mode ?? "create";
     const existOk = options?.existOk ?? false;
@@ -333,7 +333,7 @@ export class LocalConnection extends Connection {
       name,
       buf,
       mode,
-      storageOptions
+      storageOptions,
     );
     return new LocalTable(innerTable);
   }
@@ -351,7 +351,7 @@ export class LocalConnection extends Connection {
  * Takes storage options and makes all the keys snake case.
  */
 export function cleanseStorageOptions(
-  options?: Record<string, string>
+  options?: Record<string, string>,
 ): Record<string, string> | undefined {
   if (options === undefined) {
     return undefined;
@@ -390,7 +390,7 @@ function camelToSnakeCase(camel: string): string {
 async function parseTableData(
   data: Record<string, unknown>[] | TableLike,
   options?: Partial<CreateTableOptions>,
-  streaming = false
+  streaming = false,
 ) {
   let mode: string = options?.mode ?? "create";
   const existOk = options?.existOk ?? false;
@@ -409,14 +409,14 @@ async function parseTableData(
     const buf = await fromTableToStreamBuffer(
       table,
       options?.embeddingFunction,
-      options?.schema
+      options?.schema,
     );
     return { buf, mode };
   } else {
     const buf = await fromTableToBuffer(
       table,
       options?.embeddingFunction,
-      options?.schema
+      options?.schema,
     );
     return { buf, mode };
   }
