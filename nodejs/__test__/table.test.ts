@@ -253,6 +253,21 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const arrowTbl = await table.toArrow();
       expect(arrowTbl).toBeInstanceOf(ArrowTable);
     });
+
+    it("should be able to handle null data", async () => {
+      const schema = new arrow.Schema([
+        new arrow.Field("id", new arrow.Int32(), true),
+        new arrow.Field("y", new arrow.Int32(), true),
+      ]);
+      const db = await connect(tmpDir.name);
+      const table = await db.createEmptyTable("testNull", schema);
+      await table.add([{ id: null }]);
+      // await table.add([]);
+
+      // await table.mergeInsert("id").whenNotMatchedInsertAll().execute([{ id: 1 }, { id: null }]);
+      // await table.mergeInsert("id").whenNotMatchedInsertAll().execute([]);
+      // await table.mergeInsert("id").whenNotMatchedInsertAll().execute([{ id: null}, {id: null}]);
+    });
   },
 );
 

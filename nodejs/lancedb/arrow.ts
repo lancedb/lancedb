@@ -2,16 +2,22 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import {
+  Data as ArrowData,
   Table as ArrowTable,
   Binary,
+  Bool,
   BufferType,
   DataType,
+  Dictionary,
   Field,
   FixedSizeBinary,
   FixedSizeList,
   Float,
   Float32,
+  Float64,
   Int,
+  Int32,
+  Int64,
   LargeBinary,
   List,
   Null,
@@ -22,14 +28,19 @@ import {
   RecordBatchStreamWriter,
   Schema,
   Struct,
+  TimeUnit,
+  Timestamp,
   Utf8,
   Vector,
+  Visitor,
+  makeVector as arrowMakeVector,
   makeBuilder,
   makeData,
-  type makeTable,
+  makeTable,
+  tableFromJSON,
   vectorFromArray,
 } from "apache-arrow";
-import { Buffers } from "apache-arrow/data";
+import { Buffers, DataProps } from "apache-arrow/data";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import {
@@ -322,126 +333,311 @@ export function makeArrowTable(
   options?: Partial<MakeArrowTableOptions>,
   metadata?: Map<string, string>,
 ): ArrowTable {
+  const opt = new MakeArrowTableOptions(options !== undefined ? options : {});
+  let schema: Schema | undefined = undefined;
+  if (opt.schema !== undefined && opt.schema !== null) {
+    schema = sanitizeSchema(opt.schema);
+    schema = validateSchemaEmbeddings(
+      schema as Schema,
+      data,
+      options?.embeddingFunction,
+    );
+  }
+
   if (
     data.length === 0 &&
     (options?.schema === undefined || options?.schema === null)
   ) {
     throw new Error("At least one record or a schema needs to be provided");
+  } else if (data.length === 0) {
+    return new ArrowTable(schema as Schema);
   }
 
-  const opt = new MakeArrowTableOptions(options !== undefined ? options : {});
-  if (opt.schema !== undefined && opt.schema !== null) {
-    opt.schema = sanitizeSchema(opt.schema);
-    opt.schema = validateSchemaEmbeddings(
-      opt.schema as Schema,
-      data,
-      options?.embeddingFunction,
-    );
-  }
-  const columns: Record<string, Vector> = {};
-  // TODO: sample dataset to find missing columns
-  // Prefer the field ordering of the schema, if present
-  const columnNames =
-    opt.schema != null ? (opt.schema.names as string[]) : Object.keys(data[0]);
-  for (const colName of columnNames) {
-    if (
-      data.length !== 0 &&
-      !Object.prototype.hasOwnProperty.call(data[0], colName)
-    ) {
-      // The field is present in the schema, but not in the data, skip it
-      continue;
-    }
-    // Extract a single column from the records (transpose from row-major to col-major)
-    let values = data.map((datum) => datum[colName]);
+  const inferredSchema = inferSchema(data, schema, opt);
 
-    // By default (type === undefined) arrow will infer the type from the JS type
-    let type;
-    if (opt.schema !== undefined) {
-      // If there is a schema provided, then use that for the type instead
-      type = opt.schema?.fields.filter((f) => f.name === colName)[0]?.type;
-      if (DataType.isInt(type) && type.bitWidth === 64) {
-        // wrap in BigInt to avoid bug: https://github.com/apache/arrow/issues/40051
-        values = values.map((v) => {
-          if (v === null) {
-            return v;
-          }
-          if (typeof v === "bigint") {
-            return v;
-          }
-          if (typeof v === "number") {
-            return BigInt(v);
-          }
-          throw new Error(
-            `Expected BigInt or number for column ${colName}, got ${typeof v}`,
-          );
-        });
-      }
-    } else {
-      // Otherwise, check to see if this column is one of the vector columns
-      // defined by opt.vectorColumns and, if so, use the fixed size list type
-      const vectorColumnOptions = opt.vectorColumns[colName];
-      if (vectorColumnOptions !== undefined) {
-        const firstNonNullValue = values.find((v) => v !== null);
-        if (Array.isArray(firstNonNullValue)) {
-          type = newVectorType(
-            firstNonNullValue.length,
-            vectorColumnOptions.type,
-          );
-        } else {
-          throw new Error(
-            `Column ${colName} is expected to be a vector column but first non-null value is not an array.  Could not determine size of vector column`,
-          );
-        }
-      }
-    }
-
-    try {
-      // Convert an Array of JS values to an arrow vector
-      columns[colName] = makeVector(values, type, opt.dictionaryEncodeStrings);
-    } catch (error: unknown) {
-      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-      throw Error(`Could not convert column "${colName}" to Arrow: ${error}`);
-    }
+  const finalColumns: Record<string, Vector> = {};
+  for (const field of inferredSchema.fields) {
+    finalColumns[field.name] = transposeData(data, field);
   }
 
-  if (opt.schema != null) {
-    // `new ArrowTable(columns)` infers a schema which may sometimes have
-    // incorrect nullability (it assumes nullable=true always)
-    //
-    // `new ArrowTable(schema, columns)` will also fail because it will create a
-    // batch with an inferred schema and then complain that the batch schema
-    // does not match the provided schema.
-    //
-    // To work around this we first create a table with the wrong schema and
-    // then patch the schema of the batches so we can use
-    // `new ArrowTable(schema, batches)` which does not do any schema inference
-    const firstTable = new ArrowTable(columns);
-    const batchesFixed = firstTable.batches.map(
-      (batch) => new RecordBatch(opt.schema as Schema, batch.data),
-    );
-    let schema: Schema;
-    if (metadata !== undefined) {
-      let schemaMetadata = opt.schema.metadata;
-      if (schemaMetadata.size === 0) {
-        schemaMetadata = metadata;
-      } else {
-        for (const [key, entry] of schemaMetadata.entries()) {
-          schemaMetadata.set(key, entry);
-        }
-      }
-
-      schema = new Schema(opt.schema.fields as Field[], schemaMetadata);
-    } else {
-      schema = opt.schema as Schema;
-    }
-    return new ArrowTable(schema, batchesFixed);
-  }
-  const tbl = new ArrowTable(columns);
+  let schemaMetadata = schema?.metadata || new Map<string, string>();
   if (metadata !== undefined) {
-    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-    (<any>tbl.schema).metadata = metadata;
+    schemaMetadata = new Map([...schemaMetadata, ...metadata]);
   }
-  return tbl;
+  const finalSchema = new Schema(inferredSchema.fields, schemaMetadata);
+
+  return new ArrowTable(finalSchema, finalColumns);
+}
+
+function inferSchema(
+  data: Array<Record<string, unknown>>,
+  schema: Schema | undefined,
+  opts: MakeArrowTableOptions,
+): Schema {
+  // We will collect all fields we see in the data.
+  const pathTree = new PathTree<DataType>();
+
+  for (const [rowI, row] of data.entries()) {
+    for (const [path, value] of rowPathsAndValues(row)) {
+      if (!pathTree.has(path)) {
+        // First time seeing this field.
+        if (schema !== undefined) {
+          const field = getFieldForPath(schema, path);
+          if (field === undefined) {
+            throw new Error(
+              `Founds field not in schema: ${path.join(".")} at row ${rowI}`,
+            );
+          } else {
+            pathTree.set(path, field.type);
+          }
+        } else {
+          const inferredType = inferType(value, path, opts);
+          if (inferredType === undefined) {
+            throw new Error(`Failed to infer data type for field ${path.join(".")} at row ${rowI}. \
+                             Consider providing an explicit schema.`);
+          }
+          pathTree.set(path, inferredType);
+        }
+      } else if (schema === undefined) {
+        const currentType = pathTree.get(path);
+        const newType = inferType(value, path, opts);
+        if (currentType !== newType) {
+          new Error(`Failed to infer schema for data. Previously inferred type \
+                     ${currentType} but found ${newType} at row ${rowI}. Consider \
+                     providing an explicit schema.`);
+        }
+      }
+    }
+  }
+
+  if (schema === undefined) {
+    function fieldsFromPathTree(pathTree: PathTree<DataType>): Field[] {
+      const fields = [];
+      for (const [name, value] of pathTree.map.entries()) {
+        if (value instanceof PathTree) {
+          const children = fieldsFromPathTree(value);
+          fields.push(new Field(name, new Struct(children), true));
+        } else {
+          fields.push(new Field(name, value, true));
+        }
+      }
+      return fields;
+    }
+    const fields = fieldsFromPathTree(pathTree);
+    return new Schema(fields);
+  } else {
+    function takeMatchingFields(
+      fields: Field[],
+      pathTree: PathTree<DataType>,
+    ): Field[] {
+      const outFields = [];
+      for (const field of fields) {
+        if (pathTree.map.has(field.name)) {
+          const value = pathTree.get([field.name]);
+          if (value instanceof PathTree) {
+            const struct = field.type as Struct;
+            const children = takeMatchingFields(struct.children, value);
+            outFields.push(
+              new Field(field.name, new Struct(children), field.nullable),
+            );
+          } else {
+            outFields.push(
+              new Field(field.name, value as DataType, field.nullable),
+            );
+          }
+        }
+      }
+      return outFields;
+    }
+    const fields = takeMatchingFields(schema.fields, pathTree);
+    return new Schema(fields);
+  }
+}
+
+function* rowPathsAndValues(
+  row: Record<string, unknown>,
+  basePath: string[] = [],
+): Generator<[string[], unknown]> {
+  for (const [key, value] of Object.entries(row)) {
+    if (isObject(value)) {
+      yield* rowPathsAndValues(value, [...basePath, key]);
+    } else {
+      yield [[...basePath, key], value];
+    }
+  }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !(value instanceof RegExp) &&
+    !(value instanceof Date) &&
+    !(value instanceof Set) &&
+    !(value instanceof Map) &&
+    !(value instanceof Buffer)
+  );
+}
+
+function getFieldForPath(schema: Schema, path: string[]): Field | undefined {
+  let current: Field | Schema = schema;
+  for (const key of path) {
+    if (current instanceof Schema) {
+      const field: Field | undefined = current.fields.find(
+        (f) => f.name === key,
+      );
+      if (field === undefined) {
+        return undefined;
+      }
+      current = field;
+    } else if (current instanceof Field && DataType.isStruct(current.type)) {
+      const struct: Struct = current.type;
+      const field = struct.children.find((f) => f.name === key);
+      if (field === undefined) {
+        return undefined;
+      }
+      current = field;
+    } else {
+      return undefined;
+    }
+  }
+  if (current instanceof Field) {
+    return current;
+  } else {
+    return undefined;
+  }
+}
+
+/**
+ * Try to infer which Arrow type to use for a given value.
+ *
+ * May return undefined if the type cannot be inferred.
+ */
+function inferType(
+  value: unknown,
+  path: string[],
+  opts: MakeArrowTableOptions,
+): DataType | undefined {
+  if (typeof value === "bigint") {
+    return new Int64();
+  } else if (typeof value === "number") {
+    // Even if it's an integer, it's safer to assume Float64. Users can
+    // always provide an explicit schema or use BigInt if they mean integer.
+    return new Float64();
+  } else if (typeof value === "string") {
+    if (opts.dictionaryEncodeStrings) {
+      return new Dictionary(new Utf8(), new Int32());
+    } else {
+      return new Utf8();
+    }
+  } else if (typeof value === "boolean") {
+    return new Bool();
+  } else if (value instanceof Buffer) {
+    return new Binary();
+  } else if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return undefined; // Without any values we can't infer the type
+    }
+    if (path.length === 1 && Object.hasOwn(opts.vectorColumns, path[0])) {
+      const floatType = sanitizeType(opts.vectorColumns[path[0]].type);
+      return new FixedSizeList(
+        value.length,
+        new Field("item", floatType, true),
+      );
+    }
+    const valueType = inferType(value[0], path, opts);
+    if (valueType === undefined) {
+      return undefined;
+    }
+    // Try to automatically detect embedding columns.
+    if (valueType instanceof Float && path[path.length - 1] === "vector") {
+      // We default to Float32 for vectors.
+      const child = new Field("item", new Float32(), true);
+      return new FixedSizeList(value.length, child);
+    } else {
+      const child = new Field("item", valueType, true);
+      return new List(child);
+    }
+  } else {
+    // TODO: timestamp
+    return undefined;
+  }
+}
+
+class PathTree<V> {
+  map: Map<string, V | PathTree<V>>;
+
+  constructor(entries?: [string[], V][]) {
+    this.map = new Map();
+    if (entries !== undefined) {
+      for (const [path, value] of entries) {
+        this.set(path, value);
+      }
+    }
+  }
+  has(path: string[]): boolean {
+    let ref: PathTree<V> = this;
+    for (const part of path) {
+      if (!(ref instanceof PathTree) || !ref.map.has(part)) {
+        return false;
+      }
+      ref = ref.map.get(part) as PathTree<V>;
+    }
+    return true;
+  }
+  get(path: string[]): V | undefined {
+    let ref: PathTree<V> = this;
+    for (const part of path) {
+      if (!(ref instanceof PathTree) || !ref.map.has(part)) {
+        return undefined;
+      }
+      ref = ref.map.get(part) as PathTree<V>;
+    }
+    return ref as V;
+  }
+  set(path: string[], value: V): void {
+    let ref: PathTree<V> = this;
+    for (const part of path.slice(0, path.length - 1)) {
+      if (!ref.map.has(part)) {
+        ref.map.set(part, new PathTree<V>());
+      }
+      ref = ref.map.get(part) as PathTree<V>;
+    }
+    ref.map.set(path[path.length - 1], value);
+  }
+}
+
+function transposeData(
+  data: Record<string, unknown>[],
+  field: Field,
+  path: string[] = [],
+): Vector {
+  if (field.type instanceof Struct) {
+    const childFields = field.type.children;
+    const childVectors = childFields.map((child) => {
+      return transposeData(data, child, [...path, child.name]);
+    });
+    const structData = makeData({
+      type: field.type,
+      children: childVectors as unknown as ArrowData<DataType>[],
+    });
+    return arrowMakeVector(structData);
+  } else {
+    const valuesPath = [...path, field.name];
+    const values = data.map((datum) => {
+      let current: unknown = datum;
+      for (const key of valuesPath) {
+        if (isObject(current) && Object.hasOwn(current, key)) {
+          current = current[key];
+        } else {
+          return null;
+        }
+      }
+      return current;
+    });
+    return makeVector(values, field.type);
+  }
 }
 
 /**
@@ -491,6 +687,31 @@ function makeVector(
 ): Vector<any> {
   if (type !== undefined) {
     // No need for inference, let Arrow create it
+    if (type instanceof Int) {
+      if (DataType.isInt(type) && type.bitWidth === 64) {
+        // wrap in BigInt to avoid bug: https://github.com/apache/arrow/issues/40051
+        values = values.map((v) => {
+          if (v === null) {
+            return v;
+          } else if (typeof v === "bigint") {
+            return v;
+          } else if (typeof v === "number") {
+            return BigInt(v);
+          } else {
+            return v;
+          }
+        });
+      } else {
+        // Similarly, bigint isn't supported for 16 or 32-bit ints.
+        values = values.map((v) => {
+          if (typeof v == "bigint") {
+            return Number(v);
+          } else {
+            return v;
+          }
+        });
+      }
+    }
     return vectorFromArray(values, type);
   }
   if (values.length === 0) {
@@ -902,7 +1123,7 @@ function validateSchemaEmbeddings(
   schema: Schema,
   data: Array<Record<string, unknown>>,
   embeddings: EmbeddingFunctionConfig | undefined,
-) {
+): Schema {
   const fields = [];
   const missingEmbeddingFields = [];
 
