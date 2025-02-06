@@ -418,6 +418,11 @@ impl Connection {
         self.uri.as_str()
     }
 
+    /// Get access to the underlying database
+    pub fn database(&self) -> &Arc<dyn Database> {
+        &self.internal
+    }
+
     /// Get the names of all tables in the database
     ///
     /// The names will be returned in lexicographical order (ascending)
@@ -504,8 +509,14 @@ impl Connection {
     /// Drop the database
     ///
     /// This is the same as dropping all of the tables
+    #[deprecated(since = "0.15.1", note = "Use `drop_all_tables` instead")]
     pub async fn drop_db(&self) -> Result<()> {
-        self.internal.drop_db().await
+        self.internal.drop_all_tables().await
+    }
+
+    /// Drops all tables in the database
+    pub async fn drop_all_tables(&self) -> Result<()> {
+        self.internal.drop_all_tables().await
     }
 
     /// Get the in-memory embedding registry.

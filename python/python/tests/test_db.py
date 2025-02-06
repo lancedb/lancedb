@@ -499,6 +499,10 @@ def test_delete_table(tmp_db: lancedb.DBConnection):
     # if ignore_missing=True
     tmp_db.drop_table("does_not_exist", ignore_missing=True)
 
+    tmp_db.drop_all_tables()
+
+    assert tmp_db.table_names() == []
+
 
 @pytest.mark.asyncio
 async def test_delete_table_async(tmp_db: lancedb.DBConnection):

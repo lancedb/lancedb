@@ -170,12 +170,11 @@ impl Connection {
         })
     }
 
-    pub fn drop_db(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn drop_all_tables(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
-        future_into_py(
-            self_.py(),
-            async move { inner.drop_db().await.infer_error() },
-        )
+        future_into_py(self_.py(), async move {
+            inner.drop_all_tables().await.infer_error()
+        })
     }
 }
 

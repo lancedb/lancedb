@@ -237,7 +237,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(())
     }
 
-    async fn drop_db(&self) -> Result<()> {
+    async fn drop_all_tables(&self) -> Result<()> {
         Err(crate::Error::NotSupported {
             message: "Dropping databases is not supported in the remote API".to_string(),
         })

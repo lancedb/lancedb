@@ -529,7 +529,7 @@ impl Database for ListingDatabase {
         Ok(())
     }
 
-    async fn drop_db(&self) -> Result<()> {
+    async fn drop_all_tables(&self) -> Result<()> {
         self.object_store
             .remove_dir_all(self.base_path.clone())
             .await?;

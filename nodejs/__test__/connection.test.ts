@@ -17,14 +17,14 @@ describe("when connecting", () => {
   it("should connect", async () => {
     const db = await connect(tmpDir.name);
     expect(db.display()).toBe(
-      `ListingDatabase(uri=${tmpDir.name}, read_consistency_interval=None)`,
+      `ListingDatabase(uri=${tmpDir.name}, read_consistency_interval=None)`
     );
   });
 
   it("should allow read consistency interval to be specified", async () => {
     const db = await connect(tmpDir.name, { readConsistencyInterval: 5 });
     expect(db.display()).toBe(
-      `ListingDatabase(uri=${tmpDir.name}, read_consistency_interval=5s)`,
+      `ListingDatabase(uri=${tmpDir.name}, read_consistency_interval=5s)`
     );
   });
 });
@@ -61,11 +61,31 @@ describe("given a connection", () => {
     await expect(tbl.countRows()).resolves.toBe(1);
   });
 
+  it("should be able to drop tables`", async () => {
+    await db.createTable("test", [{ id: 1 }, { id: 2 }]);
+    await db.createTable("test2", [{ id: 1 }, { id: 2 }]);
+    await db.createTable("test3", [{ id: 1 }, { id: 2 }]);
+
+    await expect(db.tableNames()).resolves.toEqual(["test", "test2", "test3"]);
+
+    await db.dropTable("test2");
+
+    await expect(db.tableNames()).resolves.toEqual(["test", "test3"]);
+
+    await db.dropAllTables();
+
+    await expect(db.tableNames()).resolves.toEqual([]);
+
+    // Make sure we can still create more tables after dropping all
+
+    await db.createTable("test4", [{ id: 1 }, { id: 2 }]);
+  });
+
   it("should fail if creating table twice, unless overwrite is true", async () => {
     let tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
     await expect(tbl.countRows()).resolves.toBe(2);
     await expect(
-      db.createTable("test", [{ id: 1 }, { id: 2 }]),
+      db.createTable("test", [{ id: 1 }, { id: 2 }])
     ).rejects.toThrow();
     tbl = await db.createTable("test", [{ id: 3 }], { mode: "overwrite" });
     await expect(tbl.countRows()).resolves.toBe(1);
@@ -137,7 +157,7 @@ describe("given a connection", () => {
       new Schema([new Field("id", new Float64(), true)]),
       {
         enableV2ManifestPaths: true,
-      },
+      }
     )) as LocalTable;
     expect(await table.usesV2ManifestPaths()).toBe(true);
 
@@ -164,7 +184,7 @@ describe("given a connection", () => {
       new Schema([new Field("id", new Float64(), true)]),
       {
         enableV2ManifestPaths: false,
-      },
+      }
     )) as LocalTable;
 
     expect(await table.usesV2ManifestPaths()).toBe(false);
