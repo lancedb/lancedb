@@ -120,7 +120,14 @@ pub struct BaseTableAdapter {
 
 impl BaseTableAdapter {
     pub async fn try_new(table: Arc<dyn BaseTable>) -> Result<Self> {
-        let schema = table.schema().await?;
+        let schema = Arc::new(
+            table
+                .schema()
+                .await?
+                .as_ref()
+                .clone()
+                .with_metadata(HashMap::default()),
+        );
         Ok(Self { table, schema })
     }
 }
@@ -183,5 +190,74 @@ impl TableProvider for BaseTableAdapter {
     fn statistics(&self) -> Option<Statistics> {
         // TODO
         None
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
+    use arrow_schema::{DataType, Field, Schema};
+    use datafusion::{datasource::provider_as_source, prelude::SessionContext};
+    use datafusion_catalog::TableProvider;
+    use datafusion_expr::LogicalPlanBuilder;
+    use futures::TryStreamExt;
+    use tempfile::tempdir;
+
+    use crate::{connect, table::datafusion::BaseTableAdapter};
+
+    fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+        let metadata = HashMap::from_iter(vec![("foo".to_string(), "bar".to_string())]);
+        let schema = Arc::new(
+            Schema::new(vec![Field::new("i", DataType::Int32, false)]).with_metadata(metadata),
+        );
+        RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from_iter_values(0..10))],
+            )],
+            schema,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_metadata_erased() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let db = connect(uri).execute().await.unwrap();
+
+        let tbl = db
+            .create_table("foo", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+
+        let provider = Arc::new(
+            BaseTableAdapter::try_new(tbl.base_table().clone())
+                .await
+                .unwrap(),
+        );
+
+        assert!(provider.schema().metadata().is_empty());
+
+        let plan = LogicalPlanBuilder::scan("foo", provider_as_source(provider), None)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let mut stream = SessionContext::new()
+            .execute_logical_plan(plan)
+            .await
+            .unwrap()
+            .execute_stream()
+            .await
+            .unwrap();
+
+        while let Some(batch) = stream.try_next().await.unwrap() {
+            assert!(batch.schema().metadata().is_empty());
+        }
     }
 }

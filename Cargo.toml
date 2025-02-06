@@ -42,6 +42,7 @@ arrow-arith = "53.2"
 arrow-cast = "53.2"
 async-trait = "0"
 chrono = "0.4.35"
+datafusion = { version = "44.0", default-features = false }
 datafusion-catalog = "44.0"
 datafusion-common = { version = "44.0", default-features = false }
 datafusion-execution = "44.0"

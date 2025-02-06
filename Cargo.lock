@@ -4135,6 +4135,7 @@ dependencies = [
  "candle-transformers",
  "chrono",
  "crunchy",
+ "datafusion",
  "datafusion-catalog",
  "datafusion-common",
  "datafusion-execution",
