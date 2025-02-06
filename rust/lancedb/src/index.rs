@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_with::skip_serializing_none;
 use vector::IvfFlatIndexBuilder;
 
-use crate::{table::TableInternal, DistanceType, Error, Result};
+use crate::{table::BaseTable, DistanceType, Error, Result};
 
 use self::{
     scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder},
@@ -65,14 +65,14 @@ pub enum Index {
 ///
 /// The methods on this builder are used to specify options common to all indices.
 pub struct IndexBuilder {
-    parent: Arc<dyn TableInternal>,
+    parent: Arc<dyn BaseTable>,
     pub(crate) index: Index,
     pub(crate) columns: Vec<String>,
     pub(crate) replace: bool,
 }
 
 impl IndexBuilder {
-    pub(crate) fn new(parent: Arc<dyn TableInternal>, columns: Vec<String>, index: Index) -> Self {
+    pub(crate) fn new(parent: Arc<dyn BaseTable>, columns: Vec<String>, index: Index) -> Self {
         Self {
             parent,
             index,
