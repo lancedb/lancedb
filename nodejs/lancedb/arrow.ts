@@ -344,29 +344,34 @@ export function makeArrowTable(
     );
   }
 
+  let schemaMetadata = schema?.metadata || new Map<string, string>();
+  if (metadata !== undefined) {
+    schemaMetadata = new Map([...schemaMetadata, ...metadata]);
+  }
+
   if (
     data.length === 0 &&
     (options?.schema === undefined || options?.schema === null)
   ) {
     throw new Error("At least one record or a schema needs to be provided");
   } else if (data.length === 0) {
-    return new ArrowTable(schema as Schema);
+    if (schema === undefined) {
+      throw new Error("A schema must be provided if data is empty");
+    } else {
+      schema = new Schema(schema.fields, schemaMetadata);
+      return new ArrowTable(schema);
+    }
   }
 
-  const inferredSchema = inferSchema(data, schema, opt);
+  let inferredSchema = inferSchema(data, schema, opt);
+  inferredSchema = new Schema(inferredSchema.fields, schemaMetadata);
 
   const finalColumns: Record<string, Vector> = {};
   for (const field of inferredSchema.fields) {
     finalColumns[field.name] = transposeData(data, field);
   }
 
-  let schemaMetadata = schema?.metadata || new Map<string, string>();
-  if (metadata !== undefined) {
-    schemaMetadata = new Map([...schemaMetadata, ...metadata]);
-  }
-  const finalSchema = new Schema(inferredSchema.fields, schemaMetadata);
-
-  return new ArrowTable(finalSchema, finalColumns);
+  return new ArrowTable(inferredSchema, finalColumns);
 }
 
 function inferSchema(
