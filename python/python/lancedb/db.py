@@ -14,6 +14,7 @@ from overrides import EnforceOverrides, override  # type: ignore
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP
 
+from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .table import (
     AsyncTable,
@@ -25,6 +26,8 @@ from .util import (
     get_uri_scheme,
     validate_table_name,
 )
+
+import deprecation
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -294,6 +297,12 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError
 
+    def drop_all_tables(self):
+        """
+        Drop all tables from the database
+        """
+        raise NotImplementedError
+
     @property
     def uri(self) -> str:
         return self._uri
@@ -487,8 +496,18 @@ class LanceDBConnection(DBConnection):
         LOOP.run(self._conn.drop_table(name, ignore_missing=ignore_missing))
 
     @override
+    def drop_all_tables(self):
+        LOOP.run(self._conn.drop_all_tables())
+
+    @deprecation.deprecated(
+        deprecated_in="0.15.1",
+        removed_in="0.17",
+        current_version=__version__,
+        details="Use drop_all_tables() instead",
+    )
+    @override
     def drop_database(self):
-        LOOP.run(self._conn.drop_database())
+        LOOP.run(self._conn.drop_all_tables())
 
 
 class AsyncConnection(object):
@@ -848,9 +867,19 @@ class AsyncConnection(object):
             if f"Table '{name}' was not found" not in str(e):
                 raise e
 
+    async def drop_all_tables(self):
+        """Drop all tables from the database."""
+        await self._inner.drop_all_tables()
+
+    @deprecation.deprecated(
+        deprecated_in="0.15.1",
+        removed_in="0.17",
+        current_version=__version__,
+        details="Use drop_all_tables() instead",
+    )
     async def drop_database(self):
         """
         Drop database
         This is the same thing as dropping all the tables
         """
-        await self._inner.drop_db()
+        await self._inner.drop_all_tables()

@@ -61,6 +61,26 @@ describe("given a connection", () => {
     await expect(tbl.countRows()).resolves.toBe(1);
   });
 
+  it("should be able to drop tables`", async () => {
+    await db.createTable("test", [{ id: 1 }, { id: 2 }]);
+    await db.createTable("test2", [{ id: 1 }, { id: 2 }]);
+    await db.createTable("test3", [{ id: 1 }, { id: 2 }]);
+
+    await expect(db.tableNames()).resolves.toEqual(["test", "test2", "test3"]);
+
+    await db.dropTable("test2");
+
+    await expect(db.tableNames()).resolves.toEqual(["test", "test3"]);
+
+    await db.dropAllTables();
+
+    await expect(db.tableNames()).resolves.toEqual([]);
+
+    // Make sure we can still create more tables after dropping all
+
+    await db.createTable("test4", [{ id: 1 }, { id: 2 }]);
+  });
+
   it("should fail if creating table twice, unless overwrite is true", async () => {
     let tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
     await expect(tbl.countRows()).resolves.toBe(2);

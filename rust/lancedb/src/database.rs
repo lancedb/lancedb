@@ -128,6 +128,6 @@ pub trait Database:
     /// Drop a table in the database
     async fn drop_table(&self, name: &str) -> Result<()>;
     /// Drop all tables in the database
-    async fn drop_db(&self) -> Result<()>;
+    async fn drop_all_tables(&self) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;
 }

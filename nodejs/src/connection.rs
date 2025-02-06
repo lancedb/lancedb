@@ -187,4 +187,9 @@ impl Connection {
     pub async fn drop_table(&self, name: String) -> napi::Result<()> {
         self.get_inner()?.drop_table(&name).await.default_error()
     }
+
+    #[napi(catch_unwind)]
+    pub async fn drop_all_tables(&self) -> napi::Result<()> {
+        self.get_inner()?.drop_all_tables().await.default_error()
+    }
 }

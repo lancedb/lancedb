@@ -211,6 +211,11 @@ export abstract class Connection {
    * @param {string} name The name of the table to drop.
    */
   abstract dropTable(name: string): Promise<void>;
+
+  /**
+   * Drop all tables in the database.
+   */
+  abstract dropAllTables(): Promise<void>;
 }
 
 /** @hideconstructor */
@@ -335,6 +340,10 @@ export class LocalConnection extends Connection {
 
   async dropTable(name: string): Promise<void> {
     return this.inner.dropTable(name);
+  }
+
+  async dropAllTables(): Promise<void> {
+    return this.inner.dropAllTables();
   }
 }
 
