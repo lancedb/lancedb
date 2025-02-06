@@ -533,6 +533,10 @@ impl Table {
         }
     }
 
+    pub fn base_table(&self) -> &Arc<dyn BaseTable> {
+        &self.inner
+    }
+
     pub(crate) fn new_with_embedding_registry(
         inner: Arc<dyn BaseTable>,
         embedding_registry: Arc<dyn EmbeddingRegistry>,
