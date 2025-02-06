@@ -131,6 +131,20 @@ Return a brief description of the connection
 
 ***
 
+### dropAllTables()
+
+```ts
+abstract dropAllTables(): Promise<void>
+```
+
+Drop all tables in the database.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### dropTable()
 
 ```ts
