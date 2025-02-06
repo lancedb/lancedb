@@ -203,6 +203,7 @@ pub mod tests {
     use datafusion_catalog::TableProvider;
     use datafusion_expr::LogicalPlanBuilder;
     use futures::TryStreamExt;
+    use tempfile::tempdir;
 
     use crate::{connect, table::datafusion::BaseTableAdapter};
 
@@ -222,7 +223,11 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_metadata_erased() {
-        let db = connect("memory://test").execute().await.unwrap();
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let db = connect(uri).execute().await.unwrap();
 
         let tbl = db
             .create_table("foo", make_test_batches())
