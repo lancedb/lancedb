@@ -737,7 +737,7 @@ async def test_query_search_auto(mem_db_async: AsyncConnection):
         }
     )
 
-    @register("test")
+    @register("test2")
     class TestEmbedding(TextEmbeddingFunction):
         def ndims(self):
             return 4
