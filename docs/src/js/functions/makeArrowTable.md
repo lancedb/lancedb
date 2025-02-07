@@ -22,14 +22,15 @@ when creating a table or adding data to it)
 This function converts an array of Record<String, any> (row-major JS objects)
 to an Arrow Table (a columnar structure)
 
-Note that it currently does not support nulls.
-
 If a schema is provided then it will be used to determine the resulting array
 types.  Fields will also be reordered to fit the order defined by the schema.
 
 If a schema is not provided then the types will be inferred and the field order
 will be controlled by the order of properties in the first record.  If a type
 is inferred it will always be nullable.
+
+If not all fields are found in the data, then a subset of the schema will be
+returned.
 
 If the input is empty then a schema must be provided to create an empty table.
 
@@ -38,6 +39,7 @@ rules are as follows:
 
  - boolean => Bool
  - number => Float64
+ - bigint => Int64
  - String => Utf8
  - Buffer => Binary
  - Record<String, any> => Struct
