@@ -253,6 +253,31 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const arrowTbl = await table.toArrow();
       expect(arrowTbl).toBeInstanceOf(ArrowTable);
     });
+
+    it("should be able to handle missing fields", async () => {
+      const schema = new arrow.Schema([
+        new arrow.Field("id", new arrow.Int32(), true),
+        new arrow.Field("y", new arrow.Int32(), true),
+        new arrow.Field("z", new arrow.Int64(), true),
+      ]);
+      const db = await connect(tmpDir.name);
+      const table = await db.createEmptyTable("testNull", schema);
+      await table.add([{ id: 1, y: 2 }]);
+      await table.add([{ id: 2 }]);
+
+      await table
+        .mergeInsert("id")
+        .whenNotMatchedInsertAll()
+        .execute([
+          { id: 3, z: 3 },
+          { id: 4, z: 5 },
+        ]);
+
+      const res = await table.query().toArrow();
+      expect(res.getChild("id")?.toJSON()).toEqual([1, 2, 3, 4]);
+      expect(res.getChild("y")?.toJSON()).toEqual([2, null, null, null]);
+      expect(res.getChild("z")?.toJSON()).toEqual([null, null, 3n, 5n]);
+    });
   },
 );
 
