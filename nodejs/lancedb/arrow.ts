@@ -387,7 +387,7 @@ function inferSchema(
           const field = getFieldForPath(schema, path);
           if (field === undefined) {
             throw new Error(
-              `Founds field not in schema: ${path.join(".")} at row ${rowI}`,
+              `Found field not in schema: ${path.join(".")} at row ${rowI}`,
             );
           } else {
             pathTree.set(path, field.type);
