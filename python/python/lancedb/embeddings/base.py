@@ -116,7 +116,7 @@ class EmbeddingFunction(BaseModel, ABC):
         )
 
     @abstractmethod
-    def ndims(self):
+    def ndims(self) -> int:
         """
         Return the dimensions of the vector column
         """
