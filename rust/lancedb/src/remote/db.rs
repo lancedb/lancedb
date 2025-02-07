@@ -200,7 +200,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
         // We describe the table to confirm it exists before moving on.
-        if self.table_cache.get(&request.name).is_none() {
+        if self.table_cache.get(&request.name).await.is_none() {
             let req = self
                 .client
                 .post(&format!("/v1/table/{}/describe/", request.name));
