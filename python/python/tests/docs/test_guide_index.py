@@ -72,8 +72,7 @@ async def test_ann_index_async():
     # --8<-- [end:create_ann_index_async]
     # --8<-- [start:vector_search_async]
     await (
-        async_tbl.query()
-        .nearest_to(np.random.random((32)))
+        (await async_tbl.search(np.random.random((32))))
         .limit(2)
         .nprobes(20)
         .refine_factor(10)
@@ -82,18 +81,14 @@ async def test_ann_index_async():
     # --8<-- [end:vector_search_async]
     # --8<-- [start:vector_search_async_with_filter]
     await (
-        async_tbl.query()
-        .nearest_to(np.random.random((32)))
+        (await async_tbl.search(np.random.random((32))))
         .where("item != 'item 1141'")
         .to_pandas()
     )
     # --8<-- [end:vector_search_async_with_filter]
     # --8<-- [start:vector_search_async_with_select]
     await (
-        async_tbl.query()
-        .nearest_to(np.random.random((32)))
-        .select(["vector"])
-        .to_pandas()
+        (await async_tbl.search(np.random.random((32)))).select(["vector"]).to_pandas()
     )
     # --8<-- [end:vector_search_async_with_select]
 
@@ -164,7 +159,7 @@ async def test_scalar_index_async():
         {"book_id": 3, "vector": [5.0, 6]},
     ]
     async_tbl = await async_db.create_table("book_with_embeddings_async", data)
-    (await async_tbl.query().where("book_id != 3").nearest_to([1, 2]).to_pandas())
+    (await (await async_tbl.search([1, 2])).where("book_id != 3").to_pandas())
     # --8<-- [end:vector_search_with_scalar_index_async]
     # --8<-- [start:update_scalar_index_async]
     await async_tbl.add([{"vector": [7, 8], "book_id": 4}])
