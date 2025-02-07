@@ -283,35 +283,35 @@ def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
     ), ascending_relevance_err
 
 
-# @pytest.mark.parametrize("use_tantivy", [True, False])
-# def test_linear_combination(tmp_path, use_tantivy):
-#     reranker = LinearCombinationReranker()
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_linear_combination(tmp_path, use_tantivy):
+    reranker = LinearCombinationReranker()
 
-#     vector_results = pa.Table.from_pydict(
-#         {
-#             "_rowid": [0, 1, 2, 3, 4],
-#             "_distance": [0.1, 0.2, 0.3, 0.4, 0.5],
-#             "_text": ["a", "b", "c", "d", "e"],
-#         }
-#     )
+    vector_results = pa.Table.from_pydict(
+        {
+            "_rowid": [0, 1, 2, 3, 4],
+            "_distance": [0.1, 0.2, 0.3, 0.4, 0.5],
+            "_text": ["a", "b", "c", "d", "e"],
+        }
+    )
 
-#     fts_results = pa.Table.from_pydict(
-#         {
-#             "_rowid": [1, 2, 3, 4, 5],
-#             "_score": [0.1, 0.2, 0.3, 0.4, 0.5],
-#             "_text": ["b", "c", "d", "e", "f"],
-#         }
-#     )
+    fts_results = pa.Table.from_pydict(
+        {
+            "_rowid": [1, 2, 3, 4, 5],
+            "_score": [0.1, 0.2, 0.3, 0.4, 0.5],
+            "_text": ["b", "c", "d", "e", "f"],
+        }
+    )
 
-#     combined_results = reranker.merge_results(vector_results, fts_results, 1.0)
-#     assert len(combined_results) == 6
-#     assert "_rowid" in combined_results.column_names
-#     assert "_text" in combined_results.column_names
-#     assert "_distance" not in combined_results.column_names
-#     assert "_score" not in combined_results.column_names
-#     assert "_relevance_score" in combined_results.column_names
+    combined_results = reranker.merge_results(vector_results, fts_results, 1.0)
+    assert len(combined_results) == 6
+    assert "_rowid" in combined_results.column_names
+    assert "_text" in combined_results.column_names
+    assert "_distance" not in combined_results.column_names
+    assert "_score" not in combined_results.column_names
+    assert "_relevance_score" in combined_results.column_names
 
-#     _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
+    _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
 
 
 @pytest.mark.parametrize("use_tantivy", [True, False])
