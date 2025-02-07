@@ -132,7 +132,7 @@ def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
     ):
         return data.collect().to_arrow().to_reader()
     elif isinstance(data, Iterable):
-        return _iterator_to_table(data)
+        return _iterator_to_reader(data)
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
@@ -142,14 +142,16 @@ def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
         )
 
 
-def _iterator_to_table(data: Iterable) -> pa.RecordBatchReader:
+def _iterator_to_reader(data: Iterable) -> pa.RecordBatchReader:
+    # Each batch is treated as it's own reader, mainly so we can
+    # re-use the _into_pyarrow_reader logic.
     first = _into_pyarrow_reader(next(data))
     schema = first.schema
 
     def gen():
         yield from first
         for batch in data:
-            table = _into_pyarrow_reader(batch).read_all()
+            table: pa.Table = _into_pyarrow_reader(batch).read_all()
             if table.schema != schema:
                 try:
                     table = table.cast(schema)
