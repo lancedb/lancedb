@@ -48,13 +48,13 @@ datafusion-common = { version = "44.0", default-features = false }
 datafusion-execution = "44.0"
 datafusion-expr = "44.0"
 datafusion-physical-plan = "44.0"
-env_logger = "0.10"
+env_logger = "0.11"
 half = { "version" = "=2.4.1", default-features = false, features = [
     "num-traits",
 ] }
 futures = "0"
 log = "0.4"
-moka = { version = "0.11", features = ["future"] }
+moka = { version = "0.12", features = ["future"] }
 object_store = "0.10.2"
 pin-project = "1.0.7"
 snafu = "0.7.4"
