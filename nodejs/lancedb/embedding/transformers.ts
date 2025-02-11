@@ -44,11 +44,12 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
   #ndims?: number;
 
   constructor(
-    options: Partial<XenovaTransformerOptions> = {
+    optionsRaw: Partial<XenovaTransformerOptions> = {
       model: "Xenova/all-MiniLM-L6-v2",
     },
   ) {
-    super();
+    super(optionsRaw);
+    const options = this.resolveConfig(optionsRaw);
 
     const modelName = options?.model ?? "Xenova/all-MiniLM-L6-v2";
     this.#tokenizerOptions = {
@@ -59,21 +60,9 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
     this.#ndims = options.ndims;
     this.#modelName = modelName;
   }
-  toJSON() {
-    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-    const obj: Record<string, any> = {
-      model: this.#modelName,
-    };
-    if (this.#ndims) {
-      obj["ndims"] = this.#ndims;
-    }
-    if (this.#tokenizerOptions) {
-      obj["tokenizerOptions"] = this.#tokenizerOptions;
-    }
-    if (this.#tokenizer) {
-      obj["tokenizer"] = this.#tokenizer.name;
-    }
-    return obj;
+
+  protected getSensitiveKeys(): string[] {
+    return [];
   }
 
   async init() {

@@ -53,6 +53,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
       embeddingDataType() {
         return new arrow.Float32() as apiArrow.Float;
       }
+      protected getSensitiveKeys() {
+        return [];
+      }
       async computeSourceEmbeddings(data: string[]) {
         return data.map(() => [1, 2, 3]);
       }
@@ -97,6 +100,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
       constructor() {
         super();
       }
+      protected getSensitiveKeys() {
+        return [];
+      }
       ndims() {
         return 3;
       }
@@ -124,6 +130,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
       }
       ndims() {
         return 3;
+      }
+      protected getSensitiveKeys() {
+        return [];
       }
       embeddingDataType() {
         return new arrow.Float32() as apiArrow.Float;
@@ -153,5 +162,81 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
       ],
     ]);
     expect(schema.metadata).toEqual(expectedMetadata);
+  });
+});
+
+describe("Registry.setVar", () => {
+  const registry = getRegistry();
+
+  beforeEach(() => {
+    @register("mock-embedding")
+    // biome-ignore lint/correctness/noUnusedVariables :
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      constructor(optionsRaw: { someKey: string; secretKey?: string }) {
+        super(optionsRaw);
+        const options = this.resolveConfig(optionsRaw);
+
+        expect(optionsRaw["someKey"].startsWith("$var:someName")).toBe(true);
+        expect(options["someKey"]).toBe("someValue");
+
+        if (options["secretKey"]) {
+          expect(optionsRaw["secretKey"]).toBe("$var:secretKey");
+          expect(options["secretKey"]).toBe("mySecret");
+        }
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return data.map(() => [1, 2, 3]);
+      }
+      embeddingDataType() {
+        return new arrow18.Float32() as apiArrow.Float;
+      }
+      protected getSensitiveKeys() {
+        return ["secretKey"];
+      }
+    }
+  });
+  afterEach(() => {
+    registry.reset();
+  });
+
+  it("Should error if the variable is not set", () => {
+    console.log(registry.get("mock-embedding"));
+    expect(() =>
+      registry.get("mock-embedding")!.create({ someKey: "$var:someName" }),
+    ).toThrow('Variable "someName" not found');
+  });
+
+  it("should use default values if not set", () => {
+    registry
+      .get("mock-embedding")!
+      .create({ someKey: "$var:someName:someValue" });
+  });
+
+  it("should set a variable that the embedding function understand", () => {
+    registry.setVar("someName", "someValue");
+    registry.get("mock-embedding")!.create({ someKey: "$var:someName" });
+  });
+
+  it("should reject secrets that aren't passed as variables", () => {
+    registry.setVar("someName", "someValue");
+    expect(() =>
+      registry
+        .get("mock-embedding")!
+        .create({ secretKey: "someValue", someKey: "$var:someName" }),
+    ).toThrow(
+      'The key "secretKey" is sensitive and cannot be set directly. Please use the $var: syntax to set it.',
+    );
+  });
+
+  it("should not serialize secrets", () => {
+    registry.setVar("someName", "someValue");
+    registry.setVar("secretKey", "mySecret");
+    const func = registry
+      .get("mock-embedding")!
+      .create({ secretKey: "$var:secretKey", someKey: "$var:someName" });
+    expect(func.toJSON()).toEqual({
+      secretKey: "$var:secretKey",
+      someKey: "$var:someName",
+    });
   });
 });
