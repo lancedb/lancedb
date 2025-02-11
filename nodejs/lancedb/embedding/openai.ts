@@ -10,6 +10,12 @@ import { register } from "./registry";
 export type OpenAIOptions = {
   apiKey: string;
   model: EmbeddingCreateParams["model"];
+  dimensions: number;
+  user: EmbeddingCreateParams["user"];
+  /**
+   * The format of the embedding vector. Defaults to "base64".
+   */
+  encodingFormat: EmbeddingCreateParams["encoding_format"];
 };
 
 @register("openai")
@@ -19,6 +25,9 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
 > {
   #openai: OpenAI;
   #modelName: OpenAIOptions["model"];
+  #dimensions?: OpenAIOptions["dimensions"];
+  #user?: OpenAIOptions["user"];
+  #encodingFormat: OpenAIOptions["encodingFormat"];
 
   constructor(
     options: Partial<OpenAIOptions> = {
@@ -50,15 +59,25 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
 
     this.#openai = new Openai(configuration);
     this.#modelName = modelName;
+    this.#dimensions = options?.dimensions;
+    this.#user = options?.user;
+    // Default to base64 for efficiency.
+    this.#encodingFormat = options?.encodingFormat ?? "base64";
   }
 
   toJSON() {
     return {
       model: this.#modelName,
+      dimensions: this.#dimensions,
+      user: this.#user,
+      encodingFormat: this.#encodingFormat,
     };
   }
 
   ndims(): number {
+    if (this.#dimensions) {
+      return this.#dimensions;
+    }
     switch (this.#modelName) {
       case "text-embedding-ada-002":
         return 1536;
@@ -75,17 +94,33 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
     return new Float32();
   }
 
-  async computeSourceEmbeddings(data: string[]): Promise<number[][]> {
+  async computeSourceEmbeddings(data: string[]): Promise<number[][] | Float32Array[]> {
     const response = await this.#openai.embeddings.create({
       model: this.#modelName,
       input: data,
+      dimensions: this.#dimensions,
+      user: this.#user,
     });
 
-    const embeddings: number[][] = [];
+    const embeddings = [];
     for (let i = 0; i < response.data.length; i++) {
-      embeddings.push(response.data[i].embedding);
+      embeddings.push(this.parseEmbedding(response.data[i].embedding));
     }
     return embeddings;
+  }
+
+  private parseEmbedding(embedding: string ): Float32Array;
+  private parseEmbedding(embedding: number[]): number[];
+  private parseEmbedding(embedding: string | number[]): number[] | Float32Array {
+    if (this.#encodingFormat === "float" && Array.isArray(embedding)) {
+      return embedding
+    } else if (this.#encodingFormat === "base64" && typeof embedding === "string") {
+      return new Float32Array(
+        Buffer.from(embedding, 'base64').buffer
+      );
+    } else {
+      throw new Error(`Unexpected embedding format: ${typeof embedding}`);
+    }
   }
 
   async computeQueryEmbeddings(data: string): Promise<number[]> {
@@ -95,8 +130,10 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
     const response = await this.#openai.embeddings.create({
       model: this.#modelName,
       input: data,
+      dimensions: this.#dimensions,
+      user: this.#user,
     });
-
-    return response.data[0].embedding;
+    const embedding_raw = response.data[0].embedding;
+    return this.parseEmbedding(embedding_raw);
   }
 }
