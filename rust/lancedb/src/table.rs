@@ -1380,10 +1380,11 @@ impl NativeTable {
 
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
         let dataset = self.dataset.get().await?;
-        let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
+        let mf = dataset.manifest();
+        let indices = dataset.load_indices().await?;
         Ok(indices
             .iter()
-            .map(|i| VectorIndex::new_from_format(&(mf.0), i))
+            .map(|i| VectorIndex::new_from_format(mf, i))
             .collect())
     }
 
