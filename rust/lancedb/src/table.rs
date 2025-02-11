@@ -1384,7 +1384,7 @@ impl NativeTable {
         let indices = dataset.load_indices().await?;
         Ok(indices
             .iter()
-            .map(|i| VectorIndex::new_from_format(&mf, i))
+            .map(|i| VectorIndex::new_from_format(mf, i))
             .collect())
     }
 
