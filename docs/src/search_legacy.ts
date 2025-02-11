@@ -20,6 +20,7 @@ async function setup() {
 }
 
 async () => {
+  console.log("search_legacy.ts: start");
   await setup();
 
   // --8<-- [start:search1]
@@ -37,5 +38,5 @@ async () => {
     .execute();
   // --8<-- [end:search2]
 
-  console.log("search: done");
+  console.log("search_legacy.ts: done");
 };
