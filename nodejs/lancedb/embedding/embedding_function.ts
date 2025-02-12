@@ -86,7 +86,7 @@ export abstract class EmbeddingFunction<
   /**
    * Apply variables to the config.
    */
-  protected resolveConfig<T extends FunctionOptions>(
+  protected resolveVariables<T extends FunctionOptions>(
     config: Partial<T>,
   ): Partial<T> {
     const registry = getRegistry();

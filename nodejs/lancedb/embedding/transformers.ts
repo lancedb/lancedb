@@ -49,7 +49,7 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
     },
   ) {
     super(optionsRaw);
-    const options = this.resolveConfig(optionsRaw);
+    const options = this.resolveVariables(optionsRaw);
 
     const modelName = options?.model ?? "Xenova/all-MiniLM-L6-v2";
     this.#tokenizerOptions = {

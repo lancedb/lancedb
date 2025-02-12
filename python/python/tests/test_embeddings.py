@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-from typing import List, Union
+from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
 import lance
@@ -56,7 +56,7 @@ def test_embedding_function(tmp_path):
     conf = EmbeddingFunctionConfig(
         source_column="text",
         vector_column="vector",
-        function=MockTextEmbeddingFunction(),
+        function=MockTextEmbeddingFunction.create(),
     )
     metadata = registry.get_table_metadata([conf])
     table = table.replace_schema_metadata(metadata)
@@ -78,6 +78,57 @@ def test_embedding_function(tmp_path):
     expected = func.compute_query_embeddings("hello world")
 
     assert np.allclose(actual, expected)
+
+
+def test_embedding_function_variables():
+    @register("variable-testing")
+    class VariableTestingFunction(TextEmbeddingFunction):
+        key1: str
+        secret_key: Optional[str] = None
+
+        @staticmethod
+        def sensitive_keys():
+            return ["secret_key"]
+
+        def ndims():
+            pass
+
+        def generate_embeddings(self, _texts):
+            pass
+
+    registry = EmbeddingFunctionRegistry.get_instance()
+
+    # Should error if variable is not set
+    with pytest.raises(ValueError, match="Variable 'test' not found"):
+        registry.get("variable-testing").create(
+            key1="$var:test",
+        )
+
+    # Should use default values if not set
+    func = registry.get("variable-testing").create(key1="$var:test:some_value")
+    assert func.key1 == "some_value"
+
+    # Should set a variable that the embedding function understands
+    registry.set_var("test", "some_value")
+    func = registry.get("variable-testing").create(key1="$var:test")
+    assert func.key1 == "some_value"
+
+    # Should reject secrets that aren't passed in as variables
+    with pytest.raises(
+        ValueError,
+        match="Sensitive key 'secret_key' cannot be set to a hardcoded value",
+    ):
+        registry.get("variable-testing").create(
+            key1="whatever", secret_key="some_value"
+        )
+
+    # Should not serialize secrets.
+    registry.set_var("secret", "secret_value")
+    func = registry.get("variable-testing").create(
+        key1="whatever", secret_key="$var:secret"
+    )
+    assert func.secret_key == "secret_value"
+    assert func.safe_model_dump()["secret_key"] == "$var:secret"
 
 
 def test_embedding_with_bad_results(tmp_path):
@@ -359,7 +410,7 @@ def test_embedding_function_safe_model_dump(embedding_type):
 
     # Note: Some embedding types might require specific parameters
     try:
-        model = registry.get(embedding_type).create()
+        model = registry.get(embedding_type).create({"max_retries": 1})
     except Exception as e:
         pytest.skip(f"Skipping {embedding_type} due to error: {str(e)}")
 

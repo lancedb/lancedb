@@ -2,8 +2,10 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from abc import ABC, abstractmethod
+import copy
 from typing import List, Union
 
+from lancedb.util import add_note
 import numpy as np
 import pyarrow as pa
 from pydantic import BaseModel, Field, PrivateAttr
@@ -28,13 +30,67 @@ class EmbeddingFunction(BaseModel, ABC):
         7  # Setting 0 disables retires. Maybe this should not be enabled by default,
     )
     _ndims: int = PrivateAttr()
+    _original_args: dict = PrivateAttr()
 
     @classmethod
     def create(cls, **kwargs):
         """
         Create an instance of the embedding function
         """
-        return cls(**kwargs)
+        resolved_kwargs = cls.__resolveVariables(kwargs)
+        instance = cls(**resolved_kwargs)
+        instance._original_args = kwargs
+        return instance
+
+    @classmethod
+    def __resolveVariables(cls, args: dict) -> dict:
+        """
+        Resolve variables in the args
+        """
+        from .registry import EmbeddingFunctionRegistry
+
+        new_args = copy.deepcopy(args)
+
+        registry = EmbeddingFunctionRegistry.get_instance()
+        sensitive_keys = cls.sensitive_keys()
+        for k, v in new_args.items():
+            if isinstance(v, str) and not v.startswith("$var:") and k in sensitive_keys:
+                exc = ValueError(
+                    f"Sensitive key '{k}' cannot be set to a hardcoded value"
+                )
+                add_note(exc, "Help: Use $var: to set sensitive keys to variables")
+                raise exc
+
+            if isinstance(v, str) and v.startswith("$var:"):
+                parts = v[5:].split(":", maxsplit=1)
+                if len(parts) == 1:
+                    try:
+                        new_args[k] = registry.get_var(parts[0])
+                    except KeyError:
+                        exc = ValueError(
+                            "Variable '{}' not found in registry".format(parts[0])
+                        )
+                        add_note(
+                            exc,
+                            "Help: Variables are reset in new Python sessions. "
+                            "Use `registry.set_var` to set variables.",
+                        )
+                        raise exc
+                else:
+                    name, default = parts
+                    try:
+                        new_args[k] = registry.get_var(name)
+                    except KeyError:
+                        new_args[k] = default
+        return new_args
+
+    @staticmethod
+    def sensitive_keys() -> List[str]:
+        """
+        Return a list of keys that are sensitive and should not be allowed
+        to be set to hardcoded values in the config. For example, API keys.
+        """
+        return []
 
     @abstractmethod
     def compute_query_embeddings(self, *args, **kwargs) -> list[Union[np.array, None]]:
@@ -103,17 +159,7 @@ class EmbeddingFunction(BaseModel, ABC):
         return texts
 
     def safe_model_dump(self):
-        from ..pydantic import PYDANTIC_VERSION
-
-        if PYDANTIC_VERSION.major < 2:
-            return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
-        return self.model_dump(
-            exclude={
-                field_name
-                for field_name in self.model_fields
-                if field_name.startswith("_")
-            }
-        )
+        return self._original_args
 
     @abstractmethod
     def ndims(self) -> int:
