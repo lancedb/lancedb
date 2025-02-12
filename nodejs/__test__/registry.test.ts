@@ -39,11 +39,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
   it("should register a new item to the registry", async () => {
     @register("mock-embedding")
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {
-          someText: "hello",
-        };
-      }
       constructor() {
         super();
       }
@@ -92,11 +87,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
   });
   test("should error if registering with the same name", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {
-          someText: "hello",
-        };
-      }
       constructor() {
         super();
       }
@@ -120,11 +110,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
   });
   test("schema should contain correct metadata", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {
-          someText: "hello",
-        };
-      }
       constructor() {
         super();
       }
