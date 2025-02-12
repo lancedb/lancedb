@@ -57,6 +57,10 @@ class JinaEmbeddings(EmbeddingFunction):
         # TODO: fix hardcoding
         return 768
 
+    @staticmethod
+    def sensitive_keys() -> List[str]:
+        return ["api_key"]
+
     def sanitize_input(
         self, inputs: Union[TEXT, IMAGES]
     ) -> Union[List[Any], np.ndarray]:

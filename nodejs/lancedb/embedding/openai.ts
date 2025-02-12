@@ -26,7 +26,7 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
     },
   ) {
     super(optionsRaw);
-    const options = this.resolveConfig(optionsRaw);
+    const options = this.resolveVariables(optionsRaw);
 
     const openAIKey = options?.apiKey ?? process.env.OPENAI_API_KEY;
     if (!openAIKey) {

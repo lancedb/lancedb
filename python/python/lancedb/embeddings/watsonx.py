@@ -41,6 +41,10 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
     params: Optional[Dict] = None
 
     @staticmethod
+    def sensitive_keys():
+        return ["api_key"]
+
+    @staticmethod
     def model_names():
         return [
             "ibm/slate-125m-english-rtrvr",

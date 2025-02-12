@@ -171,8 +171,6 @@ export class EmbeddingFunctionRegistry {
    * want to supply a default value, you can add an additional part in the
    * configuration like so: `$var:variable_name:default_value`.
    *
-   * Secrets
-   *
    * @param name
    * @param value
    */
@@ -191,29 +189,6 @@ export class EmbeddingFunctionRegistry {
    */
   getVar(name: string): string | undefined {
     return this.#variables.get(name);
-  }
-
-  /**
-   * @ignore
-   */
-  resolveConfig(config: Partial<FunctionOptions>): Partial<FunctionOptions> {
-    const newConfig = { ...config };
-    for (const [key, value] of Object.entries(newConfig)) {
-      if (typeof value === "string" && value.startsWith("$var:")) {
-        const [name, defaultValue] = value.slice(5).split(":", 1);
-        const variableValue = this.getVar(name);
-        if (!variableValue) {
-          if (defaultValue) {
-            newConfig[key] = defaultValue;
-          } else {
-            throw new Error(`Variable "${name}" not found`);
-          }
-        } else {
-          newConfig[key] = variableValue;
-        }
-      }
-    }
-    return newConfig;
   }
 }
 
