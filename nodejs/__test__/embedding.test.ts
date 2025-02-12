@@ -29,11 +29,11 @@ describe("embedding functions", () => {
 
   it("should be able to create a table with an embedding function", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {};
-      }
       ndims() {
         return 3;
+      }
+      getSensitiveKeys() {
+        return [];
       }
       embeddingDataType(): Float {
         return new Float32();
@@ -75,11 +75,11 @@ describe("embedding functions", () => {
   it("should be able to append and upsert using embedding function", async () => {
     @register()
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {};
-      }
       ndims() {
         return 3;
+      }
+      getSensitiveKeys() {
+        return [];
       }
       embeddingDataType(): Float {
         return new Float32();
@@ -143,11 +143,11 @@ describe("embedding functions", () => {
   it("should be able to create an empty table with an embedding function", async () => {
     @register()
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {};
-      }
       ndims() {
         return 3;
+      }
+      getSensitiveKeys() {
+        return [];
       }
       embeddingDataType(): Float {
         return new Float32();
@@ -194,11 +194,11 @@ describe("embedding functions", () => {
   it("should error when appending to a table with an unregistered embedding function", async () => {
     @register("mock")
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {};
-      }
       ndims() {
         return 3;
+      }
+      getSensitiveKeys() {
+        return [];
       }
       embeddingDataType(): Float {
         return new Float32();
@@ -245,11 +245,11 @@ describe("embedding functions", () => {
     "should be able to provide manual embeddings with multiple float datatype",
     async (floatType) => {
       class MockEmbeddingFunction extends EmbeddingFunction<string> {
-        toJSON(): object {
-          return {};
-        }
         ndims() {
           return 3;
+        }
+        getSensitiveKeys() {
+          return [];
         }
         embeddingDataType(): Float {
           return floatType;
@@ -292,10 +292,9 @@ describe("embedding functions", () => {
     async (floatType) => {
       @register("test1")
       class MockEmbeddingFunctionWithoutNDims extends EmbeddingFunction<string> {
-        toJSON(): object {
-          return {};
+        getSensitiveKeys() {
+          return [];
         }
-
         embeddingDataType(): Float {
           return floatType;
         }
@@ -310,11 +309,11 @@ describe("embedding functions", () => {
       }
       @register("test")
       class MockEmbeddingFunction extends EmbeddingFunction<string> {
-        toJSON(): object {
-          return {};
-        }
         ndims() {
           return 3;
+        }
+        getSensitiveKeys() {
+          return [];
         }
         embeddingDataType(): Float {
           return floatType;
