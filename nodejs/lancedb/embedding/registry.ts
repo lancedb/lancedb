@@ -4,7 +4,6 @@
 import {
   type EmbeddingFunction,
   type EmbeddingFunctionConstructor,
-  FunctionOptions,
 } from "./embedding_function";
 import "reflect-metadata";
 

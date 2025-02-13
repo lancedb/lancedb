@@ -48,9 +48,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
       embeddingDataType() {
         return new arrow.Float32() as apiArrow.Float;
       }
-      protected getSensitiveKeys() {
-        return [];
-      }
       async computeSourceEmbeddings(data: string[]) {
         return data.map(() => [1, 2, 3]);
       }
@@ -90,9 +87,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
       constructor() {
         super();
       }
-      protected getSensitiveKeys() {
-        return [];
-      }
       ndims() {
         return 3;
       }
@@ -115,9 +109,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
       }
       ndims() {
         return 3;
-      }
-      protected getSensitiveKeys() {
-        return [];
       }
       embeddingDataType() {
         return new arrow.Float32() as apiArrow.Float;

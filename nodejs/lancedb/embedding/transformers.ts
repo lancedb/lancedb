@@ -61,10 +61,6 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
     this.#modelName = modelName;
   }
 
-  protected getSensitiveKeys(): string[] {
-    return [];
-  }
-
   async init() {
     let transformers;
     try {

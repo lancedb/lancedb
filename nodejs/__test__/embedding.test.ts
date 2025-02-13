@@ -32,9 +32,6 @@ describe("embedding functions", () => {
       ndims() {
         return 3;
       }
-      getSensitiveKeys() {
-        return [];
-      }
       embeddingDataType(): Float {
         return new Float32();
       }
@@ -77,9 +74,6 @@ describe("embedding functions", () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
       ndims() {
         return 3;
-      }
-      getSensitiveKeys() {
-        return [];
       }
       embeddingDataType(): Float {
         return new Float32();
@@ -146,9 +140,6 @@ describe("embedding functions", () => {
       ndims() {
         return 3;
       }
-      getSensitiveKeys() {
-        return [];
-      }
       embeddingDataType(): Float {
         return new Float32();
       }
@@ -197,9 +188,6 @@ describe("embedding functions", () => {
       ndims() {
         return 3;
       }
-      getSensitiveKeys() {
-        return [];
-      }
       embeddingDataType(): Float {
         return new Float32();
       }
@@ -241,15 +229,40 @@ describe("embedding functions", () => {
       `Function "mock" not found in registry`,
     );
   });
+
+  it("propagates variables through all methods", async () => {
+    if (!process.env.OPENAI_API_KEY) {
+      test.skip("OPENAI_API_KEY not set");
+    }
+    delete process.env.OPENAI_API_KEY;
+    const registry = getRegistry();
+    registry.setVar("openai_api_key", "sk-...");
+    const func = registry.get("openai")?.create({
+      model: "text-embedding-ada-002",
+      apiKey: "$var:openai_api_key",
+    }) as EmbeddingFunction;
+
+    const db = await connect("memory://");
+    const wordsSchema = LanceSchema({
+      text: func.sourceField(new Utf8()),
+      vector: func.vectorField(),
+    });
+    const tbl = await db.createEmptyTable("words", wordsSchema, {
+      mode: "overwrite",
+    });
+    await tbl.add([{ text: "hello world" }, { text: "goodbye world" }]);
+
+    const query = "greetings";
+    const actual = (await tbl.search(query).limit(1).toArray())[0];
+    expect(actual).toHaveProperty("text");
+  });
+
   test.each([new Float16(), new Float32(), new Float64()])(
     "should be able to provide manual embeddings with multiple float datatype",
     async (floatType) => {
       class MockEmbeddingFunction extends EmbeddingFunction<string> {
         ndims() {
           return 3;
-        }
-        getSensitiveKeys() {
-          return [];
         }
         embeddingDataType(): Float {
           return floatType;
@@ -292,9 +305,6 @@ describe("embedding functions", () => {
     async (floatType) => {
       @register("test1")
       class MockEmbeddingFunctionWithoutNDims extends EmbeddingFunction<string> {
-        getSensitiveKeys() {
-          return [];
-        }
         embeddingDataType(): Float {
           return floatType;
         }
@@ -311,9 +321,6 @@ describe("embedding functions", () => {
       class MockEmbeddingFunction extends EmbeddingFunction<string> {
         ndims() {
           return 3;
-        }
-        getSensitiveKeys() {
-          return [];
         }
         embeddingDataType(): Float {
           return floatType;

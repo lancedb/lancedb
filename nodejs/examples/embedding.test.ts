@@ -10,19 +10,16 @@ import { type Float, Float32, Utf8 } from "apache-arrow";
 // --8<-- [end:imports]
 import { withTempDirectory } from "./util.ts";
 
-const openAiTest = process.env.OPENAI_BASE_URL == null ? test.skip : test;
+const openAiTest = process.env.OPENAI_API_KEY == null ? test.skip : test;
 
 openAiTest("openai embeddings", async () => {
   await withTempDirectory(async (databaseDir) => {
     // --8<-- [start:openai_embeddings]
-    const registry = getRegistry();
-    registry.setVar("openai_api_key", "sk-...");
-    const func = registry.get("openai")?.create({
-      model: "text-embedding-ada-002",
-      apiKey: "$var:openai_api_key",
-    }) as EmbeddingFunction;
-
     const db = await lancedb.connect(databaseDir);
+    const func = getRegistry()
+    .get("openai")
+    ?.create({ model: "text-embedding-ada-002" }) as EmbeddingFunction;
+
     const wordsSchema = LanceSchema({
       text: func.sourceField(new Utf8()),
       vector: func.vectorField(),
@@ -100,5 +97,16 @@ test("custom embedding function", async () => {
     // --8<-- [end:embedding_function]
     expect(await table.countRows()).toBe(2);
     expect(await table2.countRows()).toBe(2);
+  });
+
+  test("embedding function api_key", async () => {
+    // --8<-- [start:register_secret]
+    const registry = getRegistry();
+    registry.setVar("api_key", "sk-...");
+
+    const func = registry.get("openai").create({
+      apiKey: "$var:api_key",
+    });
+    // --8<-- [end:register_secret]
   });
 });

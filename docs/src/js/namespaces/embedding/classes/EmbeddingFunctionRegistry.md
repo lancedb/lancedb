@@ -80,6 +80,28 @@ getTableMetadata(functions): Map<string, string>
 
 ***
 
+### getVar()
+
+```ts
+getVar(name): undefined | string
+```
+
+Get a variable.
+
+#### Parameters
+
+* **name**: `string`
+
+#### Returns
+
+`undefined` \| `string`
+
+#### See
+
+[setVar](EmbeddingFunctionRegistry.md#setvar)
+
+***
+
 ### length()
 
 ```ts
@@ -141,6 +163,30 @@ reset the registry to the initial state
 #### Parameters
 
 * **this**: [`EmbeddingFunctionRegistry`](EmbeddingFunctionRegistry.md)
+
+#### Returns
+
+`void`
+
+***
+
+### setVar()
+
+```ts
+setVar(name, value): void
+```
+
+Set a variable. These can be accessed in the embedding function
+configuration using the syntax `$var:variable_name`. If they are not
+set, an error will be thrown letting you know which key is unset. If you
+want to supply a default value, you can add an additional part in the
+configuration like so: `$var:variable_name:default_value`.
+
+#### Parameters
+
+* **name**: `string`
+
+* **value**: `string`
 
 #### Returns
 

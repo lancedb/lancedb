@@ -81,7 +81,9 @@ export abstract class EmbeddingFunction<
    * Provide a list of keys in the function options that should be treated as
    * sensitive. If users pass raw values for these keys, they will be rejected.
    */
-  protected abstract getSensitiveKeys(): string[];
+  protected getSensitiveKeys(): string[] {
+    return [];
+  }
 
   /**
    * Apply variables to the config.

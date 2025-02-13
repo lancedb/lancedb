@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import os
 from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
@@ -142,9 +143,11 @@ def test_embedding_with_bad_results(tmp_path):
         ) -> list[Union[np.array, None]]:
             # Return None, which is bad if field is non-nullable
             a = [
-                np.full(self.ndims(), np.nan)
-                if i % 2 == 0
-                else np.random.randn(self.ndims())
+                (
+                    np.full(self.ndims(), np.nan)
+                    if i % 2 == 0
+                    else np.random.randn(self.ndims())
+                )
                 for i in range(len(texts))
             ]
             return a
@@ -443,3 +446,33 @@ def test_retry(mock_sleep):
     result = test_function()
     assert mock_sleep.call_count == 9
     assert result == "result"
+
+
+@pytest.mark.skipif(
+    os.environ.get("OPENAI_API_KEY") is None, reason="OpenAI API key not set"
+)
+def test_openai_propagates_api_key(monkeypatch):
+    # Make sure that if we set it as a variable, the API key is propagated
+    api_key = os.environ["OPENAI_API_KEY"]
+    monkeypatch.delenv("OPENAI_API_KEY")
+
+    uri = "memory://"
+    registry = get_registry()
+    registry.set_var("open_api_key", api_key)
+    func = registry.get("openai").create(
+        name="text-embedding-ada-002",
+        max_retries=0,
+        api_key="$var:open_api_key",
+    )
+
+    class Words(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    db = lancedb.connect(uri)
+    table = db.create_table("words", schema=Words, mode="overwrite")
+    table.add([{"text": "hello world"}, {"text": "goodbye world"}])
+
+    query = "greetings"
+    actual = table.search(query).limit(1).to_pydantic(Words)[0]
+    assert len(actual.text) > 0
