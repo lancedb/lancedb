@@ -23,7 +23,17 @@ impl VectorIndex {
         let fields = index
             .fields
             .iter()
-            .map(|i| manifest.schema.fields[*i as usize].name.clone())
+            .map(|field_id| {
+                manifest
+                    .schema
+                    .field_by_id(*field_id)
+                    .expect(&format!(
+                        "field {field_id} of index {} must exist in schema",
+                        index.name
+                    ))
+                    .name
+                    .clone()
+            })
             .collect();
         Self {
             columns: fields,
