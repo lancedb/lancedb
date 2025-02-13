@@ -17,8 +17,8 @@ openAiTest("openai embeddings", async () => {
     // --8<-- [start:openai_embeddings]
     const db = await lancedb.connect(databaseDir);
     const func = getRegistry()
-    .get("openai")
-    ?.create({ model: "text-embedding-ada-002" }) as EmbeddingFunction;
+      .get("openai")
+      ?.create({ model: "text-embedding-ada-002" }) as EmbeddingFunction;
 
     const wordsSchema = LanceSchema({
       text: func.sourceField(new Utf8()),
