@@ -1041,9 +1041,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         ndims() {
           return 1;
         }
-        protected getSensitiveKeys(): string[] {
-          return [];
-        }
         embeddingDataType() {
           return new Float32();
         }

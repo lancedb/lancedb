@@ -21,8 +21,12 @@ an abstract class for implementing embedding functions that take text as input
 ### new TextEmbeddingFunction()
 
 ```ts
-new TextEmbeddingFunction<M>(): TextEmbeddingFunction<M>
+new TextEmbeddingFunction<M>(args): TextEmbeddingFunction<M>
 ```
+
+#### Parameters
+
+* **args**: `Partial`&lt;`M`&gt; = `{}`
 
 #### Returns
 
@@ -114,11 +118,36 @@ abstract generateEmbeddings(texts, ...args): Promise<number[][] | Float32Array[]
 
 ***
 
+### getSensitiveKeys()
+
+```ts
+abstract protected getSensitiveKeys(): string[]
+```
+
+Provide a list of keys in the function options that should be treated as
+sensitive. If users pass raw values for these keys, they will be rejected.
+
+#### Returns
+
+`string`[]
+
+#### Inherited from
+
+[`EmbeddingFunction`](EmbeddingFunction.md).[`getSensitiveKeys`](EmbeddingFunction.md#getsensitivekeys)
+
+***
+
 ### init()?
 
 ```ts
 optional init(): Promise<void>
 ```
+
+Optionally load any resources needed for the embedding function.
+
+This method is called after the embedding function has been initialized
+but before any embeddings are computed. It is useful for loading local models
+or other resources that are needed for the embedding function to work.
 
 #### Returns
 
@@ -148,6 +177,32 @@ The number of dimensions of the embeddings
 
 ***
 
+### resolveVariables()
+
+```ts
+protected resolveVariables<T>(config): Partial<T>
+```
+
+Apply variables to the config.
+
+#### Type Parameters
+
+• **T** *extends* [`FunctionOptions`](../interfaces/FunctionOptions.md)
+
+#### Parameters
+
+* **config**: `Partial`&lt;`T`&gt;
+
+#### Returns
+
+`Partial`&lt;`T`&gt;
+
+#### Inherited from
+
+[`EmbeddingFunction`](EmbeddingFunction.md).[`resolveVariables`](EmbeddingFunction.md#resolvevariables)
+
+***
+
 ### sourceField()
 
 ```ts
@@ -173,37 +228,15 @@ sourceField is used in combination with `LanceSchema` to provide a declarative d
 ### toJSON()
 
 ```ts
-abstract toJSON(): Partial<M>
+toJSON(): Record<string, any>
 ```
 
-Convert the embedding function to a JSON object
-It is used to serialize the embedding function to the schema
-It's important that any object returned by this method contains all the necessary
-information to recreate the embedding function
-
-It should return the same object that was passed to the constructor
-If it does not, the embedding function will not be able to be recreated, or could be recreated incorrectly
+Get the original arguments to the constructor, to serialize them so they
+can be used to recreate the embedding function later.
 
 #### Returns
 
-`Partial`&lt;`M`&gt;
-
-#### Example
-
-```ts
-class MyEmbeddingFunction extends EmbeddingFunction {
-  constructor(options: {model: string, timeout: number}) {
-    super();
-    this.model = options.model;
-    this.timeout = options.timeout;
-  }
-  toJSON() {
-    return {
-      model: this.model,
-      timeout: this.timeout,
-    };
-}
-```
+`Record`&lt;`string`, `any`&gt;
 
 #### Inherited from
 
