@@ -27,10 +27,12 @@ impl VectorIndex {
                 manifest
                     .schema
                     .field_by_id(*field_id)
-                    .expect(&format!(
-                        "field {field_id} of index {} must exist in schema",
-                        index.name
-                    ))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "field {field_id} of index {} must exist in schema",
+                            index.name
+                        )
+                    })
                     .name
                     .clone()
             })
