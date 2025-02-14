@@ -159,6 +159,10 @@ class EmbeddingFunction(BaseModel, ABC):
         return texts
 
     def safe_model_dump(self):
+        if not hasattr(self, "_original_args"):
+            raise ValueError(
+                "EmbeddingFunction was not created with EmbeddingFunction.create()"
+            )
         return self._original_args
 
     @abstractmethod
