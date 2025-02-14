@@ -17,6 +17,8 @@ import {
 import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
 
+const testOpenAIInteg = process.env.OPENAI_API_KEY == null ? test.skip : test;
+
 describe("embedding functions", () => {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
@@ -230,10 +232,7 @@ describe("embedding functions", () => {
     );
   });
 
-  it("propagates variables through all methods", async () => {
-    if (!process.env.OPENAI_API_KEY) {
-      test.skip("OPENAI_API_KEY not set");
-    }
+  testOpenAIInteg("propagates variables through all methods", async () => {
     delete process.env.OPENAI_API_KEY;
     const registry = getRegistry();
     registry.setVar("openai_api_key", "sk-...");

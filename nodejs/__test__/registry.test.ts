@@ -11,7 +11,11 @@ import * as arrow18 from "apache-arrow-18";
 import * as tmp from "tmp";
 
 import { connect } from "../lancedb";
-import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
+import {
+  EmbeddingFunction,
+  FunctionOptions,
+  LanceSchema,
+} from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
 
 describe.each([arrow15, arrow16, arrow17, arrow18])("LanceSchema", (arrow) => {
@@ -104,8 +108,8 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
   });
   test("schema should contain correct metadata", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      constructor() {
-        super();
+      constructor(args: FunctionOptions = {}) {
+        super(args);
       }
       ndims() {
         return 3;
@@ -117,7 +121,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
         return data.map(() => [1, 2, 3]);
       }
     }
-    const func = new MockEmbeddingFunction();
+    const func = new MockEmbeddingFunction({ someText: "hello" });
 
     const schema = LanceSchema({
       id: new arrow.Int32(),
@@ -148,9 +152,9 @@ describe("Registry.setVar", () => {
     @register("mock-embedding")
     // biome-ignore lint/correctness/noUnusedVariables :
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      constructor(optionsRaw: { someKey: string; secretKey?: string }) {
+      constructor(optionsRaw: FunctionOptions = {}) {
         super(optionsRaw);
-        const options = this.resolveConfig(optionsRaw);
+        const options = this.resolveVariables(optionsRaw);
 
         expect(optionsRaw["someKey"].startsWith("$var:someName")).toBe(true);
         expect(options["someKey"]).toBe("someValue");
