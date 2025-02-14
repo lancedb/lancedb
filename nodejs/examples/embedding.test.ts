@@ -45,7 +45,7 @@ test("custom embedding function", async () => {
     class MyEmbeddingFunction extends EmbeddingFunction<string> {
       constructor(optionsRaw = {}) {
         super(optionsRaw);
-        const options = this.resolveConfig(optionsRaw);
+        const options = this.resolveVariables(optionsRaw);
         // Initialize using options
       }
       ndims() {
@@ -98,15 +98,15 @@ test("custom embedding function", async () => {
     expect(await table.countRows()).toBe(2);
     expect(await table2.countRows()).toBe(2);
   });
+});
 
-  test("embedding function api_key", async () => {
-    // --8<-- [start:register_secret]
-    const registry = getRegistry();
-    registry.setVar("api_key", "sk-...");
+test("embedding function api_key", async () => {
+  // --8<-- [start:register_secret]
+  const registry = getRegistry();
+  registry.setVar("api_key", "sk-...");
 
-    const func = registry.get("openai").create({
-      apiKey: "$var:api_key",
-    });
-    // --8<-- [end:register_secret]
+  const func = registry.get("openai")!.create({
+    apiKey: "$var:api_key",
   });
+  // --8<-- [end:register_secret]
 });
