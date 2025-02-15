@@ -1741,19 +1741,6 @@ dependencies = [
 
 [[package]]
 name = "dashmap"
-version = "5.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
-dependencies = [
- "cfg-if",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
-
-[[package]]
-name = "dashmap"
 version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
@@ -1779,7 +1766,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
- "dashmap 6.1.0",
+ "dashmap",
  "datafusion-catalog",
  "datafusion-common",
  "datafusion-common-runtime",
@@ -1800,7 +1787,7 @@ dependencies = [
  "glob",
  "itertools 0.13.0",
  "log",
- "object_store 0.11.2",
+ "object_store",
  "parking_lot",
  "rand",
  "regex",
@@ -1842,7 +1829,7 @@ dependencies = [
  "indexmap 2.7.1",
  "libc",
  "log",
- "object_store 0.11.2",
+ "object_store",
  "paste",
  "sqlparser 0.53.0",
  "tokio",
@@ -1872,12 +1859,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e22cb02af47e756468b3cbfee7a83e3d4f2278d452deb4b033ba933c75169486"
 dependencies = [
  "arrow",
- "dashmap 6.1.0",
+ "dashmap",
  "datafusion-common",
  "datafusion-expr",
  "futures",
  "log",
- "object_store 0.11.2",
+ "object_store",
  "parking_lot",
  "rand",
  "tempfile",
@@ -2304,12 +2291,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "doc-comment"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fea41bba32d969b513997752735605054bc0dfa92b4c56bf1189f2e174be7a10"
-
-[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2631,7 +2612,7 @@ dependencies = [
 [[package]]
 name = "fsst"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "rand",
 ]
@@ -3584,7 +3565,7 @@ dependencies = [
 [[package]]
 name = "lance"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3602,7 +3583,7 @@ dependencies = [
  "byteorder",
  "bytes",
  "chrono",
- "dashmap 5.5.3",
+ "dashmap",
  "datafusion",
  "datafusion-expr",
  "datafusion-functions",
@@ -3623,7 +3604,7 @@ dependencies = [
  "lazy_static",
  "log",
  "moka",
- "object_store 0.10.2",
+ "object_store",
  "permutation",
  "pin-project",
  "prost",
@@ -3632,7 +3613,7 @@ dependencies = [
  "roaring",
  "serde",
  "serde_json",
- "snafu 0.7.5",
+ "snafu",
  "tantivy",
  "tempfile",
  "tokio",
@@ -3644,7 +3625,7 @@ dependencies = [
 [[package]]
 name = "lance-arrow"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3662,7 +3643,7 @@ dependencies = [
 [[package]]
 name = "lance-core"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3682,13 +3663,13 @@ dependencies = [
  "mock_instant",
  "moka",
  "num_cpus",
- "object_store 0.10.2",
+ "object_store",
  "pin-project",
  "prost",
  "rand",
  "roaring",
  "serde_json",
- "snafu 0.7.5",
+ "snafu",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -3699,7 +3680,7 @@ dependencies = [
 [[package]]
 name = "lance-datafusion"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3718,14 +3699,14 @@ dependencies = [
  "lazy_static",
  "log",
  "prost",
- "snafu 0.7.5",
+ "snafu",
  "tokio",
 ]
 
 [[package]]
 name = "lance-encoding"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "arrayref",
  "arrow",
@@ -3755,7 +3736,7 @@ dependencies = [
  "prost-types",
  "rand",
  "seq-macro",
- "snafu 0.7.5",
+ "snafu",
  "tokio",
  "tracing",
  "zstd",
@@ -3764,7 +3745,7 @@ dependencies = [
 [[package]]
 name = "lance-file"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -3785,12 +3766,12 @@ dependencies = [
  "lance-io",
  "log",
  "num-traits",
- "object_store 0.10.2",
+ "object_store",
  "prost",
  "prost-build",
  "prost-types",
  "roaring",
- "snafu 0.7.5",
+ "snafu",
  "tempfile",
  "tokio",
  "tracing",
@@ -3799,7 +3780,7 @@ dependencies = [
 [[package]]
 name = "lance-index"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3833,7 +3814,7 @@ dependencies = [
  "log",
  "moka",
  "num-traits",
- "object_store 0.10.2",
+ "object_store",
  "prost",
  "prost-build",
  "rand",
@@ -3841,7 +3822,7 @@ dependencies = [
  "roaring",
  "serde",
  "serde_json",
- "snafu 0.7.5",
+ "snafu",
  "tantivy",
  "tempfile",
  "tokio",
@@ -3852,7 +3833,7 @@ dependencies = [
 [[package]]
 name = "lance-io"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3876,13 +3857,13 @@ dependencies = [
  "lance-core",
  "lazy_static",
  "log",
- "object_store 0.10.2",
+ "object_store",
  "path_abs",
  "pin-project",
  "prost",
  "rand",
  "shellexpand",
- "snafu 0.7.5",
+ "snafu",
  "tokio",
  "tracing",
  "url",
@@ -3891,7 +3872,7 @@ dependencies = [
 [[package]]
 name = "lance-linalg"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "arrow-array",
  "arrow-ord",
@@ -3915,7 +3896,7 @@ dependencies = [
 [[package]]
 name = "lance-table"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3936,7 +3917,7 @@ dependencies = [
  "lance-io",
  "lazy_static",
  "log",
- "object_store 0.10.2",
+ "object_store",
  "prost",
  "prost-build",
  "prost-types",
@@ -3945,7 +3926,7 @@ dependencies = [
  "roaring",
  "serde",
  "serde_json",
- "snafu 0.7.5",
+ "snafu",
  "tokio",
  "tracing",
  "url",
@@ -3955,7 +3936,7 @@ dependencies = [
 [[package]]
 name = "lance-testing"
 version = "0.23.1"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.2#2e2bf1a75b464fc8bcf3f7e3f568e417b4aa9339"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.23.1-beta.4#6b58bc16230faeb5387c5478c485254a52e9787f"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -3966,7 +3947,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb"
-version = "0.16.1-beta.1"
+version = "0.16.1-beta.2"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4012,7 +3993,7 @@ dependencies = [
  "log",
  "moka",
  "num-traits",
- "object_store 0.10.2",
+ "object_store",
  "pin-project",
  "polars",
  "polars-arrow",
@@ -4023,7 +4004,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "snafu 0.7.5",
+ "snafu",
  "tempfile",
  "tokenizers",
  "tokio",
@@ -4044,13 +4025,13 @@ dependencies = [
  "lazy_static",
  "serde",
  "serde_json",
- "snafu 0.7.5",
+ "snafu",
  "tokio",
 ]
 
 [[package]]
 name = "lancedb-node"
-version = "0.16.1-beta.1"
+version = "0.16.1-beta.2"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4067,15 +4048,15 @@ dependencies = [
  "lancedb",
  "lzma-sys",
  "neon",
- "object_store 0.10.2",
+ "object_store",
  "once_cell",
- "snafu 0.7.5",
+ "snafu",
  "tokio",
 ]
 
 [[package]]
 name = "lancedb-nodejs"
-version = "0.16.1-beta.1"
+version = "0.16.1-beta.2"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4093,7 +4074,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-python"
-version = "0.19.1-beta.1"
+version = "0.19.1-beta.2"
 dependencies = [
  "arrow",
  "env_logger",
@@ -4803,15 +4784,16 @@ dependencies = [
 
 [[package]]
 name = "object_store"
-version = "0.10.2"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6da452820c715ce78221e8202ccc599b4a52f3e1eb3eedb487b680c81a8e3f3"
+checksum = "3cfccb68961a56facde1163f9319e0d15743352344e7808a11795fb99698dcaf"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
  "chrono",
  "futures",
+ "httparse",
  "humantime",
  "hyper 1.6.0",
  "itertools 0.13.0",
@@ -4825,28 +4807,7 @@ dependencies = [
  "rustls-pemfile 2.2.0",
  "serde",
  "serde_json",
- "snafu 0.7.5",
- "tokio",
- "tracing",
- "url",
- "walkdir",
-]
-
-[[package]]
-name = "object_store"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cfccb68961a56facde1163f9319e0d15743352344e7808a11795fb99698dcaf"
-dependencies = [
- "async-trait",
- "bytes",
- "chrono",
- "futures",
- "humantime",
- "itertools 0.13.0",
- "parking_lot",
- "percent-encoding",
- "snafu 0.8.5",
+ "snafu",
  "tokio",
  "tracing",
  "url",
@@ -5719,9 +5680,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.36.2"
+version = "0.37.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
+checksum = "165859e9e55f79d67b96c5d96f4e88b6f2695a1972849c15a6a3f5c59fc2c003"
 dependencies = [
  "memchr",
  "serde",
@@ -6609,33 +6570,11 @@ dependencies = [
 
 [[package]]
 name = "snafu"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4de37ad025c587a29e8f3f5605c00f70b98715ef90b9061a815b9e59e9042d6"
-dependencies = [
- "doc-comment",
- "snafu-derive 0.7.5",
-]
-
-[[package]]
-name = "snafu"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "223891c85e2a29c3fe8fb900c1fae5e69c2e42415e3177752e8718475efa5019"
 dependencies = [
- "snafu-derive 0.8.5",
-]
-
-[[package]]
-name = "snafu-derive"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "990079665f075b699031e9c08fd3ab99be5029b96f3b78dc0709e8f77e4efebf"
-dependencies = [
- "heck 0.4.1",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
+ "snafu-derive",
 ]
 
 [[package]]
