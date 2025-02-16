@@ -97,5 +97,5 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["python/lancedb/table.py"]
+include = ["python/lancedb/table.py", "python/lance/schema.py", "python/lance/file.py", "python/lance/util.py"]
 pythonVersion = "3.12"
