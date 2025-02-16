@@ -47,7 +47,7 @@ We can combine the above concepts to understand how to build and query an IVF-PQ
 
 There are three key parameters to set when constructing an IVF-PQ index:
 
-* `metric`: Use an `L2` euclidean distance metric. We also support `dot` and `cosine` distance.
+* `metric`: Use an `l2` euclidean distance metric. We also support `dot` and `cosine` distance.
 * `num_partitions`: The number of partitions in the IVF portion of the index.
 * `num_sub_vectors`: The number of sub-vectors that will be created during Product Quantization (PQ).
 
@@ -56,7 +56,7 @@ In Python, the index can be created as follows:
 ```python
 # Create and train the index for a 1536-dimensional vector
 # Make sure you have enough data in the table for an effective training step
-tbl.create_index(metric="L2", num_partitions=256, num_sub_vectors=96)
+tbl.create_index(metric="l2", num_partitions=256, num_sub_vectors=96)
 ```
 !!! note
     `num_partitions`=256 and `num_sub_vectors`=96 does not work for every dataset. Those values needs to be adjusted for your particular dataset.

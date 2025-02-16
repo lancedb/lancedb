@@ -54,7 +54,7 @@ As mentioned, after creating embedding, each data point is represented as a vect
 
 Points that are close to each other in vector space are considered similar (or appear in similar contexts), and points that are far away are considered dissimilar. To quantify this closeness, we use distance as a metric which can be measured in the  following way - 
 
-1. **Euclidean Distance (L2)**: It calculates the straight-line distance between two points (vectors) in a multidimensional space.
+1. **Euclidean Distance (l2)**: It calculates the straight-line distance between two points (vectors) in a multidimensional space.
 2. **Cosine Similarity**: It measures the cosine of the angle between two vectors, providing a normalized measure of similarity based on their direction.
 3. **Dot product**: It is calculated as the sum of the products of their corresponding components. To measure relatedness it considers both the magnitude and direction of the vectors.
 

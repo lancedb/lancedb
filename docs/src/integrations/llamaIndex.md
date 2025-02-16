@@ -125,7 +125,7 @@ The exhaustive list of parameters for `LanceDBVectorStore` vector store are :
         ```               
 - **_table_exists(self, tbl_name: `Optional[str]` = `None`) -> `bool`** : Returns `True` if `tbl_name` exists in database.
 - __create_index(  
-  self, scalar: `Optional[bool]` = False, col_name: `Optional[str]` = None, num_partitions: `Optional[int]` = 256, num_sub_vectors: `Optional[int]` = 96, index_cache_size: `Optional[int]` = None, metric: `Optional[str]` = "L2",  
+  self, scalar: `Optional[bool]` = False, col_name: `Optional[str]` = None, num_partitions: `Optional[int]` = 256, num_sub_vectors: `Optional[int]` = 96, index_cache_size: `Optional[int]` = None, metric: `Optional[str]` = "l2",  
 ) -> `None`__ : Creates a scalar(for non-vector cols) or a vector index on a table.
         Make sure your vector column has enough data before creating an index on it.
 
