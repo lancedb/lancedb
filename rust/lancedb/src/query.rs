@@ -7,6 +7,7 @@ use std::sync::Arc;
 use arrow::compute::concat_batches;
 use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
 use arrow_schema::DataType;
+use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{stream, try_join, FutureExt, TryStreamExt};
 use half::f16;
@@ -464,7 +465,7 @@ impl<T: HasQuery> QueryBase for T {
     }
 
     fn only_if(mut self, filter: impl AsRef<str>) -> Self {
-        self.mut_query().filter = Some(filter.as_ref().to_string());
+        self.mut_query().filter = Some(QueryFilter::Sql(filter.as_ref().to_string()));
         self
     }
 
@@ -577,6 +578,17 @@ pub trait ExecutableQuery {
     fn explain_plan(&self, verbose: bool) -> impl Future<Output = Result<String>> + Send;
 }
 
+/// A query filter that can be applied to a query
+#[derive(Clone, Debug)]
+pub enum QueryFilter {
+    /// The filter is an SQL string
+    Sql(String),
+    /// The filter is a Substrait ExtendedExpression message with a single expression
+    Substrait(Arc<[u8]>),
+    /// The filter is a Datafusion expression
+    Datafusion(Expr),
+}
+
 /// A basic query into a table without any kind of search
 ///
 /// This will result in a (potentially filtered) scan if executed
@@ -589,7 +601,7 @@ pub struct QueryRequest {
     pub offset: Option<usize>,
 
     /// Apply filter to the returned rows.
-    pub filter: Option<String>,
+    pub filter: Option<QueryFilter>,
 
     /// Perform a full text search on the table.
     pub full_text_search: Option<FullTextSearchQuery>,
