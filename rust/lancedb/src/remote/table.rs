@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::index::Index;
 use crate::index::IndexStatistics;
-use crate::query::{QueryRequest, Select, VectorQueryRequest};
+use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::table::{AddDataMode, AnyQuery, Filter};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error};
@@ -159,7 +159,13 @@ impl<S: HttpSend> RemoteTable<S> {
         }
 
         if let Some(filter) = &params.filter {
-            body["filter"] = serde_json::Value::String(filter.clone());
+            if let QueryFilter::Sql(filter) = filter {
+                body["filter"] = serde_json::Value::String(filter.clone());
+            } else {
+                return Err(Error::NotSupported {
+                    message: "querying a remote table with a non-sql filter".to_string(),
+                });
+            }
         }
 
         match &params.select {
