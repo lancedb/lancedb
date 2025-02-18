@@ -17,7 +17,8 @@ class EmbeddingFunction(BaseModel, ABC):
 
     All concrete embedding functions must implement the following methods:
     1. compute_query_embeddings() which takes a query and returns a list of embeddings
-    2. compute_source_embeddings() which returns a list of embeddings for the source column
+    2. compute_source_embeddings() which returns a list of embeddings for
+       the source column
     For text data, the two will be the same. For multi-modal data, the source column
     might be images and the vector column might be text.
     3. ndims() which returns the number of dimensions of the vector column
