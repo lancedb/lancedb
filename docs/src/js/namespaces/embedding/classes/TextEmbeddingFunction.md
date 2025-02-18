@@ -121,7 +121,7 @@ abstract generateEmbeddings(texts, ...args): Promise<number[][] | Float32Array[]
 ### getSensitiveKeys()
 
 ```ts
-abstract protected getSensitiveKeys(): string[]
+protected getSensitiveKeys(): string[]
 ```
 
 Provide a list of keys in the function options that should be treated as

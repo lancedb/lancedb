@@ -59,6 +59,11 @@ def test_embeddings_secret():
     func = registry.get("openai").create(api_key="$var:api_key")
     # --8<-- [end:register_secret]
 
+    try:
+        import torch
+    except ImportError:
+        pytest.skip("torch not installed")
+
     # --8<-- [start:register_device]
     import torch
 
