@@ -9,7 +9,7 @@
 An embedding function that automatically creates vector representation for a given column.
 
 It's important subclasses pass the **original** options to the super constructor
-and then pass those options to `resolveConfig` to resolve any variables before
+and then pass those options to `resolveVariables` to resolve any variables before
 using them.
 
 ## Example
@@ -18,7 +18,7 @@ using them.
 class MyEmbeddingFunction extends EmbeddingFunction {
   constructor(options: {model: string, timeout: number}) {
     super(optionsRaw);
-    const options = this.resolveConfig(optionsRaw);
+    const options = this.resolveVariables(optionsRaw);
     this.model = options.model;
     this.timeout = options.timeout;
   }
@@ -106,7 +106,7 @@ The datatype of the embeddings
 ### getSensitiveKeys()
 
 ```ts
-abstract protected getSensitiveKeys(): string[]
+protected getSensitiveKeys(): string[]
 ```
 
 Provide a list of keys in the function options that should be treated as
