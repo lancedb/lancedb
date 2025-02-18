@@ -56,8 +56,8 @@ Let's implement `SentenceTransformerEmbeddings` class. All you need to do is imp
 This is a stripped down version of our implementation of `SentenceTransformerEmbeddings` that removes certain optimizations and default settings.
 
 !!! danger "Use sensitive keys to prevent leaking secrets"
-    To prevent leaking secrets, such as API keys, you should add an configuration
-    parameteres of embedding function to the output of the
+    To prevent leaking secrets, such as API keys, you should add any sensitive
+    parameters of an embedding function to the output of the
     [sensitive_keys()][lancedb.embeddings.base.EmbeddingFunction.sensitive_keys] /
     [getSensitiveKeys()](../../js/namespaces/embedding/classes/EmbeddingFunction/#getsensitivekeys)
     method. This prevents users from accidentally instantiating the embedding
