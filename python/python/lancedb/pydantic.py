@@ -201,7 +201,7 @@ else:
 
 def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
     if inspect.isclass(tp):
-        if inspect.isclass(tp) and issubclass(tp, pydantic.BaseModel):
+        if issubclass(tp, pydantic.BaseModel):
             # Struct
             fields = _pydantic_model_to_fields(tp)
             return pa.struct(fields)
