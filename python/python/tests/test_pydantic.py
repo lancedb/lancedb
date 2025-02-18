@@ -10,7 +10,7 @@ import pyarrow as pa
 import pydantic
 import pytest
 from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, Vector, pydantic_to_schema
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 from pydantic import Field
 
 
@@ -296,15 +296,6 @@ def test_optional_nested_model():
         metadata: Optional[str] = None
         engine: str
         event: str
-
-        @field_validator("metadata", mode="before")
-        def metadata_to_json(cls, v: Optional[dict]) -> Optional[str]:
-            """
-            Convert metadata to JSON string for LanceDB compatibility.
-            """
-            if v is None:
-                return None
-            return json.dumps(v)
 
     class MessageEvent(AnyEvent):
         payload: Message
