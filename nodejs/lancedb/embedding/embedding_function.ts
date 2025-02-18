@@ -73,8 +73,8 @@ export abstract class EmbeddingFunction<
     return JSON.parse(JSON.stringify(this.#config));
   }
 
-  constructor(args: Partial<M> = {}) {
-    this.#config = args;
+  constructor() {
+    this.#config = {};
   }
 
   /**
@@ -88,9 +88,8 @@ export abstract class EmbeddingFunction<
   /**
    * Apply variables to the config.
    */
-  protected resolveVariables<T extends FunctionOptions>(
-    config: Partial<T>,
-  ): Partial<T> {
+  protected resolveVariables(config: Partial<M>): Partial<M> {
+    this.#config = config;
     const registry = getRegistry();
     const newConfig = { ...config };
     for (const [key_, value] of Object.entries(newConfig)) {
@@ -103,7 +102,7 @@ export abstract class EmbeddingFunction<
         );
       }
       // Makes TS happy (https://stackoverflow.com/a/78391854)
-      const key = key_ as keyof T;
+      const key = key_ as keyof M;
       if (typeof value === "string" && value.startsWith("$var:")) {
         const [name, defaultValue] = value.slice(5).split(":", 2);
         const variableValue = registry.getVar(name);

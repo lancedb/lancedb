@@ -44,7 +44,7 @@ test("custom embedding function", async () => {
     @register("my_embedding")
     class MyEmbeddingFunction extends EmbeddingFunction<string> {
       constructor(optionsRaw = {}) {
-        super(optionsRaw);
+        super();
         const options = this.resolveVariables(optionsRaw);
         // Initialize using options
       }

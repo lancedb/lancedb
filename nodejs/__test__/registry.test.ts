@@ -109,7 +109,8 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
   test("schema should contain correct metadata", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
       constructor(args: FunctionOptions = {}) {
-        super(args);
+        super();
+        this.resolveVariables(args);
       }
       ndims() {
         return 3;
@@ -153,7 +154,7 @@ describe("Registry.setVar", () => {
     // biome-ignore lint/correctness/noUnusedVariables :
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
       constructor(optionsRaw: FunctionOptions = {}) {
-        super(optionsRaw);
+        super();
         const options = this.resolveVariables(optionsRaw);
 
         expect(optionsRaw["someKey"].startsWith("$var:someName")).toBe(true);
