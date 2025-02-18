@@ -199,18 +199,29 @@ else:
         ]
 
 
+def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
+    if inspect.isclass(tp):
+        if issubclass(tp, pydantic.BaseModel):
+            # Struct
+            fields = _pydantic_model_to_fields(tp)
+            return pa.struct(fields)
+        if issubclass(tp, FixedSizeListMixin):
+            return pa.list_(tp.value_arrow_type(), tp.dim())
+    return _py_type_to_arrow_type(tp, field)
+
+
 def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
-
     if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
+
         if origin is list:
             child = args[0]
             return pa.list_(_py_type_to_arrow_type(child, field))
         elif origin == Union:
             if len(args) == 2 and args[1] is type(None):
-                return _py_type_to_arrow_type(args[0], field)
+                return _pydantic_type_to_arrow_type(args[0], field)
     elif sys.version_info >= (3, 10) and isinstance(field.annotation, types.UnionType):
         args = field.annotation.__args__
         if len(args) == 2:
@@ -218,14 +229,7 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
                 if typ is type(None):
                     continue
                 return _py_type_to_arrow_type(typ, field)
-    elif inspect.isclass(field.annotation):
-        if issubclass(field.annotation, pydantic.BaseModel):
-            # Struct
-            fields = _pydantic_model_to_fields(field.annotation)
-            return pa.struct(fields)
-        elif issubclass(field.annotation, FixedSizeListMixin):
-            return pa.list_(field.annotation.value_arrow_type(), field.annotation.dim())
-    return _py_type_to_arrow_type(field.annotation, field)
+    return _pydantic_type_to_arrow_type(field.annotation, field)
 
 
 def is_nullable(field: FieldInfo) -> bool:
