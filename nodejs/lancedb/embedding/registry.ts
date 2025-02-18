@@ -168,7 +168,9 @@ export class EmbeddingFunctionRegistry {
    * configuration using the syntax `$var:variable_name`. If they are not
    * set, an error will be thrown letting you know which key is unset. If you
    * want to supply a default value, you can add an additional part in the
-   * configuration like so: `$var:variable_name:default_value`.
+   * configuration like so: `$var:variable_name:default_value`. Default values
+   * can be used for runtime configurations that are not sensitive, such as
+   * whether to use a GPU for inference.
    *
    * @param name
    * @param value

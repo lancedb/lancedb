@@ -163,7 +163,9 @@ class EmbeddingFunctionRegistry:
         the syntax `$var:variable_name`. If they are not set, an error will be
         thrown letting you know which variable is missing. If you want to supply
         a default value, you can add an additional part in the configuration
-        like so: `$var:variable_name:default_value`.
+        like so: `$var:variable_name:default_value`. Default values can be
+        used for runtime configurations that are not sensitive, such as
+        whether to use a GPU for inference.
         """
         if ":" in name:
             raise ValueError("Variable names cannot contain colons")

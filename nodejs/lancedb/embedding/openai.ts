@@ -25,7 +25,7 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
       model: "text-embedding-ada-002",
     },
   ) {
-    super(optionsRaw);
+    super();
     const options = this.resolveVariables(optionsRaw);
 
     const openAIKey = options?.apiKey ?? process.env.OPENAI_API_KEY;

@@ -40,12 +40,8 @@ class MyEmbeddingFunction extends EmbeddingFunction {
 ### new EmbeddingFunction()
 
 ```ts
-new EmbeddingFunction<T, M>(args): EmbeddingFunction<T, M>
+new EmbeddingFunction<T, M>(): EmbeddingFunction<T, M>
 ```
-
-#### Parameters
-
-* **args**: `Partial`&lt;`M`&gt; = `{}`
 
 #### Returns
 
@@ -153,22 +149,18 @@ The number of dimensions of the embeddings
 ### resolveVariables()
 
 ```ts
-protected resolveVariables<T>(config): Partial<T>
+protected resolveVariables(config): Partial<M>
 ```
 
 Apply variables to the config.
 
-#### Type Parameters
-
-• **T** *extends* [`FunctionOptions`](../interfaces/FunctionOptions.md)
-
 #### Parameters
 
-* **config**: `Partial`&lt;`T`&gt;
+* **config**: `Partial`&lt;`M`&gt;
 
 #### Returns
 
-`Partial`&lt;`T`&gt;
+`Partial`&lt;`M`&gt;
 
 ***
 

@@ -48,7 +48,7 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
       model: "Xenova/all-MiniLM-L6-v2",
     },
   ) {
-    super(optionsRaw);
+    super();
     const options = this.resolveVariables(optionsRaw);
 
     const modelName = options?.model ?? "Xenova/all-MiniLM-L6-v2";
