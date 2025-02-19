@@ -68,6 +68,21 @@ The default value is 50.
 
 ***
 
+### numBits?
+
+```ts
+optional numBits: number;
+```
+
+Number of bits per sub-vector.
+
+This value controls how much each subvector is compressed.  The more bits the more
+accurate the index will be but the slower search.  The default is 8 bits.
+
+The number of bits must be 4 or 8.
+
+***
+
 ### numPartitions?
 
 ```ts

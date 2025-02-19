@@ -1,22 +1,12 @@
-// Copyright 2024 LanceDB Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Schema};
 use lance::arrow::json::JsonDataType;
 use lance::dataset::{ReadParams, WriteParams};
+use lance::index::vector::utils::infer_vector_dim;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lazy_static::lazy_static;
 
@@ -104,12 +94,12 @@ pub fn validate_table_name(name: &str) -> Result<()> {
 
 /// Find one default column to create index or perform vector query.
 pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result<String> {
-    // Try to find one fixed size list array column.
+    // Try to find a vector column.
     let candidates = schema
         .fields()
         .iter()
-        .filter_map(|field| match inf_vector_dim(field) {
-            Some(d) if dim.is_none() || dim == Some(d) => Some(field.name()),
+        .filter_map(|field| match infer_vector_dim(field.data_type()) {
+            Ok(d) if dim.is_none() || dim == Some(d as i32) => Some(field.name()),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -130,20 +120,6 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
         })
     } else {
         Ok(candidates[0].to_string())
-    }
-}
-
-fn inf_vector_dim(field: &arrow_schema::Field) -> Option<i32> {
-    match field.data_type() {
-        arrow_schema::DataType::FixedSizeList(f, d) => {
-            if f.data_type().is_floating() || f.data_type() == &DataType::UInt8 {
-                Some(*d)
-            } else {
-                None
-            }
-        }
-        arrow_schema::DataType::List(f) => inf_vector_dim(f),
-        _ => None,
     }
 }
 
@@ -185,24 +161,6 @@ pub fn supported_vector_data_type(dtype: &DataType) -> bool {
         }
         DataType::List(field) => supported_vector_data_type(field.data_type()),
         _ => false,
-    }
-}
-
-// TODO: remove this after we expose the same function in Lance.
-pub fn infer_vector_dim(data_type: &DataType) -> Result<usize> {
-    infer_vector_dim_impl(data_type, false)
-}
-
-fn infer_vector_dim_impl(data_type: &DataType, in_list: bool) -> Result<usize> {
-    match (data_type, in_list) {
-        (DataType::FixedSizeList(_, dim), _) => Ok(*dim as usize),
-        (DataType::List(inner), false) => infer_vector_dim_impl(inner.data_type(), true),
-        _ => Err(Error::InvalidInput {
-            message: format!(
-                "data type is not a vector (FixedSizeList or List<FixedSizeList>), but {:?}",
-                data_type
-            ),
-        }),
     }
 }
 

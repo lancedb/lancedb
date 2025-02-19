@@ -38,6 +38,13 @@ components:
       required: true
       schema:
         type: string
+    index_name:
+      name: index_name
+      in: path
+      description: name of the index
+      required: true
+      schema:
+        type: string
   responses:
     invalid_request:
       description: Invalid request
@@ -479,6 +486,25 @@ paths:
       responses:
         "200":
           description: Scalar Index successfully created
+        "400":
+          $ref: "#/components/responses/invalid_request"
+        "401":
+          $ref: "#/components/responses/unauthorized"
+        "404":
+          $ref: "#/components/responses/not_found"
+  /v1/table/{name}/index/{index_name}/drop/:
+    post:
+      description: Drop an index from the table
+      tags:
+        - Tables
+      summary: Drop an index from the table
+      operationId: dropIndex
+      parameters:
+        - $ref: "#/components/parameters/table_name"
+        - $ref: "#/components/parameters/index_name"
+      responses:
+        "200":
+          description: Index successfully dropped
         "400":
           $ref: "#/components/responses/invalid_request"
         "401":

@@ -1,16 +1,7 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+use std::collections::HashMap;
 
 use napi_derive::*;
 
@@ -78,6 +69,7 @@ pub struct ClientConfig {
     pub user_agent: Option<String>,
     pub retry_config: Option<RetryConfig>,
     pub timeout_config: Option<TimeoutConfig>,
+    pub extra_headers: Option<HashMap<String, String>>,
 }
 
 impl From<TimeoutConfig> for lancedb::remote::TimeoutConfig {
@@ -115,6 +107,7 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
                 .unwrap_or(concat!("LanceDB-Node-Client/", env!("CARGO_PKG_VERSION")).to_string()),
             retry_config: config.retry_config.map(Into::into).unwrap_or_default(),
             timeout_config: config.timeout_config.map(Into::into).unwrap_or_default(),
+            extra_headers: config.extra_headers.unwrap_or_default(),
         }
     }
 }

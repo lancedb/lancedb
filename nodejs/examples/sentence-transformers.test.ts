@@ -6,7 +6,7 @@ import { withTempDirectory } from "./util.ts";
 import * as lancedb from "@lancedb/lancedb";
 import "@lancedb/lancedb/embedding/transformers";
 import { LanceSchema, getRegistry } from "@lancedb/lancedb/embedding";
-import { EmbeddingFunction } from "@lancedb/lancedb/embedding";
+import type { EmbeddingFunction } from "@lancedb/lancedb/embedding";
 import { Utf8 } from "apache-arrow";
 
 test("full text search", async () => {
@@ -58,6 +58,6 @@ test("full text search", async () => {
     const query = "How many bones are in the human body?";
     const actual = await tbl.search(query).limit(1).toArray();
 
-    expect(actual[0]["text"]).toBe("The human body has 206 bones.");
+    expect(actual[0].text).toBe("The human body has 206 bones.");
   });
 }, 100_000);

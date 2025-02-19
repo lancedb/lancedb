@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::future::Future;
 use std::sync::Arc;
@@ -31,12 +20,12 @@ use lance_index::scalar::FullTextSearchQuery;
 use lance_index::vector::DIST_COL;
 use lance_io::stream::RecordBatchStreamAdapter;
 
-use crate::arrow::SendableRecordBatchStream;
 use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{check_reranker_result, NormalizeMethod, Reranker};
-use crate::table::TableInternal;
+use crate::table::BaseTable;
 use crate::DistanceType;
+use crate::{arrow::SendableRecordBatchStream, table::AnyQuery};
 
 mod hybrid;
 
@@ -460,7 +449,7 @@ pub trait QueryBase {
 }
 
 pub trait HasQuery {
-    fn mut_query(&mut self) -> &mut Query;
+    fn mut_query(&mut self) -> &mut QueryRequest;
 }
 
 impl<T: HasQuery> QueryBase for T {
@@ -588,6 +577,65 @@ pub trait ExecutableQuery {
     fn explain_plan(&self, verbose: bool) -> impl Future<Output = Result<String>> + Send;
 }
 
+/// A basic query into a table without any kind of search
+///
+/// This will result in a (potentially filtered) scan if executed
+#[derive(Debug, Clone)]
+pub struct QueryRequest {
+    /// limit the number of rows to return.
+    pub limit: Option<usize>,
+
+    /// Offset of the query.
+    pub offset: Option<usize>,
+
+    /// Apply filter to the returned rows.
+    pub filter: Option<String>,
+
+    /// Perform a full text search on the table.
+    pub full_text_search: Option<FullTextSearchQuery>,
+
+    /// Select column projection.
+    pub select: Select,
+
+    /// If set to true, the query is executed only on the indexed data,
+    /// and yields faster results.
+    ///
+    /// By default, this is false.
+    pub fast_search: bool,
+
+    /// If set to true, the query will return the `_rowid` meta column.
+    ///
+    /// By default, this is false.
+    pub with_row_id: bool,
+
+    /// If set to false, the filter will be applied after the vector search.
+    pub prefilter: bool,
+
+    /// Implementation of reranker that can be used to reorder or combine query
+    /// results, especially if using hybrid search
+    pub reranker: Option<Arc<dyn Reranker>>,
+
+    /// Configure how query results are normalized when doing hybrid search
+    pub norm: Option<NormalizeMethod>,
+}
+
+impl Default for QueryRequest {
+    fn default() -> Self {
+        Self {
+            limit: Some(DEFAULT_TOP_K),
+            offset: None,
+            filter: None,
+            full_text_search: None,
+            select: Select::All,
+            fast_search: false,
+            with_row_id: false,
+            prefilter: true,
+            reranker: None,
+            norm: None,
+        }
+    }
+}
+
 /// A builder for LanceDB queries.
 ///
 /// See [`crate::Table::query`] for more details on queries
@@ -602,59 +650,15 @@ pub trait ExecutableQuery {
 /// times.
 #[derive(Debug, Clone)]
 pub struct Query {
-    parent: Arc<dyn TableInternal>,
-
-    /// limit the number of rows to return.
-    pub limit: Option<usize>,
-
-    /// Offset of the query.
-    pub(crate) offset: Option<usize>,
-
-    /// Apply filter to the returned rows.
-    pub(crate) filter: Option<String>,
-
-    /// Perform a full text search on the table.
-    pub(crate) full_text_search: Option<FullTextSearchQuery>,
-
-    /// Select column projection.
-    pub(crate) select: Select,
-
-    /// If set to true, the query is executed only on the indexed data,
-    /// and yields faster results.
-    ///
-    /// By default, this is false.
-    pub(crate) fast_search: bool,
-
-    /// If set to true, the query will return the `_rowid` meta column.
-    ///
-    /// By default, this is false.
-    pub with_row_id: bool,
-
-    /// If set to false, the filter will be applied after the vector search.
-    pub(crate) prefilter: bool,
-
-    /// Implementation of reranker that can be used to reorder or combine query
-    /// results, especially if using hybrid search
-    pub(crate) reranker: Option<Arc<dyn Reranker>>,
-
-    /// Configure how query results are normalized when doing hybrid search
-    pub(crate) norm: Option<NormalizeMethod>,
+    parent: Arc<dyn BaseTable>,
+    request: QueryRequest,
 }
 
 impl Query {
-    pub(crate) fn new(parent: Arc<dyn TableInternal>) -> Self {
+    pub(crate) fn new(parent: Arc<dyn BaseTable>) -> Self {
         Self {
             parent,
-            limit: Some(DEFAULT_TOP_K),
-            offset: None,
-            filter: None,
-            full_text_search: None,
-            select: Select::All,
-            fast_search: false,
-            with_row_id: false,
-            prefilter: true,
-            reranker: None,
-            norm: None,
+            request: QueryRequest::default(),
         }
     }
 
@@ -702,38 +706,98 @@ impl Query {
     pub fn nearest_to(self, vector: impl IntoQueryVector) -> Result<VectorQuery> {
         let mut vector_query = self.into_vector();
         let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
-        vector_query.query_vector.push(query_vector);
+        vector_query.request.query_vector.push(query_vector);
         Ok(vector_query)
+    }
+
+    pub fn into_request(self) -> QueryRequest {
+        self.request
+    }
+
+    pub fn current_request(&self) -> &QueryRequest {
+        &self.request
     }
 }
 
 impl HasQuery for Query {
-    fn mut_query(&mut self) -> &mut Query {
-        self
+    fn mut_query(&mut self) -> &mut QueryRequest {
+        &mut self.request
     }
 }
 
 impl ExecutableQuery for Query {
     async fn create_plan(&self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
-        self.parent
-            .clone()
-            .create_plan(&self.clone().into_vector(), options)
-            .await
+        let req = AnyQuery::Query(self.request.clone());
+        self.parent.clone().create_plan(&req, options).await
     }
 
     async fn execute_with_options(
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        let query = AnyQuery::Query(self.request.clone());
         Ok(SendableRecordBatchStream::from(
-            self.parent.clone().plain_query(self, options).await?,
+            self.parent.clone().query(&query, options).await?,
         ))
     }
 
     async fn explain_plan(&self, verbose: bool) -> Result<String> {
-        self.parent
-            .explain_plan(&self.clone().into_vector(), verbose)
-            .await
+        let query = AnyQuery::Query(self.request.clone());
+        self.parent.explain_plan(&query, verbose).await
+    }
+}
+
+/// A request for a nearest-neighbors search into a table
+#[derive(Debug, Clone)]
+pub struct VectorQueryRequest {
+    /// The base query
+    pub base: QueryRequest,
+    /// The column to run the search on
+    ///
+    /// If None, then the table will need to auto-detect which column to use
+    pub column: Option<String>,
+    /// The vector(s) to search for
+    pub query_vector: Vec<Arc<dyn Array>>,
+    /// The number of partitions to search
+    pub nprobes: usize,
+    /// The lower bound (inclusive) of the distance to search for.
+    pub lower_bound: Option<f32>,
+    /// The upper bound (exclusive) of the distance to search for.
+    pub upper_bound: Option<f32>,
+    /// The number of candidates to return during the refine step for HNSW,
+    /// defaults to 1.5 * limit.
+    pub ef: Option<usize>,
+    /// A multiplier to control how many additional rows are taken during the refine step
+    pub refine_factor: Option<u32>,
+    /// The distance type to use for the search
+    pub distance_type: Option<DistanceType>,
+    /// Default is true. Set to false to enforce a brute force search.
+    pub use_index: bool,
+}
+
+impl Default for VectorQueryRequest {
+    fn default() -> Self {
+        Self {
+            base: QueryRequest::default(),
+            column: None,
+            query_vector: Vec::new(),
+            nprobes: 20,
+            lower_bound: None,
+            upper_bound: None,
+            ef: None,
+            refine_factor: None,
+            distance_type: None,
+            use_index: true,
+        }
+    }
+}
+
+impl VectorQueryRequest {
+    pub fn from_plain_query(query: QueryRequest) -> Self {
+        Self {
+            base: query,
+            ..Default::default()
+        }
     }
 }
 
@@ -748,39 +812,30 @@ impl ExecutableQuery for Query {
 /// the query and retrieve results.
 #[derive(Debug, Clone)]
 pub struct VectorQuery {
-    pub(crate) base: Query,
-    // The column to run the query on. If not specified, we will attempt to guess
-    // the column based on the dataset's schema.
-    pub(crate) column: Option<String>,
-    // IVF PQ - ANN search.
-    pub(crate) query_vector: Vec<Arc<dyn Array>>,
-    pub(crate) nprobes: usize,
-    // The lower bound (inclusive) of the distance to search for.
-    pub(crate) lower_bound: Option<f32>,
-    // The upper bound (exclusive) of the distance to search for.
-    pub(crate) upper_bound: Option<f32>,
-    // The number of candidates to return during the refine step for HNSW,
-    // defaults to 1.5 * limit.
-    pub(crate) ef: Option<usize>,
-    pub(crate) refine_factor: Option<u32>,
-    pub(crate) distance_type: Option<DistanceType>,
-    /// Default is true. Set to false to enforce a brute force search.
-    pub(crate) use_index: bool,
+    parent: Arc<dyn BaseTable>,
+    request: VectorQueryRequest,
 }
 
 impl VectorQuery {
     fn new(base: Query) -> Self {
         Self {
-            base,
-            column: None,
-            query_vector: Vec::new(),
-            nprobes: 20,
-            lower_bound: None,
-            upper_bound: None,
-            ef: None,
-            refine_factor: None,
-            distance_type: None,
-            use_index: true,
+            parent: base.parent,
+            request: VectorQueryRequest::from_plain_query(base.request),
+        }
+    }
+
+    pub fn into_request(self) -> VectorQueryRequest {
+        self.request
+    }
+
+    pub fn current_request(&self) -> &VectorQueryRequest {
+        &self.request
+    }
+
+    pub fn into_plain(self) -> Query {
+        Query {
+            parent: self.parent,
+            request: self.request.base,
         }
     }
 
@@ -792,7 +847,7 @@ impl VectorQuery {
     /// This parameter must be specified if the table has more than one column
     /// whose data type is a fixed-size-list of floats.
     pub fn column(mut self, column: &str) -> Self {
-        self.column = Some(column.to_string());
+        self.request.column = Some(column.to_string());
         self
     }
 
@@ -808,7 +863,7 @@ impl VectorQuery {
     /// result.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
         let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
-        self.query_vector.push(query_vector);
+        self.request.query_vector.push(query_vector);
         Ok(self)
     }
 
@@ -833,15 +888,15 @@ impl VectorQuery {
     /// your actual data to find the smallest possible value that will still give
     /// you the desired recall.
     pub fn nprobes(mut self, nprobes: usize) -> Self {
-        self.nprobes = nprobes;
+        self.request.nprobes = nprobes;
         self
     }
 
     /// Set the distance range for vector search,
     /// only rows with distances in the range [lower_bound, upper_bound) will be returned
     pub fn distance_range(mut self, lower_bound: Option<f32>, upper_bound: Option<f32>) -> Self {
-        self.lower_bound = lower_bound;
-        self.upper_bound = upper_bound;
+        self.request.lower_bound = lower_bound;
+        self.request.upper_bound = upper_bound;
         self
     }
 
@@ -853,7 +908,7 @@ impl VectorQuery {
     /// Increasing this value will increase the recall of your query but will
     /// also increase the latency of your query.  The default value is 1.5*limit.
     pub fn ef(mut self, ef: usize) -> Self {
-        self.ef = Some(ef);
+        self.request.ef = Some(ef);
         self
     }
 
@@ -885,7 +940,7 @@ impl VectorQuery {
     /// and the quantized result vectors.  This can be considerably different than the true
     /// distance between the query vector and the actual uncompressed vector.
     pub fn refine_factor(mut self, refine_factor: u32) -> Self {
-        self.refine_factor = Some(refine_factor);
+        self.request.refine_factor = Some(refine_factor);
         self
     }
 
@@ -902,7 +957,7 @@ impl VectorQuery {
     ///
     /// By default [`DistanceType::L2`] is used.
     pub fn distance_type(mut self, distance_type: DistanceType) -> Self {
-        self.distance_type = Some(distance_type);
+        self.request.distance_type = Some(distance_type);
         self
     }
 
@@ -914,16 +969,19 @@ impl VectorQuery {
     /// the vector index can give you ground truth results which you can use to
     /// calculate your recall to select an appropriate value for nprobes.
     pub fn bypass_vector_index(mut self) -> Self {
-        self.use_index = false;
+        self.request.use_index = false;
         self
     }
 
     pub async fn execute_hybrid(&self) -> Result<SendableRecordBatchStream> {
         // clone query and specify we want to include row IDs, which can be needed for reranking
-        let fts_query = self.base.clone().with_row_id();
+        let mut fts_query = Query::new(self.parent.clone());
+        fts_query.request = self.request.base.clone();
+        fts_query = fts_query.with_row_id();
+
         let mut vector_query = self.clone().with_row_id();
 
-        vector_query.base.full_text_search = None;
+        vector_query.request.base.full_text_search = None;
         let (fts_results, vec_results) = try_join!(fts_query.execute(), vector_query.execute())?;
 
         let (fts_results, vec_results) = try_join!(
@@ -939,7 +997,7 @@ impl VectorQuery {
         let mut fts_results = concat_batches(&fts_schema, fts_results.iter())?;
         let mut vec_results = concat_batches(&vec_schema, vec_results.iter())?;
 
-        if matches!(self.base.norm, Some(NormalizeMethod::Rank)) {
+        if matches!(self.request.base.norm, Some(NormalizeMethod::Rank)) {
             vec_results = hybrid::rank(vec_results, DIST_COL, None)?;
             fts_results = hybrid::rank(fts_results, SCORE_COL, None)?;
         }
@@ -948,14 +1006,20 @@ impl VectorQuery {
         fts_results = hybrid::normalize_scores(fts_results, SCORE_COL, None)?;
 
         let reranker = self
+            .request
             .base
             .reranker
             .clone()
             .unwrap_or(Arc::new(RRFReranker::default()));
 
-        let fts_query = self.base.full_text_search.as_ref().ok_or(Error::Runtime {
-            message: "there should be an FTS search".to_string(),
-        })?;
+        let fts_query = self
+            .request
+            .base
+            .full_text_search
+            .as_ref()
+            .ok_or(Error::Runtime {
+                message: "there should be an FTS search".to_string(),
+            })?;
 
         let mut results = reranker
             .rerank_hybrid(&fts_query.query, vec_results, fts_results)
@@ -963,12 +1027,12 @@ impl VectorQuery {
 
         check_reranker_result(&results)?;
 
-        let limit = self.base.limit.unwrap_or(DEFAULT_TOP_K);
+        let limit = self.request.base.limit.unwrap_or(DEFAULT_TOP_K);
         if results.num_rows() > limit {
             results = results.slice(0, limit);
         }
 
-        if !self.base.with_row_id {
+        if !self.request.base.with_row_id {
             results = results.drop_column(ROW_ID)?;
         }
 
@@ -980,14 +1044,15 @@ impl VectorQuery {
 
 impl ExecutableQuery for VectorQuery {
     async fn create_plan(&self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
-        self.base.parent.clone().create_plan(self, options).await
+        let query = AnyQuery::VectorQuery(self.request.clone());
+        self.parent.clone().create_plan(&query, options).await
     }
 
     async fn execute_with_options(
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
-        if self.base.full_text_search.is_some() {
+        if self.request.base.full_text_search.is_some() {
             let hybrid_result = async move { self.execute_hybrid().await }.boxed().await?;
             return Ok(hybrid_result);
         }
@@ -1001,13 +1066,14 @@ impl ExecutableQuery for VectorQuery {
     }
 
     async fn explain_plan(&self, verbose: bool) -> Result<String> {
-        self.base.parent.explain_plan(self, verbose).await
+        let query = AnyQuery::VectorQuery(self.request.clone());
+        self.parent.explain_plan(&query, verbose).await
     }
 }
 
 impl HasQuery for VectorQuery {
-    fn mut_query(&mut self) -> &mut Query {
-        &mut self.base
+    fn mut_query(&mut self) -> &mut QueryRequest {
+        &mut self.request.base
     }
 }
 
@@ -1026,7 +1092,7 @@ mod tests {
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use tempfile::tempdir;
 
-    use crate::{connect, connection::CreateTableMode, Table};
+    use crate::{connect, database::CreateTableMode, Table};
 
     #[tokio::test]
     async fn test_setters_getters() {
@@ -1047,7 +1113,13 @@ mod tests {
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
         assert_eq!(
-            *query.query_vector.first().unwrap().as_ref().as_primitive(),
+            *query
+                .request
+                .query_vector
+                .first()
+                .unwrap()
+                .as_ref()
+                .as_primitive(),
             vector
         );
 
@@ -1065,15 +1137,21 @@ mod tests {
             .refine_factor(999);
 
         assert_eq!(
-            *query.query_vector.first().unwrap().as_ref().as_primitive(),
+            *query
+                .request
+                .query_vector
+                .first()
+                .unwrap()
+                .as_ref()
+                .as_primitive(),
             new_vector
         );
-        assert_eq!(query.base.limit.unwrap(), 100);
-        assert_eq!(query.base.offset.unwrap(), 1);
-        assert_eq!(query.nprobes, 1000);
-        assert!(query.use_index);
-        assert_eq!(query.distance_type, Some(DistanceType::Cosine));
-        assert_eq!(query.refine_factor, Some(999));
+        assert_eq!(query.request.base.limit.unwrap(), 100);
+        assert_eq!(query.request.base.offset.unwrap(), 1);
+        assert_eq!(query.request.nprobes, 1000);
+        assert!(query.request.use_index);
+        assert_eq!(query.request.distance_type, Some(DistanceType::Cosine));
+        assert_eq!(query.request.refine_factor, Some(999));
     }
 
     #[tokio::test]

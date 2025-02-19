@@ -1,19 +1,9 @@
-// Copyright 2024 LanceDB Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::{future::Future, time::Duration};
+use std::{collections::HashMap, future::Future, str::FromStr, time::Duration};
 
+use http::HeaderName;
 use log::debug;
 use reqwest::{
     header::{HeaderMap, HeaderValue},
@@ -26,7 +16,7 @@ use crate::remote::db::RemoteOptions;
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
 /// Configuration for the LanceDB Cloud HTTP client.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ClientConfig {
     pub timeout_config: TimeoutConfig,
     pub retry_config: RetryConfig,
@@ -34,6 +24,7 @@ pub struct ClientConfig {
     /// name and version.
     pub user_agent: String,
     // TODO: how to configure request ids?
+    pub extra_headers: HashMap<String, String>,
 }
 
 impl Default for ClientConfig {
@@ -42,12 +33,13 @@ impl Default for ClientConfig {
             timeout_config: TimeoutConfig::default(),
             retry_config: RetryConfig::default(),
             user_agent: concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION")).into(),
+            extra_headers: HashMap::new(),
         }
     }
 }
 
 /// How to handle timeouts for HTTP requests.
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct TimeoutConfig {
     /// The timeout for creating a connection to the server.
     ///
@@ -73,7 +65,7 @@ pub struct TimeoutConfig {
 }
 
 /// How to handle retries for HTTP requests.
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct RetryConfig {
     /// The number of times to retry a request if it fails.
     ///
@@ -267,6 +259,7 @@ impl RestfulLanceDbClient<Sender> {
                 host_override.is_some(),
                 options,
                 db_prefix,
+                &client_config,
             )?)
             .user_agent(client_config.user_agent)
             .build()
@@ -302,6 +295,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         has_host_override: bool,
         options: &RemoteOptions,
         db_prefix: Option<&str>,
+        config: &ClientConfig,
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -352,6 +346,18 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 "x-azure-storage-account-name",
                 HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
                     message: format!("non-ascii storage account name '{}' provided", db_name),
+                })?,
+            );
+        }
+
+        for (key, value) in &config.extra_headers {
+            let key_parsed = HeaderName::from_str(key).map_err(|_| Error::InvalidInput {
+                message: format!("non-ascii value for header '{}' provided", key),
+            })?;
+            headers.insert(
+                key_parsed,
+                HeaderValue::from_str(value).map_err(|_| Error::InvalidInput {
+                    message: format!("non-ascii value for header '{}' provided", key),
                 })?,
             );
         }

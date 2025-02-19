@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 # --8<-- [start:import-lancedb]
 import lancedb
 
@@ -65,7 +68,7 @@ def test_vector_search():
     tbl.search(np.random.random((1536))).limit(10).to_list()
     # --8<-- [end:exhaustive_search]
     # --8<-- [start:exhaustive_search_cosine]
-    tbl.search(np.random.random((1536))).metric("cosine").limit(10).to_list()
+    tbl.search(np.random.random((1536))).distance_type("cosine").limit(10).to_list()
     # --8<-- [end:exhaustive_search_cosine]
     # --8<-- [start:create_table_with_nested_schema]
     # Let's add 100 sample rows to our dataset

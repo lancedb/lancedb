@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright The Lance Authors
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 
 import os
 from datetime import date, datetime, timedelta
@@ -1008,6 +1009,10 @@ def test_create_scalar_index(mem_db: DBConnection):
     results = table.search([5, 5]).where("x != 'b'").to_arrow()
     assert results["_distance"][0].as_py() > 0
 
+    table.drop_index(scalar_index.name)
+    indices = table.list_indices()
+    assert len(indices) == 0
+
 
 def test_empty_query(mem_db: DBConnection):
     table = mem_db.create_table(
@@ -1238,7 +1243,9 @@ def test_hybrid_search_metric_type(tmp_db: DBConnection):
 
     # with custom metric
     result_dot = (
-        table.search("feeling lucky", query_type="hybrid").metric("dot").to_arrow()
+        table.search("feeling lucky", query_type="hybrid")
+        .distance_type("dot")
+        .to_arrow()
     )
     result_l2 = table.search("feeling lucky", query_type="hybrid").to_arrow()
     assert len(result_dot) > 0

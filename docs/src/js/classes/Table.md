@@ -14,20 +14,12 @@ will be freed when the Table is garbage collected.  To eagerly free the cache yo
 can call the `close` method.  Once the Table is closed, it cannot be used for any
 further operations.
 
+Tables are created using the methods [Connection#createTable](Connection.md#createtable)
+and [Connection#createEmptyTable](Connection.md#createemptytable). Existing tables are opened
+using [Connection#openTable](Connection.md#opentable).
+
 Closing a table is optional.  It not closed, it will be closed when it is garbage
 collected.
-
-## Constructors
-
-### new Table()
-
-```ts
-new Table(): Table
-```
-
-#### Returns
-
-[`Table`](Table.md)
 
 ## Accessors
 
@@ -216,6 +208,9 @@ Indices on vector columns will speed up vector searches.
 Indices on scalar columns will speed up filtering (in both
 vector and non-vector searches)
 
+We currently don't support custom named indexes.
+The index name will always be `${column}_idx`.
+
 #### Parameters
 
 * **column**: `string`
@@ -225,11 +220,6 @@ vector and non-vector searches)
 #### Returns
 
 `Promise`&lt;`void`&gt;
-
-#### Note
-
-We currently don't support custom named indexes,
-The index name will always be `${column}_idx`
 
 #### Examples
 
@@ -317,6 +307,28 @@ then call ``cleanup_files`` to remove the old files.
 
 ***
 
+### dropIndex()
+
+```ts
+abstract dropIndex(name): Promise<void>
+```
+
+Drop an index from the table.
+
+#### Parameters
+
+* **name**: `string`
+    The name of the index.
+    This does not delete the index from disk, it just removes it from the table.
+    To delete the index, run [Table#optimize](Table.md#optimize) after dropping the index.
+    Use [Table.listIndices](Table.md#listindices) to find the names of the indices.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### indexStats()
 
 ```ts
@@ -335,6 +347,8 @@ List all the stats of a specified index
 `Promise`&lt;`undefined` \| [`IndexStatistics`](../interfaces/IndexStatistics.md)&gt;
 
 The stats of the index. If the index does not exist, it will return undefined
+
+Use [Table.listIndices](Table.md#listindices) to find the names of the indices.
 
 ***
 
@@ -376,7 +390,7 @@ List all the versions of the table
 
 #### Returns
 
-`Promise`&lt;`Version`[]&gt;
+`Promise`&lt;[`Version`](../interfaces/Version.md)[]&gt;
 
 ***
 
@@ -392,7 +406,7 @@ abstract mergeInsert(on): MergeInsertBuilder
 
 #### Returns
 
-`MergeInsertBuilder`
+[`MergeInsertBuilder`](MergeInsertBuilder.md)
 
 ***
 
@@ -436,7 +450,7 @@ Modeled after ``VACUUM`` in PostgreSQL.
 
 #### Returns
 
-`Promise`&lt;`OptimizeStats`&gt;
+`Promise`&lt;[`OptimizeStats`](../interfaces/OptimizeStats.md)&gt;
 
 ***
 
@@ -553,7 +567,7 @@ Get the schema of the table.
 abstract search(
    query,
    queryType?,
-   ftsColumns?): VectorQuery | Query
+   ftsColumns?): Query | VectorQuery
 ```
 
 Create a search query to find the nearest neighbors
@@ -561,7 +575,7 @@ of the given query
 
 #### Parameters
 
-* **query**: `string` \| `IntoVector`
+* **query**: `string` \| [`IntoVector`](../type-aliases/IntoVector.md)
     the query, a vector or string
 
 * **queryType?**: `string`
@@ -575,7 +589,7 @@ of the given query
 
 #### Returns
 
-[`VectorQuery`](VectorQuery.md) \| [`Query`](Query.md)
+[`Query`](Query.md) \| [`VectorQuery`](VectorQuery.md)
 
 ***
 
@@ -694,7 +708,7 @@ by `query`.
 
 #### Parameters
 
-* **vector**: `IntoVector`
+* **vector**: [`IntoVector`](../type-aliases/IntoVector.md)
 
 #### Returns
 
@@ -717,38 +731,3 @@ Retrieve the version of the table
 #### Returns
 
 `Promise`&lt;`number`&gt;
-
-***
-
-### parseTableData()
-
-```ts
-static parseTableData(
-   data,
-   options?,
-   streaming?): Promise<object>
-```
-
-#### Parameters
-
-* **data**: `TableLike` \| `Record`&lt;`string`, `unknown`&gt;[]
-
-* **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
-
-* **streaming?**: `boolean` = `false`
-
-#### Returns
-
-`Promise`&lt;`object`&gt;
-
-##### buf
-
-```ts
-buf: Buffer;
-```
-
-##### mode
-
-```ts
-mode: string;
-```

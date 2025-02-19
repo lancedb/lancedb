@@ -1,4 +1,7 @@
-from typing import List
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+from typing import List, Optional, Tuple, Union
 
 import pyarrow as pa
 
@@ -12,17 +15,27 @@ class AsyncRecordBatchReader:
     Also allows access to the schema of the stream
     """
 
-    def __init__(self, inner: RecordBatchStream):
-        self.inner_ = inner
-
-    @property
-    def schema(self) -> pa.Schema:
+    def __init__(
+        self,
+        inner: Union[RecordBatchStream, pa.Table],
+        max_batch_length: Optional[int] = None,
+    ):
         """
-        Get the schema of the batches produced by the stream
 
-        Accessing the schema does not consume any data from the stream
+        Attributes
+        ----------
+        schema : pa.Schema
+            The schema of the batches produced by the stream.
+            Accessing the schema does not consume any data from the stream
         """
-        return self.inner_.schema()
+        if isinstance(inner, pa.Table):
+            self._inner = self._async_iter_from_table(inner, max_batch_length)
+            self.schema: pa.Schema = inner.schema
+        elif isinstance(inner, RecordBatchStream):
+            self._inner = inner
+            self.schema: pa.Schema = inner.schema
+        else:
+            raise TypeError("inner must be a RecordBatchStream or a Table")
 
     async def read_all(self) -> List[pa.RecordBatch]:
         """
@@ -38,7 +51,32 @@ class AsyncRecordBatchReader:
         return self
 
     async def __anext__(self) -> pa.RecordBatch:
-        next = await self.inner_.next()
-        if next is None:
-            raise StopAsyncIteration
-        return next
+        return await self._inner.__anext__()
+
+    @staticmethod
+    async def _async_iter_from_table(
+        table: pa.Table, max_batch_length: Optional[int] = None
+    ):
+        """
+        Create an AsyncRecordBatchReader from a Table
+
+        This is useful when you have a Table that you want to iterate
+        over asynchronously
+        """
+        batches = table.to_batches(max_chunksize=max_batch_length)
+        for batch in batches:
+            yield batch
+
+
+def peek_reader(
+    reader: pa.RecordBatchReader,
+) -> Tuple[pa.RecordBatch, pa.RecordBatchReader]:
+    if not isinstance(reader, pa.RecordBatchReader):
+        raise TypeError("reader must be a RecordBatchReader")
+    batch = reader.read_next_batch()
+
+    def all_batches():
+        yield batch
+        yield from reader
+
+    return batch, pa.RecordBatchReader.from_batches(batch.schema, all_batches())

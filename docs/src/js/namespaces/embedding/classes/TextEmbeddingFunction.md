@@ -14,7 +14,7 @@ an abstract class for implementing embedding functions that take text as input
 
 ## Type Parameters
 
-• **M** *extends* `FunctionOptions` = `FunctionOptions`
+• **M** *extends* [`FunctionOptions`](../interfaces/FunctionOptions.md) = [`FunctionOptions`](../interfaces/FunctionOptions.md)
 
 ## Constructors
 
@@ -158,11 +158,11 @@ sourceField is used in combination with `LanceSchema` to provide a declarative d
 
 #### Returns
 
-[`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]
+[`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, [`FunctionOptions`](../interfaces/FunctionOptions.md)&gt;&gt;]
 
 #### See
 
-lancedb.LanceSchema
+[LanceSchema](../functions/LanceSchema.md)
 
 #### Overrides
 
@@ -221,15 +221,16 @@ vectorField is used in combination with `LanceSchema` to provide a declarative d
 
 #### Parameters
 
-* **optionsOrDatatype?**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
+* **optionsOrDatatype?**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;[`FieldOptions`](../interfaces/FieldOptions.md)&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
+    The options for the field
 
 #### Returns
 
-[`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]
+[`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, [`FunctionOptions`](../interfaces/FunctionOptions.md)&gt;&gt;]
 
 #### See
 
-lancedb.LanceSchema
+[LanceSchema](../functions/LanceSchema.md)
 
 #### Inherited from
 

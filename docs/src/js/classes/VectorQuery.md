@@ -10,29 +10,13 @@ A builder used to construct a vector search
 
 This builder can be reused to execute the query many times.
 
+## See
+
+[Query#nearestTo](Query.md#nearestto)
+
 ## Extends
 
 - [`QueryBase`](QueryBase.md)&lt;`NativeVectorQuery`&gt;
-
-## Constructors
-
-### new VectorQuery()
-
-```ts
-new VectorQuery(inner): VectorQuery
-```
-
-#### Parameters
-
-* **inner**: `VectorQuery` \| `Promise`&lt;`VectorQuery`&gt;
-
-#### Returns
-
-[`VectorQuery`](VectorQuery.md)
-
-#### Overrides
-
-[`QueryBase`](QueryBase.md).[`constructor`](QueryBase.md#constructors)
 
 ## Properties
 
@@ -48,22 +32,6 @@ protected inner: VectorQuery | Promise<VectorQuery>;
 
 ## Methods
 
-### \[asyncIterator\]()
-
-```ts
-asyncIterator: AsyncIterator<RecordBatch<any>, any, undefined>
-```
-
-#### Returns
-
-`AsyncIterator`&lt;`RecordBatch`&lt;`any`&gt;, `any`, `undefined`&gt;
-
-#### Inherited from
-
-[`QueryBase`](QueryBase.md).[`[asyncIterator]`](QueryBase.md#%5Basynciterator%5D)
-
-***
-
 ### addQueryVector()
 
 ```ts
@@ -72,7 +40,7 @@ addQueryVector(vector): VectorQuery
 
 #### Parameters
 
-* **vector**: `IntoVector`
+* **vector**: [`IntoVector`](../type-aliases/IntoVector.md)
 
 #### Returns
 
@@ -128,6 +96,24 @@ whose data type is a fixed-size-list of floats.
 
 ***
 
+### distanceRange()
+
+```ts
+distanceRange(lowerBound?, upperBound?): VectorQuery
+```
+
+#### Parameters
+
+* **lowerBound?**: `number`
+
+* **upperBound?**: `number`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+***
+
 ### distanceType()
 
 ```ts
@@ -158,26 +144,6 @@ type used to train the vector index.  If this is not done then the results will 
 invalid.
 
 By default "l2" is used.
-
-***
-
-### doCall()
-
-```ts
-protected doCall(fn): void
-```
-
-#### Parameters
-
-* **fn**
-
-#### Returns
-
-`void`
-
-#### Inherited from
-
-[`QueryBase`](QueryBase.md).[`doCall`](QueryBase.md#docall)
 
 ***
 
@@ -215,7 +181,7 @@ Execute the query and return the results as an
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
 
 #### Returns
 
@@ -284,7 +250,7 @@ fastSearch(): this
 Skip searching un-indexed data. This can make search faster, but will miss
 any data that is not yet indexed.
 
-Use lancedb.Table#optimize to index all un-indexed data.
+Use [Table#optimize](Table.md#optimize) to index all un-indexed data.
 
 #### Returns
 
@@ -312,7 +278,7 @@ A filter statement to be applied to this query.
 
 `this`
 
-#### Alias
+#### See
 
 where
 
@@ -336,7 +302,7 @@ fullTextSearch(query, options?): this
 
 * **query**: `string`
 
-* **options?**: `Partial`&lt;`FullTextSearchOptions`&gt;
+* **options?**: `Partial`&lt;[`FullTextSearchOptions`](../interfaces/FullTextSearchOptions.md)&gt;
 
 #### Returns
 
@@ -370,26 +336,6 @@ called then every valid row from the table will be returned.
 #### Inherited from
 
 [`QueryBase`](QueryBase.md).[`limit`](QueryBase.md#limit)
-
-***
-
-### nativeExecute()
-
-```ts
-protected nativeExecute(options?): Promise<RecordBatchIterator>
-```
-
-#### Parameters
-
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
-
-#### Returns
-
-`Promise`&lt;`RecordBatchIterator`&gt;
-
-#### Inherited from
-
-[`QueryBase`](QueryBase.md).[`nativeExecute`](QueryBase.md#nativeexecute)
 
 ***
 
@@ -528,6 +474,22 @@ distance between the query vector and the actual uncompressed vector.
 
 ***
 
+### rerank()
+
+```ts
+rerank(reranker): VectorQuery
+```
+
+#### Parameters
+
+* **reranker**: [`Reranker`](../namespaces/rerankers/interfaces/Reranker.md)
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+***
+
 ### select()
 
 ```ts
@@ -591,7 +553,7 @@ Collect the results as an array of objects.
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
 
 #### Returns
 
@@ -613,7 +575,7 @@ Collect the results as an Arrow
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
 
 #### Returns
 

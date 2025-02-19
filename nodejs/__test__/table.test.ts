@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import * as fs from "fs";
 import * as path from "path";
@@ -264,6 +253,31 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const arrowTbl = await table.toArrow();
       expect(arrowTbl).toBeInstanceOf(ArrowTable);
     });
+
+    it("should be able to handle missing fields", async () => {
+      const schema = new arrow.Schema([
+        new arrow.Field("id", new arrow.Int32(), true),
+        new arrow.Field("y", new arrow.Int32(), true),
+        new arrow.Field("z", new arrow.Int64(), true),
+      ]);
+      const db = await connect(tmpDir.name);
+      const table = await db.createEmptyTable("testNull", schema);
+      await table.add([{ id: 1, y: 2 }]);
+      await table.add([{ id: 2 }]);
+
+      await table
+        .mergeInsert("id")
+        .whenNotMatchedInsertAll()
+        .execute([
+          { id: 3, z: 3 },
+          { id: 4, z: 5 },
+        ]);
+
+      const res = await table.query().toArrow();
+      expect(res.getChild("id")?.toJSON()).toEqual([1, 2, 3, 4]);
+      expect(res.getChild("y")?.toJSON()).toEqual([2, null, null, null]);
+      expect(res.getChild("z")?.toJSON()).toEqual([null, null, 3n, 5n]);
+    });
   },
 );
 
@@ -473,6 +487,10 @@ describe("When creating an index", () => {
     // test offset
     rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
     expect(rst.numRows).toBe(1);
+
+    await tbl.dropIndex("vec_idx");
+    const indices2 = await tbl.listIndices();
+    expect(indices2.length).toBe(0);
   });
 
   it("should search with distance range", async () => {

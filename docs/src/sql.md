@@ -64,6 +64,7 @@ const tbl = await db.createTable('myVectors', data)
         ```ts
         --8<-- "docs/src/sql_legacy.ts:search"
         ```
+
 !!! note
 
     Creating a [scalar index](guides/scalar_index.md) accelerates filtering.
@@ -118,14 +119,14 @@ For example, the following filter string is acceptable:
         --8<-- "docs/src/sql_legacy.ts:vec_search"
         ```
 
-If your column name contains special characters or is a [SQL Keyword](https://docs.rs/sqlparser/latest/sqlparser/keywords/index.html),
+If your column name contains special characters, upper-case characters, or is a [SQL Keyword](https://docs.rs/sqlparser/latest/sqlparser/keywords/index.html),
 you can use backtick (`` ` ``) to escape it. For nested fields, each segment of the
 path must be wrapped in backticks.
 
 === "SQL"
 
     ```sql
-    `CUBE` = 10 AND `column name with space` IS NOT NULL
+    `CUBE` = 10 AND `UpperCaseName` = '3' AND `column name with space` IS NOT NULL
       AND `nested with space`.`inner with space` < 2
     ```
 

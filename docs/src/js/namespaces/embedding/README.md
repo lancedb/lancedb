@@ -17,6 +17,14 @@
 ### Interfaces
 
 - [EmbeddingFunctionConfig](interfaces/EmbeddingFunctionConfig.md)
+- [EmbeddingFunctionConstructor](interfaces/EmbeddingFunctionConstructor.md)
+- [EmbeddingFunctionCreate](interfaces/EmbeddingFunctionCreate.md)
+- [FieldOptions](interfaces/FieldOptions.md)
+- [FunctionOptions](interfaces/FunctionOptions.md)
+
+### Type Aliases
+
+- [CreateReturnType](type-aliases/CreateReturnType.md)
 
 ### Functions
 

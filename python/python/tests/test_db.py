@@ -1,15 +1,6 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 
 import re
 from datetime import timedelta
@@ -308,12 +299,12 @@ def test_create_exist_ok(tmp_db: lancedb.DBConnection):
 @pytest.mark.asyncio
 async def test_connect(tmp_path):
     db = await lancedb.connect_async(tmp_path)
-    assert str(db) == f"NativeDatabase(uri={tmp_path}, read_consistency_interval=None)"
+    assert str(db) == f"ListingDatabase(uri={tmp_path}, read_consistency_interval=None)"
 
     db = await lancedb.connect_async(
         tmp_path, read_consistency_interval=timedelta(seconds=5)
     )
-    assert str(db) == f"NativeDatabase(uri={tmp_path}, read_consistency_interval=5s)"
+    assert str(db) == f"ListingDatabase(uri={tmp_path}, read_consistency_interval=5s)"
 
 
 @pytest.mark.asyncio
@@ -405,13 +396,16 @@ async def test_create_exist_ok_async(tmp_db_async: lancedb.AsyncConnection):
 
 @pytest.mark.asyncio
 async def test_create_table_v2_manifest_paths_async(tmp_path):
-    db = await lancedb.connect_async(tmp_path)
+    db_with_v2_paths = await lancedb.connect_async(
+        tmp_path, storage_options={"new_table_enable_v2_manifest_paths": "true"}
+    )
+    db_no_v2_paths = await lancedb.connect_async(
+        tmp_path, storage_options={"new_table_enable_v2_manifest_paths": "false"}
+    )
     # Create table in v2 mode with v2 manifest paths enabled
-    tbl = await db.create_table(
+    tbl = await db_with_v2_paths.create_table(
         "test_v2_manifest_paths",
         data=[{"id": 0}],
-        use_legacy_format=False,
-        enable_v2_manifest_paths=True,
     )
     assert await tbl.uses_v2_manifest_paths()
     manifests_dir = tmp_path / "test_v2_manifest_paths.lance" / "_versions"
@@ -419,11 +413,9 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
         assert re.match(r"\d{20}\.manifest", manifest)
 
     # Start a table in V1 mode then migrate
-    tbl = await db.create_table(
+    tbl = await db_no_v2_paths.create_table(
         "test_v2_migration",
         data=[{"id": 0}],
-        use_legacy_format=False,
-        enable_v2_manifest_paths=False,
     )
     assert not await tbl.uses_v2_manifest_paths()
     manifests_dir = tmp_path / "test_v2_migration.lance" / "_versions"
@@ -506,6 +498,10 @@ def test_delete_table(tmp_db: lancedb.DBConnection):
     # dropping a table that does not exist should pass
     # if ignore_missing=True
     tmp_db.drop_table("does_not_exist", ignore_missing=True)
+
+    tmp_db.drop_all_tables()
+
+    assert tmp_db.table_names() == []
 
 
 @pytest.mark.asyncio
@@ -592,7 +588,7 @@ def test_empty_or_nonexistent_table(mem_db: lancedb.DBConnection):
 
 
 @pytest.mark.asyncio
-async def test_create_in_v2_mode(mem_db_async: lancedb.AsyncConnection):
+async def test_create_in_v2_mode():
     def make_data():
         for i in range(10):
             yield pa.record_batch([pa.array([x for x in range(1024)])], names=["x"])
@@ -603,9 +599,12 @@ async def test_create_in_v2_mode(mem_db_async: lancedb.AsyncConnection):
     schema = pa.schema([pa.field("x", pa.int64())])
 
     # Create table in v1 mode
-    tbl = await mem_db_async.create_table(
-        "test", data=make_data(), schema=schema, data_storage_version="legacy"
+
+    v1_db = await lancedb.connect_async(
+        "memory://", storage_options={"new_table_data_storage_version": "legacy"}
     )
+
+    tbl = await v1_db.create_table("test", data=make_data(), schema=schema)
 
     async def is_in_v2_mode(tbl):
         batches = (
@@ -619,9 +618,11 @@ async def test_create_in_v2_mode(mem_db_async: lancedb.AsyncConnection):
     assert not await is_in_v2_mode(tbl)
 
     # Create table in v2 mode
-    tbl = await mem_db_async.create_table(
-        "test_v2", data=make_data(), schema=schema, use_legacy_format=False
+    v2_db = await lancedb.connect_async(
+        "memory://", storage_options={"new_table_data_storage_version": "stable"}
     )
+
+    tbl = await v2_db.create_table("test_v2", data=make_data(), schema=schema)
 
     assert await is_in_v2_mode(tbl)
 
@@ -631,20 +632,18 @@ async def test_create_in_v2_mode(mem_db_async: lancedb.AsyncConnection):
     assert await is_in_v2_mode(tbl)
 
     # Create empty table in v2 mode and add data
-    tbl = await mem_db_async.create_table(
-        "test_empty_v2", data=None, schema=schema, use_legacy_format=False
-    )
+    tbl = await v2_db.create_table("test_empty_v2", data=None, schema=schema)
     await tbl.add(make_table())
 
     assert await is_in_v2_mode(tbl)
 
-    # Create empty table uses v1 mode by default
-    tbl = await mem_db_async.create_table(
-        "test_empty_v2_default", data=None, schema=schema, data_storage_version="legacy"
-    )
+    # Db uses v2 mode by default
+    db = await lancedb.connect_async("memory://")
+
+    tbl = await db.create_table("test_empty_v2_default", data=None, schema=schema)
     await tbl.add(make_table())
 
-    assert not await is_in_v2_mode(tbl)
+    assert await is_in_v2_mode(tbl)
 
 
 def test_replace_index(mem_db: lancedb.DBConnection):

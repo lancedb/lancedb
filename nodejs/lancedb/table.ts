@@ -1,31 +1,14 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import {
   Table as ArrowTable,
   Data,
   IntoVector,
   Schema,
-  TableLike,
   fromDataToBuffer,
-  fromTableToBuffer,
-  fromTableToStreamBuffer,
-  isArrowTable,
-  makeArrowTable,
   tableFromIPC,
 } from "./arrow";
-import { CreateTableOptions } from "./connection";
 
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
@@ -39,7 +22,6 @@ import {
   Table as _NativeTable,
 } from "./native";
 import { Query, VectorQuery } from "./query";
-import { sanitizeTable } from "./sanitize";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 
@@ -102,8 +84,14 @@ export interface Version {
  * can call the `close` method.  Once the Table is closed, it cannot be used for any
  * further operations.
  *
+ * Tables are created using the methods {@link Connection#createTable}
+ * and {@link Connection#createEmptyTable}. Existing tables are opened
+ * using {@link Connection#openTable}.
+ *
  * Closing a table is optional.  It not closed, it will be closed when it is garbage
  * collected.
+ *
+ * @hideconstructor
  */
 export abstract class Table {
   [Symbol.for("nodejs.util.inspect.custom")](): string {
@@ -201,8 +189,9 @@ export abstract class Table {
    * Indices on scalar columns will speed up filtering (in both
    * vector and non-vector searches)
    *
-   * @note We currently don't support custom named indexes,
-   * The index name will always be `${column}_idx`
+   * We currently don't support custom named indexes.
+   * The index name will always be `${column}_idx`.
+   *
    * @example
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
@@ -226,6 +215,19 @@ export abstract class Table {
     column: string,
     options?: Partial<IndexOptions>,
   ): Promise<void>;
+
+  /**
+   * Drop an index from the table.
+   *
+   * @param name The name of the index.
+   *
+   * This does not delete the index from disk, it just removes it from the table.
+   * To delete the index, run {@link Table#optimize} after dropping the index.
+   *
+   * Use {@link Table.listIndices} to find the names of the indices.
+   */
+  abstract dropIndex(name: string): Promise<void>;
+
   /**
    * Create a {@link Query} Builder.
    *
@@ -426,43 +428,10 @@ export abstract class Table {
    *
    * @param {string} name The name of the index.
    * @returns {IndexStatistics | undefined} The stats of the index. If the index does not exist, it will return undefined
+   *
+   * Use {@link Table.listIndices} to find the names of the indices.
    */
   abstract indexStats(name: string): Promise<IndexStatistics | undefined>;
-
-  static async parseTableData(
-    data: Record<string, unknown>[] | TableLike,
-    options?: Partial<CreateTableOptions>,
-    streaming = false,
-  ) {
-    let mode: string = options?.mode ?? "create";
-    const existOk = options?.existOk ?? false;
-
-    if (mode === "create" && existOk) {
-      mode = "exist_ok";
-    }
-
-    let table: ArrowTable;
-    if (isArrowTable(data)) {
-      table = sanitizeTable(data);
-    } else {
-      table = makeArrowTable(data as Record<string, unknown>[], options);
-    }
-    if (streaming) {
-      const buf = await fromTableToStreamBuffer(
-        table,
-        options?.embeddingFunction,
-        options?.schema,
-      );
-      return { buf, mode };
-    } else {
-      const buf = await fromTableToBuffer(
-        table,
-        options?.embeddingFunction,
-        options?.schema,
-      );
-      return { buf, mode };
-    }
-  }
 }
 
 export class LocalTable extends Table {
@@ -505,14 +474,8 @@ export class LocalTable extends Table {
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
     const mode = options?.mode ?? "append";
     const schema = await this.schema();
-    const registry = getRegistry();
-    const functions = await registry.parseFunctions(schema.metadata);
 
-    const buffer = await fromDataToBuffer(
-      data,
-      functions.values().next().value,
-      schema,
-    );
+    const buffer = await fromDataToBuffer(data, undefined, schema);
     await this.inner.add(buffer, mode);
   }
 
@@ -589,6 +552,10 @@ export class LocalTable extends Table {
     // biome-ignore lint/suspicious/noExplicitAny: skip
     const nativeIndex = (options?.config as any)?.inner;
     await this.inner.createIndex(nativeIndex, column, options?.replace);
+  }
+
+  async dropIndex(name: string): Promise<void> {
+    await this.inner.dropIndex(name);
   }
 
   query(): Query {
@@ -714,7 +681,7 @@ export class LocalTable extends Table {
   }
   mergeInsert(on: string | string[]): MergeInsertBuilder {
     on = Array.isArray(on) ? on : [on];
-    return new MergeInsertBuilder(this.inner.mergeInsert(on));
+    return new MergeInsertBuilder(this.inner.mergeInsert(on), this.schema());
   }
 
   /**

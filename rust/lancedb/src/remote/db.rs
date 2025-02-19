@@ -1,21 +1,10 @@
-// Copyright 2024 LanceDB Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_array::RecordBatchReader;
+use arrow_array::RecordBatchIterator;
 use async_trait::async_trait;
 use http::StatusCode;
 use lance_io::object_store::StorageOptions;
@@ -24,13 +13,12 @@ use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
-use crate::connection::{
-    ConnectionInternal, CreateTableBuilder, CreateTableMode, NoData, OpenTableBuilder,
-    TableNamesBuilder,
+use crate::database::{
+    CreateTableData, CreateTableMode, CreateTableRequest, Database, OpenTableRequest,
+    TableNamesRequest,
 };
-use crate::embeddings::EmbeddingRegistry;
 use crate::error::Result;
-use crate::Table;
+use crate::table::BaseTable;
 
 use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender};
 use super::table::RemoteTable;
@@ -116,13 +104,13 @@ impl From<&CreateTableMode> for &'static str {
 }
 
 #[async_trait]
-impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
-    async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>> {
+impl<S: HttpSend> Database for RemoteDatabase<S> {
+    async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let mut req = self.client.get("/v1/table/");
-        if let Some(limit) = options.limit {
+        if let Some(limit) = request.limit {
             req = req.query(&[("limit", limit)]);
         }
-        if let Some(start_after) = options.start_after {
+        if let Some(start_after) = request.start_after {
             req = req.query(&[("page_token", start_after)]);
         }
         let (request_id, rsp) = self.client.send(req, true).await?;
@@ -138,11 +126,15 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
         Ok(tables)
     }
 
-    async fn do_create_table(
-        &self,
-        options: CreateTableBuilder<false, NoData>,
-        data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<Table> {
+    async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        let data = match request.data {
+            CreateTableData::Data(data) => data,
+            CreateTableData::Empty(table_definition) => {
+                let schema = table_definition.schema.clone();
+                Box::new(RecordBatchIterator::new(vec![], schema))
+            }
+        };
+
         // TODO: https://github.com/lancedb/lancedb/issues/1026
         // We should accept data from an async source.  In the meantime, spawn this as blocking
         // to make sure we don't block the tokio runtime if the source is slow.
@@ -152,8 +144,8 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
 
         let req = self
             .client
-            .post(&format!("/v1/table/{}/create/", options.name))
-            .query(&[("mode", Into::<&str>::into(&options.mode))])
+            .post(&format!("/v1/table/{}/create/", request.name))
+            .query(&[("mode", Into::<&str>::into(&request.mode))])
             .body(data_buffer)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
@@ -162,14 +154,18 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
         if rsp.status() == StatusCode::BAD_REQUEST {
             let body = rsp.text().await.err_to_http(request_id.clone())?;
             if body.contains("already exists") {
-                return match options.mode {
+                return match request.mode {
                     CreateTableMode::Create => {
-                        Err(crate::Error::TableAlreadyExists { name: options.name })
+                        Err(crate::Error::TableAlreadyExists { name: request.name })
                     }
                     CreateTableMode::ExistOk(callback) => {
-                        let builder = OpenTableBuilder::new(options.parent, options.name);
-                        let builder = (callback)(builder);
-                        builder.execute().await
+                        let req = OpenTableRequest {
+                            name: request.name.clone(),
+                            index_cache_size: None,
+                            lance_read_params: None,
+                        };
+                        let req = (callback)(req);
+                        self.open_table(req).await
                     }
 
                     // This should not happen, as we explicitly set the mode to overwrite and the server
@@ -194,31 +190,31 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
 
         self.client.check_response(&request_id, rsp).await?;
 
-        self.table_cache.insert(options.name.clone(), ()).await;
+        self.table_cache.insert(request.name.clone(), ()).await;
 
-        Ok(Table::new(Arc::new(RemoteTable::new(
+        Ok(Arc::new(RemoteTable::new(
             self.client.clone(),
-            options.name,
-        ))))
+            request.name,
+        )))
     }
 
-    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table> {
+    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
         // We describe the table to confirm it exists before moving on.
-        if self.table_cache.get(&options.name).is_none() {
+        if self.table_cache.get(&request.name).await.is_none() {
             let req = self
                 .client
-                .post(&format!("/v1/table/{}/describe/", options.name));
+                .post(&format!("/v1/table/{}/describe/", request.name));
             let (request_id, resp) = self.client.send(req, true).await?;
             if resp.status() == StatusCode::NOT_FOUND {
-                return Err(crate::Error::TableNotFound { name: options.name });
+                return Err(crate::Error::TableNotFound { name: request.name });
             }
             self.client.check_response(&request_id, resp).await?;
         }
 
-        Ok(Table::new(Arc::new(RemoteTable::new(
+        Ok(Arc::new(RemoteTable::new(
             self.client.clone(),
-            options.name,
-        ))))
+            request.name,
+        )))
     }
 
     async fn rename_table(&self, current_name: &str, new_name: &str) -> Result<()> {
@@ -241,14 +237,14 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
         Ok(())
     }
 
-    async fn drop_db(&self) -> Result<()> {
+    async fn drop_all_tables(&self) -> Result<()> {
         Err(crate::Error::NotSupported {
             message: "Dropping databases is not supported in the remote API".to_string(),
         })
     }
 
-    fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
-        todo!()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -284,7 +280,7 @@ mod tests {
 
     use crate::connection::ConnectBuilder;
     use crate::{
-        connection::CreateTableMode,
+        database::CreateTableMode,
         remote::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
         Connection, Error,
     };

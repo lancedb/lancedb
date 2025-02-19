@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -23,6 +24,7 @@ from typing import (
 from urllib.parse import urlparse
 
 import lance
+from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP
 from .dependencies import _check_for_pandas
 import pyarrow as pa
@@ -73,17 +75,19 @@ pl = safe_import_polars()
 QueryType = Literal["vector", "fts", "hybrid", "auto"]
 
 
-def _into_pyarrow_table(data) -> pa.Table:
+def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
     if _check_for_hugging_face(data):
         # Huggingface datasets
         from lance.dependencies import datasets
 
         if isinstance(data, datasets.Dataset):
             schema = data.features.arrow_schema
-            return pa.Table.from_batches(data.data.to_batches(), schema=schema)
+            return pa.RecordBatchReader.from_batches(schema, data.data.to_batches())
         elif isinstance(data, datasets.dataset_dict.DatasetDict):
             schema = _schema_from_hf(data, schema)
-            return pa.Table.from_batches(_to_batches_with_split(data), schema=schema)
+            return pa.RecordBatchReader.from_batches(
+                schema, _to_batches_with_split(data)
+            )
     if isinstance(data, LanceModel):
         raise ValueError("Cannot add a single LanceModel to a table. Use a list.")
 
@@ -95,41 +99,41 @@ def _into_pyarrow_table(data) -> pa.Table:
         if isinstance(data[0], LanceModel):
             schema = data[0].__class__.to_arrow_schema()
             data = [model_to_dict(d) for d in data]
-            return pa.Table.from_pylist(data, schema=schema)
+            return pa.Table.from_pylist(data, schema=schema).to_reader()
         elif isinstance(data[0], pa.RecordBatch):
-            return pa.Table.from_batches(data)
+            return pa.Table.from_batches(data).to_reader()
         else:
-            return pa.Table.from_pylist(data)
+            return pa.Table.from_pylist(data).to_reader()
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         table = pa.Table.from_pandas(data, preserve_index=False)
         # Do not serialize Pandas metadata
         meta = table.schema.metadata if table.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
-        return table.replace_schema_metadata(meta)
+        return table.replace_schema_metadata(meta).to_reader()
     elif isinstance(data, pa.Table):
-        return data
+        return data.to_reader()
     elif isinstance(data, pa.RecordBatch):
-        return pa.Table.from_batches([data])
+        return pa.RecordBatchReader.from_batches(data.schema, [data])
     elif isinstance(data, LanceDataset):
-        return data.scanner().to_table()
+        return data.scanner().to_reader()
     elif isinstance(data, pa.dataset.Dataset):
-        return data.to_table()
+        return data.scanner().to_reader()
     elif isinstance(data, pa.dataset.Scanner):
-        return data.to_table()
+        return data.to_reader()
     elif isinstance(data, pa.RecordBatchReader):
-        return data.read_all()
+        return data
     elif (
         type(data).__module__.startswith("polars")
         and data.__class__.__name__ == "DataFrame"
     ):
-        return data.to_arrow()
+        return data.to_arrow().to_reader()
     elif (
         type(data).__module__.startswith("polars")
         and data.__class__.__name__ == "LazyFrame"
     ):
-        return data.collect().to_arrow()
+        return data.collect().to_arrow().to_reader()
     elif isinstance(data, Iterable):
-        return _iterator_to_table(data)
+        return _iterator_to_reader(data)
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
@@ -139,30 +143,28 @@ def _into_pyarrow_table(data) -> pa.Table:
         )
 
 
-def _iterator_to_table(data: Iterable) -> pa.Table:
-    batches = []
-    schema = None  # Will get schema from first batch
-    for batch in data:
-        batch_table = _into_pyarrow_table(batch)
-        if schema is not None:
-            if batch_table.schema != schema:
+def _iterator_to_reader(data: Iterable) -> pa.RecordBatchReader:
+    # Each batch is treated as it's own reader, mainly so we can
+    # re-use the _into_pyarrow_reader logic.
+    first = _into_pyarrow_reader(next(data))
+    schema = first.schema
+
+    def gen():
+        yield from first
+        for batch in data:
+            table: pa.Table = _into_pyarrow_reader(batch).read_all()
+            if table.schema != schema:
                 try:
-                    batch_table = batch_table.cast(schema)
+                    table = table.cast(schema)
                 except pa.lib.ArrowInvalid:
                     raise ValueError(
                         f"Input iterator yielded a batch with schema that "
                         f"does not match the schema of other batches.\n"
-                        f"Expected:\n{schema}\nGot:\n{batch_table.schema}"
+                        f"Expected:\n{schema}\nGot:\n{batch.schema}"
                     )
-        else:
-            # Use the first schema for the remainder of the batches
-            schema = batch_table.schema
-        batches.append(batch_table)
+            yield from table.to_batches()
 
-    if batches:
-        return pa.concat_tables(batches)
-    else:
-        raise ValueError("Input iterable is empty")
+    return pa.RecordBatchReader.from_batches(schema, gen())
 
 
 def _sanitize_data(
@@ -173,7 +175,7 @@ def _sanitize_data(
     fill_value: float = 0.0,
     *,
     allow_subschema: bool = False,
-) -> pa.Table:
+) -> pa.RecordBatchReader:
     """
     Handle input data, applying all standard transformations.
 
@@ -206,20 +208,20 @@ def _sanitize_data(
     # 1. There might be embedding columns missing that will be added
     #    in the add_embeddings step.
     # 2. If `allow_subschemas` is True, there might be columns missing.
-    table = _into_pyarrow_table(data)
+    reader = _into_pyarrow_reader(data)
 
-    table = _append_vector_columns(table, target_schema, metadata=metadata)
+    reader = _append_vector_columns(reader, target_schema, metadata=metadata)
 
     # This happens before the cast so we can fix vector columns with
     # incorrect lengths before they are cast to FSL.
-    table = _handle_bad_vectors(
-        table,
+    reader = _handle_bad_vectors(
+        reader,
         on_bad_vectors=on_bad_vectors,
         fill_value=fill_value,
     )
 
     if target_schema is None:
-        target_schema = _infer_target_schema(table)
+        target_schema, reader = _infer_target_schema(reader)
 
     if metadata:
         new_metadata = target_schema.metadata or {}
@@ -228,25 +230,25 @@ def _sanitize_data(
 
     _validate_schema(target_schema)
 
-    table = _cast_to_target_schema(table, target_schema, allow_subschema)
+    reader = _cast_to_target_schema(reader, target_schema, allow_subschema)
 
-    return table
+    return reader
 
 
 def _cast_to_target_schema(
-    table: pa.Table,
+    reader: pa.RecordBatchReader,
     target_schema: pa.Schema,
     allow_subschema: bool = False,
-) -> pa.Table:
+) -> pa.RecordBatchReader:
     # pa.Table.cast expects field order not to be changed.
     # Lance doesn't care about field order, so we don't need to rearrange fields
     # to match the target schema. We just need to correctly cast the fields.
-    if table.schema == target_schema:
+    if reader.schema == target_schema:
         # Fast path when the schemas are already the same
-        return table
+        return reader
 
     fields = []
-    for field in table.schema:
+    for field in reader.schema:
         target_field = target_schema.field(field.name)
         if target_field is None:
             raise ValueError(f"Field {field.name} not found in target schema")
@@ -259,12 +261,16 @@ def _cast_to_target_schema(
 
     if allow_subschema and len(reordered_schema) != len(target_schema):
         fields = _infer_subschema(
-            list(iter(table.schema)), list(iter(reordered_schema))
+            list(iter(reader.schema)), list(iter(reordered_schema))
         )
-        subschema = pa.schema(fields, metadata=target_schema.metadata)
-        return table.cast(subschema)
-    else:
-        return table.cast(reordered_schema)
+        reordered_schema = pa.schema(fields, metadata=target_schema.metadata)
+
+    def gen():
+        for batch in reader:
+            # Table but not RecordBatch has cast.
+            yield pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()[0]
+
+    return pa.RecordBatchReader.from_batches(reordered_schema, gen())
 
 
 def _infer_subschema(
@@ -343,7 +349,10 @@ def sanitize_create_table(
     if metadata:
         schema = schema.with_metadata(metadata)
         # Need to apply metadata to the data as well
-        data = data.replace_schema_metadata(metadata)
+        if isinstance(data, pa.Table):
+            data = data.replace_schema_metadata(metadata)
+        elif isinstance(data, pa.RecordBatchReader):
+            data = pa.RecordBatchReader.from_batches(schema, data)
 
     return data, schema
 
@@ -380,11 +389,11 @@ def _to_batches_with_split(data):
 
 
 def _append_vector_columns(
-    data: pa.Table,
+    reader: pa.RecordBatchReader,
     schema: Optional[pa.Schema] = None,
     *,
     metadata: Optional[dict] = None,
-) -> pa.Table:
+) -> pa.RecordBatchReader:
     """
     Use the embedding function to automatically embed the source columns and add the
     vector columns to the table.
@@ -395,28 +404,43 @@ def _append_vector_columns(
         metadata = schema.metadata or metadata or {}
     functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
 
+    if not functions:
+        return reader
+
+    fields = list(reader.schema)
     for vector_column, conf in functions.items():
-        func = conf.function
-        no_vector_column = vector_column not in data.column_names
-        if no_vector_column or pc.all(pc.is_null(data[vector_column])).as_py():
-            col_data = func.compute_source_embeddings_with_retry(
-                data[conf.source_column]
-            )
+        if vector_column not in reader.schema.names:
             if schema is not None:
-                dtype = schema.field(vector_column).type
+                field = schema.field(vector_column)
             else:
-                dtype = pa.list_(pa.float32(), len(col_data[0]))
-            if no_vector_column:
-                data = data.append_column(
-                    pa.field(vector_column, type=dtype), pa.array(col_data, type=dtype)
-                )
-            else:
-                data = data.set_column(
-                    data.column_names.index(vector_column),
-                    pa.field(vector_column, type=dtype),
-                    pa.array(col_data, type=dtype),
-                )
-    return data
+                dtype = pa.list_(pa.float32(), conf.function.ndims())
+                field = pa.field(vector_column, type=dtype, nullable=True)
+            fields.append(field)
+    schema = pa.schema(fields, metadata=reader.schema.metadata)
+
+    def gen():
+        for batch in reader:
+            for vector_column, conf in functions.items():
+                func = conf.function
+                no_vector_column = vector_column not in batch.column_names
+                if no_vector_column or pc.all(pc.is_null(batch[vector_column])).as_py():
+                    col_data = func.compute_source_embeddings_with_retry(
+                        batch[conf.source_column]
+                    )
+                    if no_vector_column:
+                        batch = batch.append_column(
+                            schema.field(vector_column),
+                            pa.array(col_data, type=schema.field(vector_column).type),
+                        )
+                    else:
+                        batch = batch.set_column(
+                            batch.column_names.index(vector_column),
+                            schema.field(vector_column),
+                            pa.array(col_data, type=schema.field(vector_column).type),
+                        )
+            yield batch
+
+    return pa.RecordBatchReader.from_batches(schema, gen())
 
 
 def _table_path(base: str, table_name: str) -> str:
@@ -583,6 +607,26 @@ class Table(ABC):
         num_bits: int
             The number of bits to encode sub-vectors. Only used with the IVF_PQ index.
             Only 4 and 8 are supported.
+        """
+        raise NotImplementedError
+
+    def drop_index(self, name: str) -> None:
+        """
+        Drop an index from the table.
+
+        Parameters
+        ----------
+        name: str
+            The name of the index to drop.
+
+        Notes
+        -----
+        This does not delete the index from disk, it just removes it from the table.
+        To delete the index, run [optimize][lancedb.table.Table.optimize]
+        after dropping the index.
+
+        Use [list_indices][lancedb.table.Table.list_indices] to find the names of
+        the indices.
         """
         raise NotImplementedError
 
@@ -810,7 +854,7 @@ class Table(ABC):
         2  3  y
         3  4  z
         """
-        on = [on] if isinstance(on, str) else list(on.iter())
+        on = [on] if isinstance(on, str) else list(iter(on))
 
         return LanceMergeInsertBuilder(self, on)
 
@@ -1594,6 +1638,9 @@ class LanceTable(Table):
             )
         )
 
+    def drop_index(self, name: str) -> None:
+        return LOOP.run(self._table.drop_index(name))
+
     def create_scalar_index(
         self,
         column: str,
@@ -2062,9 +2109,36 @@ class LanceTable(Table):
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         embedding_functions: list of EmbeddingFunctionModel, default None
             The embedding functions to use when creating the table.
+        data_storage_version: optional, str, default "stable"
+            Deprecated.  Set `storage_options` when connecting to the database and set
+            `new_table_data_storage_version` in the options.
+        enable_v2_manifest_paths: optional, bool, default False
+            Deprecated.  Set `storage_options` when connecting to the database and set
+            `new_table_enable_v2_manifest_paths` in the options.
         """
         self = cls.__new__(cls)
         self._conn = db
+
+        if data_storage_version is not None:
+            warnings.warn(
+                "setting data_storage_version directly on create_table is deprecated. ",
+                "Use database_options instead.",
+                DeprecationWarning,
+            )
+            if storage_options is None:
+                storage_options = {}
+            storage_options["new_table_data_storage_version"] = data_storage_version
+        if enable_v2_manifest_paths is not None:
+            warnings.warn(
+                "setting enable_v2_manifest_paths directly on create_table is ",
+                "deprecated. Use database_options instead.",
+                DeprecationWarning,
+            )
+            if storage_options is None:
+                storage_options = {}
+            storage_options["new_table_enable_v2_manifest_paths"] = (
+                enable_v2_manifest_paths
+            )
 
         self._table = LOOP.run(
             self._conn._conn.create_table(
@@ -2077,8 +2151,6 @@ class LanceTable(Table):
                 fill_value=fill_value,
                 embedding_functions=embedding_functions,
                 storage_options=storage_options,
-                data_storage_version=data_storage_version,
-                enable_v2_manifest_paths=enable_v2_manifest_paths,
             )
         )
         return self
@@ -2309,11 +2381,13 @@ class LanceTable(Table):
 
 
 def _handle_bad_vectors(
-    table: pa.Table,
+    reader: pa.RecordBatchReader,
     on_bad_vectors: Literal["error", "drop", "fill", "null"] = "error",
     fill_value: float = 0.0,
-) -> pa.Table:
-    for field in table.schema:
+) -> pa.RecordBatchReader:
+    vector_columns = []
+
+    for field in reader.schema:
         # They can provide a 'vector' column that isn't yet a FSL
         named_vector_col = (
             (
@@ -2333,22 +2407,28 @@ def _handle_bad_vectors(
         )
 
         if named_vector_col or likely_vector_col:
-            table = _handle_bad_vector_column(
-                table,
-                vector_column_name=field.name,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-            )
+            vector_columns.append(field.name)
 
-    return table
+    def gen():
+        for batch in reader:
+            for name in vector_columns:
+                batch = _handle_bad_vector_column(
+                    batch,
+                    vector_column_name=name,
+                    on_bad_vectors=on_bad_vectors,
+                    fill_value=fill_value,
+                )
+            yield batch
+
+    return pa.RecordBatchReader.from_batches(reader.schema, gen())
 
 
 def _handle_bad_vector_column(
-    data: pa.Table,
+    data: pa.RecordBatch,
     vector_column_name: str,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
-) -> pa.Table:
+) -> pa.RecordBatch:
     """
     Ensure that the vector column exists and has type fixed_size_list(float)
 
@@ -2436,8 +2516,11 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
     return pc.is_in(indices, has_nan_indices)
 
 
-def _infer_target_schema(table: pa.Table) -> pa.Schema:
-    schema = table.schema
+def _infer_target_schema(
+    reader: pa.RecordBatchReader,
+) -> Tuple[pa.Schema, pa.RecordBatchReader]:
+    schema = reader.schema
+    peeked = None
 
     for i, field in enumerate(schema):
         if (
@@ -2445,8 +2528,10 @@ def _infer_target_schema(table: pa.Table) -> pa.Schema:
             and (pa.types.is_list(field.type) or pa.types.is_large_list(field.type))
             and pa.types.is_floating(field.type.value_type)
         ):
+            if peeked is None:
+                peeked, reader = peek_reader(reader)
             # Use the most common length of the list as the dimensions
-            dim = _modal_list_size(table.column(i))
+            dim = _modal_list_size(peeked.column(i))
 
             new_field = pa.field(
                 VECTOR_COLUMN_NAME,
@@ -2460,8 +2545,10 @@ def _infer_target_schema(table: pa.Table) -> pa.Schema:
             and (pa.types.is_list(field.type) or pa.types.is_large_list(field.type))
             and pa.types.is_integer(field.type.value_type)
         ):
+            if peeked is None:
+                peeked, reader = peek_reader(reader)
             # Use the most common length of the list as the dimensions
-            dim = _modal_list_size(table.column(i))
+            dim = _modal_list_size(peeked.column(i))
             new_field = pa.field(
                 VECTOR_COLUMN_NAME,
                 pa.list_(pa.uint8(), dim),
@@ -2470,7 +2557,7 @@ def _infer_target_schema(table: pa.Table) -> pa.Schema:
 
             schema = schema.set(i, new_field)
 
-    return schema
+    return schema, reader
 
 
 def _modal_list_size(arr: Union[pa.ListArray, pa.ChunkedArray]) -> int:
@@ -2716,6 +2803,26 @@ class AsyncTable:
                 add_note(e, help_msg)
             raise e
 
+    async def drop_index(self, name: str) -> None:
+        """
+        Drop an index from the table.
+
+        Parameters
+        ----------
+        name: str
+            The name of the index to drop.
+
+        Notes
+        -----
+        This does not delete the index from disk, it just removes it from the table.
+        To delete the index, run [optimize][lancedb.table.AsyncTable.optimize]
+        after dropping the index.
+
+        Use [list_indices][lancedb.table.AsyncTable.list_indices] to find the names
+        of the indices.
+        """
+        await self._inner.drop_index(name)
+
     async def add(
         self,
         data: DATA,
@@ -2820,7 +2927,7 @@ class AsyncTable:
         2  3  y
         3  4  z
         """
-        on = [on] if isinstance(on, str) else list(on.iter())
+        on = [on] if isinstance(on, str) else list(iter(on))
 
         return LanceMergeInsertBuilder(self, on)
 

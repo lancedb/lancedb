@@ -107,7 +107,7 @@ def test_embedding_with_bad_results(tmp_path):
         vector: Vector(model.ndims()) = model.VectorField()
 
     table = db.create_table("test", schema=Schema, mode="overwrite")
-    with pytest.raises(ValueError):
+    with pytest.raises(RuntimeError):
         # Default on_bad_vectors is "error"
         table.add([{"text": "hello world"}])
 
@@ -341,6 +341,7 @@ def test_add_optional_vector(tmp_path):
     assert not (np.abs(tbl.to_pandas()["vector"][0]) < 1e-6).all()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "embedding_type",
     [

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 # Copyright 2023 LanceDB Developers
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");

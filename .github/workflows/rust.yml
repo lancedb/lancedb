@@ -22,6 +22,7 @@ env:
   # "1" means line tables only, which is useful for panic tracebacks.
   RUSTFLAGS: "-C debuginfo=1"
   RUST_BACKTRACE: "1"
+  CARGO_INCREMENTAL: 0
 
 jobs:
   lint:
@@ -51,6 +52,28 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --tests --all-features -- -D warnings
 
+  build-no-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Need up-to-date compilers for kernels
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+      # Remote cargo.lock to force a fresh build
+      - name: Remove Cargo.lock
+        run: rm -f Cargo.lock
+      - uses: rui314/setup-mold@v1
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - name: Build all
+        run: |
+          cargo build --benches --all-features --tests
+
   linux:
     timeout-minutes: 30
     # To build all features, we need more disk space than is available
@@ -75,8 +98,11 @@ jobs:
           workspaces: rust
       - name: Install dependencies
         run: |
-          sudo apt update
+          # This shaves 2 minutes off this step in CI. This doesn't seem to be
+          # necessary in standard runners, but it is in the 4x runners.
+          sudo rm /var/lib/man-db/auto-update
           sudo apt install -y protobuf-compiler libssl-dev
+      - uses: rui314/setup-mold@v1
       - name: Make Swap
         run: |
           sudo fallocate -l 16G /swapfile
@@ -87,11 +113,11 @@ jobs:
         working-directory: .
         run: docker compose up --detach --wait
       - name: Build
-        run: cargo build --all-features
+        run: cargo build --all-features --tests --locked --examples
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --all-features --locked
       - name: Run examples
-        run: cargo run --example simple
+        run: cargo run --example simple --locked
 
   macos:
     timeout-minutes: 30
@@ -115,11 +141,14 @@ jobs:
           workspaces: rust
       - name: Install dependencies
         run: brew install protobuf
-      - name: Build
-        run: cargo build --all-features
       - name: Run tests
-        # Run with everything except the integration tests.
-        run: cargo test --features remote,fp16kernels
+        run: |
+          # Don't run the s3 integration tests since docker isn't available
+          # on this image.
+          ALL_FEATURES=`cargo metadata --format-version=1 --no-deps \
+            | jq -r '.packages[] | .features | keys | .[]' \
+            | grep -v s3-test | sort | uniq | paste -s -d "," -`
+          cargo test --features $ALL_FEATURES --locked
 
   windows:
     runs-on: windows-2022
@@ -140,8 +169,38 @@ jobs:
       - name: Run tests
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo build
-          cargo test
+          cargo test --features remote --locked
+
+  windows-arm64-cross:
+    # We cross compile in Node releases, so we want to make sure
+    # this can run successfully.
+    runs-on: ubuntu-latest
+    container: alpine:edge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          set -e
+          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
+
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup target add aarch64-pc-windows-msvc
+
+          mkdir -p sysroot
+          cd sysroot
+          sh ../ci/sysroot-aarch64-pc-windows-msvc.sh
+      - name: Check
+        env:
+          CC: clang
+          AR: llvm-ar
+          C_INCLUDE_PATH: /usr/aarch64-pc-windows-msvc/usr/include
+          CARGO_BUILD_TARGET: aarch64-pc-windows-msvc
+          RUSTFLAGS: -Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib
+        run: |
+          source $HOME/.cargo/env
+          cargo check --features remote --locked
 
   windows-arm64:
     runs-on: windows-4x-arm
@@ -236,8 +295,7 @@ jobs:
       - name: Run tests
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo build --target aarch64-pc-windows-msvc
-          cargo test --target aarch64-pc-windows-msvc
+          cargo test --target aarch64-pc-windows-msvc --features remote --locked
 
   msrv:
     # Check the minimum supported Rust version

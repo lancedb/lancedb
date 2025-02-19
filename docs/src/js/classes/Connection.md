@@ -23,18 +23,6 @@ be closed when they are garbage collected.
 Any created tables are independent and will continue to work even if
 the underlying connection has been closed.
 
-## Constructors
-
-### new Connection()
-
-```ts
-new Connection(): Connection
-```
-
-#### Returns
-
-[`Connection`](Connection.md)
-
 ## Methods
 
 ### close()
@@ -71,7 +59,7 @@ Creates a new empty Table
 * **name**: `string`
     The name of the table.
 
-* **schema**: `SchemaLike`
+* **schema**: [`SchemaLike`](../type-aliases/SchemaLike.md)
     The schema of the table
 
 * **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
@@ -117,7 +105,7 @@ Creates a new Table and initialize it with new data.
 * **name**: `string`
     The name of the table.
 
-* **data**: `TableLike` \| `Record`&lt;`string`, `unknown`&gt;[]
+* **data**: [`TableLike`](../type-aliases/TableLike.md) \| `Record`&lt;`string`, `unknown`&gt;[]
     Non-empty Array of Records
     to be inserted into the table
 
@@ -140,6 +128,20 @@ Return a brief description of the connection
 #### Returns
 
 `string`
+
+***
+
+### dropAllTables()
+
+```ts
+abstract dropAllTables(): Promise<void>
+```
+
+Drop all tables in the database.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
 
 ***
 
@@ -189,7 +191,7 @@ Open a table in the database.
 * **name**: `string`
     The name of the table
 
-* **options?**: `Partial`&lt;`OpenTableOptions`&gt;
+* **options?**: `Partial`&lt;[`OpenTableOptions`](../interfaces/OpenTableOptions.md)&gt;
 
 #### Returns
 

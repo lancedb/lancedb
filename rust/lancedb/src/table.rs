@@ -1,16 +1,5 @@
-// Copyright 2024 LanceDB Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 //! LanceDB Table APIs
 
@@ -23,6 +12,7 @@ use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
+use datafusion_expr::Expr;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
@@ -32,15 +22,17 @@ use futures::{StreamExt, TryStreamExt};
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
-use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
+use lance::dataset::scanner::Scanner;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
+pub use lance::dataset::Version;
 use lance::dataset::{
-    Dataset, InsertBuilder, UpdateBuilder as LanceUpdateBuilder, Version, WhenMatched, WriteMode,
+    Dataset, InsertBuilder, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode,
     WriteParams,
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
+use lance::index::vector::utils::infer_vector_dim;
 use lance::io::WrappingObjectStore;
 use lance_datafusion::exec::execute_plan;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
@@ -70,10 +62,11 @@ use crate::index::{
 };
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{
-    IntoQueryVector, Query, QueryExecutionOptions, Select, VectorQuery, DEFAULT_TOP_K,
+    IntoQueryVector, Query, QueryExecutionOptions, QueryRequest, Select, VectorQuery,
+    VectorQueryRequest, DEFAULT_TOP_K,
 };
 use crate::utils::{
-    default_vector_column, infer_vector_dim, supported_bitmap_data_type, supported_btree_data_type,
+    default_vector_column, supported_bitmap_data_type, supported_btree_data_type,
     supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
     PatchReadParam, PatchWriteParam,
 };
@@ -81,11 +74,13 @@ use crate::utils::{
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
 
+pub mod datafusion;
 pub(crate) mod dataset;
 pub mod merge;
 
 pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
+pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
 
 /// Defines the type of column
@@ -240,6 +235,24 @@ pub struct OptimizeStats {
     pub prune: Option<RemovalStats>,
 }
 
+/// Describes what happens when a vector either contains NaN or
+/// does not have enough values
+#[derive(Clone, Debug, Default)]
+enum BadVectorHandling {
+    /// An error is returned
+    #[default]
+    Error,
+    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
+    /// The offending row is droppped
+    Drop,
+    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
+    /// The invalid/missing items are replaced by fill_value
+    Fill(f32),
+    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
+    /// The invalid items are replaced by NULL
+    None,
+}
+
 /// Options to use when writing data
 #[derive(Clone, Debug, Default)]
 pub struct WriteOptions {
@@ -265,7 +278,7 @@ pub enum AddDataMode {
 /// A builder for configuring a [`crate::connection::Connection::create_table`] or [`Table::add`]
 /// operation
 pub struct AddDataBuilder<T: IntoArrow> {
-    parent: Arc<dyn TableInternal>,
+    parent: Arc<dyn BaseTable>,
     pub(crate) data: T,
     pub(crate) mode: AddDataMode,
     pub(crate) write_options: WriteOptions,
@@ -310,13 +323,13 @@ impl<T: IntoArrow> AddDataBuilder<T> {
 /// A builder for configuring an [`Table::update`] operation
 #[derive(Debug, Clone)]
 pub struct UpdateBuilder {
-    parent: Arc<dyn TableInternal>,
+    parent: Arc<dyn BaseTable>,
     pub(crate) filter: Option<String>,
     pub(crate) columns: Vec<(String, String)>,
 }
 
 impl UpdateBuilder {
-    fn new(parent: Arc<dyn TableInternal>) -> Self {
+    fn new(parent: Arc<dyn BaseTable>) -> Self {
         Self {
             parent,
             filter: None,
@@ -373,63 +386,102 @@ impl UpdateBuilder {
     }
 }
 
+/// Filters that can be used to limit the rows returned by a query
+pub enum Filter {
+    /// A SQL filter string
+    Sql(String),
+    /// A Datafusion logical expression
+    Datafusion(Expr),
+}
+
+/// A query that can be used to search a LanceDB table
+pub enum AnyQuery {
+    Query(QueryRequest),
+    VectorQuery(VectorQueryRequest),
+}
+
+/// A trait for anything "table-like".  This is used for both native tables (which target
+/// Lance datasets) and remote tables (which target LanceDB cloud)
+///
+/// This trait is still EXPERIMENTAL and subject to change in the future
 #[async_trait]
-pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Sync {
-    #[allow(dead_code)]
+pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
+    /// Get a reference to std::any::Any
     fn as_any(&self) -> &dyn std::any::Any;
-    /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
-    fn as_native(&self) -> Option<&NativeTable>;
     /// Get the name of the table.
     fn name(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
     /// Count the number of rows in this table.
-    async fn count_rows(&self, filter: Option<String>) -> Result<usize>;
+    async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
+    /// Create a physical plan for the query.
     async fn create_plan(
         &self,
-        query: &VectorQuery,
+        query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>>;
-    async fn plain_query(
+    /// Execute a query and return the results as a stream of RecordBatches.
+    async fn query(
         &self,
-        query: &Query,
+        query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream>;
-    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String> {
+    /// Explain the plan for a query.
+    async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
         let plan = self.create_plan(query, Default::default()).await?;
         let display = DisplayableExecutionPlan::new(plan.as_ref());
 
         Ok(format!("{}", display.indent(verbose)))
     }
+    /// Add new records to the table.
     async fn add(
         &self,
         add: AddDataBuilder<NoData>,
         data: Box<dyn arrow_array::RecordBatchReader + Send>,
     ) -> Result<()>;
+    /// Delete rows from the table.
     async fn delete(&self, predicate: &str) -> Result<()>;
+    /// Update rows in the table.
     async fn update(&self, update: UpdateBuilder) -> Result<u64>;
+    /// Create an index on the provided column(s).
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+    /// List the indices on the table.
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
+    /// Drop an index from the table.
+    async fn drop_index(&self, name: &str) -> Result<()>;
+    /// Get statistics about the index.
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
+    /// Merge insert new records into the table.
     async fn merge_insert(
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()>;
+    /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    /// Add columns to the table.
     async fn add_columns(
         &self,
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<()>;
+    /// Alter columns in the table.
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()>;
+    /// Drop columns from the table.
     async fn drop_columns(&self, columns: &[&str]) -> Result<()>;
+    /// Get the version of the table.
     async fn version(&self) -> Result<u64>;
+    /// Checkout a specific version of the table.
     async fn checkout(&self, version: u64) -> Result<()>;
+    /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
+    /// Restore the table to the currently checked out version.
     async fn restore(&self) -> Result<()>;
+    /// List the versions of the table.
     async fn list_versions(&self) -> Result<Vec<Version>>;
+    /// Get the table definition.
     async fn table_definition(&self) -> Result<TableDefinition>;
+    /// Get the table URI
     fn dataset_uri(&self) -> &str;
 }
 
@@ -438,7 +490,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
 /// The type of the each row is defined in Apache Arrow [Schema].
 #[derive(Clone)]
 pub struct Table {
-    inner: Arc<dyn TableInternal>,
+    inner: Arc<dyn BaseTable>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
 
@@ -474,15 +526,19 @@ impl std::fmt::Display for Table {
 }
 
 impl Table {
-    pub(crate) fn new(inner: Arc<dyn TableInternal>) -> Self {
+    pub fn new(inner: Arc<dyn BaseTable>) -> Self {
         Self {
             inner,
             embedding_registry: Arc::new(MemoryRegistry::new()),
         }
     }
 
+    pub fn base_table(&self) -> &Arc<dyn BaseTable> {
+        &self.inner
+    }
+
     pub(crate) fn new_with_embedding_registry(
-        inner: Arc<dyn TableInternal>,
+        inner: Arc<dyn BaseTable>,
         embedding_registry: Arc<dyn EmbeddingRegistry>,
     ) -> Self {
         Self {
@@ -515,7 +571,7 @@ impl Table {
     ///
     /// * `filter` if present, only count rows matching the filter
     pub async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
-        self.inner.count_rows(filter).await
+        self.inner.count_rows(filter.map(Filter::Sql)).await
     }
 
     /// Insert new records into this Table
@@ -984,6 +1040,18 @@ impl Table {
         self.inner.index_stats(index_name.as_ref()).await
     }
 
+    /// Drop an index from the table.
+    ///
+    /// Note: This is not yet available in LanceDB cloud.
+    ///
+    /// This does not delete the index from disk, it just removes it from the table.
+    /// To delete the index, run [`Self::optimize()`] after dropping the index.
+    ///
+    /// Use [`Self::list_indices()`] to find the names of the indices.
+    pub async fn drop_index(&self, name: &str) -> Result<()> {
+        self.inner.drop_index(name).await
+    }
+
     // Take many execution plans and map them into a single plan that adds
     // a query_index column and unions them.
     pub(crate) fn multi_vector_plan(
@@ -1039,6 +1107,17 @@ impl Table {
 impl From<NativeTable> for Table {
     fn from(table: NativeTable) -> Self {
         Self::new(Arc::new(table))
+    }
+}
+
+pub trait NativeTableExt {
+    /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
+    fn as_native(&self) -> Option<&NativeTable>;
+}
+
+impl NativeTableExt for Arc<dyn BaseTable> {
+    fn as_native(&self) -> Option<&NativeTable> {
+        self.as_any().downcast_ref::<NativeTable>()
     }
 }
 
@@ -1161,7 +1240,7 @@ impl NativeTable {
     /// # Returns
     ///
     /// * A [TableImpl] object.
-    pub(crate) async fn create(
+    pub async fn create(
         uri: &str,
         name: &str,
         batches: impl RecordBatchReader + Send + 'static,
@@ -1301,10 +1380,11 @@ impl NativeTable {
 
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
         let dataset = self.dataset.get().await?;
-        let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
+        let mf = dataset.manifest();
+        let indices = dataset.load_indices().await?;
         Ok(indices
             .iter()
-            .map(|i| VectorIndex::new_from_format(&(mf.0), i))
+            .map(|i| VectorIndex::new_from_format(mf, i))
             .collect())
     }
 
@@ -1655,7 +1735,7 @@ impl NativeTable {
 
     async fn generic_query(
         &self,
-        query: &VectorQuery,
+        query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
         let plan = self.create_plan(query, options).await?;
@@ -1728,6 +1808,12 @@ impl NativeTable {
     }
 
     /// Update field metadata
+    ///
+    /// # Arguments:
+    /// * `new_values` - An iterator of tuples where the first element is the
+    ///   field id and the second element is a hashmap of metadata key-value
+    ///   pairs.
+    ///
     pub async fn replace_field_metadata(
         &self,
         new_values: impl IntoIterator<Item = (u32, HashMap<String, String>)>,
@@ -1739,13 +1825,9 @@ impl NativeTable {
 }
 
 #[async_trait::async_trait]
-impl TableInternal for NativeTable {
+impl BaseTable for NativeTable {
     fn as_any(&self) -> &dyn std::any::Any {
         self
-    }
-
-    fn as_native(&self) -> Option<&NativeTable> {
-        Some(self)
     }
 
     fn name(&self) -> &str {
@@ -1803,8 +1885,15 @@ impl TableInternal for NativeTable {
         TableDefinition::try_from_rich_schema(schema)
     }
 
-    async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
-        Ok(self.dataset.get().await?.count_rows(filter).await?)
+    async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
+        let dataset = self.dataset.get().await?;
+        match filter {
+            None => Ok(dataset.count_rows(None).await?),
+            Some(Filter::Sql(sql)) => Ok(dataset.count_rows(Some(sql)).await?),
+            Some(Filter::Datafusion(_)) => Err(Error::NotSupported {
+                message: "Datafusion filters are not yet supported".to_string(),
+            }),
+        }
     }
 
     async fn add(
@@ -1871,6 +1960,12 @@ impl TableInternal for NativeTable {
         }
     }
 
+    async fn drop_index(&self, index_name: &str) -> Result<()> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.drop_index(index_name).await?;
+        Ok(())
+    }
+
     async fn update(&self, update: UpdateBuilder) -> Result<u64> {
         let dataset = self.dataset.get().await?.clone();
         let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
@@ -1892,9 +1987,14 @@ impl TableInternal for NativeTable {
 
     async fn create_plan(
         &self,
-        query: &VectorQuery,
+        query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        let query = match query {
+            AnyQuery::VectorQuery(query) => query.clone(),
+            AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query.clone()),
+        };
+
         let ds_ref = self.dataset.get().await?;
         let schema = ds_ref.schema();
         let mut column = query.column.clone();
@@ -1942,7 +2042,10 @@ impl TableInternal for NativeTable {
                         let mut sub_query = query.clone();
                         sub_query.query_vector = vec![query_vector];
                         let options_ref = options.clone();
-                        async move { self.create_plan(&sub_query, options_ref).await }
+                        async move {
+                            self.create_plan(&AnyQuery::VectorQuery(sub_query), options_ref)
+                                .await
+                        }
                     })
                     .collect::<Vec<_>>();
                 let plans = futures::future::try_join_all(plan_futures).await?;
@@ -2040,13 +2143,12 @@ impl TableInternal for NativeTable {
         Ok(scanner.create_plan().await?)
     }
 
-    async fn plain_query(
+    async fn query(
         &self,
-        query: &Query,
+        query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        self.generic_query(&query.clone().into_vector(), options)
-            .await
+        self.generic_query(query, options).await
     }
 
     async fn merge_insert(
@@ -2315,7 +2417,10 @@ mod tests {
 
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
         assert_eq!(
-            table.count_rows(Some("i >= 5".to_string())).await.unwrap(),
+            table
+                .count_rows(Some(Filter::Sql("i >= 5".to_string())))
+                .await
+                .unwrap(),
             5
         );
     }
@@ -2897,6 +3002,9 @@ mod tests {
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.index_type, crate::index::IndexType::IvfPq);
         assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
+
+        table.drop_index(index_name).await.unwrap();
+        assert_eq!(table.list_indices().await.unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -3507,11 +3615,10 @@ mod tests {
             .unwrap();
 
         let native_tbl = table.as_native().unwrap();
-        let schema = native_tbl.schema().await.unwrap();
+        let schema = native_tbl.manifest().await.unwrap().schema;
 
-        let (field_idx, field) = schema.column_with_name("i").unwrap();
-        let field_metadata = field.metadata();
-        assert_eq!(field_metadata.len(), 0);
+        let field = schema.field("i").unwrap();
+        assert_eq!(field.metadata.len(), 0);
 
         native_tbl
             .replace_schema_metadata(vec![(
@@ -3532,16 +3639,15 @@ mod tests {
         let mut new_field_metadata = HashMap::<String, String>::new();
         new_field_metadata.insert("test_field_key1".into(), "test_field_val1".into());
         native_tbl
-            .replace_field_metadata(vec![(field_idx as u32, new_field_metadata)])
+            .replace_field_metadata(vec![(field.id as u32, new_field_metadata)])
             .await
             .unwrap();
 
-        let schema = native_tbl.schema().await.unwrap();
-        let (_field_idx, field) = schema.column_with_name("i").unwrap();
-        let field_metadata = field.metadata();
-        assert_eq!(field_metadata.len(), 1);
+        let schema = native_tbl.manifest().await.unwrap().schema;
+        let field = schema.field("i").unwrap();
+        assert_eq!(field.metadata.len(), 1);
         assert_eq!(
-            field_metadata.get("test_field_key1"),
+            field.metadata.get("test_field_key1"),
             Some(&"test_field_val1".to_string())
         );
     }

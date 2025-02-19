@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import {
   type EmbeddingFunction,
@@ -18,11 +7,11 @@ import {
 } from "./embedding_function";
 import "reflect-metadata";
 
-type CreateReturnType<T> = T extends { init: () => Promise<void> }
+export type CreateReturnType<T> = T extends { init: () => Promise<void> }
   ? Promise<T>
   : T;
 
-interface EmbeddingFunctionCreate<T extends EmbeddingFunction> {
+export interface EmbeddingFunctionCreate<T extends EmbeddingFunction> {
   create(options?: T["TOptions"]): CreateReturnType<T>;
 }
 
@@ -44,8 +33,6 @@ export class EmbeddingFunctionRegistry {
 
   /**
    * Register an embedding function
-   * @param name The name of the function
-   * @param func The function to register
    * @throws Error if the function is already registered
    */
   register<

@@ -9,7 +9,6 @@ venv
 .vscode
 .zed
 rust/target
-rust/Cargo.lock
 
 site
 
@@ -42,5 +41,3 @@ dist
 target
 
 **/sccache.log
-
-Cargo.lock

@@ -1,15 +1,6 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 
 from __future__ import annotations
 
@@ -23,6 +14,7 @@ from overrides import EnforceOverrides, override  # type: ignore
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP
 
+from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .table import (
     AsyncTable,
@@ -34,6 +26,8 @@ from .util import (
     get_uri_scheme,
     validate_table_name,
 )
+
+import deprecation
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -128,19 +122,11 @@ class DBConnection(EnforceOverrides):
             See available options at
             <https://lancedb.github.io/lancedb/guides/storage/>
         data_storage_version: optional, str, default "stable"
-            The version of the data storage format to use. Newer versions are more
-            efficient but require newer versions of lance to read.  The default is
-            "stable" which will use the legacy v2 version.  See the user guide
-            for more details.
-        enable_v2_manifest_paths: bool, optional, default False
-            Use the new V2 manifest paths. These paths provide more efficient
-            opening of datasets with many versions on object stores.  WARNING:
-            turning this on will make the dataset unreadable for older versions
-            of LanceDB (prior to 0.13.0). To migrate an existing dataset, instead
-            use the
-            [Table.migrate_manifest_paths_v2][lancedb.table.Table.migrate_v2_manifest_paths]
-            method.
-
+            Deprecated.  Set `storage_options` when connecting to the database and set
+            `new_table_data_storage_version` in the options.
+        enable_v2_manifest_paths: optional, bool, default False
+            Deprecated.  Set `storage_options` when connecting to the database and set
+            `new_table_enable_v2_manifest_paths` in the options.
         Returns
         -------
         LanceTable
@@ -311,6 +297,12 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError
 
+    def drop_all_tables(self):
+        """
+        Drop all tables from the database
+        """
+        raise NotImplementedError
+
     @property
     def uri(self) -> str:
         return self._uri
@@ -461,8 +453,6 @@ class LanceDBConnection(DBConnection):
             fill_value=fill_value,
             embedding_functions=embedding_functions,
             storage_options=storage_options,
-            data_storage_version=data_storage_version,
-            enable_v2_manifest_paths=enable_v2_manifest_paths,
         )
         return tbl
 
@@ -506,8 +496,18 @@ class LanceDBConnection(DBConnection):
         LOOP.run(self._conn.drop_table(name, ignore_missing=ignore_missing))
 
     @override
+    def drop_all_tables(self):
+        LOOP.run(self._conn.drop_all_tables())
+
+    @deprecation.deprecated(
+        deprecated_in="0.15.1",
+        removed_in="0.17",
+        current_version=__version__,
+        details="Use drop_all_tables() instead",
+    )
+    @override
     def drop_database(self):
-        LOOP.run(self._conn.drop_database())
+        LOOP.run(self._conn.drop_all_tables())
 
 
 class AsyncConnection(object):
@@ -604,9 +604,6 @@ class AsyncConnection(object):
         storage_options: Optional[Dict[str, str]] = None,
         *,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
-        data_storage_version: Optional[str] = None,
-        use_legacy_format: Optional[bool] = None,
-        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -649,23 +646,6 @@ class AsyncConnection(object):
             connection will be inherited by the table, but can be overridden here.
             See available options at
             <https://lancedb.github.io/lancedb/guides/storage/>
-        data_storage_version: optional, str, default "stable"
-            The version of the data storage format to use. Newer versions are more
-            efficient but require newer versions of lance to read.  The default is
-            "stable" which will use the legacy v2 version.  See the user guide
-            for more details.
-        use_legacy_format: bool, optional, default False. (Deprecated)
-            If True, use the legacy format for the table. If False, use the new format.
-            This method is deprecated, use `data_storage_version` instead.
-        enable_v2_manifest_paths: bool, optional, default False
-            Use the new V2 manifest paths. These paths provide more efficient
-            opening of datasets with many versions on object stores.  WARNING:
-            turning this on will make the dataset unreadable for older versions
-            of LanceDB (prior to 0.13.0). To migrate an existing dataset, instead
-            use the
-            [AsyncTable.migrate_manifest_paths_v2][lancedb.table.AsyncTable.migrate_manifest_paths_v2]
-            method.
-
 
         Returns
         -------
@@ -804,17 +784,12 @@ class AsyncConnection(object):
         if mode == "create" and exist_ok:
             mode = "exist_ok"
 
-        if not data_storage_version:
-            data_storage_version = "legacy" if use_legacy_format else "stable"
-
         if data is None:
             new_table = await self._inner.create_empty_table(
                 name,
                 mode,
                 schema,
                 storage_options=storage_options,
-                data_storage_version=data_storage_version,
-                enable_v2_manifest_paths=enable_v2_manifest_paths,
             )
         else:
             data = data_to_reader(data, schema)
@@ -823,8 +798,6 @@ class AsyncConnection(object):
                 mode,
                 data,
                 storage_options=storage_options,
-                data_storage_version=data_storage_version,
-                enable_v2_manifest_paths=enable_v2_manifest_paths,
             )
 
         return AsyncTable(new_table)
@@ -894,9 +867,19 @@ class AsyncConnection(object):
             if f"Table '{name}' was not found" not in str(e):
                 raise e
 
+    async def drop_all_tables(self):
+        """Drop all tables from the database."""
+        await self._inner.drop_all_tables()
+
+    @deprecation.deprecated(
+        deprecated_in="0.15.1",
+        removed_in="0.17",
+        current_version=__version__,
+        details="Use drop_all_tables() instead",
+    )
     async def drop_database(self):
         """
         Drop database
         This is the same thing as dropping all the tables
         """
-        await self._inner.drop_db()
+        await self._inner.drop_all_tables()

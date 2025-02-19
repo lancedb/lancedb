@@ -11,6 +11,7 @@ excluded_globs = [
     "../src/examples/*.md",
     "../src/integrations/*.md",
     "../src/guides/tables.md",
+    "../src/guides/tables/merge_insert.md",
     "../src/python/duckdb.md",
     "../src/python/pandas_and_pyarrow.md",
     "../src/python/polars_arrow.md",

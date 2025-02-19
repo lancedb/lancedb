@@ -133,13 +133,22 @@ recommend switching to stable releases.
 ## Connect to a database
 
 === "Python"
+    === "Sync API"
 
-    ```python
-    --8<-- "python/python/tests/docs/test_basic.py:imports"
-    --8<-- "python/python/tests/docs/test_basic.py:connect"
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:imports"
 
-    --8<-- "python/python/tests/docs/test_basic.py:connect_async"
-    ```
+        --8<-- "python/python/tests/docs/test_basic.py:set_uri"
+        --8<-- "python/python/tests/docs/test_basic.py:connect"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:imports"
+
+        --8<-- "python/python/tests/docs/test_basic.py:set_uri"
+        --8<-- "python/python/tests/docs/test_basic.py:connect_async"
+        ```
 
 === "Typescript[^1]"
 
@@ -183,21 +192,33 @@ table.
 
 === "Python"
 
-    ```python
-    --8<-- "python/python/tests/docs/test_basic.py:create_table"
-    --8<-- "python/python/tests/docs/test_basic.py:create_table_async"
-    ```
-
     If the table already exists, LanceDB will raise an error by default.
     If you want to overwrite the table, you can pass in `mode="overwrite"`
     to the `create_table` method.
 
-    You can also pass in a pandas DataFrame directly:
+    === "Sync API"
 
-    ```python
-    --8<-- "python/python/tests/docs/test_basic.py:create_table_pandas"
-    --8<-- "python/python/tests/docs/test_basic.py:create_table_async_pandas"
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:create_table"
+        ```
+
+        You can also pass in a pandas DataFrame directly:
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:create_table_pandas"
+        ```
+
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:create_table_async"
+        ```
+
+        You can also pass in a pandas DataFrame directly:
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:create_table_async_pandas"
+        ```
 
 === "Typescript[^1]"
 
@@ -247,10 +268,16 @@ similar to a `CREATE TABLE` statement in SQL.
 
 === "Python"
 
-      ```python
-      --8<-- "python/python/tests/docs/test_basic.py:create_empty_table"
-      --8<-- "python/python/tests/docs/test_basic.py:create_empty_table_async"
-      ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:create_empty_table"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:create_empty_table_async"
+        ```
 
     !!! note "You can define schema in Pydantic"
         LanceDB comes with Pydantic support, which allows you to define the schema of your data using Pydantic models. This makes it easy to work with LanceDB tables and data. Learn more about all supported types in [tables guide](./guides/tables.md).
@@ -281,10 +308,16 @@ Once created, you can open a table as follows:
 
 === "Python"
 
-    ```python
-    --8<-- "python/python/tests/docs/test_basic.py:open_table"
-    --8<-- "python/python/tests/docs/test_basic.py:open_table_async"
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:open_table"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:open_table_async"
+        ```
 
 === "Typescript[^1]"
     === "@lancedb/lancedb"
@@ -310,10 +343,16 @@ If you forget the name of your table, you can always get a listing of all table 
 
 === "Python"
 
-    ```python
-    --8<-- "python/python/tests/docs/test_basic.py:table_names"
-    --8<-- "python/python/tests/docs/test_basic.py:table_names_async"
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:table_names"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:table_names_async"
+        ```
 
 === "Typescript[^1]"
     === "@lancedb/lancedb"
@@ -340,10 +379,16 @@ After a table has been created, you can always add more data to it as follows:
 
 === "Python"
 
-    ```python
-    --8<-- "python/python/tests/docs/test_basic.py:add_data"
-    --8<-- "python/python/tests/docs/test_basic.py:add_data_async"
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:add_data"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:add_data_async"
+        ```
 
 === "Typescript[^1]"
     === "@lancedb/lancedb"
@@ -370,10 +415,16 @@ Once you've embedded the query, you can find its nearest neighbors as follows:
 
 === "Python"
 
-    ```python
-    --8<-- "python/python/tests/docs/test_basic.py:vector_search"
-    --8<-- "python/python/tests/docs/test_basic.py:vector_search_async"
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:vector_search"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:vector_search_async"
+        ```
 
     This returns a pandas DataFrame with the results.
 
@@ -412,10 +463,16 @@ LanceDB allows you to create an ANN index on a table as follows:
 
 === "Python"
 
-    ```py
-    --8<-- "python/python/tests/docs/test_basic.py:create_index"
-    --8<-- "python/python/tests/docs/test_basic.py:create_index_async"
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:create_index"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:create_index_async"
+        ```
 
 === "Typescript[^1]"
     === "@lancedb/lancedb"
@@ -451,10 +508,16 @@ This can delete any number of rows that match the filter.
 
 === "Python"
 
-    ```python
-    --8<-- "python/python/tests/docs/test_basic.py:delete_rows"
-    --8<-- "python/python/tests/docs/test_basic.py:delete_rows_async"
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:delete_rows"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:delete_rows_async"
+        ```
 
 === "Typescript[^1]"
 
@@ -483,7 +546,10 @@ simple or complex as needed. To see what expressions are supported, see the
 
 === "Python"
 
-      Read more: [lancedb.table.Table.delete][]
+    === "Sync API"
+        Read more: [lancedb.table.Table.delete][]
+    === "Async API"
+        Read more: [lancedb.table.AsyncTable.delete][]
 
 === "Typescript[^1]"
 
@@ -505,10 +571,16 @@ Use the `drop_table()` method on the database to remove a table.
 
 === "Python"
 
-    ```python
-    --8<-- "python/python/tests/docs/test_basic.py:drop_table"
-    --8<-- "python/python/tests/docs/test_basic.py:drop_table_async"
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:drop_table"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_basic.py:drop_table_async"
+        ```
 
     This permanently removes the table and is not recoverable, unlike deleting rows.
     By default, if the table does not exist an exception is raised. To suppress this,
@@ -543,10 +615,17 @@ You can use the embedding API when working with embedding models. It automatical
 
 === "Python"
 
-    ```python
-    --8<-- "python/python/tests/docs/test_embeddings_optional.py:imports"
-    --8<-- "python/python/tests/docs/test_embeddings_optional.py:openai_embeddings"
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_embeddings_optional.py:imports"
+
+        --8<-- "python/python/tests/docs/test_embeddings_optional.py:openai_embeddings"
+        ```
+    === "Async API"
+
+        Coming soon to the async API.
+        https://github.com/lancedb/lancedb/issues/1938
 
 === "Typescript[^1]"
 

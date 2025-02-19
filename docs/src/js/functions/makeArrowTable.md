@@ -22,14 +22,15 @@ when creating a table or adding data to it)
 This function converts an array of Record<String, any> (row-major JS objects)
 to an Arrow Table (a columnar structure)
 
-Note that it currently does not support nulls.
-
 If a schema is provided then it will be used to determine the resulting array
 types.  Fields will also be reordered to fit the order defined by the schema.
 
 If a schema is not provided then the types will be inferred and the field order
 will be controlled by the order of properties in the first record.  If a type
 is inferred it will always be nullable.
+
+If not all fields are found in the data, then a subset of the schema will be
+returned.
 
 If the input is empty then a schema must be provided to create an empty table.
 
@@ -38,6 +39,7 @@ rules are as follows:
 
  - boolean => Bool
  - number => Float64
+ - bigint => Int64
  - String => Utf8
  - Buffer => Binary
  - Record<String, any> => Struct
@@ -57,6 +59,7 @@ rules are as follows:
 
 ## Example
 
+```ts
 import { fromTableToBuffer, makeArrowTable } from "../arrow";
 import { Field, FixedSizeList, Float16, Float32, Int32, Schema } from "apache-arrow";
 
@@ -78,42 +81,40 @@ The `vectorColumns` option can be used to support other vector column
 names and data types.
 
 ```ts
-
 const schema = new Schema([
-   new Field("a", new Float64()),
-   new Field("b", new Float64()),
-   new Field(
-     "vector",
-     new FixedSizeList(3, new Field("item", new Float32()))
-   ),
- ]);
- const table = makeArrowTable([
-   { a: 1, b: 2, vector: [1, 2, 3] },
-   { a: 4, b: 5, vector: [4, 5, 6] },
-   { a: 7, b: 8, vector: [7, 8, 9] },
- ]);
- assert.deepEqual(table.schema, schema);
+  new Field("a", new Float64()),
+  new Field("b", new Float64()),
+  new Field(
+    "vector",
+    new FixedSizeList(3, new Field("item", new Float32()))
+  ),
+]);
+const table = makeArrowTable([
+  { a: 1, b: 2, vector: [1, 2, 3] },
+  { a: 4, b: 5, vector: [4, 5, 6] },
+  { a: 7, b: 8, vector: [7, 8, 9] },
+]);
+assert.deepEqual(table.schema, schema);
 ```
 
 You can specify the vector column types and names using the options as well
 
-```typescript
-
+```ts
 const schema = new Schema([
-   new Field('a', new Float64()),
-   new Field('b', new Float64()),
-   new Field('vec1', new FixedSizeList(3, new Field('item', new Float16()))),
-   new Field('vec2', new FixedSizeList(3, new Field('item', new Float16())))
- ]);
+  new Field('a', new Float64()),
+  new Field('b', new Float64()),
+  new Field('vec1', new FixedSizeList(3, new Field('item', new Float16()))),
+  new Field('vec2', new FixedSizeList(3, new Field('item', new Float16())))
+]);
 const table = makeArrowTable([
-   { a: 1, b: 2, vec1: [1, 2, 3], vec2: [2, 4, 6] },
-   { a: 4, b: 5, vec1: [4, 5, 6], vec2: [8, 10, 12] },
-   { a: 7, b: 8, vec1: [7, 8, 9], vec2: [14, 16, 18] }
- ], {
-   vectorColumns: {
-     vec1: { type: new Float16() },
-     vec2: { type: new Float16() }
-   }
- }
+  { a: 1, b: 2, vec1: [1, 2, 3], vec2: [2, 4, 6] },
+  { a: 4, b: 5, vec1: [4, 5, 6], vec2: [8, 10, 12] },
+  { a: 7, b: 8, vec1: [7, 8, 9], vec2: [14, 16, 18] }
+], {
+  vectorColumns: {
+    vec1: { type: new Float16() },
+    vec2: { type: new Float16() }
+  }
+}
 assert.deepEqual(table.schema, schema)
 ```

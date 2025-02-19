@@ -20,6 +20,7 @@ import asyncio
 import deprecation
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 import pydantic
 
@@ -31,6 +32,7 @@ from .rerankers.util import check_reranker_result
 from .util import safe_import_pandas, flatten_columns
 
 if TYPE_CHECKING:
+    import sys
     import PIL
     import polars as pl
 
@@ -41,6 +43,11 @@ if TYPE_CHECKING:
     from .common import VEC
     from .pydantic import LanceModel
     from .table import Table
+
+    if sys.version_info >= (3, 11):
+        from typing import Self
+    else:
+        from typing_extensions import Self
 
 pd = safe_import_pandas()
 
@@ -498,7 +505,7 @@ class LanceQueryBuilder(ABC):
                 "column": self._vector_column,
                 "q": self._query,
                 "k": self._limit,
-                "metric": self._metric,
+                "metric": self._distance_type,
                 "nprobes": self._nprobes,
                 "refine_factor": self._refine_factor,
                 "use_index": self._use_index,
@@ -569,7 +576,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     >>> db = lancedb.connect("./.lancedb")
     >>> table = db.create_table("my_table", data=data)
     >>> (table.search([0.4, 0.4])
-    ...       .metric("cosine")
+    ...       .distance_type("cosine")
     ...       .where("b < 10")
     ...       .select(["b", "vector"])
     ...       .limit(2)
@@ -589,7 +596,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     ):
         super().__init__(table)
         self._query = query
-        self._metric = "L2"
+        self._distance_type = "L2"
         self._nprobes = 20
         self._lower_bound = None
         self._upper_bound = None
@@ -603,6 +610,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
 
+        This is an alias for distance_type() and may be deprecated in the future.
+        Please use distance_type() instead.
+
         Parameters
         ----------
         metric: "L2" or "cosine" or "dot"
@@ -613,7 +623,32 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._metric = metric.lower()
+        return self.distance_type(metric)
+
+    def distance_type(
+        self, distance_type: Literal["L2", "cosine", "dot"]
+    ) -> "LanceVectorQueryBuilder":
+        """Set the distance metric to use.
+
+        When performing a vector search we try and find the "nearest" vectors according
+        to some kind of distance metric. This parameter controls which distance metric
+        to use.
+
+        Note: if there is a vector index then the distance type used MUST match the
+        distance type used to train the vector index. If this is not done then the
+        results will be invalid.
+
+        Parameters
+        ----------
+        distance_type: "L2" or "cosine" or "dot"
+            The distance metric to use. By default "L2" is used.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._distance_type = distance_type.lower()
         return self
 
     def nprobes(self, nprobes: int) -> LanceVectorQueryBuilder:
@@ -738,7 +773,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             filter=self._where,
             prefilter=self._prefilter,
             k=self._limit,
-            metric=self._metric,
+            metric=self._distance_type,
             columns=self._columns,
             nprobes=self._nprobes,
             lower_bound=self._lower_bound,
@@ -1071,7 +1106,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._reranker = RRFReranker()
         self._nprobes = None
         self._refine_factor = None
-        self._metric = None
+        self._distance_type = None
         self._phrase_query = False
 
     def _validate_query(self, query, vector=None, text=None):
@@ -1139,8 +1174,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.with_row_id(True)
         if self._phrase_query:
             self._fts_query.phrase_query(True)
-        if self._metric:
-            self._vector_query.metric(self._metric)
+        if self._distance_type:
+            self._vector_query.metric(self._distance_type)
         if self._nprobes:
             self._vector_query.nprobes(self._nprobes)
         if self._refine_factor:
@@ -1183,17 +1218,51 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
 
         # normalize the scores to be between 0 and 1, 0 being most relevant
-        vector_results = LanceHybridQueryBuilder._normalize_scores(
-            vector_results, "_distance"
-        )
+        # We check whether the results (vector and FTS) are empty, because when
+        # they are, they often are missing the _rowid column, which causes an error
+        if vector_results.num_rows > 0:
+            distance_i = vector_results.column_names.index("_distance")
+            original_distances = vector_results.column(distance_i)
+            original_distance_row_ids = vector_results.column("_rowid")
+            vector_results = vector_results.set_column(
+                distance_i,
+                vector_results.field(distance_i),
+                LanceHybridQueryBuilder._normalize_scores(original_distances),
+            )
 
         # In fts higher scores represent relevance. Not inverting them here as
         # rerankers might need to preserve this score to support `return_score="all"`
-        fts_results = LanceHybridQueryBuilder._normalize_scores(fts_results, "_score")
+        if fts_results.num_rows > 0:
+            score_i = fts_results.column_names.index("_score")
+            original_scores = fts_results.column(score_i)
+            original_score_row_ids = fts_results.column("_rowid")
+            fts_results = fts_results.set_column(
+                score_i,
+                fts_results.field(score_i),
+                LanceHybridQueryBuilder._normalize_scores(original_scores),
+            )
 
         results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
 
         check_reranker_result(results)
+
+        if "_distance" in results.column_names:
+            # restore the original distances
+            indices = pc.index_in(
+                results["_rowid"], original_distance_row_ids, skip_nulls=True
+            )
+            original_distances = pc.take(original_distances, indices)
+            distance_i = results.column_names.index("_distance")
+            results = results.set_column(distance_i, "_distance", original_distances)
+
+        if "_score" in results.column_names:
+            # restore the original scores
+            indices = pc.index_in(
+                results["_rowid"], original_score_row_ids, skip_nulls=True
+            )
+            original_scores = pc.take(original_scores, indices)
+            score_i = results.column_names.index("_score")
+            results = results.set_column(score_i, "_score", original_scores)
 
         results = results.slice(length=limit)
 
@@ -1224,28 +1293,23 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         return results
 
     @staticmethod
-    def _normalize_scores(results: pa.Table, column: str, invert=False):
-        if len(results) == 0:
-            return results
-        # Get the _score column from results
-        scores = results.column(column).to_numpy()
+    def _normalize_scores(scores: pa.Array, invert=False) -> pa.Array:
+        if len(scores) == 0:
+            return scores
         # normalize the scores by subtracting the min and dividing by the max
-        max, min = np.max(scores), np.min(scores)
-        if np.isclose(max, min):
-            rng = max
-        else:
-            rng = max - min
-        # If rng is 0 then min and max are both 0 and so we can leave the scores as is
-        if rng != 0:
-            scores = (scores - min) / rng
+        min, max = pc.min_max(scores).values()
+        rng = pc.subtract(max, min)
+
+        if not pc.equal(rng, pa.scalar(0.0)).as_py():
+            scores = pc.divide(pc.subtract(scores, min), rng)
+        elif not pc.equal(max, pa.scalar(0.0)).as_py():
+            # If rng is 0, then we at least want the scores to be 0
+            scores = pc.subtract(scores, min)
+
         if invert:
-            scores = 1 - scores
-        # replace the _score column with the ranks
-        _score_idx = results.column_names.index(column)
-        results = results.set_column(
-            _score_idx, column, pa.array(scores, type=pa.float32())
-        )
-        return results
+            scores = pc.subtract(1, scores)
+
+        return scores
 
     def rerank(
         self,
@@ -1350,6 +1414,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
         """Set the distance metric to use.
 
+        This is an alias for distance_type() and may be deprecated in the future.
+        Please use distance_type() instead.
+
         Parameters
         ----------
         metric: "L2" or "cosine" or "dot"
@@ -1360,7 +1427,32 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._metric = metric.lower()
+        return self.distance_type(metric)
+
+    def distance_type(
+        self, distance_type: Literal["L2", "cosine", "dot"]
+    ) -> "LanceHybridQueryBuilder":
+        """Set the distance metric to use.
+
+        When performing a vector search we try and find the "nearest" vectors according
+        to some kind of distance metric. This parameter controls which distance metric
+        to use.
+
+        Note: if there is a vector index then the distance type used MUST match the
+        distance type used to train the vector index. If this is not done then the
+        results will be invalid.
+
+        Parameters
+        ----------
+        distance_type: "L2" or "cosine" or "dot"
+            The distance metric to use. By default "L2" is used.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._distance_type = distance_type.lower()
         return self
 
     def refine_factor(self, refine_factor: int) -> LanceHybridQueryBuilder:
@@ -1418,7 +1510,7 @@ class AsyncQueryBase(object):
         """
         self._inner = inner
 
-    def where(self, predicate: str) -> AsyncQuery:
+    def where(self, predicate: str) -> Self:
         """
         Only return rows matching the given predicate
 
@@ -1437,7 +1529,7 @@ class AsyncQueryBase(object):
         self._inner.where(predicate)
         return self
 
-    def select(self, columns: Union[List[str], dict[str, str]]) -> AsyncQuery:
+    def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
         """
         Return only the specified columns.
 
@@ -1475,7 +1567,7 @@ class AsyncQueryBase(object):
             raise TypeError("columns must be a list of column names or a dict")
         return self
 
-    def limit(self, limit: int) -> AsyncQuery:
+    def limit(self, limit: int) -> Self:
         """
         Set the maximum number of results to return.
 
@@ -1485,7 +1577,7 @@ class AsyncQueryBase(object):
         self._inner.limit(limit)
         return self
 
-    def offset(self, offset: int) -> AsyncQuery:
+    def offset(self, offset: int) -> Self:
         """
         Set the offset for the results.
 
@@ -1497,7 +1589,7 @@ class AsyncQueryBase(object):
         self._inner.offset(offset)
         return self
 
-    def fast_search(self) -> AsyncQuery:
+    def fast_search(self) -> Self:
         """
         Skip searching un-indexed data.
 
@@ -1511,14 +1603,14 @@ class AsyncQueryBase(object):
         self._inner.fast_search()
         return self
 
-    def with_row_id(self) -> AsyncQuery:
+    def with_row_id(self) -> Self:
         """
         Include the _rowid column in the results.
         """
         self._inner.with_row_id()
         return self
 
-    def postfilter(self) -> AsyncQuery:
+    def postfilter(self) -> Self:
         """
         If this is called then filtering will happen after the search instead of
         before.
@@ -1754,7 +1846,7 @@ class AsyncQuery(AsyncQueryBase):
             raise ValueError("query_vector can not be None")
 
         if (
-            isinstance(query_vector, list)
+            isinstance(query_vector, (list, np.ndarray, pa.Array))
             and len(query_vector) > 0
             and isinstance(query_vector[0], (list, np.ndarray, pa.Array))
         ):
@@ -1807,8 +1899,8 @@ class AsyncFTSQuery(AsyncQueryBase):
         self._inner = inner
         self._reranker = None
 
-    def get_query(self):
-        self._inner.get_query()
+    def get_query(self) -> str:
+        return self._inner.get_query()
 
     def rerank(
         self,
@@ -1891,29 +1983,18 @@ class AsyncFTSQuery(AsyncQueryBase):
                 self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
             )
 
-    async def to_arrow(self) -> pa.Table:
-        results = await super().to_arrow()
+    async def to_batches(
+        self, *, max_batch_length: Optional[int] = None
+    ) -> AsyncRecordBatchReader:
+        reader = await super().to_batches()
+        results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
-            results = self._reranker.rerank_fts(results)
-        return results
+            results = self._reranker.rerank_fts(self.get_query(), results)
+        return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
-class AsyncVectorQuery(AsyncQueryBase):
-    def __init__(self, inner: LanceVectorQuery):
-        """
-        Construct an AsyncVectorQuery
-
-        This method is not intended to be called directly.  Instead, create
-        a query first with [AsyncTable.query][lancedb.table.AsyncTable.query] and then
-        use [AsyncQuery.nearest_to][lancedb.query.AsyncQuery.nearest_to]] to convert to
-        a vector query.  Or you can use
-        [AsyncTable.vector_search][lancedb.table.AsyncTable.vector_search]
-        """
-        super().__init__(inner)
-        self._inner = inner
-        self._reranker = None
-
-    def column(self, column: str) -> AsyncVectorQuery:
+class AsyncVectorQueryBase:
+    def column(self, column: str) -> Self:
         """
         Set the vector column to query
 
@@ -1926,7 +2007,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.column(column)
         return self
 
-    def nprobes(self, nprobes: int) -> AsyncVectorQuery:
+    def nprobes(self, nprobes: int) -> Self:
         """
         Set the number of partitions to search (probe)
 
@@ -1954,7 +2035,7 @@ class AsyncVectorQuery(AsyncQueryBase):
 
     def distance_range(
         self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
-    ) -> AsyncVectorQuery:
+    ) -> Self:
         """Set the distance range to use.
 
         Only rows with distances within range [lower_bound, upper_bound)
@@ -1975,7 +2056,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.distance_range(lower_bound, upper_bound)
         return self
 
-    def ef(self, ef: int) -> AsyncVectorQuery:
+    def ef(self, ef: int) -> Self:
         """
         Set the number of candidates to consider during search
 
@@ -1990,7 +2071,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.ef(ef)
         return self
 
-    def refine_factor(self, refine_factor: int) -> AsyncVectorQuery:
+    def refine_factor(self, refine_factor: int) -> Self:
         """
         A multiplier to control how many additional rows are taken during the refine
         step
@@ -2026,7 +2107,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.refine_factor(refine_factor)
         return self
 
-    def distance_type(self, distance_type: str) -> AsyncVectorQuery:
+    def distance_type(self, distance_type: str) -> Self:
         """
         Set the distance metric to use
 
@@ -2044,7 +2125,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.distance_type(distance_type)
         return self
 
-    def bypass_vector_index(self) -> AsyncVectorQuery:
+    def bypass_vector_index(self) -> Self:
         """
         If this is called then any vector index is skipped
 
@@ -2057,6 +2138,23 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.bypass_vector_index()
         return self
 
+
+class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
+    def __init__(self, inner: LanceVectorQuery):
+        """
+        Construct an AsyncVectorQuery
+
+        This method is not intended to be called directly.  Instead, create
+        a query first with [AsyncTable.query][lancedb.table.AsyncTable.query] and then
+        use [AsyncQuery.nearest_to][lancedb.query.AsyncQuery.nearest_to]] to convert to
+        a vector query.  Or you can use
+        [AsyncTable.vector_search][lancedb.table.AsyncTable.vector_search]
+        """
+        super().__init__(inner)
+        self._inner = inner
+        self._reranker = None
+        self._query_string = None
+
     def rerank(
         self, reranker: Reranker = RRFReranker(), query_string: Optional[str] = None
     ) -> AsyncHybridQuery:
@@ -2064,6 +2162,11 @@ class AsyncVectorQuery(AsyncQueryBase):
             raise ValueError("reranker must be an instance of Reranker class.")
 
         self._reranker = reranker
+
+        if not self._query_string and not query_string:
+            raise ValueError("query_string must be provided to rerank the results.")
+
+        self._query_string = query_string
 
         return self
 
@@ -2100,14 +2203,17 @@ class AsyncVectorQuery(AsyncQueryBase):
             self._inner.nearest_to_text({"query": query, "columns": columns})
         )
 
-    async def to_arrow(self) -> pa.Table:
-        results = await super().to_arrow()
+    async def to_batches(
+        self, *, max_batch_length: Optional[int] = None
+    ) -> AsyncRecordBatchReader:
+        reader = await super().to_batches()
+        results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
-            results = self._reranker.rerank_vector(results)
-        return results
+            results = self._reranker.rerank_vector(self._query_string, results)
+        return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
-class AsyncHybridQuery(AsyncQueryBase):
+class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
     """
     A query builder that performs hybrid vector and full text search.
     Results are combined and reranked based on the specified reranker.
@@ -2155,10 +2261,9 @@ class AsyncHybridQuery(AsyncQueryBase):
 
         return self
 
-    async def to_batches(self):
-        raise NotImplementedError("to_batches not yet supported on a hybrid query")
-
-    async def to_arrow(self) -> pa.Table:
+    async def to_batches(
+        self, *, max_batch_length: Optional[int] = None
+    ) -> AsyncRecordBatchReader:
         fts_query = AsyncFTSQuery(self._inner.to_fts_query())
         vec_query = AsyncVectorQuery(self._inner.to_vector_query())
 
@@ -2173,7 +2278,7 @@ class AsyncHybridQuery(AsyncQueryBase):
             vec_query.to_arrow(),
         )
 
-        return LanceHybridQueryBuilder._combine_hybrid_results(
+        result = LanceHybridQueryBuilder._combine_hybrid_results(
             fts_results=fts_results,
             vector_results=vector_results,
             norm=self._norm,
@@ -2182,6 +2287,8 @@ class AsyncHybridQuery(AsyncQueryBase):
             limit=self._inner.get_limit(),
             with_row_ids=with_row_ids,
         )
+
+        return AsyncRecordBatchReader(result, max_batch_length=max_batch_length)
 
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.

@@ -1,21 +1,23 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { Data, Schema, SchemaLike, TableLike } from "./arrow";
-import { fromTableToBuffer, makeEmptyTable } from "./arrow";
+import {
+  Data,
+  Schema,
+  SchemaLike,
+  TableLike,
+  fromTableToStreamBuffer,
+  isArrowTable,
+  makeArrowTable,
+} from "./arrow";
+import {
+  Table as ArrowTable,
+  fromTableToBuffer,
+  makeEmptyTable,
+} from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Connection as LanceDbConnection } from "./native";
+import { sanitizeTable } from "./sanitize";
 import { LocalTable, Table } from "./table";
 
 export interface CreateTableOptions {
@@ -50,6 +52,8 @@ export interface CreateTableOptions {
    *
    * The default is `stable`.
    * Set to "legacy" to use the old format.
+   *
+   * @deprecated Pass `new_table_data_storage_version` to storageOptions instead.
    */
   dataStorageVersion?: string;
 
@@ -59,17 +63,11 @@ export interface CreateTableOptions {
    * turning this on will make the dataset unreadable for older versions
    * of LanceDB (prior to 0.10.0). To migrate an existing dataset, instead
    * use the {@link LocalTable#migrateManifestPathsV2} method.
+   *
+   * @deprecated Pass `new_table_enable_v2_manifest_paths` to storageOptions instead.
    */
   enableV2ManifestPaths?: boolean;
 
-  /**
-   * If true then data files will be written with the legacy format
-   *
-   * The default is false.
-   *
-   * Deprecated. Use data storage version instead.
-   */
-  useLegacyFormat?: boolean;
   schema?: SchemaLike;
   embeddingFunction?: EmbeddingFunctionConfig;
 }
@@ -127,6 +125,7 @@ export interface TableNamesOptions {
  *
  * Any created tables are independent and will continue to work even if
  * the underlying connection has been closed.
+ * @hideconstructor
  */
 export abstract class Connection {
   [Symbol.for("nodejs.util.inspect.custom")](): string {
@@ -212,11 +211,18 @@ export abstract class Connection {
    * @param {string} name The name of the table to drop.
    */
   abstract dropTable(name: string): Promise<void>;
+
+  /**
+   * Drop all tables in the database.
+   */
+  abstract dropAllTables(): Promise<void>;
 }
 
+/** @hideconstructor */
 export class LocalConnection extends Connection {
   readonly inner: LanceDbConnection;
 
+  /** @hidden */
   constructor(inner: LanceDbConnection) {
     super();
     this.inner = inner;
@@ -251,6 +257,28 @@ export class LocalConnection extends Connection {
     return new LocalTable(innerTable);
   }
 
+  private getStorageOptions(
+    options?: Partial<CreateTableOptions>,
+  ): Record<string, string> | undefined {
+    if (options?.dataStorageVersion !== undefined) {
+      if (options.storageOptions === undefined) {
+        options.storageOptions = {};
+      }
+      options.storageOptions["newTableDataStorageVersion"] =
+        options.dataStorageVersion;
+    }
+
+    if (options?.enableV2ManifestPaths !== undefined) {
+      if (options.storageOptions === undefined) {
+        options.storageOptions = {};
+      }
+      options.storageOptions["newTableEnableV2ManifestPaths"] =
+        options.enableV2ManifestPaths ? "true" : "false";
+    }
+
+    return cleanseStorageOptions(options?.storageOptions);
+  }
+
   async createTable(
     nameOrOptions:
       | string
@@ -266,21 +294,15 @@ export class LocalConnection extends Connection {
     if (data === undefined) {
       throw new Error("data is required");
     }
-    const { buf, mode } = await Table.parseTableData(data, options);
-    let dataStorageVersion = "stable";
-    if (options?.dataStorageVersion !== undefined) {
-      dataStorageVersion = options.dataStorageVersion;
-    } else if (options?.useLegacyFormat !== undefined) {
-      dataStorageVersion = options.useLegacyFormat ? "legacy" : "stable";
-    }
+    const { buf, mode } = await parseTableData(data, options);
+
+    const storageOptions = this.getStorageOptions(options);
 
     const innerTable = await this.inner.createTable(
       nameOrOptions,
       buf,
       mode,
-      cleanseStorageOptions(options?.storageOptions),
-      dataStorageVersion,
-      options?.enableV2ManifestPaths,
+      storageOptions,
     );
 
     return new LocalTable(innerTable);
@@ -304,28 +326,24 @@ export class LocalConnection extends Connection {
       metadata = registry.getTableMetadata([embeddingFunction]);
     }
 
-    let dataStorageVersion = "stable";
-    if (options?.dataStorageVersion !== undefined) {
-      dataStorageVersion = options.dataStorageVersion;
-    } else if (options?.useLegacyFormat !== undefined) {
-      dataStorageVersion = options.useLegacyFormat ? "legacy" : "stable";
-    }
-
+    const storageOptions = this.getStorageOptions(options);
     const table = makeEmptyTable(schema, metadata);
     const buf = await fromTableToBuffer(table);
     const innerTable = await this.inner.createEmptyTable(
       name,
       buf,
       mode,
-      cleanseStorageOptions(options?.storageOptions),
-      dataStorageVersion,
-      options?.enableV2ManifestPaths,
+      storageOptions,
     );
     return new LocalTable(innerTable);
   }
 
   async dropTable(name: string): Promise<void> {
     return this.inner.dropTable(name);
+  }
+
+  async dropAllTables(): Promise<void> {
+    return this.inner.dropAllTables();
   }
 }
 
@@ -367,4 +385,39 @@ function camelToSnakeCase(camel: string): string {
     result = result.slice(1);
   }
   return result;
+}
+
+async function parseTableData(
+  data: Record<string, unknown>[] | TableLike,
+  options?: Partial<CreateTableOptions>,
+  streaming = false,
+) {
+  let mode: string = options?.mode ?? "create";
+  const existOk = options?.existOk ?? false;
+
+  if (mode === "create" && existOk) {
+    mode = "exist_ok";
+  }
+
+  let table: ArrowTable;
+  if (isArrowTable(data)) {
+    table = sanitizeTable(data);
+  } else {
+    table = makeArrowTable(data as Record<string, unknown>[], options);
+  }
+  if (streaming) {
+    const buf = await fromTableToStreamBuffer(
+      table,
+      options?.embeddingFunction,
+      options?.schema,
+    );
+    return { buf, mode };
+  } else {
+    const buf = await fromTableToBuffer(
+      table,
+      options?.embeddingFunction,
+      options?.schema,
+    );
+    return { buf, mode };
+  }
 }

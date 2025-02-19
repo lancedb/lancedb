@@ -7,6 +7,7 @@ from pathlib import Path
 
 import lancedb
 from lancedb.index import IvfPq, FTS
+from lancedb.rerankers.cross_encoder import CrossEncoderReranker
 import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
@@ -69,7 +70,7 @@ async def table_struct_async(tmp_path) -> AsyncTable:
 
 
 @pytest.fixture
-def multivec_table() -> lancedb.table.Table:
+def multivec_table(vector_value_type=pa.float32()) -> lancedb.table.Table:
     db = lancedb.connect("memory://")
     # Generate 256 rows of data
     num_rows = 256
@@ -85,7 +86,7 @@ def multivec_table() -> lancedb.table.Table:
     df = pa.table(
         {
             "vector": pa.array(
-                vector_data, type=pa.list_(pa.list_(pa.float32(), list_size=2))
+                vector_data, type=pa.list_(pa.list_(vector_value_type, list_size=2))
             ),
             "id": pa.array(id_data),
             "float_field": pa.array(float_field_data),
@@ -95,7 +96,7 @@ def multivec_table() -> lancedb.table.Table:
 
 
 @pytest_asyncio.fixture
-async def multivec_table_async(tmp_path) -> AsyncTable:
+async def multivec_table_async(vector_value_type=pa.float32()) -> AsyncTable:
     conn = await lancedb.connect_async(
         "memory://", read_consistency_interval=timedelta(seconds=0)
     )
@@ -113,7 +114,7 @@ async def multivec_table_async(tmp_path) -> AsyncTable:
     df = pa.table(
         {
             "vector": pa.array(
-                vector_data, type=pa.list_(pa.list_(pa.float32(), list_size=2))
+                vector_data, type=pa.list_(pa.list_(vector_value_type, list_size=2))
             ),
             "id": pa.array(id_data),
             "float_field": pa.array(float_field_data),
@@ -231,6 +232,74 @@ async def test_distance_range_async(table_async: AsyncTable):
     assert res["_distance"].to_pylist() == [min_dist, max_dist]
 
 
+@pytest.mark.asyncio
+async def test_distance_range_with_new_rows_async():
+    conn = await lancedb.connect_async(
+        "memory://", read_consistency_interval=timedelta(seconds=0)
+    )
+    data = pa.table(
+        {
+            "vector": pa.FixedShapeTensorArray.from_numpy_ndarray(
+                np.random.rand(256, 2)
+            ),
+        }
+    )
+    table = await conn.create_table("test", data)
+    table.create_index("vector", config=IvfPq(num_partitions=1, num_sub_vectors=2))
+
+    q = [0, 0]
+    rs = await table.query().nearest_to(q).to_arrow()
+    dists = rs["_distance"].to_pylist()
+    min_dist = dists[0]
+    max_dist = dists[-1]
+
+    # append more rows so that execution plan would be mixed with ANN & Flat KNN
+    new_data = pa.table(
+        {
+            "vector": pa.FixedShapeTensorArray.from_numpy_ndarray(np.random.rand(4, 2)),
+        }
+    )
+    await table.add(new_data)
+
+    res = (
+        await table.query()
+        .nearest_to(q)
+        .distance_range(upper_bound=min_dist)
+        .to_arrow()
+    )
+    assert len(res) == 0
+
+    res = (
+        await table.query()
+        .nearest_to(q)
+        .distance_range(lower_bound=max_dist)
+        .to_arrow()
+    )
+    for dist in res["_distance"].to_pylist():
+        assert dist >= max_dist
+
+    res = (
+        await table.query()
+        .nearest_to(q)
+        .distance_range(upper_bound=max_dist)
+        .to_arrow()
+    )
+    for dist in res["_distance"].to_pylist():
+        assert dist < max_dist
+
+    res = (
+        await table.query()
+        .nearest_to(q)
+        .distance_range(lower_bound=min_dist)
+        .to_arrow()
+    )
+    for dist in res["_distance"].to_pylist():
+        assert dist >= min_dist
+
+
+@pytest.mark.parametrize(
+    "multivec_table", [pa.float16(), pa.float32(), pa.float64()], indirect=True
+)
 def test_multivector(multivec_table: lancedb.table.Table):
     # create index on multivector
     multivec_table.create_index(
@@ -261,6 +330,9 @@ def test_multivector(multivec_table: lancedb.table.Table):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "multivec_table_async", [pa.float16(), pa.float32(), pa.float64()], indirect=True
+)
 async def test_multivector_async(multivec_table_async: AsyncTable):
     # create index on multivector
     await multivec_table_async.create_index(
@@ -370,14 +442,14 @@ def test_query_builder_with_metric(table):
     df_default = LanceVectorQueryBuilder(table, query, vector_column_name).to_pandas()
     df_l2 = (
         LanceVectorQueryBuilder(table, query, vector_column_name)
-        .metric("L2")
+        .distance_type("L2")
         .to_pandas()
     )
     tm.assert_frame_equal(df_default, df_l2)
 
     df_cosine = (
         LanceVectorQueryBuilder(table, query, vector_column_name)
-        .metric("cosine")
+        .distance_type("cosine")
         .limit(1)
         .to_pandas()
     )
@@ -394,7 +466,7 @@ def test_query_builder_with_different_vector_column():
     vector_column_name = "foo_vector"
     builder = (
         LanceVectorQueryBuilder(table, query, vector_column_name)
-        .metric("cosine")
+        .distance_type("cosine")
         .where("b < 10")
         .select(["b"])
         .limit(2)
@@ -509,15 +581,24 @@ async def test_query_async(table_async: AsyncTable):
         expected_columns=["id", "vector", "_rowid"],
     )
 
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+async def test_query_reranked_async(table_async: AsyncTable):
     # FTS with rerank
     await table_async.create_index("text", config=FTS(with_position=False))
     await check_query(
-        table_async.query().nearest_to_text("dog").rerank(),
+        table_async.query().nearest_to_text("dog").rerank(CrossEncoderReranker()),
         expected_num_rows=1,
     )
 
     # Vector query with rerank
-    await check_query(table_async.vector_search([1, 2]).rerank(), expected_num_rows=2)
+    await check_query(
+        table_async.vector_search([1, 2]).rerank(
+            CrossEncoderReranker(), query_string="dog"
+        ),
+        expected_num_rows=2,
+    )
 
 
 @pytest.mark.asyncio

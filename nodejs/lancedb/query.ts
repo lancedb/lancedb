@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import {
   Table as ArrowTable,
@@ -104,10 +93,19 @@ export interface FullTextSearchOptions {
   columns?: string | string[];
 }
 
-/** Common methods supported by all query types */
+/** Common methods supported by all query types
+ *
+ * @see {@link Query}
+ * @see {@link VectorQuery}
+ *
+ * @hideconstructor
+ */
 export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
   implements AsyncIterable<RecordBatch>
 {
+  /**
+   * @hidden
+   */
   protected constructor(
     protected inner: NativeQueryType | Promise<NativeQueryType>,
   ) {
@@ -115,6 +113,9 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
   }
 
   // call a function on the inner (either a promise or the actual object)
+  /**
+   * @hidden
+   */
   protected doCall(fn: (inner: NativeQueryType) => void) {
     if (this.inner instanceof Promise) {
       this.inner = this.inner.then((inner) => {
@@ -143,7 +144,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
   }
   /**
    * A filter statement to be applied to this query.
-   * @alias where
+   * @see where
    * @deprecated Use `where` instead
    */
   filter(predicate: string): this {
@@ -246,7 +247,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
    * Skip searching un-indexed data. This can make search faster, but will miss
    * any data that is not yet indexed.
    *
-   * Use {@link lancedb.Table#optimize} to index all un-indexed data.
+   * Use {@link Table#optimize} to index all un-indexed data.
    */
   fastSearch(): this {
     this.doCall((inner: NativeQueryType) => inner.fastSearch());
@@ -265,6 +266,9 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     return this;
   }
 
+  /**
+   * @hidden
+   */
   protected nativeExecute(
     options?: Partial<QueryExecutionOptions>,
   ): Promise<NativeBatchIterator> {
@@ -292,6 +296,9 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     return new RecordBatchIterator(this.nativeExecute(options));
   }
 
+  /**
+   * @hidden
+   */
   // biome-ignore lint/suspicious/noExplicitAny: skip
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>> {
     const promise = this.nativeExecute();
@@ -354,8 +361,15 @@ export interface ExecutableQuery {}
  * A builder used to construct a vector search
  *
  * This builder can be reused to execute the query many times.
+ *
+ * @see {@link Query#nearestTo}
+ *
+ * @hideconstructor
  */
 export class VectorQuery extends QueryBase<NativeVectorQuery> {
+  /**
+   * @hidden
+   */
   constructor(inner: NativeVectorQuery | Promise<NativeVectorQuery>) {
     super(inner);
   }
@@ -581,8 +595,16 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
   }
 }
 
-/** A builder for LanceDB queries. */
+/** A builder for LanceDB queries.
+ *
+ * @see {@link Table#query}, {@link Table#search}
+ *
+ * @hideconstructor
+ */
 export class Query extends QueryBase<NativeQuery> {
+  /**
+   * @hidden
+   */
   constructor(tbl: NativeTable) {
     super(tbl.query());
   }

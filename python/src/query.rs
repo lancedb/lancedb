@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use arrow::array::make_array;
 use arrow::array::ArrayData;
@@ -18,8 +7,7 @@ use arrow::pyarrow::FromPyArrow;
 use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::{
-    ExecutableQuery, HasQuery, Query as LanceDbQuery, QueryBase, Select,
-    VectorQuery as LanceDbVectorQuery,
+    ExecutableQuery, Query as LanceDbQuery, QueryBase, Select, VectorQuery as LanceDbVectorQuery,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::{PyAnyMethods, PyDictMethods};
@@ -324,7 +312,8 @@ impl VectorQuery {
     }
 
     pub fn nearest_to_text(&mut self, query: Bound<'_, PyDict>) -> PyResult<HybridQuery> {
-        let fts_query = Query::new(self.inner.mut_query().clone()).nearest_to_text(query)?;
+        let base_query = self.inner.clone().into_plain();
+        let fts_query = Query::new(base_query).nearest_to_text(query)?;
         Ok(HybridQuery {
             inner_vec: self.clone(),
             inner_fts: fts_query,
@@ -422,10 +411,14 @@ impl HybridQuery {
     }
 
     pub fn get_limit(&mut self) -> Option<u32> {
-        self.inner_fts.inner.limit.map(|i| i as u32)
+        self.inner_fts
+            .inner
+            .current_request()
+            .limit
+            .map(|i| i as u32)
     }
 
     pub fn get_with_row_id(&mut self) -> bool {
-        self.inner_fts.inner.with_row_id
+        self.inner_fts.inner.current_request().with_row_id
     }
 }
