@@ -262,7 +262,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 let vectors = query
                     .query_vector
                     .iter()
-                    .map(|v| vector_to_json(v))
+                    .map(vector_to_json)
                     .collect::<Result<Vec<_>>>()?;
                 body["vector"] = serde_json::Value::Array(vectors);
             }
@@ -1463,7 +1463,10 @@ mod tests {
             );
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(body["dim"].as_number().unwrap().as_u64().unwrap(), 3);
+            let query_vectors = body["vector"].as_array().unwrap();
+            assert_eq!(query_vectors.len(), 2);
+            assert_eq!(query_vectors[0].as_array().unwrap().len(), 3);
+            assert_eq!(query_vectors[1].as_array().unwrap().len(), 3);
             let data = RecordBatch::try_new(
                 Arc::new(Schema::new(vec![
                     Field::new("a", DataType::Int32, false),
