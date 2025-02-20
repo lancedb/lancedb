@@ -1996,8 +1996,8 @@ impl BaseTable for NativeTable {
         };
 
         let ds_ref = self.dataset.get().await?;
-        let mut column = query.column.clone();
         let schema = ds_ref.schema();
+        let mut column = query.column.clone();
 
         let mut query_vector = query.query_vector.first().cloned();
         if query.query_vector.len() > 1 {
