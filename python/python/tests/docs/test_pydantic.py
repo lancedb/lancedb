@@ -3,7 +3,6 @@
 
 # --8<-- [start:imports]
 import lancedb
-import pydantic
 from lancedb.pydantic import Vector, LanceModel
 # --8<-- [end:imports]
 
@@ -14,6 +13,7 @@ def test_pydantic_model(tmp_path):
         name: str
         age: int
         vector: Vector(2)
+
     # --8<-- [end:base_model]
 
     # --8<-- [start:set_url]
