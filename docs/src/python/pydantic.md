@@ -7,12 +7,12 @@ integrate Pydantic with the rest of the LanceDB APIs.
 
 ```python
 
---8<-- "python/python/tests/docs/test_pydantic.py:imports"
+--8<-- "python/python/tests/docs/test_pydantic_integration.py:imports"
 
---8<-- "python/python/tests/docs/test_pydantic.py:base_model"
+--8<-- "python/python/tests/docs/test_pydantic_integration.py:base_model"
 
---8<-- "python/python/tests/docs/test_pydantic.py:set_url"
---8<-- "python/python/tests/docs/test_pydantic.py:base_example"
+--8<-- "python/python/tests/docs/test_pydantic_integration.py:set_url"
+--8<-- "python/python/tests/docs/test_pydantic_integration.py:base_example"
 ```
 
 
