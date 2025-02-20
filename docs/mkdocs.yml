@@ -4,6 +4,9 @@ repo_url: https://github.com/lancedb/lancedb
 edit_uri: https://github.com/lancedb/lancedb/tree/main/docs/src
 repo_name: lancedb/lancedb
 docs_dir: src
+watch:
+  - src
+  - ../python/python
 
 theme:
   name: "material"
@@ -63,6 +66,7 @@ plugins:
             - https://arrow.apache.org/docs/objects.inv
             - https://pandas.pydata.org/docs/objects.inv
             - https://lancedb.github.io/lance/objects.inv
+            - https://docs.pydantic.dev/latest/objects.inv
   - mkdocs-jupyter
   - render_swagger:
       allow_arbitrary_locations: true
@@ -105,8 +109,8 @@ nav:
       - 📚 Concepts:
           - Vector search: concepts/vector_search.md
           - Indexing:
-            - IVFPQ: concepts/index_ivfpq.md
-            - HNSW: concepts/index_hnsw.md
+              - IVFPQ: concepts/index_ivfpq.md
+              - HNSW: concepts/index_hnsw.md
           - Storage: concepts/storage.md
           - Data management: concepts/data_management.md
       - 🔨 Guides:
@@ -130,8 +134,8 @@ nav:
               - Adaptive RAG: rag/adaptive_rag.md
               - SFR RAG: rag/sfr_rag.md
               - Advanced Techniques:
-                - HyDE: rag/advanced_techniques/hyde.md
-                - FLARE: rag/advanced_techniques/flare.md
+                  - HyDE: rag/advanced_techniques/hyde.md
+                  - FLARE: rag/advanced_techniques/flare.md
           - Reranking:
               - Quickstart: reranking/index.md
               - Cohere Reranker: reranking/cohere.md
@@ -146,7 +150,7 @@ nav:
               - Building Custom Rerankers: reranking/custom_reranker.md
               - Example: notebooks/lancedb_reranking.ipynb
           - Filtering: sql.md
-          - Versioning & Reproducibility: 
+          - Versioning & Reproducibility:
               - sync API: notebooks/reproducibility.ipynb
               - async API: notebooks/reproducibility_async.ipynb
           - Configuring Storage: guides/storage.md
@@ -240,8 +244,8 @@ nav:
   - Concepts:
       - Vector search: concepts/vector_search.md
       - Indexing:
-        - IVFPQ: concepts/index_ivfpq.md
-        - HNSW: concepts/index_hnsw.md
+          - IVFPQ: concepts/index_ivfpq.md
+          - HNSW: concepts/index_hnsw.md
       - Storage: concepts/storage.md
       - Data management: concepts/data_management.md
   - Guides:
@@ -265,8 +269,8 @@ nav:
           - Adaptive RAG: rag/adaptive_rag.md
           - SFR RAG: rag/sfr_rag.md
           - Advanced Techniques:
-            - HyDE: rag/advanced_techniques/hyde.md
-            - FLARE: rag/advanced_techniques/flare.md
+              - HyDE: rag/advanced_techniques/hyde.md
+              - FLARE: rag/advanced_techniques/flare.md
       - Reranking:
           - Quickstart: reranking/index.md
           - Cohere Reranker: reranking/cohere.md
@@ -280,7 +284,7 @@ nav:
           - Building Custom Rerankers: reranking/custom_reranker.md
           - Example: notebooks/lancedb_reranking.ipynb
       - Filtering: sql.md
-      - Versioning & Reproducibility: 
+      - Versioning & Reproducibility:
           - sync API: notebooks/reproducibility.ipynb
           - async API: notebooks/reproducibility_async.ipynb
       - Configuring Storage: guides/storage.md
@@ -349,8 +353,8 @@ nav:
       - 🦀 Rust:
           - Overview: examples/examples_rust.md
   - Studies:
-    - studies/overview.md
-    - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
+      - studies/overview.md
+      - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
   - API reference:
       - Overview: api_reference.md
       - Python: python/python.md
