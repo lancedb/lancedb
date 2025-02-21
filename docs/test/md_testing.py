@@ -15,6 +15,7 @@ excluded_globs = [
     "../src/python/duckdb.md",
     "../src/python/pandas_and_pyarrow.md",
     "../src/python/polars_arrow.md",
+    "../src/python/pydantic.md",
     "../src/embeddings/*.md",
     "../src/concepts/*.md",
     "../src/ann_indexes.md",

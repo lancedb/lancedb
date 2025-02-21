@@ -259,7 +259,8 @@ def _pydantic_to_field(name: str, field: FieldInfo) -> pa.Field:
 
 
 def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
-    """Convert a Pydantic model to a PyArrow Schema.
+    """Convert a [Pydantic Model][pydantic.BaseModel] to a
+       [PyArrow Schema][pyarrow.Schema].
 
     Parameters
     ----------
@@ -269,24 +270,25 @@ def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
     Returns
     -------
     pyarrow.Schema
+        The Arrow Schema
 
     Examples
     --------
 
     >>> from typing import List, Optional
     >>> import pydantic
-    >>> from lancedb.pydantic import pydantic_to_schema
+    >>> from lancedb.pydantic import pydantic_to_schema, Vector
     >>> class FooModel(pydantic.BaseModel):
     ...     id: int
     ...     s: str
-    ...     vec: List[float]
+    ...     vec: Vector(1536)  # fixed_size_list<item: float32>[1536]
     ...     li: List[int]
     ...
     >>> schema = pydantic_to_schema(FooModel)
     >>> assert schema == pa.schema([
     ...     pa.field("id", pa.int64(), False),
     ...     pa.field("s", pa.utf8(), False),
-    ...     pa.field("vec", pa.list_(pa.float64()), False),
+    ...     pa.field("vec", pa.list_(pa.float32(), 1536)),
     ...     pa.field("li", pa.list_(pa.int64()), False),
     ... ])
     """
@@ -308,7 +310,7 @@ class LanceModel(pydantic.BaseModel):
     ...     vector: Vector(2)
     ...
     >>> db = lancedb.connect("./example")
-    >>> table = db.create_table("test", schema=TestModel.to_arrow_schema())
+    >>> table = db.create_table("test", schema=TestModel)
     >>> table.add([
     ...     TestModel(name="test", vector=[1.0, 2.0])
     ... ])
