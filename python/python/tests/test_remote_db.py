@@ -388,8 +388,14 @@ def test_query_sync_maximal():
 
 
 def test_query_sync_multiple_vectors():
-    def handler(_body):
-        return pa.table({"id": [1]})
+    def handler(body):
+        # TODO: we will add the ability to get the server version,
+        # so that we can decide how to perform batch quires.
+        vectors = body["vector"]
+        res = []
+        for i, vector in enumerate(vectors):
+            res.append({"id": 1, "query_index": i})
+        return pa.Table.from_pylist(res)
 
     with query_test_table(handler) as table:
         results = table.search([[1, 2, 3], [4, 5, 6]]).limit(1).to_list()
