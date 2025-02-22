@@ -62,7 +62,7 @@ use crate::index::{
 };
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{
-    IntoQueryVector, Query, QueryExecutionOptions, QueryRequest, Select, VectorQuery,
+    IntoQueryVector, Query, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQuery,
     VectorQueryRequest, DEFAULT_TOP_K,
 };
 use crate::utils::{
@@ -2125,7 +2125,17 @@ impl BaseTable for NativeTable {
         }
 
         if let Some(filter) = &query.base.filter {
-            scanner.filter(filter)?;
+            match filter {
+                QueryFilter::Sql(sql) => {
+                    scanner.filter(sql)?;
+                }
+                QueryFilter::Substrait(substrait) => {
+                    scanner.filter_substrait(substrait)?;
+                }
+                QueryFilter::Datafusion(expr) => {
+                    scanner.filter_expr(expr.clone());
+                }
+            }
         }
 
         if let Some(fts) = &query.base.full_text_search {
