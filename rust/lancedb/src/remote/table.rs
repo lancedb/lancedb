@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex};
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryRequest, Select, VectorQueryRequest};
+use crate::remote::db::MULTIVECTOR_VERSION;
 use crate::table::{AddDataMode, AnyQuery, Filter};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
-use crate::{DistanceType, Error};
+use crate::{DistanceType, Error, Table};
 use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
@@ -24,7 +25,7 @@ use http::StatusCode;
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
-use lance_datafusion::exec::OneShotExec;
+use lance_datafusion::exec::{execute_plan, OneShotExec};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -48,7 +49,7 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     #[allow(dead_code)]
     client: RestfulLanceDbClient<S>,
     name: String,
-    server_version: Option<semver::Version>,
+    server_version: semver::Version,
 
     version: RwLock<Option<u64>>,
 }
@@ -57,7 +58,7 @@ impl<S: HttpSend> RemoteTable<S> {
     pub fn new(
         client: RestfulLanceDbClient<S>,
         name: String,
-        server_version: Option<semver::Version>,
+        server_version: semver::Version,
     ) -> Self {
         Self {
             client,
@@ -211,10 +212,11 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     fn apply_vector_query_params(
-        body: &mut serde_json::Value,
+        &self,
+        mut body: serde_json::Value,
         query: &VectorQueryRequest,
-    ) -> Result<()> {
-        Self::apply_query_params(body, &query.base)?;
+    ) -> Result<Vec<serde_json::Value>> {
+        Self::apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
         body["prefilter"] = query.base.prefilter.into();
@@ -256,25 +258,40 @@ impl<S: HttpSend> RemoteTable<S> {
             }
         }
 
-        match query.query_vector.len() {
+        let bodies = match query.query_vector.len() {
             0 => {
                 // Server takes empty vector, not null or undefined.
                 body["vector"] = serde_json::Value::Array(Vec::new());
+                vec![body]
             }
             1 => {
                 body["vector"] = vector_to_json(&query.query_vector[0])?;
+                vec![body]
             }
             _ => {
-                let vectors = query
-                    .query_vector
-                    .iter()
-                    .map(vector_to_json)
-                    .collect::<Result<Vec<_>>>()?;
-                body["vector"] = serde_json::Value::Array(vectors);
+                if self.server_version >= MULTIVECTOR_VERSION {
+                    let vectors = query
+                        .query_vector
+                        .iter()
+                        .map(vector_to_json)
+                        .collect::<Result<Vec<_>>>()?;
+                    body["vector"] = serde_json::Value::Array(vectors);
+                    vec![body]
+                } else {
+                    // Server does not support multiple vectors in a single query.
+                    // We need to send multiple requests.
+                    let mut bodies = Vec::with_capacity(query.query_vector.len());
+                    for vector in &query.query_vector {
+                        let mut body = body.clone();
+                        body["vector"] = vector_to_json(vector)?;
+                        bodies.push(body);
+                    }
+                    bodies
+                }
             }
-        }
+        };
 
-        Ok(())
+        Ok(bodies)
     }
 
     async fn check_mutable(&self) -> Result<()> {
@@ -299,27 +316,34 @@ impl<S: HttpSend> RemoteTable<S> {
         &self,
         query: &AnyQuery,
         _options: QueryExecutionOptions,
-    ) -> Result<Pin<Box<dyn RecordBatchStream + Send>>> {
+    ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
         let request = self.client.post(&format!("/v1/table/{}/query/", self.name));
 
         let version = self.current_version().await;
         let mut body = serde_json::json!({ "version": version });
 
-        match query {
+        let requests = match query {
             AnyQuery::Query(query) => {
                 Self::apply_query_params(&mut body, query)?;
                 // Empty vector can be passed if no vector search is performed.
                 body["vector"] = serde_json::Value::Array(Vec::new());
+                vec![request.json(&body)]
             }
             AnyQuery::VectorQuery(query) => {
-                Self::apply_vector_query_params(&mut body, query)?;
+                let bodies = self.apply_vector_query_params(body, query)?;
+                bodies
+                    .into_iter()
+                    .map(|body| request.try_clone().unwrap().json(&body))
+                    .collect()
             }
-        }
+        };
 
-        let request = request.json(&body);
-        let (request_id, response) = self.client.send(request, true).await?;
-        let stream = self.read_arrow_stream(&request_id, response).await?;
-        Ok(stream)
+        let futures = requests.into_iter().map(|req| async move {
+            let (request_id, response) = self.client.send(req, true).await?;
+            self.read_arrow_stream(&request_id, response).await
+        });
+        let streams = futures::future::try_join_all(futures).await?;
+        Ok(streams)
     }
 }
 
@@ -340,6 +364,7 @@ mod test_utils {
     use super::*;
     use crate::remote::client::test_utils::client_with_handler;
     use crate::remote::client::test_utils::MockSender;
+    use crate::remote::db::DEFAULT_SERVER_VERSION;
 
     impl RemoteTable<MockSender> {
         pub fn new_mock<F, T>(name: String, handler: F) -> Self
@@ -351,7 +376,7 @@ mod test_utils {
             Self {
                 client,
                 name,
-                server_version: None,
+                server_version: DEFAULT_SERVER_VERSION.clone(),
                 version: RwLock::new(None),
             }
         }
@@ -492,8 +517,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let stream = self.execute_query(query, options).await?;
-        Ok(Arc::new(OneShotExec::new(stream)))
+        let streams = self.execute_query(query, options).await?;
+        if streams.len() == 1 {
+            let stream = streams.into_iter().next().unwrap();
+            Ok(Arc::new(OneShotExec::new(stream)))
+        } else {
+            let stream_execs = streams
+                .into_iter()
+                .map(|stream| Arc::new(OneShotExec::new(stream)) as Arc<dyn ExecutionPlan>)
+                .collect();
+            Table::multi_vector_plan(stream_execs)
+        }
     }
 
     async fn query(
@@ -501,8 +535,24 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         query: &AnyQuery,
         _options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        let stream = self.execute_query(query, _options).await?;
-        Ok(DatasetRecordBatchStream::new(stream))
+        let streams = self.execute_query(query, _options).await?;
+
+        if streams.len() == 1 {
+            Ok(DatasetRecordBatchStream::new(
+                streams.into_iter().next().unwrap(),
+            ))
+        } else {
+            let stream_execs = streams
+                .into_iter()
+                .map(|stream| Arc::new(OneShotExec::new(stream)) as Arc<dyn ExecutionPlan>)
+                .collect();
+            let plan = Table::multi_vector_plan(stream_execs)?;
+
+            Ok(DatasetRecordBatchStream::new(execute_plan(
+                plan,
+                Default::default(),
+            )?))
+        }
     }
     async fn update(&self, update: UpdateBuilder) -> Result<u64> {
         self.check_mutable().await?;
