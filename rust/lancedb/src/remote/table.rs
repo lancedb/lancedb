@@ -1471,6 +1471,7 @@ mod tests {
                 "k": 10,
                 "vector": [],
                 "with_row_id": true,
+                "prefilter": true,
                 "version": null
             });
             assert_eq!(body, expected_body);
