@@ -166,6 +166,8 @@ class EmbeddingFunctionRegistry:
         like so: `$var:variable_name:default_value`. Default values can be
         used for runtime configurations that are not sensitive, such as
         whether to use a GPU for inference.
+
+        The name must not contain a colon. Default values can contain colons.
         """
         if ":" in name:
             raise ValueError("Variable names cannot contain colons")

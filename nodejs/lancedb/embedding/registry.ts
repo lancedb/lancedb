@@ -172,6 +172,8 @@ export class EmbeddingFunctionRegistry {
    * can be used for runtime configurations that are not sensitive, such as
    * whether to use a GPU for inference.
    *
+   * The name must not contain colons. The default value can contain colons.
+   *
    * @param name
    * @param value
    */
