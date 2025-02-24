@@ -561,7 +561,7 @@ class Table(ABC):
 
     def create_index(
         self,
-        metric="L2",
+        metric="l2",
         num_partitions=256,
         num_sub_vectors=96,
         vector_column_name: str = VECTOR_COLUMN_NAME,
@@ -582,10 +582,10 @@ class Table(ABC):
 
         Parameters
         ----------
-        metric: str, default "L2"
+        metric: str, default "l2"
             The distance metric to use when creating the index.
-            Valid values are "L2", "cosine", "dot", or "hamming".
-            L2 is euclidean distance.
+            Valid values are "l2", "cosine", "dot", or "hamming".
+            l2 is euclidean distance.
             Hamming is available only for binary vectors.
         num_partitions: int, default 256
             The number of IVF partitions to use when creating the index.
@@ -1557,7 +1557,7 @@ class LanceTable(Table):
 
     def create_index(
         self,
-        metric="L2",
+        metric="l2",
         num_partitions=None,
         num_sub_vectors=None,
         vector_column_name=VECTOR_COLUMN_NAME,

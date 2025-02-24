@@ -68,7 +68,7 @@ class Query(pydantic.BaseModel):
     metric : str
         the distance metric between a pair of vectors,
 
-        can support L2 (default), Cosine and Dot.
+        can support l2 (default), Cosine and Dot.
         [metric definitions][search]
     columns : Optional[List[str]]
         which columns to return in the results
@@ -113,7 +113,7 @@ class Query(pydantic.BaseModel):
     k: int
 
     # # metrics
-    metric: str = "L2"
+    metric: str = "l2"
 
     # which columns to return in the results
     columns: Optional[Union[List[str], Dict[str, str]]] = None
@@ -596,7 +596,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     ):
         super().__init__(table)
         self._query = query
-        self._distance_type = "L2"
+        self._distance_type = "l2"
         self._nprobes = 20
         self._lower_bound = None
         self._upper_bound = None
@@ -607,7 +607,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._str_query = str_query
         self._fast_search = fast_search
 
-    def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceVectorQueryBuilder:
+    def metric(self, metric: Literal["l2", "cosine", "dot"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
 
         This is an alias for distance_type() and may be deprecated in the future.
@@ -615,8 +615,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         Parameters
         ----------
-        metric: "L2" or "cosine" or "dot"
-            The distance metric to use. By default "L2" is used.
+        metric: "l2" or "cosine" or "dot"
+            The distance metric to use. By default "l2" is used.
 
         Returns
         -------
@@ -626,7 +626,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         return self.distance_type(metric)
 
     def distance_type(
-        self, distance_type: Literal["L2", "cosine", "dot"]
+        self, distance_type: Literal["l2", "cosine", "dot"]
     ) -> "LanceVectorQueryBuilder":
         """Set the distance metric to use.
 
@@ -640,8 +640,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         Parameters
         ----------
-        distance_type: "L2" or "cosine" or "dot"
-            The distance metric to use. By default "L2" is used.
+        distance_type: "l2" or "cosine" or "dot"
+            The distance metric to use. By default "l2" is used.
 
         Returns
         -------
@@ -1411,7 +1411,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._ef = ef
         return self
 
-    def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
+    def metric(self, metric: Literal["l2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
         """Set the distance metric to use.
 
         This is an alias for distance_type() and may be deprecated in the future.
@@ -1419,8 +1419,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         Parameters
         ----------
-        metric: "L2" or "cosine" or "dot"
-            The distance metric to use. By default "L2" is used.
+        metric: "l2" or "cosine" or "dot"
+            The distance metric to use. By default "l2" is used.
 
         Returns
         -------
@@ -1430,7 +1430,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         return self.distance_type(metric)
 
     def distance_type(
-        self, distance_type: Literal["L2", "cosine", "dot"]
+        self, distance_type: Literal["l2", "cosine", "dot"]
     ) -> "LanceHybridQueryBuilder":
         """Set the distance metric to use.
 
@@ -1444,8 +1444,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         Parameters
         ----------
-        distance_type: "L2" or "cosine" or "dot"
-            The distance metric to use. By default "L2" is used.
+        distance_type: "l2" or "cosine" or "dot"
+            The distance metric to use. By default "l2" is used.
 
         Returns
         -------

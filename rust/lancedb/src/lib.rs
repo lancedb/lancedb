@@ -223,13 +223,13 @@ pub use table::Table;
 pub enum DistanceType {
     /// Euclidean distance. This is a very common distance metric that
     /// accounts for both magnitude and direction when determining the distance
-    /// between vectors. L2 distance has a range of [0, ∞).
+    /// between vectors. l2 distance has a range of [0, ∞).
     L2,
     /// Cosine distance.  Cosine distance is a distance metric
     /// calculated from the cosine similarity between two vectors. Cosine
     /// similarity is a measure of similarity between two non-zero vectors of an
     /// inner product space. It is defined to equal the cosine of the angle
-    /// between them.  Unlike L2, the cosine distance is not affected by the
+    /// between them.  Unlike l2, the cosine distance is not affected by the
     /// magnitude of the vectors.  Cosine distance has a range of [0, 2].
     ///
     /// Note: the cosine distance is undefined when one (or both) of the vectors
@@ -238,7 +238,7 @@ pub enum DistanceType {
     Cosine,
     /// Dot product. Dot distance is the dot product of two vectors. Dot
     /// distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
-    /// L2 norm is 1), then dot distance is equivalent to the cosine distance.
+    /// l2 norm is 1), then dot distance is equivalent to the cosine distance.
     Dot,
     /// Hamming distance. Hamming distance is a distance metric that measures
     /// the number of positions at which the corresponding elements are different.

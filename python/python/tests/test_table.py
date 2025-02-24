@@ -480,7 +480,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
     )
 
     table.create_index(
-        metric="L2",
+        metric="l2",
         num_partitions=256,
         num_sub_vectors=96,
         vector_column_name="vector",
@@ -489,7 +489,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_bits=4,
     )
     expected_config = IvfPq(
-        distance_type="L2",
+        distance_type="l2",
         num_partitions=256,
         num_sub_vectors=96,
         num_bits=4,
@@ -1237,7 +1237,7 @@ def test_hybrid_search_metric_type(tmp_db: DBConnection):
     # This test uses an FTS index
     pytest.importorskip("lancedb.fts")
 
-    # Need to use nonnorm as the embedding function so L2 and dot results
+    # Need to use nonnorm as the embedding function so l2 and dot results
     # are different
     table, _, _ = setup_hybrid_search_table(tmp_db, "nonnorm")
 
