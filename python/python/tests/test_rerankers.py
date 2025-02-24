@@ -32,8 +32,8 @@ pytest.importorskip("lancedb.fts")
 def get_test_table(tmp_path, use_tantivy):
     db = lancedb.connect(tmp_path)
     # Create a LanceDB table schema with a vector and a text column
-    emb = EmbeddingFunctionRegistry.get_instance().get("test")()
-    meta_emb = EmbeddingFunctionRegistry.get_instance().get("test")()
+    emb = EmbeddingFunctionRegistry.get_instance().get("test").create()
+    meta_emb = EmbeddingFunctionRegistry.get_instance().get("test").create()
 
     class MyTable(LanceModel):
         text: str = emb.SourceField()
@@ -405,7 +405,9 @@ def test_answerdotai_reranker(tmp_path, use_tantivy):
 
 
 @pytest.mark.skipif(
-    os.environ.get("OPENAI_API_KEY") is None, reason="OPENAI_API_KEY not set"
+    os.environ.get("OPENAI_API_KEY") is None
+    or os.environ.get("OPENAI_BASE_URL") is not None,
+    reason="OPENAI_API_KEY not set",
 )
 @pytest.mark.parametrize("use_tantivy", [True, False])
 def test_openai_reranker(tmp_path, use_tantivy):

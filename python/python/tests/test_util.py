@@ -127,7 +127,7 @@ def test_append_vector_columns():
     conf = EmbeddingFunctionConfig(
         source_column="text",
         vector_column="vector",
-        function=MockTextEmbeddingFunction(),
+        function=MockTextEmbeddingFunction.create(),
     )
     metadata = registry.get_table_metadata([conf])
 
@@ -434,7 +434,7 @@ def test_sanitize_data(
         conf = EmbeddingFunctionConfig(
             source_column="text",
             vector_column="vector",
-            function=MockTextEmbeddingFunction(),
+            function=MockTextEmbeddingFunction.create(),
         )
         metadata = registry.get_table_metadata([conf])
     else:

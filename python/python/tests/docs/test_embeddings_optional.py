@@ -49,3 +49,28 @@ async def test_embeddings_openai_async():
     actual = await (await table.search(query)).limit(1).to_pydantic(Words)[0]
     print(actual.text)
     # --8<-- [end:async_openai_embeddings]
+
+
+def test_embeddings_secret():
+    # --8<-- [start:register_secret]
+    registry = get_registry()
+    registry.set_var("api_key", "sk-...")
+
+    func = registry.get("openai").create(api_key="$var:api_key")
+    # --8<-- [end:register_secret]
+
+    try:
+        import torch
+    except ImportError:
+        pytest.skip("torch not installed")
+
+    # --8<-- [start:register_device]
+    import torch
+
+    registry = get_registry()
+    if torch.cuda.is_available():
+        registry.set_var("device", "cuda")
+
+    func = registry.get("huggingface").create(device="$var:device:cpu")
+    # --8<-- [end:register_device]
+    assert func.device == "cuda" if torch.cuda.is_available() else "cpu"

@@ -11,7 +11,11 @@ import * as arrow18 from "apache-arrow-18";
 import * as tmp from "tmp";
 
 import { connect } from "../lancedb";
-import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
+import {
+  EmbeddingFunction,
+  FunctionOptions,
+  LanceSchema,
+} from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
 
 describe.each([arrow15, arrow16, arrow17, arrow18])("LanceSchema", (arrow) => {
@@ -39,11 +43,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
   it("should register a new item to the registry", async () => {
     @register("mock-embedding")
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {
-          someText: "hello",
-        };
-      }
       constructor() {
         super();
       }
@@ -89,11 +88,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
   });
   test("should error if registering with the same name", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {
-          someText: "hello",
-        };
-      }
       constructor() {
         super();
       }
@@ -114,13 +108,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
   });
   test("schema should contain correct metadata", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {
-          someText: "hello",
-        };
-      }
-      constructor() {
+      constructor(args: FunctionOptions = {}) {
         super();
+        this.resolveVariables(args);
       }
       ndims() {
         return 3;
@@ -132,7 +122,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
         return data.map(() => [1, 2, 3]);
       }
     }
-    const func = new MockEmbeddingFunction();
+    const func = new MockEmbeddingFunction({ someText: "hello" });
 
     const schema = LanceSchema({
       id: new arrow.Int32(),
@@ -153,5 +143,81 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
       ],
     ]);
     expect(schema.metadata).toEqual(expectedMetadata);
+  });
+});
+
+describe("Registry.setVar", () => {
+  const registry = getRegistry();
+
+  beforeEach(() => {
+    @register("mock-embedding")
+    // biome-ignore lint/correctness/noUnusedVariables :
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      constructor(optionsRaw: FunctionOptions = {}) {
+        super();
+        const options = this.resolveVariables(optionsRaw);
+
+        expect(optionsRaw["someKey"].startsWith("$var:someName")).toBe(true);
+        expect(options["someKey"]).toBe("someValue");
+
+        if (options["secretKey"]) {
+          expect(optionsRaw["secretKey"]).toBe("$var:secretKey");
+          expect(options["secretKey"]).toBe("mySecret");
+        }
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return data.map(() => [1, 2, 3]);
+      }
+      embeddingDataType() {
+        return new arrow18.Float32() as apiArrow.Float;
+      }
+      protected getSensitiveKeys() {
+        return ["secretKey"];
+      }
+    }
+  });
+  afterEach(() => {
+    registry.reset();
+  });
+
+  it("Should error if the variable is not set", () => {
+    console.log(registry.get("mock-embedding"));
+    expect(() =>
+      registry.get("mock-embedding")!.create({ someKey: "$var:someName" }),
+    ).toThrow('Variable "someName" not found');
+  });
+
+  it("should use default values if not set", () => {
+    registry
+      .get("mock-embedding")!
+      .create({ someKey: "$var:someName:someValue" });
+  });
+
+  it("should set a variable that the embedding function understand", () => {
+    registry.setVar("someName", "someValue");
+    registry.get("mock-embedding")!.create({ someKey: "$var:someName" });
+  });
+
+  it("should reject secrets that aren't passed as variables", () => {
+    registry.setVar("someName", "someValue");
+    expect(() =>
+      registry
+        .get("mock-embedding")!
+        .create({ secretKey: "someValue", someKey: "$var:someName" }),
+    ).toThrow(
+      'The key "secretKey" is sensitive and cannot be set directly. Please use the $var: syntax to set it.',
+    );
+  });
+
+  it("should not serialize secrets", () => {
+    registry.setVar("someName", "someValue");
+    registry.setVar("secretKey", "mySecret");
+    const func = registry
+      .get("mock-embedding")!
+      .create({ secretKey: "$var:secretKey", someKey: "$var:someName" });
+    expect(func.toJSON()).toEqual({
+      secretKey: "$var:secretKey",
+      someKey: "$var:someName",
+    });
   });
 });

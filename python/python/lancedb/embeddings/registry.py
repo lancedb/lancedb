@@ -41,6 +41,7 @@ class EmbeddingFunctionRegistry:
 
     def __init__(self):
         self._functions = {}
+        self._variables = {}
 
     def register(self, alias: str = None):
         """
@@ -155,6 +156,28 @@ class EmbeddingFunctionRegistry:
         # so we need to json dump then utf8 encode
         metadata = json.dumps(json_data, indent=2).encode("utf-8")
         return {"embedding_functions": metadata}
+
+    def set_var(self, name: str, value: str) -> None:
+        """
+        Set a variable. These can be accessed in embedding configuration using
+        the syntax `$var:variable_name`. If they are not set, an error will be
+        thrown letting you know which variable is missing. If you want to supply
+        a default value, you can add an additional part in the configuration
+        like so: `$var:variable_name:default_value`. Default values can be
+        used for runtime configurations that are not sensitive, such as
+        whether to use a GPU for inference.
+
+        The name must not contain a colon. Default values can contain colons.
+        """
+        if ":" in name:
+            raise ValueError("Variable names cannot contain colons")
+        self._variables[name] = value
+
+    def get_var(self, name: str) -> str:
+        """
+        Get a variable.
+        """
+        return self._variables[name]
 
 
 # Global instance

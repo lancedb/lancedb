@@ -887,7 +887,7 @@ def test_create_with_embedding_function(mem_db: DBConnection):
         text: str
         vector: Vector(10)
 
-    func = MockTextEmbeddingFunction()
+    func = MockTextEmbeddingFunction.create()
     texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
     df = pd.DataFrame({"text": texts, "vector": func.compute_source_embeddings(texts)})
 
@@ -934,7 +934,7 @@ def test_create_f16_table(mem_db: DBConnection):
 
 
 def test_add_with_embedding_function(mem_db: DBConnection):
-    emb = EmbeddingFunctionRegistry.get_instance().get("test")()
+    emb = EmbeddingFunctionRegistry.get_instance().get("test").create()
 
     class MyTable(LanceModel):
         text: str = emb.SourceField()
@@ -1128,7 +1128,7 @@ def test_count_rows(mem_db: DBConnection):
 
 def setup_hybrid_search_table(db: DBConnection, embedding_func):
     # Create a LanceDB table schema with a vector and a text column
-    emb = EmbeddingFunctionRegistry.get_instance().get(embedding_func)()
+    emb = EmbeddingFunctionRegistry.get_instance().get(embedding_func).create()
 
     class MyTable(LanceModel):
         text: str = emb.SourceField()

@@ -23,6 +23,7 @@ export interface EmbeddingFunctionCreate<T extends EmbeddingFunction> {
  */
 export class EmbeddingFunctionRegistry {
   #functions = new Map<string, EmbeddingFunctionConstructor>();
+  #variables = new Map<string, string>();
 
   /**
    * Get the number of registered functions
@@ -82,10 +83,7 @@ export class EmbeddingFunctionRegistry {
       };
     } else {
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-      create = function (options?: any) {
-        const instance = new factory(options);
-        return instance;
-      };
+      create = (options?: any) => new factory(options);
     }
 
     return {
@@ -163,6 +161,37 @@ export class EmbeddingFunctionRegistry {
     metadata.set("embedding_functions", JSON.stringify(jsonData));
 
     return metadata;
+  }
+
+  /**
+   * Set a variable. These can be accessed in the embedding function
+   * configuration using the syntax `$var:variable_name`. If they are not
+   * set, an error will be thrown letting you know which key is unset. If you
+   * want to supply a default value, you can add an additional part in the
+   * configuration like so: `$var:variable_name:default_value`. Default values
+   * can be used for runtime configurations that are not sensitive, such as
+   * whether to use a GPU for inference.
+   *
+   * The name must not contain colons. The default value can contain colons.
+   *
+   * @param name
+   * @param value
+   */
+  setVar(name: string, value: string): void {
+    if (name.includes(":")) {
+      throw new Error("Variable names cannot contain colons");
+    }
+    this.#variables.set(name, value);
+  }
+
+  /**
+   * Get a variable.
+   * @param name
+   * @returns
+   * @see {@link setVar}
+   */
+  getVar(name: string): string | undefined {
+    return this.#variables.get(name);
   }
 }
 

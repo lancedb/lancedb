@@ -55,6 +55,10 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
         return self._ndims
 
     @staticmethod
+    def sensitive_keys():
+        return ["api_key"]
+
+    @staticmethod
     def model_names():
         return [
             "text-embedding-ada-002",

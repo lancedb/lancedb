@@ -43,11 +43,16 @@ test("custom embedding function", async () => {
 
     @register("my_embedding")
     class MyEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {};
+      constructor(optionsRaw = {}) {
+        super();
+        const options = this.resolveVariables(optionsRaw);
+        // Initialize using options
       }
       ndims() {
         return 3;
+      }
+      protected getSensitiveKeys(): string[] {
+        return [];
       }
       embeddingDataType(): Float {
         return new Float32();
@@ -93,4 +98,15 @@ test("custom embedding function", async () => {
     expect(await table.countRows()).toBe(2);
     expect(await table2.countRows()).toBe(2);
   });
+});
+
+test("embedding function api_key", async () => {
+  // --8<-- [start:register_secret]
+  const registry = getRegistry();
+  registry.setVar("api_key", "sk-...");
+
+  const func = registry.get("openai")!.create({
+    apiKey: "$var:api_key",
+  });
+  // --8<-- [end:register_secret]
 });
