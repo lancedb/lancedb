@@ -338,6 +338,7 @@ def test_query_sync_empty_query():
             "filter": "true",
             "vector": [],
             "columns": ["id"],
+            "prefilter": False,
             "version": None,
         }
 
@@ -412,6 +413,7 @@ def test_query_sync_fts():
                 "columns": [],
             },
             "k": 10,
+            "prefilter": True,
             "vector": [],
             "version": None,
         }
@@ -429,6 +431,7 @@ def test_query_sync_fts():
             },
             "k": 42,
             "vector": [],
+            "prefilter": True,
             "with_row_id": True,
             "version": None,
         }
@@ -455,6 +458,7 @@ def test_query_sync_hybrid():
                 },
                 "k": 42,
                 "vector": [],
+                "prefilter": True,
                 "with_row_id": True,
                 "version": None,
             }
