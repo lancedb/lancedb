@@ -723,7 +723,7 @@ The following keys can be used as both environment variables or keys in the `sto
 
 ### Azure Blob Storage
 
-Azure Blob Storage credentials can be configured by setting the `AZURE_STORAGE_ACCOUNT_NAME`and `AZURE_STORAGE_ACCOUNT_KEY` environment variables. Alternatively, you can pass the account name and key in the `storage_options` parameter:
+Azure Blob Storage credentials can be configured by setting the `AZURE_STORAGE_ACCOUNT_NAME` and `AZURE_STORAGE_ACCOUNT_KEY` environment variables. Alternatively, you can pass the account name and key in the `storage_options` parameter. However, it is important to keep these credentials as environment variables. You must save them as environment variables before passing them to `storage_options` as a parameter; otherwise, connectivity issues may occur. :
 
 === "Python"
 
