@@ -191,6 +191,7 @@
 //! ```
 
 pub mod arrow;
+pub mod catalog;
 pub mod connection;
 pub mod data;
 pub mod database;
