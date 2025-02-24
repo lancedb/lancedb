@@ -184,6 +184,8 @@ configuration like so: `$var:variable_name:default_value`. Default values
 can be used for runtime configurations that are not sensitive, such as
 whether to use a GPU for inference.
 
+The name must not contain colons. The default value can contain colons.
+
 #### Parameters
 
 * **name**: `string`
