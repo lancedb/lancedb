@@ -200,7 +200,9 @@ pub mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use arrow::array::AsArray;
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
+    use arrow_array::{
+        Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, UInt32Array,
+    };
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::{datasource::provider_as_source, prelude::SessionContext};
     use datafusion_catalog::TableProvider;
@@ -209,17 +211,28 @@ pub mod tests {
     use futures::TryStreamExt;
     use tempfile::tempdir;
 
-    use crate::{connect, table::datafusion::BaseTableAdapter};
+    use crate::{
+        connect,
+        index::{scalar::BTreeIndexBuilder, Index},
+        table::datafusion::BaseTableAdapter,
+    };
 
     fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
         let metadata = HashMap::from_iter(vec![("foo".to_string(), "bar".to_string())]);
         let schema = Arc::new(
-            Schema::new(vec![Field::new("i", DataType::Int32, false)]).with_metadata(metadata),
+            Schema::new(vec![
+                Field::new("i", DataType::Int32, false),
+                Field::new("indexed", DataType::UInt32, false),
+            ])
+            .with_metadata(metadata),
         );
         RecordBatchIterator::new(
             vec![RecordBatch::try_new(
                 schema.clone(),
-                vec![Arc::new(Int32Array::from_iter_values(0..10))],
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..10)),
+                    Arc::new(UInt32Array::from_iter_values(0..10)),
+                ],
             )],
             schema,
         )
@@ -240,6 +253,11 @@ pub mod tests {
 
             let tbl = db
                 .create_table("foo", make_test_batches())
+                .execute()
+                .await
+                .unwrap();
+
+            tbl.create_index(&["indexed"], Index::BTree(BTreeIndexBuilder::default()))
                 .execute()
                 .await
                 .unwrap();
@@ -291,7 +309,7 @@ pub mod tests {
         }
 
         async fn check_plan(plan: LogicalPlan, expected: &str) {
-            let physical_plan = Self::plan_to_explain(plan).await;
+            let physical_plan = dbg!(Self::plan_to_explain(plan).await);
             let mut lines_checked = 0;
             for (actual_line, expected_line) in physical_plan.lines().zip(expected.lines()) {
                 lines_checked += 1;
@@ -328,12 +346,15 @@ pub mod tests {
     #[tokio::test]
     async fn test_filter_pushdown() {
         let fixture = TestFixture::new().await;
-        let plan = LogicalPlanBuilder::scan("foo", provider_as_source(fixture.adapter), None)
-            .unwrap()
-            .filter(col("i").gt_eq(lit(5)))
-            .unwrap()
-            .build()
-            .unwrap();
+
+        // Basic filter, not much different pushed down than run from DF
+        let plan =
+            LogicalPlanBuilder::scan("foo", provider_as_source(fixture.adapter.clone()), None)
+                .unwrap()
+                .filter(col("i").gt_eq(lit(5)))
+                .unwrap()
+                .build()
+                .unwrap();
 
         TestFixture::check_plan(
             plan,
@@ -345,5 +366,15 @@ pub mod tests {
              LanceScan:...",
         )
         .await;
+
+        // Filter utilizing scalar index, make sure it gets pushed down
+        let plan = LogicalPlanBuilder::scan("foo", provider_as_source(fixture.adapter), None)
+            .unwrap()
+            .filter(col("indexed").eq(lit(5)))
+            .unwrap()
+            .build()
+            .unwrap();
+
+        TestFixture::check_plan(plan, "").await;
     }
 }
