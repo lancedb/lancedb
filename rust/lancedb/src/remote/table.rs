@@ -367,7 +367,7 @@ mod test_utils {
     use crate::remote::db::DEFAULT_SERVER_VERSION;
 
     impl RemoteTable<MockSender> {
-        pub fn new_mock<F, T>(name: String, handler: F) -> Self
+        pub fn new_mock<F, T>(name: String, handler: F, version: Option<semver::Version>) -> Self
         where
             F: Fn(reqwest::Request) -> http::Response<T> + Send + Sync + 'static,
             T: Into<reqwest::Body>,
@@ -376,7 +376,7 @@ mod test_utils {
             Self {
                 client,
                 name,
-                server_version: DEFAULT_SERVER_VERSION.clone(),
+                server_version: version.unwrap_or(DEFAULT_SERVER_VERSION.clone()),
                 version: RwLock::new(None),
             }
         }
@@ -935,8 +935,10 @@ mod tests {
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
     use lance_index::scalar::FullTextSearchQuery;
     use reqwest::Body;
+    use rstest::rstest;
 
     use crate::index::vector::IvfFlatIndexBuilder;
+    use crate::remote::db::DEFAULT_SERVER_VERSION;
     use crate::remote::JSON_CONTENT_TYPE;
     use crate::{
         index::{vector::IvfPqIndexBuilder, Index, IndexStatistics, IndexType},
@@ -1509,9 +1511,12 @@ mod tests {
             .unwrap();
     }
 
+    #[rstest]
+    #[case(DEFAULT_SERVER_VERSION.clone())]
+    #[case(MULTIVECTOR_VERSION.clone())]
     #[tokio::test]
-    async fn test_query_multiple_vectors() {
-        let table = Table::new_with_handler("my_table", |request| {
+    async fn test_batch_queries(#[case] version: semver::Version) {
+        let table = Table::new_with_handler_version("my_table", version.clone(), move |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/v1/table/my_table/query/");
             assert_eq!(
@@ -1521,20 +1526,31 @@ mod tests {
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
             let query_vectors = body["vector"].as_array().unwrap();
-            assert_eq!(query_vectors.len(), 2);
-            assert_eq!(query_vectors[0].as_array().unwrap().len(), 3);
-            assert_eq!(query_vectors[1].as_array().unwrap().len(), 3);
-            let data = RecordBatch::try_new(
-                Arc::new(Schema::new(vec![
-                    Field::new("a", DataType::Int32, false),
-                    Field::new("query_index", DataType::Int32, false),
-                ])),
-                vec![
-                    Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])),
-                    Arc::new(Int32Array::from(vec![0, 0, 0, 1, 1, 1])),
-                ],
-            )
-            .unwrap();
+            let data = if version >= MULTIVECTOR_VERSION {
+                assert_eq!(query_vectors.len(), 2);
+                assert_eq!(query_vectors[0].as_array().unwrap().len(), 3);
+                assert_eq!(query_vectors[1].as_array().unwrap().len(), 3);
+                RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![
+                        Field::new("a", DataType::Int32, false),
+                        Field::new("query_index", DataType::Int32, false),
+                    ])),
+                    vec![
+                        Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])),
+                        Arc::new(Int32Array::from(vec![0, 0, 0, 1, 1, 1])),
+                    ],
+                )
+                .unwrap()
+            } else {
+                // it's single flat vector, so here the length is dim
+                assert_eq!(query_vectors.len(), 3);
+                RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                    vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+                )
+                .unwrap()
+            };
+
             let response_body = write_ipc_file(&data);
             http::Response::builder()
                 .status(200)
