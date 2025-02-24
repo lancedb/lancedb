@@ -1038,9 +1038,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     test("can search using a string", async () => {
       @register()
       class MockEmbeddingFunction extends EmbeddingFunction<string> {
-        toJSON(): object {
-          return {};
-        }
         ndims() {
           return 1;
         }

@@ -182,6 +182,7 @@ nav:
                   - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md
                   - Jina Embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/jina_multimodal_embedding.md
           - User-defined embedding functions: embeddings/custom_embedding_function.md
+          - Variables and secrets: embeddings/variables_and_secrets.md
           - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
           - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
       - 🔌 Integrations:
@@ -315,6 +316,7 @@ nav:
               - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md
               - Jina Embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/jina_multimodal_embedding.md
       - User-defined embedding functions: embeddings/custom_embedding_function.md
+      - Variables and secrets: embeddings/variables_and_secrets.md
       - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
       - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
   - Integrations:

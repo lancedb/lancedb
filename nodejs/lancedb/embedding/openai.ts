@@ -21,11 +21,13 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
   #modelName: OpenAIOptions["model"];
 
   constructor(
-    options: Partial<OpenAIOptions> = {
+    optionsRaw: Partial<OpenAIOptions> = {
       model: "text-embedding-ada-002",
     },
   ) {
     super();
+    const options = this.resolveVariables(optionsRaw);
+
     const openAIKey = options?.apiKey ?? process.env.OPENAI_API_KEY;
     if (!openAIKey) {
       throw new Error("OpenAI API key is required");
@@ -52,10 +54,8 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
     this.#modelName = modelName;
   }
 
-  toJSON() {
-    return {
-      model: this.#modelName,
-    };
+  protected getSensitiveKeys(): string[] {
+    return ["apiKey"];
   }
 
   ndims(): number {

@@ -55,6 +55,14 @@ Let's implement `SentenceTransformerEmbeddings` class. All you need to do is imp
 
 This is a stripped down version of our implementation of `SentenceTransformerEmbeddings` that removes certain optimizations and default settings.
 
+!!! danger "Use sensitive keys to prevent leaking secrets"
+    To prevent leaking secrets, such as API keys, you should add any sensitive
+    parameters of an embedding function to the output of the
+    [sensitive_keys()][lancedb.embeddings.base.EmbeddingFunction.sensitive_keys] /
+    [getSensitiveKeys()](../../js/namespaces/embedding/classes/EmbeddingFunction/#getsensitivekeys)
+    method. This prevents users from accidentally instantiating the embedding
+    function with hard-coded secrets.
+
 Now you can use this embedding function to create your table schema and that's it! you can then ingest data and run queries without manually vectorizing the inputs.
 
 === "Python"
