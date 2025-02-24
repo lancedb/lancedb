@@ -155,7 +155,7 @@ class LanceQueryBuilder(ABC):
         ordering_field_name: Optional[str] = None,
         fts_columns: Union[str, List[str]] = [],
         fast_search: bool = False,
-    ) -> LanceQueryBuilder:
+    ) -> Self:
         """
         Create a query builder based on the given query and query type.
 
@@ -361,7 +361,7 @@ class LanceQueryBuilder(ABC):
 
         return pl.from_arrow(self.to_arrow())
 
-    def limit(self, limit: Union[int, None]) -> LanceQueryBuilder:
+    def limit(self, limit: Union[int, None]) -> Self:
         """Set the maximum number of results to return.
 
         Parameters
@@ -392,7 +392,7 @@ class LanceQueryBuilder(ABC):
             self._limit = limit
         return self
 
-    def offset(self, offset: int) -> LanceQueryBuilder:
+    def offset(self, offset: int) -> Self:
         """Set the offset for the results.
 
         Parameters
@@ -411,7 +411,7 @@ class LanceQueryBuilder(ABC):
             self._offset = offset
         return self
 
-    def select(self, columns: Union[list[str], dict[str, str]]) -> LanceQueryBuilder:
+    def select(self, columns: Union[list[str], dict[str, str]]) -> Self:
         """Set the columns to return.
 
         Parameters
@@ -432,7 +432,7 @@ class LanceQueryBuilder(ABC):
             raise ValueError("columns must be a list or a dictionary")
         return self
 
-    def where(self, where: str, prefilter: bool = True) -> LanceQueryBuilder:
+    def where(self, where: str, prefilter: bool = True) -> Self:
         """Set the where clause.
 
         Parameters
@@ -456,7 +456,7 @@ class LanceQueryBuilder(ABC):
         self._prefilter = prefilter
         return self
 
-    def with_row_id(self, with_row_id: bool) -> LanceQueryBuilder:
+    def with_row_id(self, with_row_id: bool) -> Self:
         """Set whether to return row ids.
 
         Parameters
@@ -517,7 +517,7 @@ class LanceQueryBuilder(ABC):
             offset=self._offset,
         ).explain_plan(verbose)
 
-    def vector(self, vector: Union[np.ndarray, list]) -> LanceQueryBuilder:
+    def vector(self, vector: Union[np.ndarray, list]) -> Self:
         """Set the vector to search for.
 
         Parameters
@@ -532,7 +532,7 @@ class LanceQueryBuilder(ABC):
         """
         raise NotImplementedError
 
-    def text(self, text: str) -> LanceQueryBuilder:
+    def text(self, text: str) -> Self:
         """Set the text to search for.
 
         Parameters
@@ -548,7 +548,7 @@ class LanceQueryBuilder(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def rerank(self, reranker: Reranker) -> LanceQueryBuilder:
+    def rerank(self, reranker: Reranker) -> Self:
         """Rerank the results using the specified reranker.
 
         Parameters
