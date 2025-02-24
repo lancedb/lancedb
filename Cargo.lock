@@ -3969,6 +3969,7 @@ dependencies = [
  "random_word",
  "regex",
  "reqwest",
+ "semver 1.0.25",
  "serde",
  "serde_json",
  "serde_with",

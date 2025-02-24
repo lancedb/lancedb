@@ -48,15 +48,21 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     #[allow(dead_code)]
     client: RestfulLanceDbClient<S>,
     name: String,
+    server_version: Option<semver::Version>,
 
     version: RwLock<Option<u64>>,
 }
 
 impl<S: HttpSend> RemoteTable<S> {
-    pub fn new(client: RestfulLanceDbClient<S>, name: String) -> Self {
+    pub fn new(
+        client: RestfulLanceDbClient<S>,
+        name: String,
+        server_version: Option<semver::Version>,
+    ) -> Self {
         Self {
             client,
             name,
+            server_version,
             version: RwLock::new(None),
         }
     }
@@ -345,6 +351,7 @@ mod test_utils {
             Self {
                 client,
                 name,
+                server_version: None,
                 version: RwLock::new(None),
             }
         }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatchIterator;
 use async_trait::async_trait;
-use http::StatusCode;
+use http::{HeaderValue, StatusCode};
 use lance_io::object_store::StorageOptions;
 use moka::future::Cache;
 use reqwest::header::CONTENT_TYPE;
@@ -208,6 +208,23 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             if resp.status() == StatusCode::NOT_FOUND {
                 return Err(crate::Error::TableNotFound { name: request.name });
             }
+            let version = resp
+                .headers()
+                .get("phalanx-version")
+                .map(|v| {
+                    let v = v.to_str().map_err(|e| crate::Error::Http {
+                        source: e.into(),
+                        request_id: request_id.clone(),
+                        status_code: Some(resp.status()),
+                    })?;
+                    semver::Version::parse(v).map_err(|e| crate::Error::Http {
+                        source: e.into(),
+                        request_id: request_id.clone(),
+                        status_code: Some(resp.status()),
+                    })
+                })
+                .transpose()?;
+
             self.client.check_response(&request_id, resp).await?;
         }
 
