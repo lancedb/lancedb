@@ -2981,7 +2981,7 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[str] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["fts"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -3045,20 +3045,12 @@ class AsyncTable:
                 or raise an error if no corresponding embedding function is found.
 
             - If `query` is a string, then the query type is "vector" if the
-            table has embedding functions else the query type is "fts"
+              table has embedding functions else the query type is "fts"
 
         Returns
         -------
         LanceQueryBuilder
             A query builder object representing the query.
-            Once executed, the query returns
-
-            - selected columns
-
-            - the vector
-
-            - and also the "_distance" column which is the distance between the query
-            vector and the returned vector.
         """
 
         def is_embedding(query):
@@ -3120,7 +3112,10 @@ class AsyncTable:
                 query_type = "vector"
             elif isinstance(query, str):
                 try:
-                    indices, (vector_column_name, conf) = await asyncio.gather(
+                    (
+                        indices,
+                        (vector_column_name, embedding_conf),
+                    ) = await asyncio.gather(
                         self.list_indices(),
                         get_embedding_func(vector_column_name, "auto", query),
                     )
@@ -3134,10 +3129,11 @@ class AsyncTable:
                     else:
                         raise e
                 else:
-                    if conf is not None:
-                        vector_query = await make_embedding(conf, query)
+                    if embedding_conf is not None:
+                        vector_query = await make_embedding(embedding_conf, query)
                         if any(
-                            i.columns[0] == conf.source_column and i.index_type == "FTS"
+                            i.columns[0] == embedding_conf.source_column
+                            and i.index_type == "FTS"
                             for i in indices
                         ):
                             query_type = "hybrid"
@@ -3152,18 +3148,18 @@ class AsyncTable:
             if is_embedding(query):
                 vector_query = query
             else:
-                vector_column_name, conf = await get_embedding_func(
+                vector_column_name, embedding_conf = await get_embedding_func(
                     vector_column_name, query_type, query
                 )
-                vector_query = await make_embedding(conf, query)
+                vector_query = await make_embedding(embedding_conf, query)
         elif query_type == "hybrid":
             if is_embedding(query):
                 raise ValueError("Hybrid search requires a text query")
             else:
-                vector_column_name, conf = await get_embedding_func(
+                vector_column_name, embedding_conf = await get_embedding_func(
                     vector_column_name, query_type, query
                 )
-                vector_query = await make_embedding(conf, query)
+                vector_query = await make_embedding(embedding_conf, query)
 
         if query_type == "vector":
             builder = self.query().nearest_to(vector_query)
@@ -3177,6 +3173,8 @@ class AsyncTable:
             if vector_column_name:
                 builder = builder.column(vector_column_name)
             return builder.nearest_to_text(query, columns=fts_columns or [])
+        else:
+            raise ValueError(f"Unknown query type: '{query_type}'")
 
     def vector_search(
         self,

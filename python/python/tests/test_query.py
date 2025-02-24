@@ -752,7 +752,7 @@ async def test_query_search_auto(mem_db_async: AsyncConnection):
             return embeddings
 
     registry = get_registry()
-    func = registry.get("test").create()
+    func = registry.get("test2").create()
 
     class TestModel(LanceModel):
         text: str = func.SourceField()
@@ -812,6 +812,9 @@ async def test_query_search_specified(mem_db_async: AsyncConnection):
 
     query = await table.search("0.1", query_type="fts")
     assert isinstance(query, AsyncFTSQuery)
+
+    with pytest.raises(ValueError, match="Unknown query type: 'foo'"):
+        await table.search("0.1", query_type="foo")
 
     with pytest.raises(
         ValueError, match="Column 'vector' has no registered embedding function"
