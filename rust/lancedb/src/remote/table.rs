@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryRequest, Select, VectorQueryRequest};
-use crate::remote::db::MULTIVECTOR_VERSION;
 use crate::table::{AddDataMode, AnyQuery, Filter};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
@@ -42,6 +41,7 @@ use crate::{
 
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
+use super::db::ServerVersion;
 use super::ARROW_STREAM_CONTENT_TYPE;
 
 #[derive(Debug)]
@@ -49,7 +49,7 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     #[allow(dead_code)]
     client: RestfulLanceDbClient<S>,
     name: String,
-    server_version: semver::Version,
+    server_version: ServerVersion,
 
     version: RwLock<Option<u64>>,
 }
@@ -58,7 +58,7 @@ impl<S: HttpSend> RemoteTable<S> {
     pub fn new(
         client: RestfulLanceDbClient<S>,
         name: String,
-        server_version: semver::Version,
+        server_version: ServerVersion,
     ) -> Self {
         Self {
             client,
@@ -269,7 +269,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 vec![body]
             }
             _ => {
-                if self.server_version >= MULTIVECTOR_VERSION {
+                if self.server_version.support_multivector() {
                     let vectors = query
                         .query_vector
                         .iter()
@@ -364,7 +364,6 @@ mod test_utils {
     use super::*;
     use crate::remote::client::test_utils::client_with_handler;
     use crate::remote::client::test_utils::MockSender;
-    use crate::remote::db::DEFAULT_SERVER_VERSION;
 
     impl RemoteTable<MockSender> {
         pub fn new_mock<F, T>(name: String, handler: F, version: Option<semver::Version>) -> Self
@@ -376,7 +375,7 @@ mod test_utils {
             Self {
                 client,
                 name,
-                server_version: version.unwrap_or(DEFAULT_SERVER_VERSION.clone()),
+                server_version: version.map(|v| ServerVersion(v)).unwrap_or_default(),
                 version: RwLock::new(None),
             }
         }
@@ -1513,7 +1512,7 @@ mod tests {
 
     #[rstest]
     #[case(DEFAULT_SERVER_VERSION.clone())]
-    #[case(MULTIVECTOR_VERSION.clone())]
+    #[case(semver::Version::new(0, 2, 0))]
     #[tokio::test]
     async fn test_batch_queries(#[case] version: semver::Version) {
         let table = Table::new_with_handler_version("my_table", version.clone(), move |request| {
@@ -1526,7 +1525,8 @@ mod tests {
             let body: serde_json::Value =
                 serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
             let query_vectors = body["vector"].as_array().unwrap();
-            let data = if version >= MULTIVECTOR_VERSION {
+            let version = ServerVersion(version.clone());
+            let data = if version.support_multivector() {
                 assert_eq!(query_vectors.len(), 2);
                 assert_eq!(query_vectors[0].as_array().unwrap().len(), 3);
                 assert_eq!(query_vectors[1].as_array().unwrap().len(), 3);

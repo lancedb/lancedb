@@ -8,7 +8,7 @@ use reqwest::Response;
 
 use crate::Result;
 
-use super::db::DEFAULT_SERVER_VERSION;
+use super::db::ServerVersion;
 
 pub fn batches_to_ipc_bytes(batches: impl RecordBatchReader) -> Result<Vec<u8>> {
     const WRITE_BUF_SIZE: usize = 4096;
@@ -26,7 +26,7 @@ pub fn batches_to_ipc_bytes(batches: impl RecordBatchReader) -> Result<Vec<u8>> 
     Ok(buf.into_inner())
 }
 
-pub fn parse_server_version(req_id: &str, rsp: &Response) -> Result<semver::Version> {
+pub fn parse_server_version(req_id: &str, rsp: &Response) -> Result<ServerVersion> {
     let version = rsp
         .headers()
         .get("phalanx-version")
@@ -36,13 +36,13 @@ pub fn parse_server_version(req_id: &str, rsp: &Response) -> Result<semver::Vers
                 request_id: req_id.to_string(),
                 status_code: Some(rsp.status()),
             })?;
-            semver::Version::parse(v).map_err(|e| crate::Error::Http {
+            ServerVersion::parse(v).map_err(|e| crate::Error::Http {
                 source: e.into(),
                 request_id: req_id.to_string(),
                 status_code: Some(rsp.status()),
             })
         })
         .transpose()?
-        .unwrap_or(DEFAULT_SERVER_VERSION.clone());
+        .unwrap_or_default();
     Ok(version)
 }

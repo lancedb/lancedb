@@ -19,6 +19,7 @@ use crate::database::{
 };
 use crate::error::Result;
 use crate::table::BaseTable;
+use crate::Error;
 
 use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender};
 use super::table::RemoteTable;
@@ -27,10 +28,31 @@ use super::ARROW_STREAM_CONTENT_TYPE;
 
 // the versions of the server that we support
 // for any new feature that we need to change the SDK behavior, we should bump the server version,
-// and add a feature flag here, so use `self.server_version >= FEATURE_VERSION` to check if the server
-// supports the feature.
+// and add a feature flag as method of `ServerVersion` here.
 pub const DEFAULT_SERVER_VERSION: semver::Version = semver::Version::new(0, 1, 0);
-pub const MULTIVECTOR_VERSION: semver::Version = semver::Version::new(0, 2, 0);
+#[derive(Debug, Clone)]
+pub struct ServerVersion(pub semver::Version);
+
+impl Default for ServerVersion {
+    fn default() -> Self {
+        Self(DEFAULT_SERVER_VERSION.clone())
+    }
+}
+
+impl ServerVersion {
+    pub fn parse(version: &str) -> Result<Self> {
+        let version = Self(
+            semver::Version::parse(version).map_err(|e| Error::InvalidInput {
+                message: e.to_string(),
+            })?,
+        );
+        Ok(version)
+    }
+
+    pub fn support_multivector(&self) -> bool {
+        self.0 >= semver::Version::new(0, 2, 0)
+    }
+}
 
 #[derive(Deserialize)]
 struct ListTablesResponse {
