@@ -278,7 +278,7 @@ def test_table_create_indices():
 
 
 @contextlib.contextmanager
-def query_test_table(query_handler, *, server_version=Version(0, 1, 0)):
+def query_test_table(query_handler, *, server_version=Version("0.1.0")):
     def handler(request):
         if request.path == "/v1/table/test/describe/":
             request.send_response(200)
@@ -389,14 +389,14 @@ def test_query_sync_maximal():
         )
 
 
-@pytest.mark.parametrize("server_version", [Version(0, 1, 0), Version(0, 2, 0)])
+@pytest.mark.parametrize("server_version", [Version("0.1.0"), Version("0.2.0")])
 def test_query_sync_batch_queries(server_version):
     def handler(body):
         # TODO: we will add the ability to get the server version,
         # so that we can decide how to perform batch quires.
         vectors = body["vector"]
         if server_version >= Version(
-            0, 2, 0
+            "0.2.0"
         ):  # we can handle batch queries in single request since 0.2.0
             assert len(vectors) == 2
             res = []
