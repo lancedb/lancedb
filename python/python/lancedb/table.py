@@ -3195,7 +3195,9 @@ class AsyncTable:
         # The sync remote table calls into this method, so we need to map the
         # query to the async version of the query and run that here. This is only
         # used for that code path right now.
-        async_query = self.query().limit(query.k)
+        async_query = self.query()
+        if query.k is not None:
+            async_query = async_query.limit(query.k)
         if query.offset > 0:
             async_query = async_query.offset(query.offset)
         if query.columns:

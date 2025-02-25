@@ -469,6 +469,9 @@ impl<T: HasQuery> QueryBase for T {
     }
 
     fn full_text_search(mut self, query: FullTextSearchQuery) -> Self {
+        if self.mut_query().limit.is_none() {
+            self.mut_query().limit = Some(DEFAULT_TOP_K);
+        }
         self.mut_query().full_text_search = Some(query);
         self
     }
@@ -622,7 +625,7 @@ pub struct QueryRequest {
 impl Default for QueryRequest {
     fn default() -> Self {
         Self {
-            limit: Some(DEFAULT_TOP_K),
+            limit: None,
             offset: None,
             filter: None,
             full_text_search: None,
@@ -707,6 +710,11 @@ impl Query {
         let mut vector_query = self.into_vector();
         let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
         vector_query.request.query_vector.push(query_vector);
+
+        if vector_query.request.base.limit.is_none() {
+            vector_query.request.base.limit = Some(DEFAULT_TOP_K);
+        }
+
         Ok(vector_query)
     }
 
