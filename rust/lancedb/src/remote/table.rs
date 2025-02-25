@@ -375,7 +375,7 @@ mod test_utils {
             Self {
                 client,
                 name,
-                server_version: version.map(|v| ServerVersion(v)).unwrap_or_default(),
+                server_version: version.map(ServerVersion).unwrap_or_default(),
                 version: RwLock::new(None),
             }
         }
