@@ -4,7 +4,7 @@ name = "lancedb"
 dynamic = ["version"]
 dependencies = [
     "deprecation",
-    "pylance==0.23.0",
+    "pylance==0.23.2b3",
     "tqdm>=4.27.0",
     "pydantic>=1.10",
     "packaging",
@@ -55,7 +55,12 @@ tests = [
     "tantivy",
     "pyarrow-stubs",
 ]
-dev = ["ruff", "pre-commit", "pyright", 'typing-extensions>=4.0.0; python_version < "3.11"']
+dev = [
+    "ruff",
+    "pre-commit",
+    "pyright",
+    'typing-extensions>=4.0.0; python_version < "3.11"',
+]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 clip = ["torch", "pillow", "open-clip"]
 embeddings = [

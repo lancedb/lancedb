@@ -17,7 +17,7 @@ use futures::{TryFutureExt, TryStreamExt};
 
 use super::{AnyQuery, BaseTable};
 use crate::{
-    query::{QueryExecutionOptions, QueryRequest, Select},
+    query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
     Result,
 };
 
@@ -161,7 +161,13 @@ impl TableProvider for BaseTableAdapter {
                 .collect();
             query.select = Select::Columns(field_names);
         }
-        assert!(filters.is_empty());
+        if !filters.is_empty() {
+            let first = filters.first().unwrap().clone();
+            let filter = filters[1..]
+                .iter()
+                .fold(first, |acc, expr| acc.and(expr.clone()));
+            query.filter = Some(QueryFilter::Datafusion(filter));
+        }
         if let Some(limit) = limit {
             query.limit = Some(limit);
         } else {
@@ -180,11 +186,7 @@ impl TableProvider for BaseTableAdapter {
         &self,
         filters: &[&Expr],
     ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
-        // TODO: Pushdown unsupported until we can support datafusion filters in BaseTable::create_plan
-        Ok(vec![
-            TableProviderFilterPushDown::Unsupported;
-            filters.len()
-        ])
+        Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
     }
 
     fn statistics(&self) -> Option<Statistics> {
@@ -197,67 +199,182 @@ impl TableProvider for BaseTableAdapter {
 pub mod tests {
     use std::{collections::HashMap, sync::Arc};
 
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
+    use arrow::array::AsArray;
+    use arrow_array::{
+        Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, UInt32Array,
+    };
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::{datasource::provider_as_source, prelude::SessionContext};
     use datafusion_catalog::TableProvider;
-    use datafusion_expr::LogicalPlanBuilder;
+    use datafusion_execution::SendableRecordBatchStream;
+    use datafusion_expr::{col, lit, LogicalPlan, LogicalPlanBuilder};
     use futures::TryStreamExt;
     use tempfile::tempdir;
 
-    use crate::{connect, table::datafusion::BaseTableAdapter};
+    use crate::{
+        connect,
+        index::{scalar::BTreeIndexBuilder, Index},
+        table::datafusion::BaseTableAdapter,
+    };
 
     fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
         let metadata = HashMap::from_iter(vec![("foo".to_string(), "bar".to_string())]);
         let schema = Arc::new(
-            Schema::new(vec![Field::new("i", DataType::Int32, false)]).with_metadata(metadata),
+            Schema::new(vec![
+                Field::new("i", DataType::Int32, false),
+                Field::new("indexed", DataType::UInt32, false),
+            ])
+            .with_metadata(metadata),
         );
         RecordBatchIterator::new(
             vec![RecordBatch::try_new(
                 schema.clone(),
-                vec![Arc::new(Int32Array::from_iter_values(0..10))],
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..10)),
+                    Arc::new(UInt32Array::from_iter_values(0..10)),
+                ],
             )],
             schema,
         )
     }
 
+    struct TestFixture {
+        _tmp_dir: tempfile::TempDir,
+        adapter: Arc<BaseTableAdapter>,
+    }
+
+    impl TestFixture {
+        async fn new() -> Self {
+            let tmp_dir = tempdir().unwrap();
+            let dataset_path = tmp_dir.path().join("test.lance");
+            let uri = dataset_path.to_str().unwrap();
+
+            let db = connect(uri).execute().await.unwrap();
+
+            let tbl = db
+                .create_table("foo", make_test_batches())
+                .execute()
+                .await
+                .unwrap();
+
+            tbl.create_index(&["indexed"], Index::BTree(BTreeIndexBuilder::default()))
+                .execute()
+                .await
+                .unwrap();
+
+            let adapter = Arc::new(
+                BaseTableAdapter::try_new(tbl.base_table().clone())
+                    .await
+                    .unwrap(),
+            );
+
+            Self {
+                _tmp_dir: tmp_dir,
+                adapter,
+            }
+        }
+
+        async fn plan_to_stream(plan: LogicalPlan) -> SendableRecordBatchStream {
+            SessionContext::new()
+                .execute_logical_plan(plan)
+                .await
+                .unwrap()
+                .execute_stream()
+                .await
+                .unwrap()
+        }
+
+        async fn plan_to_explain(plan: LogicalPlan) -> String {
+            let mut explain_stream = SessionContext::new()
+                .execute_logical_plan(plan)
+                .await
+                .unwrap()
+                .explain(true, false)
+                .unwrap()
+                .execute_stream()
+                .await
+                .unwrap();
+            let batch = explain_stream.try_next().await.unwrap().unwrap();
+            assert!(explain_stream.try_next().await.unwrap().is_none());
+
+            let plan_descs = batch.columns()[0].as_string::<i32>();
+            let plans = batch.columns()[1].as_string::<i32>();
+
+            for (desc, plan) in plan_descs.iter().zip(plans.iter()) {
+                if desc.unwrap() == "physical_plan" {
+                    return plan.unwrap().to_string();
+                }
+            }
+            panic!("No physical plan found in explain output");
+        }
+
+        async fn check_plan(plan: LogicalPlan, expected: &str) {
+            let physical_plan = dbg!(Self::plan_to_explain(plan).await);
+            let mut lines_checked = 0;
+            for (actual_line, expected_line) in physical_plan.lines().zip(expected.lines()) {
+                lines_checked += 1;
+                let actual_trimmed = actual_line.trim();
+                let expected_trimmed = if let Some(ellipsis_pos) = expected_line.find("...") {
+                    expected_line[0..ellipsis_pos].trim()
+                } else {
+                    expected_line.trim()
+                };
+                assert_eq!(&actual_trimmed[..expected_trimmed.len()], expected_trimmed);
+            }
+            assert_eq!(lines_checked, expected.lines().count());
+        }
+    }
+
     #[tokio::test]
     async fn test_metadata_erased() {
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = dataset_path.to_str().unwrap();
+        let fixture = TestFixture::new().await;
 
-        let db = connect(uri).execute().await.unwrap();
+        assert!(fixture.adapter.schema().metadata().is_empty());
 
-        let tbl = db
-            .create_table("foo", make_test_batches())
-            .execute()
-            .await
-            .unwrap();
-
-        let provider = Arc::new(
-            BaseTableAdapter::try_new(tbl.base_table().clone())
-                .await
-                .unwrap(),
-        );
-
-        assert!(provider.schema().metadata().is_empty());
-
-        let plan = LogicalPlanBuilder::scan("foo", provider_as_source(provider), None)
+        let plan = LogicalPlanBuilder::scan("foo", provider_as_source(fixture.adapter), None)
             .unwrap()
             .build()
             .unwrap();
 
-        let mut stream = SessionContext::new()
-            .execute_logical_plan(plan)
-            .await
-            .unwrap()
-            .execute_stream()
-            .await
-            .unwrap();
+        let mut stream = TestFixture::plan_to_stream(plan).await;
 
         while let Some(batch) = stream.try_next().await.unwrap() {
             assert!(batch.schema().metadata().is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn test_filter_pushdown() {
+        let fixture = TestFixture::new().await;
+
+        // Basic filter, not much different pushed down than run from DF
+        let plan =
+            LogicalPlanBuilder::scan("foo", provider_as_source(fixture.adapter.clone()), None)
+                .unwrap()
+                .filter(col("i").gt_eq(lit(5)))
+                .unwrap()
+                .build()
+                .unwrap();
+
+        TestFixture::check_plan(
+            plan,
+            "MetadataEraserExec
+             RepartitionExec:...
+             CoalesceBatchesExec:...
+             FilterExec: i@0 >= 5
+             ProjectionExec:...
+             LanceScan:...",
+        )
+        .await;
+
+        // Filter utilizing scalar index, make sure it gets pushed down
+        let plan = LogicalPlanBuilder::scan("foo", provider_as_source(fixture.adapter), None)
+            .unwrap()
+            .filter(col("indexed").eq(lit(5)))
+            .unwrap()
+            .build()
+            .unwrap();
+
+        TestFixture::check_plan(plan, "").await;
     }
 }
