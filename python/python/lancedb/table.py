@@ -2683,7 +2683,7 @@ class AsyncTable:
         self.close()
 
     def is_open(self) -> bool:
-        """Return True if the table is closed."""
+        """Return True if the table is open."""
         return self._inner.is_open()
 
     def close(self):
