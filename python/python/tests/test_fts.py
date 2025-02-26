@@ -174,6 +174,10 @@ def test_search_fts(table, use_tantivy):
     assert len(results) == 5
     assert len(results[0]) == 3  # id, text, _score
 
+    # Default limit of 10
+    results = table.search("puppy").select(["id", "text"]).to_list()
+    assert len(results) == 10
+
 
 @pytest.mark.asyncio
 async def test_fts_select_async(async_table):

@@ -154,9 +154,9 @@ impl<S: HttpSend> RemoteTable<S> {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
         }
 
-        if let Some(limit) = params.limit {
-            body["k"] = serde_json::Value::Number(serde_json::Number::from(limit));
-        }
+        // Server requires k.
+        let limit = params.limit.unwrap_or(usize::MAX);
+        body["k"] = serde_json::Value::Number(serde_json::Number::from(limit));
 
         if let Some(filter) = &params.filter {
             if let QueryFilter::Sql(filter) = filter {
@@ -1291,6 +1291,52 @@ mod tests {
         });
 
         table.delete("id in (1, 2, 3)").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_query_plain() {
+        let expected_data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let expected_data_ref = expected_data.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            let expected_body = serde_json::json!({
+                "k": usize::MAX,
+                "prefilter": true,
+                "vector": [], // Empty vector means no vector query.
+                "version": null,
+            });
+            assert_eq!(body, expected_body);
+
+            let response_body = write_ipc_file(&expected_data_ref);
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(response_body)
+                .unwrap()
+        });
+
+        let data = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].as_ref().unwrap(), &expected_data);
     }
 
     #[tokio::test]

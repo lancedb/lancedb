@@ -110,7 +110,7 @@ class Query(pydantic.BaseModel):
     full_text_query: Optional[Union[str, dict]] = None
 
     # top k results to return
-    k: int
+    k: Optional[int] = None
 
     # # metrics
     metric: str = "L2"
@@ -257,7 +257,7 @@ class LanceQueryBuilder(ABC):
 
     def __init__(self, table: "Table"):
         self._table = table
-        self._limit = 10
+        self._limit = None
         self._offset = 0
         self._columns = None
         self._where = None
@@ -370,8 +370,7 @@ class LanceQueryBuilder(ABC):
             The maximum number of results to return.
             The default query limit is 10 results.
             For ANN/KNN queries, you must specify a limit.
-            Entering 0, a negative number, or None will reset
-            the limit to the default value of 10.
+            For plain searches, all records are returned if limit not set.
             *WARNING* if you have a large dataset, setting
             the limit to a large number, e.g. the table size,
             can potentially result in reading a
@@ -595,6 +594,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         fast_search: bool = False,
     ):
         super().__init__(table)
+        if self._limit is None:
+            self._limit = 10
         self._query = query
         self._distance_type = "L2"
         self._nprobes = 20
@@ -888,6 +889,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         fts_columns: Union[str, List[str]] = [],
     ):
         super().__init__(table)
+        if self._limit is None:
+            self._limit = 10
         self._query = query
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
@@ -1055,7 +1058,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
         query = Query(
             columns=self._columns,
             filter=self._where,
-            k=self._limit or 10,
+            k=self._limit,
             with_row_id=self._with_row_id,
             vector=[],
             # not actually respected in remote query
