@@ -10,7 +10,7 @@
     "vector database",
     "ann"
   ],
-  "version": "0.5.2",
+  "version": "0.5.2-final.1",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
