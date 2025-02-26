@@ -142,6 +142,10 @@ class CompactionStats:
     files_removed: int
     files_added: int
 
+class CleanupStats:
+    bytes_removed: int
+    old_versions: int
+
 class RemovalStats:
     bytes_removed: int
     old_versions_removed: int
