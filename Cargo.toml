@@ -21,7 +21,6 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-<<<<<<< HEAD
 lance = { "version" = "=0.23.3", "features" = [
     "dynamodb",
 ], git = "https://github.com/lancedb/lance.git", tag = "v0.23.3-beta.1" }
@@ -32,16 +31,6 @@ lance-table = { version = "=0.23.3", tag = "v0.23.3-beta.1", git = "https://gith
 lance-testing = { version = "=0.23.3", tag = "v0.23.3-beta.1", git = "https://github.com/lancedb/lance.git" }
 lance-datafusion = { version = "=0.23.3", tag = "v0.23.3-beta.1", git = "https://github.com/lancedb/lance.git" }
 lance-encoding = { version = "=0.23.3", tag = "v0.23.3-beta.1", git = "https://github.com/lancedb/lance.git" }
-=======
-lance = { "version" = "=0.23.2", "features" = ["dynamodb"] }
-lance-io = { version = "=0.23.2" }
-lance-index = { version = "=0.23.2" }
-lance-linalg = { version = "=0.23.2" }
-lance-table = { version = "=0.23.2" }
-lance-testing = { version = "=0.23.2" }
-lance-datafusion = { version = "=0.23.2" }
-lance-encoding = { version = "=0.23.2" }
->>>>>>> d6b3ccb37b3621308fccf4f4daa97266c3b64709
 # Note that this one does not include pyarrow
 arrow = { version = "53.2", optional = false }
 arrow-array = "53.2"
