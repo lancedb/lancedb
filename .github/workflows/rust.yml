@@ -61,7 +61,12 @@ jobs:
       CXX: clang++
     steps:
       - uses: actions/checkout@v4
-      # Remote cargo.lock to force a fresh build
+      # Building without a lock file often requires the latest Rust version since downstream
+      # dependencies may have updated their minimum Rust version.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: "stable"
+      # Remove cargo.lock to force a fresh build
       - name: Remove Cargo.lock
         run: rm -f Cargo.lock
       - uses: rui314/setup-mold@v1
