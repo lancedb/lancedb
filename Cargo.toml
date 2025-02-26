@@ -35,7 +35,7 @@ arrow-schema = "51.0"
 arrow-arith = "51.0"
 arrow-cast = "51.0"
 async-trait = "0"
-chrono = "0.4.35"
+chrono = "=0.4.39"
 datafusion-physical-plan = "37.1"
 half = { "version" = "=2.4.1", default-features = false, features = [
     "num-traits",
