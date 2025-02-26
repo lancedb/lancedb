@@ -1388,7 +1388,13 @@ class LanceTable(Table):
 
     def to_lance(self, **kwargs) -> LanceDataset:
         """Return the LanceDataset backing this table."""
-        import lance
+        try:
+            import lance
+        except ImportError:
+            raise ImportError(
+                "The lance library is required to use this function. "
+                "Please install with `pip install pylance`."
+            )
 
         return lance.dataset(
             self._dataset_path,
