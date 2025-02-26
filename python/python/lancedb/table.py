@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import deprecation
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -24,16 +25,15 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-import lance
+from . import __version__
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP
-from .dependencies import _check_for_pandas
+from .dependencies import _check_for_hugging_face, _check_for_pandas
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 import numpy as np
 from lance import LanceDataset
-from lance.dependencies import _check_for_hugging_face
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
@@ -66,10 +66,14 @@ from .index import lang_mapping
 
 
 if TYPE_CHECKING:
-    from ._lancedb import Table as LanceDBTable, OptimizeStats, CompactionStats
+    from ._lancedb import (
+        Table as LanceDBTable,
+        OptimizeStats,
+        CleanupStats,
+        CompactionStats,
+    )
     from .db import LanceDBConnection
     from .index import IndexConfig
-    from lance.dataset import CleanupStats, ReaderLike
     import pandas
     import PIL
 
@@ -80,10 +84,9 @@ QueryType = Literal["vector", "fts", "hybrid", "auto"]
 
 
 def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
-    if _check_for_hugging_face(data):
-        # Huggingface datasets
-        from lance.dependencies import datasets
+    from lancedb.dependencies import datasets
 
+    if _check_for_hugging_face(data):
         if isinstance(data, datasets.Dataset):
             schema = data.features.arrow_schema
             return pa.RecordBatchReader.from_batches(schema, data.data.to_batches())
@@ -1074,7 +1077,7 @@ class Table(ABC):
         older_than: Optional[timedelta] = None,
         *,
         delete_unverified: bool = False,
-    ) -> CleanupStats:
+    ) -> "CleanupStats":
         """
         Clean up old versions of the table, freeing disk space.
 
@@ -1385,6 +1388,8 @@ class LanceTable(Table):
 
     def to_lance(self, **kwargs) -> LanceDataset:
         """Return the LanceDataset backing this table."""
+        import lance
+
         return lance.dataset(
             self._dataset_path,
             version=self.version,
@@ -1844,7 +1849,7 @@ class LanceTable(Table):
 
     def merge(
         self,
-        other_table: Union[LanceTable, ReaderLike],
+        other_table: Union[LanceTable, DATA],
         left_on: str,
         right_on: Optional[str] = None,
         schema: Optional[Union[pa.Schema, LanceModel]] = None,
@@ -1894,12 +1899,13 @@ class LanceTable(Table):
         1  2  b  e
         2  3  c  f
         """
-        if isinstance(schema, LanceModel):
-            schema = schema.to_arrow_schema()
         if isinstance(other_table, LanceTable):
             other_table = other_table.to_lance()
-        if isinstance(other_table, LanceDataset):
-            other_table = other_table.to_table()
+        else:
+            other_table = _sanitize_data(
+                other_table,
+                schema=schema,
+            )
         self.to_lance().merge(
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
@@ -2222,12 +2228,17 @@ class LanceTable(Table):
     ):
         LOOP.run(self._table._do_merge(merge, new_data, on_bad_vectors, fill_value))
 
+    @deprecation.deprecated(
+        deprecated_in="0.21.0",
+        current_version=__version__,
+        details="Use `Table.optimize` instead.",
+    )
     def cleanup_old_versions(
         self,
         older_than: Optional[timedelta] = None,
         *,
         delete_unverified: bool = False,
-    ) -> CleanupStats:
+    ) -> "CleanupStats":
         """
         Clean up old versions of the table, freeing disk space.
 
@@ -2252,6 +2263,11 @@ class LanceTable(Table):
             older_than, delete_unverified=delete_unverified
         )
 
+    @deprecation.deprecated(
+        deprecated_in="0.21.0",
+        current_version=__version__,
+        details="Use `Table.optimize` instead.",
+    )
     def compact_files(self, *args, **kwargs) -> CompactionStats:
         """
         Run the compaction process on the table.
