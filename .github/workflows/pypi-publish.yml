@@ -15,15 +15,21 @@ jobs:
           - platform: x86_64
             manylinux: "2_17"
             extra_args: ""
+            runner: ubuntu-22.04
           - platform: x86_64
             manylinux: "2_28"
             extra_args: "--features fp16kernels"
+            runner: ubuntu-22.04
           - platform: aarch64
-            manylinux: "2_24"
+            manylinux: "2_17"
             extra_args: ""
-          # We don't build fp16 kernels for aarch64, because it uses 
-          # cross compilation image, which doesn't have a new enough compiler.
-    runs-on: "ubuntu-22.04"
+            # For successful fat LTO builds, we need a large runner to avoid OOM errors.
+            runner: ubuntu-2404-8x-arm64
+          - platform: aarch64
+            manylinux: "2_28"
+            extra_args: "--features fp16kernels"
+            runner: ubuntu-2404-8x-arm64
+    runs-on: ${{ matrix.config.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,7 +89,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.8
+          python-version: 3.12
       - uses: ./.github/workflows/build_windows_wheel
         with:
           python-minor-version: 8
