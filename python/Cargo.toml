@@ -19,6 +19,7 @@ lancedb = { path = "../rust/lancedb" }
 env_logger = "0.10"
 pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38"] }
 pyo3-asyncio = { version = "0.20", features = ["attributes", "tokio-runtime"] }
+base64ct = "=1.6.0" # workaround for https://github.com/RustCrypto/formats/issues/1684
 
 # Prevent dynamic linking of lzma, which comes from datafusion
 lzma-sys = { version = "*", features = ["static"] }
