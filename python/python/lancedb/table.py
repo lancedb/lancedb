@@ -1904,7 +1904,7 @@ class LanceTable(Table):
         else:
             other_table = _sanitize_data(
                 other_table,
-                schema=schema,
+                schema,
             )
         self.to_lance().merge(
             other_table, left_on=left_on, right_on=right_on, schema=schema
