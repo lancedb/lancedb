@@ -3915,7 +3915,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb"
-version = "0.17.0"
+version = "0.18.0-beta.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4001,7 +4001,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-node"
-version = "0.17.0"
+version = "0.18.0-beta.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4026,7 +4026,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-nodejs"
-version = "0.17.0"
+version = "0.18.0-beta.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4044,7 +4044,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-python"
-version = "0.20.0"
+version = "0.21.0-beta.0"
 dependencies = [
  "arrow",
  "env_logger",
