@@ -509,6 +509,27 @@ mod test_utils {
             let inner = Arc::new(crate::remote::table::RemoteTable::new_mock(
                 name.into(),
                 handler,
+                None,
+            ));
+            Self {
+                inner,
+                // Registry is unused.
+                embedding_registry: Arc::new(MemoryRegistry::new()),
+            }
+        }
+
+        pub fn new_with_handler_version<T>(
+            name: impl Into<String>,
+            version: semver::Version,
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let inner = Arc::new(crate::remote::table::RemoteTable::new_mock(
+                name.into(),
+                handler,
+                Some(version),
             ));
             Self {
                 inner,

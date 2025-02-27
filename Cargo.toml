@@ -62,6 +62,7 @@ num-traits = "0.2"
 rand = "0.8"
 regex = "1.10"
 lazy_static = "1"
+semver = "1.0.25"
 
 # Temporary pins to work around downstream issues
 # https://github.com/apache/arrow-rs/commit/2fddf85afcd20110ce783ed5b4cdeb82293da30b

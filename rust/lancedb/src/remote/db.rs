@@ -19,11 +19,40 @@ use crate::database::{
 };
 use crate::error::Result;
 use crate::table::BaseTable;
+use crate::Error;
 
 use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender};
 use super::table::RemoteTable;
-use super::util::batches_to_ipc_bytes;
+use super::util::{batches_to_ipc_bytes, parse_server_version};
 use super::ARROW_STREAM_CONTENT_TYPE;
+
+// the versions of the server that we support
+// for any new feature that we need to change the SDK behavior, we should bump the server version,
+// and add a feature flag as method of `ServerVersion` here.
+pub const DEFAULT_SERVER_VERSION: semver::Version = semver::Version::new(0, 1, 0);
+#[derive(Debug, Clone)]
+pub struct ServerVersion(pub semver::Version);
+
+impl Default for ServerVersion {
+    fn default() -> Self {
+        Self(DEFAULT_SERVER_VERSION.clone())
+    }
+}
+
+impl ServerVersion {
+    pub fn parse(version: &str) -> Result<Self> {
+        let version = Self(
+            semver::Version::parse(version).map_err(|e| Error::InvalidInput {
+                message: e.to_string(),
+            })?,
+        );
+        Ok(version)
+    }
+
+    pub fn support_multivector(&self) -> bool {
+        self.0 >= semver::Version::new(0, 2, 0)
+    }
+}
 
 #[derive(Deserialize)]
 struct ListTablesResponse {
@@ -33,7 +62,7 @@ struct ListTablesResponse {
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
-    table_cache: Cache<String, ()>,
+    table_cache: Cache<String, Arc<RemoteTable<S>>>,
 }
 
 impl RemoteDatabase {
@@ -115,13 +144,19 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
         let (request_id, rsp) = self.client.send(req, true).await?;
         let rsp = self.client.check_response(&request_id, rsp).await?;
+        let version = parse_server_version(&request_id, &rsp)?;
         let tables = rsp
             .json::<ListTablesResponse>()
             .await
             .err_to_http(request_id)?
             .tables;
         for table in &tables {
-            self.table_cache.insert(table.clone(), ()).await;
+            let remote_table = Arc::new(RemoteTable::new(
+                self.client.clone(),
+                table.clone(),
+                version.clone(),
+            ));
+            self.table_cache.insert(table.clone(), remote_table).await;
         }
         Ok(tables)
     }
@@ -187,34 +222,42 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 return Err(crate::Error::InvalidInput { message: body });
             }
         }
-
-        self.client.check_response(&request_id, rsp).await?;
-
-        self.table_cache.insert(request.name.clone(), ()).await;
-
-        Ok(Arc::new(RemoteTable::new(
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let version = parse_server_version(&request_id, &rsp)?;
+        let table = Arc::new(RemoteTable::new(
             self.client.clone(),
-            request.name,
-        )))
+            request.name.clone(),
+            version,
+        ));
+        self.table_cache
+            .insert(request.name.clone(), table.clone())
+            .await;
+
+        Ok(table)
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
         // We describe the table to confirm it exists before moving on.
-        if self.table_cache.get(&request.name).await.is_none() {
+        if let Some(table) = self.table_cache.get(&request.name).await {
+            Ok(table.clone())
+        } else {
             let req = self
                 .client
                 .post(&format!("/v1/table/{}/describe/", request.name));
-            let (request_id, resp) = self.client.send(req, true).await?;
-            if resp.status() == StatusCode::NOT_FOUND {
+            let (request_id, rsp) = self.client.send(req, true).await?;
+            if rsp.status() == StatusCode::NOT_FOUND {
                 return Err(crate::Error::TableNotFound { name: request.name });
             }
-            self.client.check_response(&request_id, resp).await?;
+            let rsp = self.client.check_response(&request_id, rsp).await?;
+            let version = parse_server_version(&request_id, &rsp)?;
+            let table = Arc::new(RemoteTable::new(
+                self.client.clone(),
+                request.name.clone(),
+                version,
+            ));
+            self.table_cache.insert(request.name, table.clone()).await;
+            Ok(table)
         }
-
-        Ok(Arc::new(RemoteTable::new(
-            self.client.clone(),
-            request.name,
-        )))
     }
 
     async fn rename_table(&self, current_name: &str, new_name: &str) -> Result<()> {
@@ -224,8 +267,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let req = req.json(&serde_json::json!({ "new_table_name": new_name }));
         let (request_id, resp) = self.client.send(req, false).await?;
         self.client.check_response(&request_id, resp).await?;
-        self.table_cache.remove(current_name).await;
-        self.table_cache.insert(new_name.into(), ()).await;
+        let table = self.table_cache.remove(current_name).await;
+        if let Some(table) = table {
+            self.table_cache.insert(new_name.into(), table).await;
+        }
         Ok(())
     }
 
