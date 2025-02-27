@@ -401,7 +401,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn test_several_columns() {
+    async fn test_metadata_erased_with_filter() {
         // This is a regression test where the metadata eraser was not properly erasing metadata
         let fixture = TestFixture::new().await;
 
