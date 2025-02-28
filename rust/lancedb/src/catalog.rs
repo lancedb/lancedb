@@ -50,8 +50,11 @@ impl Default for CreateDatabaseMode {
 
 /// Request to create a new database
 pub struct CreateDatabaseRequest {
+    /// The name of the database to create
     pub name: String,
+    /// The creation mode
     pub mode: CreateDatabaseMode,
+    /// A map of catalog-specific options, consult your catalog implementation to determine what's available
     pub options: HashMap<String, String>,
 }
 
