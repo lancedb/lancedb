@@ -143,21 +143,18 @@ impl Catalog for ListingCatalog {
                 return Err(Error::DatabaseAlreadyExists { name: request.name })
             }
             CreateDatabaseMode::Create => {
-                // let db_local_path = to_local_path(&db_path);
-                create_dir_all(&db_path.to_string()).unwrap();
+                create_dir_all(db_path.to_string()).unwrap();
             }
             CreateDatabaseMode::ExistOk => {
                 if !exists {
-                    // let db_local_path = to_local_path(&db_path);
-                    create_dir_all(&db_path.to_string()).unwrap();
+                    create_dir_all(db_path.to_string()).unwrap();
                 }
             }
             CreateDatabaseMode::Overwrite => {
                 if exists {
                     self.drop_database(&request.name).await?;
                 }
-                // let db_local_path = to_local_path(&db_path);
-                create_dir_all(&db_path.to_string()).unwrap();
+                create_dir_all(db_path.to_string()).unwrap();
             }
         }
 
