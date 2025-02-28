@@ -84,6 +84,7 @@ if TYPE_CHECKING:
         VectorIndexType,
         ScalarIndexType,
         BaseTokenizerType,
+        DistanceType,
     )
 
 
@@ -1578,7 +1579,7 @@ class LanceTable(Table):
 
     def create_index(
         self,
-        metric="L2",
+        metric: DistanceType = "L2",
         num_partitions=None,
         num_sub_vectors=None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
@@ -2065,7 +2066,7 @@ class LanceTable(Table):
             query_type,
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
-            fts_columns=fts_columns,
+            fts_columns=fts_columns or [],
         )
 
     @classmethod
@@ -2873,7 +2874,7 @@ class AsyncTable:
         data: DATA,
         *,
         mode: Optional[Literal["append", "overwrite"]] = "append",
-        on_bad_vectors: Optional[str] = None,
+        on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
     ):
         """Add more data to the [Table](Table).
@@ -3033,7 +3034,7 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> AsyncQuery:
+    ) -> Union[AsyncHybridQuery | AsyncFTSQuery | AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
         and [full-text search][experimental-full-text-search].
