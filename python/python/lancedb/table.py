@@ -39,7 +39,7 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 from .merge import LanceMergeInsertBuilder
-from .lance_pydantic import LanceModel, model_to_dict
+from .pydantic import LanceModel, model_to_dict
 from .query import (
     AsyncFTSQuery,
     AsyncHybridQuery,
