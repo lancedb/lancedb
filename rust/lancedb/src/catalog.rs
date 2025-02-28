@@ -24,7 +24,11 @@ pub struct DatabaseNamesRequest {
 /// Request to open an existing database
 #[derive(Clone, Debug)]
 pub struct OpenDatabaseRequest {
+    /// The name of the database to open
     pub name: String,
+    /// A map of database-specific options
+    ///
+    /// Consult the catalog / database implementation to determine which options are available
     pub database_options: HashMap<String, String>,
 }
 
