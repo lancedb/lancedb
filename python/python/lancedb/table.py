@@ -76,11 +76,19 @@ if TYPE_CHECKING:
     from .index import IndexConfig
     import pandas
     import PIL
+    from .types import (
+        QueryType,
+        OnBadVectorsType,
+        AddMode,
+        CreateMode,
+        VectorIndexType,
+        ScalarIndexType,
+        BaseTokenizerType,
+    )
+
 
 pd = safe_import_pandas()
 pl = safe_import_polars()
-
-QueryType = Literal["vector", "fts", "hybrid", "auto"]
 
 
 def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
@@ -178,7 +186,7 @@ def _sanitize_data(
     data: "DATA",
     target_schema: Optional[pa.Schema] = None,
     metadata: Optional[dict] = None,  # embedding metadata
-    on_bad_vectors: Literal["error", "drop", "fill", "null"] = "error",
+    on_bad_vectors: OnBadVectorsType = "error",
     fill_value: float = 0.0,
     *,
     allow_subschema: bool = False,
@@ -324,7 +332,7 @@ def sanitize_create_table(
     data,
     schema: Union[pa.Schema, LanceModel],
     metadata=None,
-    on_bad_vectors: str = "error",
+    on_bad_vectors: OnBadVectorsType = "error",
     fill_value: float = 0.0,
 ):
     if inspect.isclass(schema) and issubclass(schema, LanceModel):
@@ -576,9 +584,7 @@ class Table(ABC):
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         *,
-        index_type: Literal[
-            "IVF_FLAT", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
-        ] = "IVF_PQ",
+        index_type: VectorIndexType = "IVF_PQ",
         num_bits: int = 8,
         max_iterations: int = 50,
         sample_rate: int = 256,
@@ -643,7 +649,7 @@ class Table(ABC):
         column: str,
         *,
         replace: bool = True,
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
+        index_type: ScalarIndexType = "BTREE",
     ):
         """Create a scalar index on a column.
 
@@ -708,7 +714,7 @@ class Table(ABC):
         tokenizer_name: Optional[str] = None,
         with_position: bool = True,
         # tokenizer configs:
-        base_tokenizer: Literal["simple", "raw", "whitespace"] = "simple",
+        base_tokenizer: BaseTokenizerType = "simple",
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
@@ -960,7 +966,7 @@ class Table(ABC):
         self,
         merge: LanceMergeInsertBuilder,
         new_data: DATA,
-        on_bad_vectors: str,
+        on_bad_vectors: OnBadVectorsType,
         fill_value: float,
     ): ...
 
@@ -1575,7 +1581,7 @@ class LanceTable(Table):
         metric="L2",
         num_partitions=None,
         num_sub_vectors=None,
-        vector_column_name=VECTOR_COLUMN_NAME,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
@@ -1661,7 +1667,7 @@ class LanceTable(Table):
         column: str,
         *,
         replace: bool = True,
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
+        index_type: ScalarIndexType = "BTREE",
     ):
         if index_type == "BTREE":
             config = BTree()
@@ -1686,7 +1692,7 @@ class LanceTable(Table):
         tokenizer_name: Optional[str] = None,
         with_position: bool = True,
         # tokenizer configs:
-        base_tokenizer: str = "simple",
+        base_tokenizer: BaseTokenizerType = "simple",
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
@@ -1820,8 +1826,8 @@ class LanceTable(Table):
     def add(
         self,
         data: DATA,
-        mode: str = "append",
-        on_bad_vectors: str = "error",
+        mode: AddMode = "append",
+        on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
     ):
         """Add data to the table.
@@ -2069,9 +2075,9 @@ class LanceTable(Table):
         name: str,
         data: Optional[DATA] = None,
         schema: Optional[pa.Schema] = None,
-        mode: Literal["create", "overwrite"] = "create",
+        mode: CreateMode = "create",
         exist_ok: bool = False,
-        on_bad_vectors: str = "error",
+        on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
@@ -2229,7 +2235,7 @@ class LanceTable(Table):
         self,
         merge: LanceMergeInsertBuilder,
         new_data: DATA,
-        on_bad_vectors: str,
+        on_bad_vectors: OnBadVectorsType,
         fill_value: float,
     ):
         LOOP.run(self._table._do_merge(merge, new_data, on_bad_vectors, fill_value))
@@ -2973,7 +2979,7 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[Union[str]] = None,
+        query: Optional[str] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -2983,7 +2989,7 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[Union[str]] = None,
+        query: Optional[str] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["hybrid"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -3266,7 +3272,7 @@ class AsyncTable:
         self,
         merge: LanceMergeInsertBuilder,
         new_data: DATA,
-        on_bad_vectors: str,
+        on_bad_vectors: OnBadVectorsType,
         fill_value: float,
     ):
         schema = await self.schema()
