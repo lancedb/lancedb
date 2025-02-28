@@ -33,11 +33,11 @@ pub struct ListingCatalog {
 
     query_string: Option<String>,
 
-    pub(crate) uri: String,
+    uri: String,
 
     base_path: ObjectStorePath,
 
-    pub(crate) store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+    store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
 
     storage_options: HashMap<String, String>,
 }
