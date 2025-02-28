@@ -60,7 +60,6 @@ dev = [
     "ruff",
     "pre-commit",
     "pyright",
-    "pyarrow-stubs",
     'typing-extensions>=4.0.0; python_version < "3.11"',
 ]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
@@ -127,4 +126,3 @@ include = [
     "python/lancedb/embeddings/__init__.py",
 ]
 pythonVersion = "3.12"
-useLibraryCodeForTypes = true
