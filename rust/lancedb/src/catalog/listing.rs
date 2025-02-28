@@ -116,7 +116,7 @@ impl Catalog for ListingCatalog {
             .await?
             .iter()
             .map(Path::new)
-            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
+            .filter_map(|p| p.file_name().and_then(|s| s.to_str().map(String::from)))
             .collect::<Vec<String>>();
         f.sort();
 
@@ -143,21 +143,21 @@ impl Catalog for ListingCatalog {
                 return Err(Error::DatabaseAlreadyExists { name: request.name })
             }
             CreateDatabaseMode::Create => {
-                let db_local_path = to_local_path(&db_path);
-                create_dir_all(&db_local_path).unwrap();
+                // let db_local_path = to_local_path(&db_path);
+                create_dir_all(&db_path.to_string()).unwrap();
             }
             CreateDatabaseMode::ExistOk => {
                 if !exists {
-                    let db_local_path = to_local_path(&db_path);
-                    create_dir_all(&db_local_path).unwrap();
+                    // let db_local_path = to_local_path(&db_path);
+                    create_dir_all(&db_path.to_string()).unwrap();
                 }
             }
             CreateDatabaseMode::Overwrite => {
                 if exists {
                     self.drop_database(&request.name).await?;
                 }
-                let db_local_path = to_local_path(&db_path);
-                create_dir_all(&db_local_path).unwrap();
+                // let db_local_path = to_local_path(&db_path);
+                create_dir_all(&db_path.to_string()).unwrap();
             }
         }
 
@@ -171,7 +171,7 @@ impl Catalog for ListingCatalog {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             read_consistency_interval: None,
-            storage_options: HashMap::new(),
+            storage_options: self.storage_options.clone(),
         };
 
         Ok(Arc::new(
@@ -181,23 +181,22 @@ impl Catalog for ListingCatalog {
 
     async fn open_database(&self, request: OpenDatabaseRequest) -> Result<Arc<dyn Database>> {
         let db_path = self.database_path(&request.name);
-        let db_path_str = to_local_path(&db_path);
 
+        let db_path_str = to_local_path(&db_path);
         let exists = Path::new(&db_path_str).exists();
         if !exists {
             return Err(Error::DatabaseNotFound { name: request.name });
         }
 
-        let db_uri = format!("file:///{}/{}", self.base_path, request.name);
         let connect_request = ConnectRequest {
-            uri: db_uri,
+            uri: db_path.to_string(),
             api_key: None,
             region: None,
             host_override: None,
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             read_consistency_interval: None,
-            storage_options: HashMap::new(),
+            storage_options: self.storage_options.clone(),
         };
 
         Ok(Arc::new(
@@ -498,7 +497,7 @@ mod tests {
         let result = catalog.rename_database("old", "new").await;
         assert!(matches!(
             result.unwrap_err(),
-            Error::NotSupported { message } if message.contains("rename_table")
+            Error::NotSupported { message } if message.contains("rename_database")
         ));
     }
 
