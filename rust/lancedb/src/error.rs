@@ -15,6 +15,10 @@ pub enum Error {
     InvalidInput { message: String },
     #[snafu(display("Table '{name}' was not found"))]
     TableNotFound { name: String },
+    #[snafu(display("Database '{name}' was not found"))]
+    DatabaseNotFound { name: String },
+    #[snafu(display("Database '{name}' already exists."))]
+    DatabaseAlreadyExists { name: String },
     #[snafu(display("Index '{name}' was not found"))]
     IndexNotFound { name: String },
     #[snafu(display("Embedding function '{name}' was not found. : {reason}"))]
