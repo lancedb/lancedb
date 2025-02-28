@@ -103,7 +103,7 @@ async fn create_index(table: &Table) -> Result<()> {
                 // we are creating an index that my have better recall than the
                 // default but is also larger and slower.
                 IvfPqIndexBuilder::default()
-                    // This overrides the default distance type of L2
+                    // This overrides the default distance type of l2
                     .distance_type(DistanceType::Cosine)
                     // With 1000 rows this have been ~31 by default
                     .num_partitions(50)
