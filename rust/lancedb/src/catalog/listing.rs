@@ -207,7 +207,7 @@ impl Catalog for ListingCatalog {
 
     async fn rename_database(&self, _old_name: &str, _new_name: &str) -> Result<()> {
         Err(Error::NotSupported {
-            message: "rename_database is not supported in LanceDB OSS".to_string(),
+            message: "rename_database is not supported in LanceDB OSS yet".to_string(),
         })
     }
 
