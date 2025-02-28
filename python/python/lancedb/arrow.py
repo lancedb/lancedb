@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-from typing import List, Optional, Tuple, Union
+from typing import AsyncGenerator, List, Optional, Tuple, Union
 
 import pyarrow as pa
 
@@ -33,7 +33,7 @@ class AsyncRecordBatchReader:
             self.schema: pa.Schema = inner.schema
         elif isinstance(inner, RecordBatchStream):
             self._inner = inner
-            self.schema: pa.Schema = inner.schema
+            self.schema: pa.Schema = inner.schema()
         else:
             raise TypeError("inner must be a RecordBatchStream or a Table")
 
@@ -51,7 +51,13 @@ class AsyncRecordBatchReader:
         return self
 
     async def __anext__(self) -> pa.RecordBatch:
-        return await self._inner.__anext__()
+        if isinstance(self._inner, AsyncGenerator):
+            batch = await self._inner.__anext__()
+        else:
+            batch = await self._inner.next()
+        if batch is None:
+            raise StopAsyncIteration
+        return batch
 
     @staticmethod
     async def _async_iter_from_table(

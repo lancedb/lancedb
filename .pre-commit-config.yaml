@@ -15,7 +15,7 @@ repos:
     hooks:
       - id: pyright
         args: ["--project", "python"]
-        install_deps: true
+        additional_dependencies: [pyarrow-stubs]
   - repo: local
     hooks:
       - id: local-biome-check
