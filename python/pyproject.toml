@@ -104,6 +104,27 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["python/lancedb/table.py", "python/lancedb/embeddings/utils.py"]
+include = [
+    "python/lancedb/index.py",
+    "python/lancedb/rerankers/util.py",
+    "python/lancedb/rerankers/__init__.py",
+    "python/lancedb/rerankers/voyageai.py",
+    "python/lancedb/rerankers/jinaai.py",
+    "python/lancedb/rerankers/openai.py",
+    "python/lancedb/rerankers/cross_encoder.py",
+    "python/lancedb/rerankers/colbert.py",
+    "python/lancedb/rerankers/answerdotai.py",
+    "python/lancedb/rerankers/cohere.py",
+    "python/lancedb/arrow.py",
+    "python/lancedb/__init__.py",
+    "python/lancedb/types.py",
+    "python/lancedb/integrations/__init__.py",
+    "python/lancedb/exceptions.py",
+    "python/lancedb/background_loop.py",
+    "python/lancedb/schema.py",
+    "python/lancedb/remote/__init__.py",
+    "python/lancedb/remote/errors.py",
+    "python/lancedb/embeddings/__init__.py",
+]
 pythonVersion = "3.12"
 useLibraryCodeForTypes = true
