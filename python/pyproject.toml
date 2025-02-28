@@ -125,4 +125,5 @@ include = [
     "python/lancedb/remote/errors.py",
     "python/lancedb/embeddings/__init__.py",
 ]
+exclude = ["python/tests/"]
 pythonVersion = "3.12"
