@@ -22,6 +22,11 @@ use lance_io::object_store::WrappingObjectStore;
 use object_store::path::Path as ObjectStorePath;
 use snafu::ResultExt;
 
+/// A catalog implementation that works by listing subfolders in a directory
+///
+/// The listing catalog will be created with a base folder specified by the URI.  Every subfolder
+/// in this base folder will be considered a database.  These will be opened as a
+/// [`crate::database::listing::ListingDatabase`]
 #[derive(Debug)]
 pub struct ListingCatalog {
     object_store: ObjectStore,
