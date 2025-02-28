@@ -33,6 +33,8 @@ pub struct OpenDatabaseRequest {
 }
 
 /// Database creation mode
+///
+/// The default behavior is Create
 pub enum CreateDatabaseMode {
     /// Create new database, error if exists
     Create,
