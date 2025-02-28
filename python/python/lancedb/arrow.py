@@ -33,7 +33,7 @@ class AsyncRecordBatchReader:
             self.schema: pa.Schema = inner.schema
         elif isinstance(inner, RecordBatchStream):
             self._inner = inner
-            self.schema: pa.Schema = inner.schema()
+            self.schema: pa.Schema = inner.schema
         else:
             raise TypeError("inner must be a RecordBatchStream or a Table")
 
