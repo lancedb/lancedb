@@ -1,21 +1,27 @@
 repos:
--   repo: https://github.com/pre-commit/pre-commit-hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v3.2.0
     hooks:
-    -   id: check-yaml
-    -   id: end-of-file-fixer
-    -   id: trailing-whitespace
--   repo: https://github.com/astral-sh/ruff-pre-commit
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+  - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
-    rev: v0.8.4
+    rev: v0.9.9
     hooks:
-    - id: ruff
-- repo: local
-  hooks:
-    - id: local-biome-check
-      name: biome check
-      entry: npx @biomejs/biome@1.8.3 check --config-path nodejs/biome.json nodejs/
-      language: system
-      types: [text]
-      files: "nodejs/.*"
-      exclude: nodejs/lancedb/native.d.ts|nodejs/dist/.*|nodejs/examples/.*
+      - id: ruff
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.395
+    hooks:
+      - id: pyright
+        args: ["--project", "python"]
+        additional_dependencies: [pyarrow-stubs]
+  - repo: local
+    hooks:
+      - id: local-biome-check
+        name: biome check
+        entry: npx @biomejs/biome@1.8.3 check --config-path nodejs/biome.json nodejs/
+        language: system
+        types: [text]
+        files: "nodejs/.*"
+        exclude: nodejs/lancedb/native.d.ts|nodejs/dist/.*|nodejs/examples/.*
