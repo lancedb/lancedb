@@ -60,6 +60,7 @@ dev = [
     "ruff",
     "pre-commit",
     "pyright",
+    "pyarrow-stubs",
     'typing-extensions>=4.0.0; python_version < "3.11"',
 ]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
@@ -92,7 +93,7 @@ requires = ["maturin>=1.4"]
 build-backend = "maturin"
 
 [tool.ruff.lint]
-select = ["F", "E", "W", "G", "TCH", "PERF"]
+select = ["F", "E", "W", "G", "PERF"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --ignore-glob=lancedb/embeddings/*.py"
@@ -103,5 +104,6 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["python/lancedb/table.py"]
+include = ["python/lancedb/table.py", "python/lancedb/embeddings/utils.py"]
 pythonVersion = "3.12"
+useLibraryCodeForTypes = true
