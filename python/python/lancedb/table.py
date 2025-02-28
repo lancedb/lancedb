@@ -39,7 +39,7 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 from .merge import LanceMergeInsertBuilder
-from .pydantic import LanceModel, model_to_dict
+from .lance_pydantic import LanceModel, model_to_dict
 from .query import (
     AsyncFTSQuery,
     AsyncHybridQuery,
@@ -784,8 +784,8 @@ class Table(ABC):
     def add(
         self,
         data: DATA,
-        mode: str = "append",
-        on_bad_vectors: str = "error",
+        mode: AddMode = "append",
+        on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
     ):
         """Add more data to the [Table](Table).
@@ -1579,7 +1579,7 @@ class LanceTable(Table):
 
     def create_index(
         self,
-        metric: DistanceType = "L2",
+        metric: DistanceType = "l2",
         num_partitions=None,
         num_sub_vectors=None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
@@ -2082,7 +2082,7 @@ class LanceTable(Table):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        storage_options: Optional[Dict[str, str]] = None,
+        storage_options: Optional[Dict[str, str | bool]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ):
