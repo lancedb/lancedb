@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Tuple, Any, Union, Literal
 import pyarrow as pa
 
 from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from .remote import ClientConfig
 
 class Connection(object):
     uri: str
@@ -71,11 +72,15 @@ async def connect(
     region: Optional[str],
     host_override: Optional[str],
     read_consistency_interval: Optional[float],
+    client_config: Optional[Union[ClientConfig, Dict[str, Any]]],
+    storage_options: Optional[Dict[str, str]],
 ) -> Connection: ...
 
 class RecordBatchStream:
+    @property
     def schema(self) -> pa.Schema: ...
-    async def next(self) -> Optional[pa.RecordBatch]: ...
+    def __aiter__(self) -> "RecordBatchStream": ...
+    async def __anext__(self) -> pa.RecordBatch: ...
 
 class Query:
     def where(self, filter: str): ...

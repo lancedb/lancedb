@@ -784,8 +784,7 @@ async def test_query_search_auto(mem_db_async: AsyncConnection):
     with pytest.raises(
         Exception,
         match=(
-            "Cannot perform full text search unless an INVERTED index has "
-            "been created"
+            "Cannot perform full text search unless an INVERTED index has been created"
         ),
     ):
         query = await (await tbl2.search("0.1")).to_arrow()

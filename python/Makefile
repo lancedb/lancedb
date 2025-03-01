@@ -23,6 +23,10 @@ check:		## Check formatting and lints.
 fix:		## Fix python lints
 	ruff check python --fix
 
+.PHONY: typecheck
+typecheck:	## Run type checking with pyright.
+	pyright
+
 .PHONY: doctest
 doctest:	## Run documentation tests.
 	pytest --doctest-modules python/lancedb
