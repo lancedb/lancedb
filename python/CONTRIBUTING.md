@@ -8,9 +8,9 @@ For general contribution guidelines, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 The Python package is a wrapper around the Rust library, `lancedb`. We use
 [pyo3](https://pyo3.rs/) to create the bindings between Rust and Python.
 
-* `src/`: Rust bindings source code
-* `python/lancedb`: Python package source code
-* `python/tests`: Unit tests
+- `src/`: Rust bindings source code
+- `python/lancedb`: Python package source code
+- `python/tests`: Unit tests
 
 ## Development environment
 
@@ -59,6 +59,12 @@ Run tests:
 ```shell
 make test
 make doctest
+```
+
+Run type checking:
+
+```shell
+make typecheck
 ```
 
 To run a single test, you can use the `pytest` command directly. Provide the path
