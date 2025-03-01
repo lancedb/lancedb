@@ -38,6 +38,30 @@ jobs:
         run: ruff format --check .
       - name: Lint
         run: ruff check .
+
+  type-check:
+    name: "Type Check"
+    timeout-minutes: 30
+    runs-on: "ubuntu-22.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pyright and pyarrow-stubs
+        run: |
+          pip install pyright pyarrow-stubs
+      - name: Run pyright
+        run: pyright
+
   doctest:
     name: "Doctest"
     timeout-minutes: 30
