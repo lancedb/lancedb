@@ -70,9 +70,9 @@ impl ListingCatalog {
         let parse_res = url::Url::parse(uri);
 
         match parse_res {
-            Ok(url) if url.scheme().len() == 1 && cfg!(windows) => Self::open_path(uri).await,
+            Ok(url) if url.scheme().len() == 1 && cfg!(windows) => Self::open_path(dbg!(uri)).await,
             Ok(url) => {
-                let plain_uri = url.to_string();
+                let plain_uri = dbg!(url.to_string());
 
                 let registry = Arc::new(ObjectStoreRegistry::default());
                 let storage_options = request.storage_options.clone();
@@ -81,7 +81,7 @@ impl ListingCatalog {
                     ..Default::default()
                 };
                 let (object_store, base_path) =
-                    ObjectStore::from_uri_and_params(registry, &plain_uri, &os_params).await?;
+                    dbg!(ObjectStore::from_uri_and_params(registry, &plain_uri, &os_params).await?);
                 if object_store.is_local() {
                     Self::try_create_dir(&plain_uri).context(CreateDirSnafu { path: plain_uri })?;
                 }
@@ -93,7 +93,7 @@ impl ListingCatalog {
                     storage_options,
                 })
             }
-            Err(_) => Self::open_path(uri).await,
+            Err(_) => Self::open_path(dbg!(uri)).await,
         }
     }
 
