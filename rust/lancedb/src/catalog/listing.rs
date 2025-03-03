@@ -98,7 +98,7 @@ impl ListingCatalog {
     }
 
     fn database_path(&self, name: &str) -> ObjectStorePath {
-        self.base_path.child(name)
+        self.base_path.child(name.replace('\\', "/"))
     }
 }
 
@@ -238,12 +238,14 @@ mod tests {
             .canonicalize()
             .unwrap();
 
-        let catalog_path = format!("{}/{}", dir1.to_str().unwrap(), "catalog");
+        let catalog_path = dir1.join("catalog");
+        std::fs::create_dir_all(&catalog_path).unwrap();
         let object_store = ObjectStore::local();
         let base_path = Path::from_absolute_path(catalog_path.clone()).unwrap();
+        let uri = Url::from_file_path(&catalog_path).unwrap().to_string();
 
         ListingCatalog {
-            uri: format!("file://{}", catalog_path.clone()),
+            uri,
             base_path,
             object_store,
             storage_options: HashMap::new(),
@@ -255,6 +257,7 @@ mod tests {
     use arrow_schema::Field;
     use std::sync::Arc;
     use tempfile::tempdir;
+    use url::Url;
 
     #[tokio::test]
     async fn test_database_names() {
