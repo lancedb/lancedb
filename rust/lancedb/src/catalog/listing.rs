@@ -52,6 +52,10 @@ impl ListingCatalog {
         Ok(())
     }
 
+pub fn uri(&self) -> &str {
+  &self.uri
+}
+
     async fn open_path(path: &str) -> Result<Self> {
         let (object_store, base_path) = ObjectStore::from_path(path).unwrap();
         if object_store.is_local() {
