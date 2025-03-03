@@ -18,7 +18,6 @@ use crate::error::{CreateDirSnafu, Error, Result};
 use async_trait::async_trait;
 use lance::io::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry};
 use lance_io::local::to_local_path;
-use lance_io::object_store::WrappingObjectStore;
 use object_store::path::Path as ObjectStorePath;
 use snafu::ResultExt;
 
