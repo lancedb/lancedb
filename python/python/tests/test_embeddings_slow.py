@@ -11,7 +11,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 from lancedb.embeddings import get_registry
-from lancedb.pydantic import LanceModel, Vector
+from lancedb.pydantic import LanceModel, Vector, MultiVector
 import requests
 
 # These are integration tests for embedding functions.
@@ -540,7 +540,7 @@ def test_voyageai_multimodal_embedding_function():
     db = lancedb.connect("~/lancedb")
     table = db.create_table("test", schema=Images, mode="overwrite")
     labels = ["cat", "cat", "dog", "dog", "horse", "horse"]
-    uris = [
+uris = [
         "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
         "http://farm1.staticflickr.com/134/332220238_da527d8140_z.jpg",
         "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",
@@ -575,3 +575,69 @@ def test_voyageai_multimodal_embedding_text_function():
 
     tbl.add(df)
     assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    importlib.util.find_spec("colpali_engine") is None,
+    reason="colpali_engine not installed",
+)
+def test_colpali(tmp_path):
+    import requests
+    from PIL import Image
+    from lancedb.pydantic import LanceModel
+
+    db = lancedb.connect(tmp_path)
+    registry = get_registry()
+    func = registry.get("colpali").create()
+
+    class MediaItems(LanceModel):
+        text: str
+        image_uri: str = func.SourceField()
+        image_bytes: bytes = func.SourceField()
+        image_vectors: MultiVector(func.ndims()) = (
+            func.VectorField()
+        )  # Multivector image embeddings
+
+    table = db.create_table("media", schema=MediaItems)
+
+    # Test data - mix of text and images
+    texts = [
+        "a cute cat playing with yarn",
+        "a puppy in a flower field",
+        "a red sports car on the highway",
+        "a vintage bicycle leaning against a wall",
+        "a plate of delicious pasta",
+        "fresh fruit salad in a bowl",
+    ]
+
+    uris = [
+        "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
+        "http://farm1.staticflickr.com/134/332220238_da527d8140_z.jpg",
+        "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",
+        "http://farm5.staticflickr.com/4092/5017326486_1f46057f5f_z.jpg",
+        "http://farm9.staticflickr.com/8216/8434969557_d37882c42d_z.jpg",
+        "http://farm6.staticflickr.com/5142/5835678453_4f3a4edb45_z.jpg",
+    ]
+
+    # Get images as bytes
+    image_bytes = [requests.get(uri).content for uri in uris]
+
+    table.add(
+        pd.DataFrame({"text": texts, "image_uri": uris, "image_bytes": image_bytes})
+    )
+
+    # Test text-to-image search
+    image_results = (
+        table.search("fluffy companion", vector_column_name="image_vectors")
+        .limit(1)
+        .to_pydantic(MediaItems)[0]
+    )
+    assert "cat" in image_results.text.lower() or "puppy" in image_results.text.lower()
+
+    # Verify multivector dimensions
+    first_row = table.to_arrow().to_pylist()[0]
+    assert len(first_row["image_vectors"]) > 1, "Should have multiple image vectors"
+    assert len(first_row["image_vectors"][0]) == func.ndims(), (
+        "Vector dimension mismatch"
+    )

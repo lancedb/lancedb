@@ -275,3 +275,12 @@ def url_retrieve(url: str):
 def api_key_not_found_help(provider):
     logging.error("Could not find API key for %s", provider)
     raise ValueError(f"Please set the {provider.upper()}_API_KEY environment variable.")
+
+
+def is_flash_attn_2_available():
+    try:
+        import flash_attn
+
+        return True
+    except ImportError:
+        return False
