@@ -31,8 +31,6 @@ use snafu::ResultExt;
 pub struct ListingCatalog {
     object_store: ObjectStore,
 
-    query_string: Option<String>,
-
     uri: String,
 
     base_path: ObjectStorePath,
@@ -52,9 +50,9 @@ impl ListingCatalog {
         Ok(())
     }
 
-pub fn uri(&self) -> &str {
-  &self.uri
-}
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
 
     async fn open_path(path: &str) -> Result<Self> {
         let (object_store, base_path) = ObjectStore::from_path(path).unwrap();
@@ -64,7 +62,6 @@ pub fn uri(&self) -> &str {
 
         Ok(Self {
             uri: path.to_string(),
-            query_string: None,
             base_path,
             object_store,
             store_wrapper: None,
@@ -95,7 +92,6 @@ pub fn uri(&self) -> &str {
 
                 Ok(Self {
                     uri: String::from(url.clone()),
-                    query_string: url.query().map(|s| s.to_string()),
                     base_path,
                     object_store,
                     store_wrapper: None,
@@ -253,7 +249,6 @@ mod tests {
 
         ListingCatalog {
             uri: format!("file://{}", catalog_path.clone()),
-            query_string: None,
             base_path,
             object_store,
             store_wrapper: None,
