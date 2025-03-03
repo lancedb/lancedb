@@ -35,8 +35,6 @@ pub struct ListingCatalog {
 
     base_path: ObjectStorePath,
 
-    store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-
     storage_options: HashMap<String, String>,
 }
 
@@ -64,7 +62,6 @@ impl ListingCatalog {
             uri: path.to_string(),
             base_path,
             object_store,
-            store_wrapper: None,
             storage_options: HashMap::new(),
         })
     }
@@ -94,7 +91,6 @@ impl ListingCatalog {
                     uri: String::from(url.clone()),
                     base_path,
                     object_store,
-                    store_wrapper: None,
                     storage_options,
                 })
             }
@@ -251,7 +247,6 @@ mod tests {
             uri: format!("file://{}", catalog_path.clone()),
             base_path,
             object_store,
-            store_wrapper: None,
             storage_options: HashMap::new(),
         }
     }
