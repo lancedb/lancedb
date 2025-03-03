@@ -3,7 +3,7 @@
 
 //! Catalog implementation for managing databases
 
-mod listing;
+pub mod listing;
 
 use std::collections::HashMap;
 use std::sync::Arc;
