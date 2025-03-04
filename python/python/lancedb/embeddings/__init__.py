@@ -20,3 +20,4 @@ from .utils import with_embeddings
 from .jinaai import JinaEmbeddings
 from .watsonx import WatsonxEmbeddings
 from .voyageai import VoyageAIEmbeddingFunction
+from .colpali import ColPaliEmbeddings
