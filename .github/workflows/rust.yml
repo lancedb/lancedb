@@ -184,15 +184,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Install dependencies
+      - name: Install dependencies (part 1)
         run: |
           set -e
           apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
-
-          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
-          source $HOME/.cargo/env
-          rustup target add aarch64-pc-windows-msvc
-
+      - name: Install rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: aarch64-pc-windows-msvc
+      - name: Install dependencies (part 2)
+        run: |
+          set -e
           mkdir -p sysroot
           cd sysroot
           sh ../ci/sysroot-aarch64-pc-windows-msvc.sh
@@ -264,7 +266,7 @@ jobs:
       - name: Install Rust
         run: |
           Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
-          .\rustup-init.exe -y --default-host aarch64-pc-windows-msvc
+          .\rustup-init.exe -y --default-host aarch64-pc-windows-msvc --default-toolchain 1.83.0
         shell: powershell
       - name: Add Rust to PATH
         run: |
