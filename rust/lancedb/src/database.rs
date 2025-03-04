@@ -94,14 +94,20 @@ pub enum CreateTableData {
     Empty(TableDefinition),
 }
 
-#[async_trait]
-impl StreamingWriteSource for CreateTableData {
-    fn arrow_schema(&self) -> Arc<arrow_schema::Schema> {
+impl CreateTableData {
+    pub fn schema(&self) -> Arc<arrow_schema::Schema> {
         match self {
             CreateTableData::Data(reader) => reader.schema(),
             CreateTableData::StreamingData(stream) => stream.schema(),
             CreateTableData::Empty(definition) => definition.schema.clone(),
         }
+    }
+}
+
+#[async_trait]
+impl StreamingWriteSource for CreateTableData {
+    fn arrow_schema(&self) -> Arc<arrow_schema::Schema> {
+        self.schema()
     }
     fn into_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream {
         match self {
