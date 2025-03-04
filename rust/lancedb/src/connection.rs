@@ -13,7 +13,6 @@ use object_store::aws::AwsCredential;
 
 use crate::arrow::{IntoArrow, IntoArrowStream, SendableRecordBatchStream};
 use crate::catalog::listing::ListingCatalog;
-use crate::catalog::Catalog;
 use crate::database::listing::{
     ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
@@ -819,12 +818,6 @@ impl ConnectBuilder {
                     .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
             })
         }
-    }
-
-    /// Establishes a connection to a catalog
-    pub async fn execute_catalog(self) -> Result<Arc<dyn Catalog>> {
-        let catalog = ListingCatalog::connect(&self.request).await?;
-        Ok(Arc::new(catalog))
     }
 }
 
