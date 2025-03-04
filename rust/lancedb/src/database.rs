@@ -97,9 +97,9 @@ pub enum CreateTableData {
 impl CreateTableData {
     pub fn schema(&self) -> Arc<arrow_schema::Schema> {
         match self {
-            CreateTableData::Data(reader) => reader.schema(),
-            CreateTableData::StreamingData(stream) => stream.schema(),
-            CreateTableData::Empty(definition) => definition.schema.clone(),
+            Self::Data(reader) => reader.schema(),
+            Self::StreamingData(stream) => stream.schema(),
+            Self::Empty(definition) => definition.schema.clone(),
         }
     }
 }
@@ -111,9 +111,9 @@ impl StreamingWriteSource for CreateTableData {
     }
     fn into_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream {
         match self {
-            CreateTableData::Data(reader) => reader.into_stream(),
-            CreateTableData::StreamingData(stream) => stream.into_df_stream(),
-            CreateTableData::Empty(table_definition) => {
+            Self::Data(reader) => reader.into_stream(),
+            Self::StreamingData(stream) => stream.into_df_stream(),
+            Self::Empty(table_definition) => {
                 let schema = table_definition.schema.clone();
                 Box::pin(RecordBatchStreamAdapter::new(schema, stream::empty()))
             }

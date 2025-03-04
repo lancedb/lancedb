@@ -1058,7 +1058,7 @@ mod tests {
         let schema = batches.first().unwrap().schema();
         let one_batch = concat_batches(&schema, batches.iter()).unwrap();
 
-        let ldb_stream = stream::iter(batches.clone().into_iter().map(|r| Result::Ok(r)));
+        let ldb_stream = stream::iter(batches.clone().into_iter().map(Result::Ok));
         let ldb_stream: SendableRecordBatchStream =
             Box::pin(SimpleRecordBatchStream::new(ldb_stream, schema.clone()));
 
@@ -1068,7 +1068,7 @@ mod tests {
             .await
             .unwrap();
 
-        let df_stream = stream::iter(batches.into_iter().map(|r| DataFusionResult::Ok(r)));
+        let df_stream = stream::iter(batches.into_iter().map(DataFusionResult::Ok));
         let df_stream: datafusion_physical_plan::SendableRecordBatchStream =
             Box::pin(RecordBatchStreamAdapter::new(schema.clone(), df_stream));
 
