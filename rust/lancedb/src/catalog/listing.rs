@@ -244,12 +244,12 @@ mod tests {
 
     async fn setup_catalog() -> (TempDir, ListingCatalog) {
         let tempdir = tempfile::tempdir().unwrap();
-        let dir1 = tempdir.path().canonicalize().unwrap();
 
-        let catalog_path = dir1.join("catalog");
+        let catalog_path = tempdir.path().join("catalog");
         std::fs::create_dir_all(&catalog_path).unwrap();
         let object_store = ObjectStore::local();
-        let base_path = dbg!(Path::from_absolute_path(catalog_path.clone()).unwrap());
+        let base_path =
+            dbg!(Path::from_absolute_path(catalog_path.canonicalize().unwrap()).unwrap());
         let uri = dbg!(path_to_uri(catalog_path));
 
         (
