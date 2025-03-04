@@ -231,6 +231,17 @@ mod tests {
     use lance::io::ObjectStore;
     use object_store::path::Path;
 
+    /// file:/// URIs with drive letters do not work correctly on Windows
+    #[cfg(windows)]
+    fn path_to_uri(path: PathBuf) -> String {
+        path.to_str().unwrap().to_string()
+    }
+
+    #[cfg(not(windows))]
+    fn path_to_uri(path: PathBuf) -> String {
+        Url::from_file_path(path).unwrap().to_string()
+    }
+
     async fn setup_catalog() -> (TempDir, ListingCatalog) {
         let tempdir = tempfile::tempdir().unwrap();
         let dir1 = tempdir.path().canonicalize().unwrap();
@@ -239,7 +250,7 @@ mod tests {
         std::fs::create_dir_all(&catalog_path).unwrap();
         let object_store = ObjectStore::local();
         let base_path = dbg!(Path::from_absolute_path(catalog_path.clone()).unwrap());
-        let uri = dbg!(Url::from_file_path(&catalog_path).unwrap().to_string());
+        let uri = dbg!(path_to_uri(catalog_path));
 
         (
             tempdir,
@@ -255,6 +266,7 @@ mod tests {
     use crate::database::{CreateTableData, CreateTableRequest, TableNamesRequest};
     use crate::table::TableDefinition;
     use arrow_schema::Field;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::{tempdir, TempDir};
     use url::Url;
@@ -518,8 +530,8 @@ mod tests {
     #[tokio::test]
     async fn test_connect_file_scheme() {
         let tmp_dir = tempdir().unwrap();
-        let path = tmp_dir.path().to_str().unwrap();
-        let uri = format!("file://{}", path);
+        let path = tmp_dir.path();
+        let uri = path_to_uri(path.to_path_buf());
 
         let request = ConnectRequest {
             uri: uri.clone(),
