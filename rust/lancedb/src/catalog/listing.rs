@@ -243,6 +243,8 @@ mod tests {
     async fn setup_catalog() -> (TempDir, ListingCatalog) {
         let tempdir = tempfile::tempdir().unwrap();
         let catalog_path = tempdir.path().join("catalog");
+        std::fs::create_dir_all(&catalog_path).unwrap();
+
         let uri = path_to_uri(catalog_path);
 
         let request = ConnectRequest {
