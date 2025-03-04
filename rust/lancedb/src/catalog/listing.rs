@@ -228,8 +228,6 @@ impl Catalog for ListingCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lance::io::ObjectStore;
-    use object_store::path::Path;
 
     /// file:/// URIs with drive letters do not work correctly on Windows
     #[cfg(windows)]
@@ -244,23 +242,23 @@ mod tests {
 
     async fn setup_catalog() -> (TempDir, ListingCatalog) {
         let tempdir = tempfile::tempdir().unwrap();
-
         let catalog_path = tempdir.path().join("catalog");
-        std::fs::create_dir_all(&catalog_path).unwrap();
-        let object_store = ObjectStore::local();
-        let base_path =
-            dbg!(Path::from_absolute_path(catalog_path.canonicalize().unwrap()).unwrap());
-        let uri = dbg!(path_to_uri(catalog_path));
+        let uri = path_to_uri(catalog_path);
 
-        (
-            tempdir,
-            ListingCatalog {
-                uri,
-                base_path,
-                object_store,
-                storage_options: HashMap::new(),
-            },
-        )
+        let request = ConnectRequest {
+            uri: uri.clone(),
+            api_key: None,
+            region: None,
+            host_override: None,
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            storage_options: HashMap::new(),
+            read_consistency_interval: None,
+        };
+
+        let catalog = ListingCatalog::connect(&request).await.unwrap();
+
+        (tempdir, catalog)
     }
 
     use crate::database::{CreateTableData, CreateTableRequest, TableNamesRequest};
