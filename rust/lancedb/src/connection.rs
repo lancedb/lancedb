@@ -12,6 +12,8 @@ use lance::dataset::ReadParams;
 use object_store::aws::AwsCredential;
 
 use crate::arrow::{IntoArrow, IntoArrowStream, SendableRecordBatchStream};
+use crate::catalog::listing::ListingCatalog;
+use crate::catalog::Catalog;
 use crate::database::listing::{
     ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
@@ -818,6 +820,12 @@ impl ConnectBuilder {
             })
         }
     }
+
+    /// Establishes a connection to a catalog
+    pub async fn execute_catalog(self) -> Result<Arc<dyn Catalog>> {
+        let catalog = ListingCatalog::connect(&self.request).await?;
+        Ok(Arc::new(catalog))
+    }
 }
 
 /// Connect to a LanceDB database.
@@ -828,6 +836,110 @@ impl ConnectBuilder {
 ///           or a LanceDB Cloud database.  See [ConnectOptions::uri] for a list of accepted formats
 pub fn connect(uri: &str) -> ConnectBuilder {
     ConnectBuilder::new(uri)
+}
+
+/// A builder for configuring a connection to a LanceDB catalog
+#[derive(Debug)]
+pub struct CatalogConnectBuilder {
+    request: ConnectRequest,
+}
+
+impl CatalogConnectBuilder {
+    /// Create a new [`CatalogConnectBuilder`] with the given catalog URI.
+    pub fn new(uri: &str) -> Self {
+        Self {
+            request: ConnectRequest {
+                uri: uri.to_string(),
+                api_key: None,
+                region: None,
+                host_override: None,
+                #[cfg(feature = "remote")]
+                client_config: Default::default(),
+                read_consistency_interval: None,
+                storage_options: HashMap::new(),
+            },
+        }
+    }
+
+    pub fn api_key(mut self, api_key: &str) -> Self {
+        self.request.api_key = Some(api_key.to_string());
+        self
+    }
+
+    pub fn region(mut self, region: &str) -> Self {
+        self.request.region = Some(region.to_string());
+        self
+    }
+
+    pub fn host_override(mut self, host_override: &str) -> Self {
+        self.request.host_override = Some(host_override.to_string());
+        self
+    }
+
+    /// Set an option for the storage layer.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.request
+            .storage_options
+            .insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple options for the storage layer.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (key, value) in pairs {
+            self.request
+                .storage_options
+                .insert(key.into(), value.into());
+        }
+        self
+    }
+
+    #[cfg(feature = "remote")]
+    pub fn client_config(mut self, config: ClientConfig) -> Self {
+        self.request.client_config = config;
+        self
+    }
+
+    /// [`AwsCredential`] to use when connecting to S3.
+    #[deprecated(note = "Pass through storage_options instead")]
+    pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
+        self.request
+            .storage_options
+            .insert("aws_access_key_id".into(), aws_creds.key_id.clone());
+        self.request
+            .storage_options
+            .insert("aws_secret_access_key".into(), aws_creds.secret_key.clone());
+        if let Some(token) = &aws_creds.token {
+            self.request
+                .storage_options
+                .insert("aws_session_token".into(), token.clone());
+        }
+        self
+    }
+
+    /// Establishes a connection to the catalog
+    pub async fn execute(self) -> Result<Arc<ListingCatalog>> {
+        let catalog = ListingCatalog::connect(&self.request).await?;
+        Ok(Arc::new(catalog))
+    }
+}
+
+/// Connect to a LanceDB catalog.
+///
+/// A catalog is a container for databases, which in turn are containers for tables.
+///
+/// # Arguments
+///
+/// * `uri` - URI where the catalog is located, can be a local directory or supported remote cloud storage.
+pub fn connect_catalog(uri: &str) -> CatalogConnectBuilder {
+    CatalogConnectBuilder::new(uri)
 }
 
 #[cfg(all(test, feature = "remote"))]
@@ -854,6 +966,10 @@ mod test_utils {
 mod tests {
     use std::fs::create_dir_all;
 
+    use crate::catalog::{DatabaseNamesRequest, OpenDatabaseRequest};
+    use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
+    use crate::query::QueryBase;
+    use crate::query::{ExecutableQuery, QueryExecutionOptions};
     use arrow::compute::concat_batches;
     use arrow_array::RecordBatchReader;
     use arrow_schema::{DataType, Field, Schema};
@@ -1156,5 +1272,90 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(other_schema, overwritten.schema().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_connect_catalog() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let catalog = connect_catalog(uri).execute().await.unwrap();
+
+        // Verify that we can get the uri from the catalog
+        let catalog_uri = catalog.uri();
+        assert_eq!(catalog_uri, uri);
+
+        // Check that the catalog is initially empty
+        let dbs = catalog
+            .database_names(DatabaseNamesRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(dbs.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_catalog_create_database() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let catalog = connect_catalog(uri).execute().await.unwrap();
+
+        let db_name = "test_db";
+        catalog
+            .create_database(crate::catalog::CreateDatabaseRequest {
+                name: db_name.to_string(),
+                mode: Default::default(),
+                options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let dbs = catalog
+            .database_names(DatabaseNamesRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(dbs.len(), 1);
+        assert_eq!(dbs[0], db_name);
+
+        let db = catalog
+            .open_database(OpenDatabaseRequest {
+                name: db_name.to_string(),
+                database_options: HashMap::new(),
+            })
+            .await
+            .unwrap();
+
+        let tables = db.table_names(Default::default()).await.unwrap();
+        assert_eq!(tables.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_catalog_drop_database() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let catalog = connect_catalog(uri).execute().await.unwrap();
+
+        // Create and then drop a database
+        let db_name = "test_db_to_drop";
+        catalog
+            .create_database(crate::catalog::CreateDatabaseRequest {
+                name: db_name.to_string(),
+                mode: Default::default(),
+                options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let dbs = catalog
+            .database_names(DatabaseNamesRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(dbs.len(), 1);
+
+        catalog.drop_database(db_name).await.unwrap();
+
+        let dbs_after = catalog
+            .database_names(DatabaseNamesRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(dbs_after.len(), 0);
     }
 }
