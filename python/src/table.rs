@@ -10,12 +10,13 @@ use lancedb::table::{
     Table as LanceDbTable,
 };
 use pyo3::{
-    exceptions::{PyRuntimeError, PyValueError},
+    exceptions::{PyKeyError, PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
     Bound, FromPyObject, PyAny, PyRef, PyResult, Python, ToPyObject,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
+use std::collections::HashMap;
 
 use crate::{
     error::PythonErrorExt,
@@ -483,6 +484,37 @@ impl Table {
         future_into_py(self_.py(), async move {
             let column_refs = columns.iter().map(String::as_str).collect::<Vec<&str>>();
             inner.drop_columns(&column_refs).await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn replace_field_metadata<'a>(
+        self_: PyRef<'a, Self>,
+        field_name: String,
+        metadata: &Bound<'_, PyDict>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let mut new_metadata = HashMap::<String, String>::new();
+        for (column_name, value) in metadata.into_iter() {
+            let key: String = column_name.extract()?;
+            let value: String = value.extract()?;
+            new_metadata.insert(key, value);
+        }
+
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let native_tbl = inner
+                .as_native()
+                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?;
+            let schema = native_tbl.manifest().await.infer_error()?.schema;
+            let field = schema
+                .field(&field_name)
+                .ok_or_else(|| PyKeyError::new_err(format!("Field {} not found", field_name)))?;
+
+            native_tbl
+                .replace_field_metadata(vec![(field.id as u32, new_metadata)])
+                .await
+                .infer_error()?;
+
             Ok(())
         })
     }

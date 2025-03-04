@@ -2405,6 +2405,19 @@ class LanceTable(Table):
         """
         LOOP.run(self._table.migrate_v2_manifest_paths())
 
+    def replace_field_metadata(self, field_name: str, new_metadata: Dict[str, str]):
+        """
+        Replace the metadata of a field in the schema
+
+        Parameters
+        ----------
+        field_name: str
+            The name of the field to replace the metadata for
+        new_metadata: dict
+            The new metadata to set
+        """
+        LOOP.run(self._table.replace_field_metadata(field_name, new_metadata))
+
 
 def _handle_bad_vectors(
     reader: pa.RecordBatchReader,
@@ -3634,6 +3647,21 @@ class AsyncTable:
         to check if the table is already using the new path style.
         """
         await self._inner.migrate_manifest_paths_v2()
+
+    async def replace_field_metadata(
+        self, field_name: str, new_metadata: dict[str, str]
+    ):
+        """
+        Replace the metadata of a field in the schema
+
+        Parameters
+        ----------
+        field_name: str
+            The name of the field to replace the metadata for
+        new_metadata: dict
+            The new metadata to set
+        """
+        await self._inner.replace_field_metadata(field_name, new_metadata)
 
 
 @dataclass

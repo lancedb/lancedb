@@ -1481,3 +1481,12 @@ async def test_optimize_delete_unverified(tmp_db_async: AsyncConnection, tmp_pat
         cleanup_older_than=timedelta(seconds=0), delete_unverified=True
     )
     assert stats.prune.old_versions_removed == 2
+
+
+def test_replace_field_metadata(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("my_table", data=[{"x": 0}])
+    table.replace_field_metadata("x", {"foo": "bar"})
+    schema = table.schema
+    field = schema[0].metadata
+    assert field == {b"foo": b"bar"}
