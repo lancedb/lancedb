@@ -231,37 +231,37 @@ mod tests {
     use lance::io::ObjectStore;
     use object_store::path::Path;
 
-    async fn setup_catalog() -> ListingCatalog {
-        let dir1 = tempfile::tempdir()
-            .unwrap()
-            .into_path()
-            .canonicalize()
-            .unwrap();
+    async fn setup_catalog() -> (TempDir, ListingCatalog) {
+        let tempdir = tempfile::tempdir().unwrap();
+        let dir1 = tempdir.path().canonicalize().unwrap();
 
         let catalog_path = dir1.join("catalog");
         std::fs::create_dir_all(&catalog_path).unwrap();
         let object_store = ObjectStore::local();
-        let base_path = Path::from_absolute_path(catalog_path.clone()).unwrap();
-        let uri = Url::from_file_path(&catalog_path).unwrap().to_string();
+        let base_path = dbg!(Path::from_absolute_path(catalog_path.clone()).unwrap());
+        let uri = dbg!(Url::from_file_path(&catalog_path).unwrap().to_string());
 
-        ListingCatalog {
-            uri,
-            base_path,
-            object_store,
-            storage_options: HashMap::new(),
-        }
+        (
+            tempdir,
+            ListingCatalog {
+                uri,
+                base_path,
+                object_store,
+                storage_options: HashMap::new(),
+            },
+        )
     }
 
     use crate::database::{CreateTableData, CreateTableRequest, TableNamesRequest};
     use crate::table::TableDefinition;
     use arrow_schema::Field;
     use std::sync::Arc;
-    use tempfile::tempdir;
+    use tempfile::{tempdir, TempDir};
     use url::Url;
 
     #[tokio::test]
     async fn test_database_names() {
-        let catalog = setup_catalog().await;
+        let (_tempdir, catalog) = setup_catalog().await;
 
         let names = catalog
             .database_names(DatabaseNamesRequest::default())
@@ -272,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_database() {
-        let catalog = setup_catalog().await;
+        let (_tempdir, catalog) = setup_catalog().await;
 
         catalog
             .create_database(CreateDatabaseRequest {
@@ -292,7 +292,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_database_exist_ok() {
-        let catalog = setup_catalog().await;
+        let (_tempdir, catalog) = setup_catalog().await;
 
         let db1 = catalog
             .create_database(CreateDatabaseRequest {
@@ -327,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_database_overwrite() {
-        let catalog = setup_catalog().await;
+        let (_tempdir, catalog) = setup_catalog().await;
 
         let db = catalog
             .create_database(CreateDatabaseRequest {
@@ -367,7 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_database_overwrite_non_existing() {
-        let catalog = setup_catalog().await;
+        let (_tempdir, catalog) = setup_catalog().await;
 
         catalog
             .create_database(CreateDatabaseRequest {
@@ -387,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_open_database() {
-        let catalog = setup_catalog().await;
+        let (_tempdir, catalog) = setup_catalog().await;
 
         // Test open non-existent
         let result = catalog
@@ -426,7 +426,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_drop_database() {
-        let catalog = setup_catalog().await;
+        let (_tempdir, catalog) = setup_catalog().await;
 
         // Create test database
         catalog
@@ -456,7 +456,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_drop_all_databases() {
-        let catalog = setup_catalog().await;
+        let (_tempdir, catalog) = setup_catalog().await;
 
         catalog
             .create_database(CreateDatabaseRequest {
@@ -486,7 +486,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rename_database_unsupported() {
-        let catalog = setup_catalog().await;
+        let (_tempdir, catalog) = setup_catalog().await;
         let result = catalog.rename_database("old", "new").await;
         assert!(matches!(
             result.unwrap_err(),
