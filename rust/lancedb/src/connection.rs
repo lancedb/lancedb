@@ -959,7 +959,7 @@ mod test_utils {
 mod tests {
     use std::fs::create_dir_all;
 
-    use crate::catalog::{DatabaseNamesRequest, OpenDatabaseRequest};
+    use crate::catalog::{Catalog, DatabaseNamesRequest, OpenDatabaseRequest};
     use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, QueryExecutionOptions};
