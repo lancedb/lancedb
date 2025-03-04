@@ -3661,7 +3661,7 @@ class AsyncTable:
         new_metadata: dict
             The new metadata to set
         """
-        self._inner.replace_field_metadata(field_name, new_metadata)
+        await self._inner.replace_field_metadata(field_name, new_metadata)
 
 
 @dataclass
