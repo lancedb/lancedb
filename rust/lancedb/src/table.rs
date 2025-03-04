@@ -28,13 +28,13 @@ pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::{
-    Dataset, InsertBuilder, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode,
-    WriteParams,
+    InsertBuilder, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::io::WrappingObjectStore;
 use lance_datafusion::exec::execute_plan;
+use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
@@ -1264,7 +1264,7 @@ impl NativeTable {
     pub async fn create(
         uri: &str,
         name: &str,
-        batches: impl RecordBatchReader + Send + 'static,
+        batches: impl StreamingWriteSource,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
@@ -1279,7 +1279,9 @@ impl NativeTable {
             None => params,
         };
 
-        let dataset = Dataset::write(batches, uri, Some(params))
+        let insert_builder = InsertBuilder::new(uri).with_params(&params);
+        let dataset = insert_builder
+            .execute_stream(batches)
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
@@ -1287,6 +1289,7 @@ impl NativeTable {
                 },
                 source => Error::Lance { source },
             })?;
+
         Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
@@ -2391,8 +2394,9 @@ mod tests {
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
-    use lance::dataset::{Dataset, WriteMode};
+    use lance::dataset::WriteMode;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
+    use lance::Dataset;
     use rand::Rng;
     use tempfile::tempdir;
 
@@ -2442,6 +2446,7 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         let batches = make_test_batches();
+        let batches = Box::new(batches) as Box<dyn RecordBatchReader + Send>;
         let table = NativeTable::create(uri, "test", batches, None, None, None)
             .await
             .unwrap();
