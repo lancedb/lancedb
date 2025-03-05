@@ -58,7 +58,7 @@ jobs:
           python-version: "3.12"
       - name: Install pyright and pyarrow-stubs
         run: |
-          pip install pyright pyarrow-stubs
+          pip install -e .[dev,tests,embeddings]
       - name: Run pyright
         run: pyright
 
