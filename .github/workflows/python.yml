@@ -62,7 +62,7 @@ jobs:
           sudo apt install -y protobuf-compiler
       - name: Install dependencies
         run: |
-          pip install -e ".[dev,tests]" --no-deps
+          pip install -e ".[dev,tests,embeddings]"
       - name: Install pyright and pyarrow-stubs
         run: |
           pip install pyright pyarrow-stubs
