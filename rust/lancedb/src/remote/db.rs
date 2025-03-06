@@ -166,7 +166,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             CreateTableData::Data(data) => data,
             CreateTableData::StreamingData(_) => {
                 return Err(Error::NotSupported {
-                    message: format!("Creating a remote table from a streaming source"),
+                    message: "Creating a remote table from a streaming source".to_string(),
                 })
             }
             CreateTableData::Empty(table_definition) => {
