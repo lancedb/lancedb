@@ -56,9 +56,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install protobuf compiler
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev,tests]" --no-deps
       - name: Install pyright and pyarrow-stubs
         run: |
-          pip install -e .[dev,tests,embeddings]
+          pip install pyright pyarrow-stubs
       - name: Run pyright
         run: pyright
 
