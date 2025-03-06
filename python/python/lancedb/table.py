@@ -236,7 +236,7 @@ def _sanitize_data(
         target_schema = target_schema.with_metadata(new_metadata)
 
     _validate_schema(target_schema)
-
+    breakpoint()
     reader = _cast_to_target_schema(reader, target_schema, allow_subschema)
 
     return reader
@@ -256,9 +256,10 @@ def _cast_to_target_schema(
 
     fields = []
     for field in reader.schema:
+        # TODO: also reorder and prune nested fields.
         target_field = target_schema.field(field.name)
         if target_field is None:
-            raise ValueError(f"Field {field.name} not found in target schema")
+            raise ValueError(f"Field '{field.name}' not found in target schema")
         fields.append(target_field)
     reordered_schema = pa.schema(fields, metadata=target_schema.metadata)
     if not allow_subschema and len(reordered_schema) != len(target_schema):

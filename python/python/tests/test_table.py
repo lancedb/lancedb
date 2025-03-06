@@ -231,6 +231,29 @@ def test_add(mem_db: DBConnection):
     _add(table, schema)
 
 
+def test_add_struct(mem_db: DBConnection):
+    # https://github.com/lancedb/lancedb/issues/2114
+    schema = pa.schema([
+        ("stuff", pa.struct([
+            ("b", pa.int64()),
+            ("a", pa.int64()),
+            # TODO: also test subset of nested.
+        ]))
+    ])
+
+    # Create test data with fields in same order
+    data = [{
+        "stuff": {
+            "b": 1,
+            "a": 2
+        }
+    }]
+    # pa.Table.from_pylist() will reorder the fields. We need to make sure
+    # we fix the field order later, before casting.
+    table = mem_db.create_table("test", schema=schema)
+    table.add(data)
+
+
 def test_add_subschema(mem_db: DBConnection):
     schema = pa.schema(
         [
