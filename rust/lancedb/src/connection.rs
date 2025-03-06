@@ -11,7 +11,7 @@ use arrow_schema::{Field, SchemaRef};
 use lance::dataset::ReadParams;
 use object_store::aws::AwsCredential;
 
-use crate::arrow::IntoArrow;
+use crate::arrow::{IntoArrow, IntoArrowStream, SendableRecordBatchStream};
 use crate::database::listing::{
     ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
@@ -75,6 +75,14 @@ impl IntoArrow for NoData {
     }
 }
 
+// Stores the value given from the initial CreateTableBuilder::new call
+// and defers errors until `execute` is called
+enum CreateTableBuilderInitialData {
+    None,
+    Iterator(Result<Box<dyn RecordBatchReader + Send>>),
+    Stream(Result<SendableRecordBatchStream>),
+}
+
 /// A builder for configuring a [`Connection::create_table`] operation
 pub struct CreateTableBuilder<const HAS_DATA: bool> {
     parent: Arc<dyn Database>,
@@ -83,7 +91,7 @@ pub struct CreateTableBuilder<const HAS_DATA: bool> {
     request: CreateTableRequest,
     // This is a bit clumsy but we defer errors until `execute` is called
     // to maintain backwards compatibility
-    data: Option<Result<Box<dyn RecordBatchReader + Send>>>,
+    data: CreateTableBuilderInitialData,
 }
 
 // Builder methods that only apply when we have initial data
@@ -103,7 +111,26 @@ impl CreateTableBuilder<true> {
             ),
             embeddings: Vec::new(),
             embedding_registry,
-            data: Some(data.into_arrow()),
+            data: CreateTableBuilderInitialData::Iterator(data.into_arrow()),
+        }
+    }
+
+    fn new_streaming<T: IntoArrowStream>(
+        parent: Arc<dyn Database>,
+        name: String,
+        data: T,
+        embedding_registry: Arc<dyn EmbeddingRegistry>,
+    ) -> Self {
+        let dummy_schema = Arc::new(arrow_schema::Schema::new(Vec::<Field>::default()));
+        Self {
+            parent,
+            request: CreateTableRequest::new(
+                name,
+                CreateTableData::Empty(TableDefinition::new_from_schema(dummy_schema)),
+            ),
+            embeddings: Vec::new(),
+            embedding_registry,
+            data: CreateTableBuilderInitialData::Stream(data.into_arrow()),
         }
     }
 
@@ -125,17 +152,37 @@ impl CreateTableBuilder<true> {
     }
 
     fn into_request(self) -> Result<CreateTableRequest> {
-        let data = if self.embeddings.is_empty() {
-            self.data.unwrap()?
+        if self.embeddings.is_empty() {
+            match self.data {
+                CreateTableBuilderInitialData::Iterator(maybe_iter) => {
+                    let data = maybe_iter?;
+                    Ok(CreateTableRequest {
+                        data: CreateTableData::Data(data),
+                        ..self.request
+                    })
+                }
+                CreateTableBuilderInitialData::None => {
+                    unreachable!("No data provided for CreateTableBuilder<true>")
+                }
+                CreateTableBuilderInitialData::Stream(maybe_stream) => {
+                    let data = maybe_stream?;
+                    Ok(CreateTableRequest {
+                        data: CreateTableData::StreamingData(data),
+                        ..self.request
+                    })
+                }
+            }
         } else {
-            let data = self.data.unwrap()?;
-            Box::new(WithEmbeddings::new(data, self.embeddings))
-        };
-        let req = self.request;
-        Ok(CreateTableRequest {
-            data: CreateTableData::Data(data),
-            ..req
-        })
+            let CreateTableBuilderInitialData::Iterator(maybe_iter) = self.data else {
+                return Err(Error::NotSupported { message: "Creating a table with embeddings is currently not support when the input is streaming".to_string() });
+            };
+            let data = maybe_iter?;
+            let data = Box::new(WithEmbeddings::new(data, self.embeddings));
+            Ok(CreateTableRequest {
+                data: CreateTableData::Data(data),
+                ..self.request
+            })
+        }
     }
 }
 
@@ -151,7 +198,7 @@ impl CreateTableBuilder<false> {
         Self {
             parent,
             request: CreateTableRequest::new(name, CreateTableData::Empty(table_definition)),
-            data: None,
+            data: CreateTableBuilderInitialData::None,
             embeddings: Vec::default(),
             embedding_registry,
         }
@@ -432,7 +479,7 @@ impl Connection {
         TableNamesBuilder::new(self.internal.clone())
     }
 
-    /// Create a new table from data
+    /// Create a new table from an iterator of data
     ///
     /// # Parameters
     ///
@@ -444,6 +491,25 @@ impl Connection {
         initial_data: T,
     ) -> CreateTableBuilder<true> {
         CreateTableBuilder::<true>::new(
+            self.internal.clone(),
+            name.into(),
+            initial_data,
+            self.embedding_registry.clone(),
+        )
+    }
+
+    /// Create a new table from a stream of data
+    ///
+    /// # Parameters
+    ///
+    /// * `name` - The name of the table
+    /// * `initial_data` - The initial data to write to the table
+    pub fn create_table_streaming<T: IntoArrowStream>(
+        &self,
+        name: impl Into<String>,
+        initial_data: T,
+    ) -> CreateTableBuilder<true> {
+        CreateTableBuilder::<true>::new_streaming(
             self.internal.clone(),
             name.into(),
             initial_data,
@@ -788,12 +854,16 @@ mod test_utils {
 mod tests {
     use std::fs::create_dir_all;
 
+    use arrow::compute::concat_batches;
     use arrow_array::RecordBatchReader;
     use arrow_schema::{DataType, Field, Schema};
-    use futures::TryStreamExt;
+    use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+    use futures::{stream, TryStreamExt};
+    use lance::error::{ArrowResult, DataFusionResult};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
     use tempfile::tempdir;
 
+    use crate::arrow::SimpleRecordBatchStream;
     use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, QueryExecutionOptions};
@@ -974,6 +1044,63 @@ mod tests {
             .unwrap();
 
         assert_eq!(batches.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_streaming() {
+        let tmp_dir = tempdir().unwrap();
+
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = connect(uri).execute().await.unwrap();
+
+        let batches = make_data().collect::<ArrowResult<Vec<_>>>().unwrap();
+
+        let schema = batches.first().unwrap().schema();
+        let one_batch = concat_batches(&schema, batches.iter()).unwrap();
+
+        let ldb_stream = stream::iter(batches.clone().into_iter().map(Result::Ok));
+        let ldb_stream: SendableRecordBatchStream =
+            Box::pin(SimpleRecordBatchStream::new(ldb_stream, schema.clone()));
+
+        let tbl1 = db
+            .create_table_streaming("one", ldb_stream)
+            .execute()
+            .await
+            .unwrap();
+
+        let df_stream = stream::iter(batches.into_iter().map(DataFusionResult::Ok));
+        let df_stream: datafusion_physical_plan::SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), df_stream));
+
+        let tbl2 = db
+            .create_table_streaming("two", df_stream)
+            .execute()
+            .await
+            .unwrap();
+
+        let tbl1_data = tbl1
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let tbl1_data = concat_batches(&schema, tbl1_data.iter()).unwrap();
+        assert_eq!(tbl1_data, one_batch);
+
+        let tbl2_data = tbl2
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let tbl2_data = concat_batches(&schema, tbl2_data.iter()).unwrap();
+        assert_eq!(tbl2_data, one_batch);
     }
 
     #[tokio::test]

@@ -7,9 +7,9 @@ use std::fs::create_dir_all;
 use std::path::Path;
 use std::{collections::HashMap, sync::Arc};
 
-use arrow_array::RecordBatchIterator;
 use lance::dataset::{ReadParams, WriteMode};
 use lance::io::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry, WrappingObjectStore};
+use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
@@ -22,8 +22,8 @@ use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
 use super::{
-    BaseTable, CreateTableData, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    OpenTableRequest, TableNamesRequest,
+    BaseTable, CreateTableMode, CreateTableRequest, Database, DatabaseOptions, OpenTableRequest,
+    TableNamesRequest,
 };
 
 /// File extension to indicate a lance table
@@ -401,19 +401,12 @@ impl Database for ListingDatabase {
             write_params.mode = WriteMode::Overwrite;
         }
 
-        let data = match request.data {
-            CreateTableData::Data(data) => data,
-            CreateTableData::Empty(table_definition) => {
-                let schema = table_definition.schema.clone();
-                Box::new(RecordBatchIterator::new(vec![], schema))
-            }
-        };
-        let data_schema = data.schema();
+        let data_schema = request.data.arrow_schema();
 
         match NativeTable::create(
             &table_uri,
             &request.name,
-            data,
+            request.data,
             self.store_wrapper.clone(),
             Some(write_params),
             self.read_consistency_interval,

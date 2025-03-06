@@ -18,8 +18,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
+use async_trait::async_trait;
+use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+use futures::stream;
 use lance::dataset::ReadParams;
+use lance_datafusion::utils::StreamingWriteSource;
 
+use crate::arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt};
 use crate::error::Result;
 use crate::table::{BaseTable, TableDefinition, WriteOptions};
 
@@ -81,10 +86,39 @@ impl Default for CreateTableMode {
 
 /// The data to start a table or a schema to create an empty table
 pub enum CreateTableData {
-    /// Creates a table using data, no schema required as it will be obtained from the data
+    /// Creates a table using an iterator of data, the schema will be obtained from the data
     Data(Box<dyn RecordBatchReader + Send>),
+    /// Creates a table using a stream of data, the schema will be obtained from the data
+    StreamingData(SendableRecordBatchStream),
     /// Creates an empty table, the definition / schema must be provided separately
     Empty(TableDefinition),
+}
+
+impl CreateTableData {
+    pub fn schema(&self) -> Arc<arrow_schema::Schema> {
+        match self {
+            Self::Data(reader) => reader.schema(),
+            Self::StreamingData(stream) => stream.schema(),
+            Self::Empty(definition) => definition.schema.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl StreamingWriteSource for CreateTableData {
+    fn arrow_schema(&self) -> Arc<arrow_schema::Schema> {
+        self.schema()
+    }
+    fn into_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream {
+        match self {
+            Self::Data(reader) => reader.into_stream(),
+            Self::StreamingData(stream) => stream.into_df_stream(),
+            Self::Empty(table_definition) => {
+                let schema = table_definition.schema.clone();
+                Box::pin(RecordBatchStreamAdapter::new(schema, stream::empty()))
+            }
+        }
+    }
 }
 
 /// A request to create a table
