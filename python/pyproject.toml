@@ -5,7 +5,7 @@ dynamic = ["version"]
 dependencies = [
     "deprecation",
     "tqdm>=4.27.0",
-    "pyarrow>=14",
+    "pyarrow>=16",
     "pydantic>=1.10",
     "packaging",
     "overrides>=0.7",
