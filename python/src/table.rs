@@ -13,7 +13,7 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
-    Bound, FromPyObject, PyAny, PyRef, PyResult, Python, ToPyObject,
+    Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -215,13 +215,13 @@ impl Table {
         })
     }
 
-    pub fn index_stats(self_: PyRef<'_, Self>, index_name: String) -> PyResult<Bound<'_, PyAny>> {
+    pub fn index_stats<'py>(self_: PyRef<'py, Self>, index_name: String) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let stats = inner.index_stats(&index_name).await.infer_error()?;
             if let Some(stats) = stats {
                 Python::with_gil(|py| {
-                    let dict = PyDict::new_bound(py);
+                    let dict = PyDict::new(py);
                     dict.set_item("num_indexed_rows", stats.num_indexed_rows)?;
                     dict.set_item("num_unindexed_rows", stats.num_unindexed_rows)?;
                     dict.set_item("index_type", stats.index_type.to_string())?;
@@ -234,7 +234,7 @@ impl Table {
                         dict.set_item("num_indices", num_indices)?;
                     }
 
-                    Ok(Some(dict.to_object(py)))
+                    Ok(Some(dict.unbind()))
                 })
             } else {
                 Ok(None)
@@ -265,7 +265,7 @@ impl Table {
                 versions
                     .iter()
                     .map(|v| {
-                        let dict = PyDict::new_bound(py);
+                        let dict = PyDict::new(py);
                         dict.set_item("version", v.version).unwrap();
                         dict.set_item(
                             "timestamp",
@@ -274,9 +274,9 @@ impl Table {
                         .unwrap();
 
                         let tup: Vec<(&String, &String)> = v.metadata.iter().collect();
-                        dict.set_item("metadata", tup.into_py_dict_bound(py))
+                        dict.set_item("metadata", tup.into_py_dict(py).unwrap())
                             .unwrap();
-                        dict.to_object(py)
+                        dict.unbind()
                     })
                     .collect::<Vec<_>>()
             });
