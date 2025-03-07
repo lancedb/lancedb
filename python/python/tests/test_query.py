@@ -452,7 +452,7 @@ def test_query_builder_with_metric(table):
     df_default = LanceVectorQueryBuilder(table, query, vector_column_name).to_pandas()
     df_l2 = (
         LanceVectorQueryBuilder(table, query, vector_column_name)
-        .distance_type("L2")
+        .distance_type("l2")
         .to_pandas()
     )
     tm.assert_frame_equal(df_default, df_l2)

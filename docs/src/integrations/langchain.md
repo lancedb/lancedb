@@ -108,7 +108,7 @@ This method creates a scalar(for non-vector cols) or a vector index on a table.
 |:---|:---|:---|:---|
 |`vector_col`|`Optional[str]`| Provide if you want to create index on a vector column. |`None`|
 |`col_name`|`Optional[str]`| Provide if you want to create index on a non-vector column. |`None`|
-|`metric`|`Optional[str]` |Provide the metric to use for vector index. choice of metrics: 'L2', 'dot', 'cosine'. |`L2`|
+|`metric`|`Optional[str]` |Provide the metric to use for vector index. choice of metrics: 'l2', 'dot', 'cosine'. |`l2`|
 |`num_partitions`|`Optional[int]`|Number of partitions to use for the index.|`256`|
 |`num_sub_vectors`|`Optional[int]` |Number of sub-vectors to use for the index.|`96`|
 |`index_cache_size`|`Optional[int]` |Size of the index cache.|`None`|

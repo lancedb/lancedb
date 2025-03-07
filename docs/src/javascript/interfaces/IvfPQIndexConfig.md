@@ -85,7 +85,7 @@ ___
 
 • `Optional` **metric\_type**: [`MetricType`](../enums/MetricType.md)
 
-Metric type, L2 or Cosine
+Metric type, l2 or Cosine
 
 #### Defined in
 
