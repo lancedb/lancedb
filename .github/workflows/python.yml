@@ -228,6 +228,7 @@ jobs:
       - name: Install lancedb
         run: |
           pip install "pydantic<2"
+          pip install pyarrow~=16
           pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests]
           pip install tantivy
       - name: Run tests

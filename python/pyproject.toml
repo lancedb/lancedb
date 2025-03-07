@@ -7,7 +7,7 @@ dependencies = [
     "numpy",
     "overrides>=0.7",
     "packaging",
-    "pyarrow>=14",
+    "pyarrow>=16",
     "pydantic>=1.10",
     "tqdm>=4.27.0",
 ]
