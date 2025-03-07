@@ -7,29 +7,30 @@ use lancedb::index::{
     vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
     Index as LanceDbIndex,
 };
+use pyo3::IntoPyObject;
 use pyo3::{
     exceptions::{PyKeyError, PyValueError},
     intern, pyclass, pymethods,
     types::PyAnyMethods,
-    Bound, FromPyObject, IntoPy, PyAny, PyObject, PyResult, Python,
+    Bound, FromPyObject, PyAny, PyResult, Python
 };
 
 use crate::util::parse_distance_type;
 
-pub fn class_name<'a>(ob: &'a Bound<'_, PyAny>) -> PyResult<&'a str> {
-    let full_name: &str = ob
+pub fn class_name<'a>(ob: &'a Bound<'_, PyAny>) -> PyResult<String> {
+    let full_name: String = ob
         .getattr(intern!(ob.py(), "__class__"))?
         .getattr(intern!(ob.py(), "__name__"))?
         .extract()?;
     match full_name.rsplit_once('.') {
-        Some((_, name)) => Ok(name),
+        Some((_, name)) => Ok(name.to_string()),
         None => Ok(full_name),
     }
 }
 
 pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<LanceDbIndex> {
     if let Some(source) = source {
-        match class_name(source)? {
+        match class_name(source)?.as_ref() {
             "BTree" => Ok(LanceDbIndex::BTree(BTreeIndexBuilder::default())),
             "Bitmap" => Ok(LanceDbIndex::Bitmap(Default::default())),
             "LabelList" => Ok(LanceDbIndex::LabelList(Default::default())),
@@ -196,11 +197,11 @@ impl IndexConfig {
 
     // For backwards-compatibility with the old sync SDK, we also support getting
     // attributes via __getitem__.
-    pub fn __getitem__(&self, key: String, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn __getitem__<'py>(&self, key: String, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         match key.as_str() {
-            "index_type" => Ok(self.index_type.clone().into_py(py)),
-            "columns" => Ok(self.columns.clone().into_py(py)),
-            "name" | "index_name" => Ok(self.name.clone().into_py(py)),
+            "index_type" => Ok(self.index_type.clone().into_pyobject(py).unwrap().into_any()),
+            "columns" => self.columns.clone().into_pyobject(py),
+            "name" | "index_name" => Ok(self.name.clone().into_pyobject(py).unwrap().into_any()),
             _ => Err(PyKeyError::new_err(format!("Invalid key: {}", key))),
         }
     }
