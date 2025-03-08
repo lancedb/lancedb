@@ -299,4 +299,29 @@ maybeDescribe("DynamoDB Lock", () => {
     const rowCount = await table.countRows();
     expect(rowCount).toBe(6);
   });
+
+  it("clears dynamodb state after dropping all tables", async () => {
+    const uri = `s3+ddb://${bucket.name}/test?ddbTableName=${commitTable.name}`;
+    const db = await connect(uri, {
+      storageOptions: CONFIG,
+      readConsistencyInterval: 0,
+    });
+
+    await db.createTable("foo", [{ a: 1, b: 2 }]);
+    await db.createTable("bar", [{ a: 1, b: 2 }]);
+
+    let tableNames = await db.tableNames();
+    expect(tableNames).toEqual(["foo", "bar"]);
+
+    await db.dropAllTables();
+    tableNames = await db.tableNames();
+    expect(tableNames).toEqual([]);
+
+    // We can create a new table with the same name as the one we dropped.
+    await db.createTable("foo", [{ a: 1, b: 2 }]);
+    tableNames = await db.tableNames();
+    expect(tableNames).toEqual(["foo"]);
+
+    await db.dropAllTables();
+  })
 });

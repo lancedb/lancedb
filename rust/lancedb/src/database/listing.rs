@@ -322,6 +322,36 @@ impl ListingDatabase {
 
         Ok(uri)
     }
+
+    async fn drop_tables(&self, names: Vec<String>) -> Result<()> {
+        let object_store_params = ObjectStoreParams {
+            storage_options: Some(self.storage_options.clone()),
+            ..Default::default()
+        };
+        let mut uri = self.uri.clone();
+        if let Some(query_string) = &self.query_string {
+            uri.push_str(&format!("?{}", query_string));
+        }
+        let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params)).await?;
+        for name in names {
+            let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
+            let full_path = self.base_path.child(dir_name.clone());
+            self.object_store
+                .remove_dir_all(full_path.clone())
+                .await
+                .map_err(|err| match err {
+                    // this error is not lance::Error::DatasetNotFound, as the method
+                    // `remove_dir_all` may be used to remove something not be a dataset
+                    lance::Error::NotFound { .. } => Error::TableNotFound {
+                        name: name.to_owned(),
+                    },
+                    _ => Error::from(err),
+                })?;
+
+            commit_handler.delete(&full_path).await?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -493,40 +523,12 @@ impl Database for ListingDatabase {
     }
 
     async fn drop_table(&self, name: &str) -> Result<()> {
-        let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
-        let full_path = self.base_path.child(dir_name.clone());
-        self.object_store
-            .remove_dir_all(full_path.clone())
-            .await
-            .map_err(|err| match err {
-                // this error is not lance::Error::DatasetNotFound,
-                // as the method `remove_dir_all` may be used to remove something not be a dataset
-                lance::Error::NotFound { .. } => Error::TableNotFound {
-                    name: name.to_owned(),
-                },
-                _ => Error::from(err),
-            })?;
-
-        let object_store_params = ObjectStoreParams {
-            storage_options: Some(self.storage_options.clone()),
-            ..Default::default()
-        };
-        let mut uri = self.uri.clone();
-        if let Some(query_string) = &self.query_string {
-            uri.push_str(&format!("?{}", query_string));
-        }
-        let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params))
-            .await
-            .unwrap();
-        commit_handler.delete(&full_path).await.unwrap();
-        Ok(())
+        self.drop_tables(vec![name.to_string()]).await
     }
 
     async fn drop_all_tables(&self) -> Result<()> {
-        self.object_store
-            .remove_dir_all(self.base_path.clone())
-            .await?;
-        Ok(())
+        let tables = self.table_names(TableNamesRequest::default()).await?;
+        self.drop_tables(tables).await
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
