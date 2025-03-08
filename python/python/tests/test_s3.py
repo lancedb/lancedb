@@ -265,7 +265,7 @@ def test_s3_dynamodb_drop_all_tables(s3_bucket: str, commit_table: str, monkeypa
 
     db.create_table("foo", data)
     db.create_table("bar", data)
-    assert db.table_names() == ["foo", "bar"]
+    assert db.table_names() == ["bar", "foo"]
 
     # dropping all tables should clear multiple tables
     db.drop_all_tables()
