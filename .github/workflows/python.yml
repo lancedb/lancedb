@@ -60,6 +60,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler
+          pip install toml
       - name: Install dependencies
         run: |
           python ../ci/parse_requirements.py pyproject.toml --extras dev,tests,embeddings > requirements.txt
