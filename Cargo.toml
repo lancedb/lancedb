@@ -21,32 +21,30 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.24.0", "features" = [
-    "dynamodb",
-], git = "https://github.com/lancedb/lance.git", tag = "v0.24.0-beta.1" }
-lance-io = { version = "=0.24.0", tag = "v0.24.0-beta.1", git = "https://github.com/lancedb/lance.git" }
-lance-index = { version = "=0.24.0", tag = "v0.24.0-beta.1", git = "https://github.com/lancedb/lance.git" }
-lance-linalg = { version = "=0.24.0", tag = "v0.24.0-beta.1", git = "https://github.com/lancedb/lance.git" }
-lance-table = { version = "=0.24.0", tag = "v0.24.0-beta.1", git = "https://github.com/lancedb/lance.git" }
-lance-testing = { version = "=0.24.0", tag = "v0.24.0-beta.1", git = "https://github.com/lancedb/lance.git" }
-lance-datafusion = { version = "=0.24.0", tag = "v0.24.0-beta.1", git = "https://github.com/lancedb/lance.git" }
-lance-encoding = { version = "=0.24.0", tag = "v0.24.0-beta.1", git = "https://github.com/lancedb/lance.git" }
+lance = { "version" = "=0.24.0", "features" = ["dynamodb"] }
+lance-io = { version = "=0.24.0" }
+lance-index = { version = "=0.24.0" }
+lance-linalg = { version = "=0.24.0" }
+lance-table = { version = "=0.24.0" }
+lance-testing = { version = "=0.24.0" }
+lance-datafusion = { version = "=0.24.0" }
+lance-encoding = { version = "=0.24.0" }
 # Note that this one does not include pyarrow
-arrow = { version = "53.2", optional = false }
-arrow-array = "53.2"
-arrow-data = "53.2"
-arrow-ipc = "53.2"
-arrow-ord = "53.2"
-arrow-schema = "53.2"
-arrow-arith = "53.2"
-arrow-cast = "53.2"
+arrow = { version = "54.1", optional = false }
+arrow-array = "54.1"
+arrow-data = "54.1"
+arrow-ipc = "54.1"
+arrow-ord = "54.1"
+arrow-schema = "54.1"
+arrow-arith = "54.1"
+arrow-cast = "54.1"
 async-trait = "0"
-datafusion = { version = "44.0", default-features = false }
-datafusion-catalog = "44.0"
-datafusion-common = { version = "44.0", default-features = false }
-datafusion-execution = "44.0"
-datafusion-expr = "44.0"
-datafusion-physical-plan = "44.0"
+datafusion = { version = "45.0", default-features = false }
+datafusion-catalog = "45.0"
+datafusion-common = { version = "45.0", default-features = false }
+datafusion-execution = "45.0"
+datafusion-expr = "45.0"
+datafusion-physical-plan = "45.0"
 env_logger = "0.11"
 half = { "version" = "=2.4.1", default-features = false, features = [
     "num-traits",
