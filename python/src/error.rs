@@ -43,7 +43,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                 } => Python::with_gil(|py| {
                     let message = err.to_string();
                     let http_err_cls = py
-                        .import_bound(intern!(py, "lancedb.remote.errors"))?
+                        .import(intern!(py, "lancedb.remote.errors"))?
                         .getattr(intern!(py, "HttpError"))?;
                     let err = http_err_cls.call1((
                         message,
@@ -63,7 +63,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                         err.setattr(intern!(py, "__cause__"), cause_err)?;
                     }
 
-                    Err(PyErr::from_value_bound(err))
+                    Err(PyErr::from_value(err))
                 }),
                 LanceError::Retry {
                     request_id,
@@ -85,7 +85,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
 
                     let message = err.to_string();
                     let retry_error_cls = py
-                        .import_bound(intern!(py, "lancedb.remote.errors"))?
+                        .import(intern!(py, "lancedb.remote.errors"))?
                         .getattr("RetryError")?;
                     let err = retry_error_cls.call1((
                         message,
@@ -100,7 +100,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     ))?;
 
                     err.setattr(intern!(py, "__cause__"), cause_err)?;
-                    Err(PyErr::from_value_bound(err))
+                    Err(PyErr::from_value(err))
                 }),
                 _ => self.runtime_error(),
             },
@@ -127,18 +127,16 @@ fn http_from_rust_error(
     status_code: Option<u16>,
 ) -> PyResult<PyErr> {
     let message = err.to_string();
-    let http_err_cls = py
-        .import_bound("lancedb.remote.errors")?
-        .getattr("HttpError")?;
+    let http_err_cls = py.import("lancedb.remote.errors")?.getattr("HttpError")?;
     let py_err = http_err_cls.call1((message, request_id, status_code))?;
 
     // Reset the traceback since it doesn't provide additional information.
-    let py_err = py_err.call_method1(intern!(py, "with_traceback"), (PyNone::get_bound(py),))?;
+    let py_err = py_err.call_method1(intern!(py, "with_traceback"), (PyNone::get(py),))?;
 
     if let Some(cause) = err.source() {
         let cause_err = http_from_rust_error(py, cause, request_id, status_code)?;
         py_err.setattr(intern!(py, "__cause__"), cause_err)?;
     }
 
-    Ok(PyErr::from_value_bound(py_err))
+    Ok(PyErr::from_value(py_err))
 }
