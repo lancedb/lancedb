@@ -336,6 +336,9 @@ impl ListingDatabase {
         for name in names {
             let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
             let full_path = self.base_path.child(dir_name.clone());
+
+            commit_handler.delete(&full_path).await?;
+
             self.object_store
                 .remove_dir_all(full_path.clone())
                 .await
@@ -347,8 +350,6 @@ impl ListingDatabase {
                     },
                     _ => Error::from(err),
                 })?;
-
-            commit_handler.delete(&full_path).await?;
         }
         Ok(())
     }
