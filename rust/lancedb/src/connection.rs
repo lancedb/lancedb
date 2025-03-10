@@ -916,9 +916,6 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::arrow::SimpleRecordBatchStream;
-    use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
-    use crate::query::QueryBase;
-    use crate::query::{ExecutableQuery, QueryExecutionOptions};
 
     use super::*;
 
