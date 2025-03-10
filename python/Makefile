@@ -34,3 +34,7 @@ doctest:	## Run documentation tests.
 .PHONY: test
 test:		## Run tests.
 	pytest python/tests -vv --durations=10 -m "not slow and not s3_test"
+
+.PHONY: clean
+clean:
+	rm -rf data

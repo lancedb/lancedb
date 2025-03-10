@@ -252,3 +252,27 @@ def test_s3_dynamodb_sync(s3_bucket: str, commit_table: str, monkeypatch):
     db.drop_table("test_ddb_sync")
     assert db.table_names() == []
     db.drop_database()
+
+
+@pytest.mark.s3_test
+def test_s3_dynamodb_drop_all_tables(s3_bucket: str, commit_table: str, monkeypatch):
+    for key, value in CONFIG.items():
+        monkeypatch.setenv(key.upper(), value)
+
+    uri = f"s3+ddb://{s3_bucket}/test2?ddbTableName={commit_table}"
+    db = lancedb.connect(uri, read_consistency_interval=timedelta(0))
+    data = pa.table({"x": ["a", "b", "c"]})
+
+    db.create_table("foo", data)
+    db.create_table("bar", data)
+    assert db.table_names() == ["bar", "foo"]
+
+    # dropping all tables should clear multiple tables
+    db.drop_all_tables()
+    assert db.table_names() == []
+
+    # create a new table with the same name to ensure DDB is clean
+    db.create_table("foo", data)
+    assert db.table_names() == ["foo"]
+
+    db.drop_all_tables()
