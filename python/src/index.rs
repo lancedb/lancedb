@@ -18,7 +18,7 @@ use pyo3::{
 
 use crate::util::parse_distance_type;
 
-pub fn class_name<'a>(ob: &'a Bound<'_, PyAny>) -> PyResult<String> {
+pub fn class_name(ob: &'_ Bound<'_, PyAny>) -> PyResult<String> {
     let full_name = ob
         .getattr(intern!(ob.py(), "__class__"))?
         .getattr(intern!(ob.py(), "__name__"))?;
