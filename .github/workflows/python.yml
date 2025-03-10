@@ -33,11 +33,41 @@ jobs:
           python-version: "3.12"
       - name: Install ruff
         run: |
-          pip install ruff==0.8.4
+          pip install ruff==0.9.9
       - name: Format check
         run: ruff format --check .
       - name: Lint
         run: ruff check .
+
+  type-check:
+    name: "Type Check"
+    timeout-minutes: 30
+    runs-on: "ubuntu-22.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install protobuf compiler
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+          pip install toml
+      - name: Install dependencies
+        run: |
+          python ../ci/parse_requirements.py pyproject.toml --extras dev,tests,embeddings > requirements.txt
+          pip install -r requirements.txt
+      - name: Run pyright
+        run: pyright
+
   doctest:
     name: "Doctest"
     timeout-minutes: 30

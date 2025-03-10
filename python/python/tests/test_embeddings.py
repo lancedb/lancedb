@@ -419,17 +419,17 @@ def test_embedding_function_safe_model_dump(embedding_type):
 
     dumped_model = model.safe_model_dump()
 
-    assert all(
-        not k.startswith("_") for k in dumped_model.keys()
-    ), f"{embedding_type}: Dumped model contains keys starting with underscore"
+    assert all(not k.startswith("_") for k in dumped_model.keys()), (
+        f"{embedding_type}: Dumped model contains keys starting with underscore"
+    )
 
-    assert (
-        "max_retries" in dumped_model
-    ), f"{embedding_type}: Essential field 'max_retries' is missing from dumped model"
+    assert "max_retries" in dumped_model, (
+        f"{embedding_type}: Essential field 'max_retries' is missing from dumped model"
+    )
 
-    assert isinstance(
-        dumped_model, dict
-    ), f"{embedding_type}: Dumped model is not a dictionary"
+    assert isinstance(dumped_model, dict), (
+        f"{embedding_type}: Dumped model is not a dictionary"
+    )
 
     for key in model.__dict__:
         if key.startswith("_"):
