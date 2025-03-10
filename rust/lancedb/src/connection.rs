@@ -13,6 +13,7 @@ use object_store::aws::AwsCredential;
 
 use crate::arrow::{IntoArrow, IntoArrowStream, SendableRecordBatchStream};
 use crate::catalog::listing::ListingCatalog;
+use crate::catalog::CatalogOptions;
 use crate::database::listing::{
     ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
@@ -854,66 +855,8 @@ impl CatalogConnectBuilder {
         }
     }
 
-    pub fn api_key(mut self, api_key: &str) -> Self {
-        self.request.api_key = Some(api_key.to_string());
-        self
-    }
-
-    pub fn region(mut self, region: &str) -> Self {
-        self.request.region = Some(region.to_string());
-        self
-    }
-
-    pub fn host_override(mut self, host_override: &str) -> Self {
-        self.request.host_override = Some(host_override.to_string());
-        self
-    }
-
-    /// Set an option for the storage layer.
-    ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
-    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.request
-            .storage_options
-            .insert(key.into(), value.into());
-        self
-    }
-
-    /// Set multiple options for the storage layer.
-    ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
-    pub fn storage_options(
-        mut self,
-        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
-    ) -> Self {
-        for (key, value) in pairs {
-            self.request
-                .storage_options
-                .insert(key.into(), value.into());
-        }
-        self
-    }
-
-    #[cfg(feature = "remote")]
-    pub fn client_config(mut self, config: ClientConfig) -> Self {
-        self.request.client_config = config;
-        self
-    }
-
-    /// [`AwsCredential`] to use when connecting to S3.
-    #[deprecated(note = "Pass through storage_options instead")]
-    pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
-        self.request
-            .storage_options
-            .insert("aws_access_key_id".into(), aws_creds.key_id.clone());
-        self.request
-            .storage_options
-            .insert("aws_secret_access_key".into(), aws_creds.secret_key.clone());
-        if let Some(token) = &aws_creds.token {
-            self.request
-                .storage_options
-                .insert("aws_session_token".into(), token.clone());
-        }
+    pub fn catalog_options(mut self, catalog_options: &dyn CatalogOptions) -> Self {
+        catalog_options.serialize_into_map(&mut self.request.storage_options);
         self
     }
 
