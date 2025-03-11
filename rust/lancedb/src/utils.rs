@@ -174,7 +174,8 @@ pub fn string_to_datatype(s: &str) -> Option<DataType> {
         }
     };
     if data_type.get("type").is_none() {
-        data_type = serde_json::Value::Object([("type".to_string(), data_type)].iter().cloned().collect());
+        data_type =
+            serde_json::Value::Object([("type".to_string(), data_type)].iter().cloned().collect());
     }
     let json_type: JsonDataType = serde_json::from_value(data_type).ok()?;
     (&json_type).try_into().ok()
