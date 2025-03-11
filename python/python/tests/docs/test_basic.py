@@ -83,6 +83,14 @@ def test_quickstart(tmp_path):
         }
     )
     # --8<-- [end:alter_columns]
+    # --8<-- [start:alter_columns_vector]
+    tbl.alter_columns(
+        {
+            "path": "vector",
+            "data_type": pa.list_(pa.float16(), list_size=2),
+        }
+    )
+    # --8<-- [end:alter_columns_vector]
     # --8<-- [start:drop_columns]
     tbl.drop_columns(["dbl_price"])
     # --8<-- [end:drop_columns]
@@ -162,6 +170,14 @@ async def test_quickstart_async(tmp_path):
         }
     )
     # --8<-- [end:alter_columns_async]
+    # --8<-- [start:alter_columns_async_vector]
+    await tbl.alter_columns(
+        {
+            "path": "vector",
+            "data_type": pa.list_(pa.float16(), list_size=2),
+        }
+    )
+    # --8<-- [end:alter_columns_async_vector]
     # --8<-- [start:drop_columns_async]
     await tbl.drop_columns(["dbl_price"])
     # --8<-- [end:drop_columns_async]

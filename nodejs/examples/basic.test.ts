@@ -132,6 +132,17 @@ test("basic table examples", async () => {
       },
     ]);
     // --8<-- [end:alter_columns]
+    // --8<-- [start:alter_columns_vector]
+    await tbl.alterColumns([
+      {
+        path: "vector",
+        dataType: new arrow.FixedSizeList(
+          2,
+          new arrow.Field("item", new arrow.Float16(), false),
+        ),
+      },
+    ]);
+    // --8<-- [end:alter_columns_vector]
     // --8<-- [start:drop_columns]
     await tbl.dropColumns(["dbl_price"]);
     // --8<-- [end:drop_columns]
