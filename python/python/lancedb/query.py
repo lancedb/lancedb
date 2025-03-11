@@ -26,10 +26,11 @@ import pydantic
 
 from . import __version__
 from .arrow import AsyncRecordBatchReader
+from .dependencies import pandas as pd
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
-from .util import safe_import_pandas, flatten_columns
+from .util import flatten_columns
 
 if TYPE_CHECKING:
     import sys
@@ -48,8 +49,6 @@ if TYPE_CHECKING:
         from typing import Self
     else:
         from typing_extensions import Self
-
-pd = safe_import_pandas()
 
 
 class Query(pydantic.BaseModel):

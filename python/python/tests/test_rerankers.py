@@ -131,9 +131,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         "represents the relevance of the result to the query & should "
         "be descending."
     )
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-        ascending_relevance_err
-    )
+    assert np.all(
+        np.diff(result.column("_relevance_score").to_numpy()) <= 0
+    ), ascending_relevance_err
 
     # Vector search setting
     result = (
@@ -143,9 +143,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         .to_arrow()
     )
     assert len(result) == 30
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-        ascending_relevance_err
-    )
+    assert np.all(
+        np.diff(result.column("_relevance_score").to_numpy()) <= 0
+    ), ascending_relevance_err
     result_explicit = (
         table.search(query_vector, vector_column_name="vector")
         .rerank(reranker=reranker, query_string=query)
@@ -168,9 +168,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         .to_arrow()
     )
     assert len(result) > 0
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-        ascending_relevance_err
-    )
+    assert np.all(
+        np.diff(result.column("_relevance_score").to_numpy()) <= 0
+    ), ascending_relevance_err
 
     # empty FTS results
     query = "abcxyz" * 100
@@ -185,9 +185,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
 
     # should return _relevance_score column
     assert "_relevance_score" in result.column_names
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-        ascending_relevance_err
-    )
+    assert np.all(
+        np.diff(result.column("_relevance_score").to_numpy()) <= 0
+    ), ascending_relevance_err
 
     # Multi-vector search setting
     rs1 = table.search(query, vector_column_name="vector").limit(10).with_row_id(True)
@@ -262,9 +262,9 @@ def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
         "represents the relevance of the result to the query & should "
         "be descending."
     )
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-        ascending_relevance_err
-    )
+    assert np.all(
+        np.diff(result.column("_relevance_score").to_numpy()) <= 0
+    ), ascending_relevance_err
 
     # Test with empty FTS results
     query = "abcxyz" * 100
@@ -278,9 +278,9 @@ def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
     )
     # should return _relevance_score column
     assert "_relevance_score" in result.column_names
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-        ascending_relevance_err
-    )
+    assert np.all(
+        np.diff(result.column("_relevance_score").to_numpy()) <= 0
+    ), ascending_relevance_err
 
 
 @pytest.mark.parametrize("use_tantivy", [True, False])

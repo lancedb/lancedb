@@ -15,7 +15,6 @@ from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.embeddings import (
     EmbeddingFunctionConfig,
     EmbeddingFunctionRegistry,
-    with_embeddings,
 )
 from lancedb.embeddings.base import TextEmbeddingFunction
 from lancedb.embeddings.registry import get_registry, register
@@ -25,23 +24,6 @@ from lancedb.pydantic import LanceModel, Vector
 
 def mock_embed_func(input_data):
     return [np.random.randn(128).tolist() for _ in range(len(input_data))]
-
-
-def test_with_embeddings():
-    for wrap_api in [True, False]:
-        data = pa.Table.from_arrays(
-            [
-                pa.array(["foo", "bar"]),
-                pa.array([10.0, 20.0]),
-            ],
-            names=["text", "price"],
-        )
-        data = with_embeddings(mock_embed_func, data, wrap_api=wrap_api)
-        assert data.num_columns == 3
-        assert data.num_rows == 2
-        assert data.column_names == ["text", "price", "vector"]
-        assert data.column("text").to_pylist() == ["foo", "bar"]
-        assert data.column("price").to_pylist() == [10.0, 20.0]
 
 
 def test_embedding_function(tmp_path):
@@ -419,17 +401,17 @@ def test_embedding_function_safe_model_dump(embedding_type):
 
     dumped_model = model.safe_model_dump()
 
-    assert all(not k.startswith("_") for k in dumped_model.keys()), (
-        f"{embedding_type}: Dumped model contains keys starting with underscore"
-    )
+    assert all(
+        not k.startswith("_") for k in dumped_model.keys()
+    ), f"{embedding_type}: Dumped model contains keys starting with underscore"
 
-    assert "max_retries" in dumped_model, (
-        f"{embedding_type}: Essential field 'max_retries' is missing from dumped model"
-    )
+    assert (
+        "max_retries" in dumped_model
+    ), f"{embedding_type}: Essential field 'max_retries' is missing from dumped model"
 
-    assert isinstance(dumped_model, dict), (
-        f"{embedding_type}: Dumped model is not a dictionary"
-    )
+    assert isinstance(
+        dumped_model, dict
+    ), f"{embedding_type}: Dumped model is not a dictionary"
 
     for key in model.__dict__:
         if key.startswith("_"):
