@@ -37,6 +37,7 @@ from .dependencies import (
     polars as pl,
 )
 import pyarrow as pa
+import pyarrow.dataset
 import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 import numpy as np

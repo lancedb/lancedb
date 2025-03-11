@@ -7,6 +7,7 @@ from typing import Iterable, List, Optional, Union
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.dataset
 
 from .dependencies import pandas as pd
 
