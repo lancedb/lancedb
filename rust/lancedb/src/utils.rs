@@ -166,13 +166,16 @@ pub fn supported_vector_data_type(dtype: &DataType) -> bool {
 
 /// Note: this is temporary until we get a proper datatype conversion in Lance.
 pub fn string_to_datatype(s: &str) -> Option<DataType> {
-    let mut data_type = serde_json::Value::String(s.to_string());
-    dbg!(&data_type);
+    let mut data_type: serde_json::Value = {
+        if let Ok(data_type) = serde_json::from_str(s) {
+            data_type
+        } else {
+            serde_json::Value::String(s.to_string())
+        }
+    };
     if data_type.get("type").is_none() {
         data_type = serde_json::Value::Object([("type".to_string(), data_type)].iter().cloned().collect());
     }
-    // let json_type =
-    //     serde_json::Value::Object([("type".to_string(), data_type)].iter().cloned().collect());
     let json_type: JsonDataType = serde_json::from_value(data_type).ok()?;
     (&json_type).try_into().ok()
 }

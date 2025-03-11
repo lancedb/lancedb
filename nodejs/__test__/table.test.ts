@@ -920,6 +920,23 @@ describe("schema evolution", function () {
       new Field("price", new Float64(), true),
     ]);
     expect(await table.schema()).toEqual(expectedSchema2);
+
+    await table.alterColumns([
+      {
+        path: "vector",
+        dataType: new FixedSizeList(2, new Field("item", new Float64(), true)),
+      },
+    ]);
+    const expectedSchema3 = new Schema([
+      new Field("new_id", new Int32(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float64(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema3);
   });
 
   it("can drop a column from the schema", async function () {

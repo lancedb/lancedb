@@ -635,10 +635,11 @@ export class LocalTable extends Table {
         const dataType = sanitizeType(alteration.dataType);
         return {
           ...alteration,
-          dataType: dataTypeToJson(dataType),
+          dataType: JSON.stringify(dataTypeToJson(dataType)),
         };
       }
     });
+
     await this.inner.alterColumns(processedAlterations);
   }
 

@@ -25,6 +25,7 @@ import {
   LargeBinary,
   List,
   Null,
+  Precision,
   RecordBatch,
   RecordBatchFileReader,
   RecordBatchFileWriter,
@@ -1177,91 +1178,136 @@ function validateSchemaEmbeddings(
   return new Schema(fields, schema.metadata);
 }
 
+interface JsonDataType {
+  type: string;
+  fields?: JsonField[];
+  length?: number;
+}
+
+interface JsonField {
+  name: string;
+  type: JsonDataType;
+  nullable: boolean;
+  metadata: Map<string, string>;
+}
+
 // Matches format of https://github.com/lancedb/lance/blob/main/rust/lance/src/arrow/json.rs
-export function dataTypeToJson(dataType: DataType): string {
+export function dataTypeToJson(dataType: DataType): JsonDataType {
   switch (dataType.typeId) {
     // For primitives, matches https://github.com/lancedb/lance/blob/e12bb9eff2a52f753668d4b62c52e4d72b10d294/rust/lance-core/src/datatypes.rs#L185
     case Type.Null:
-      return JSON.stringify({ type: "null" });
+      return { type: "null" };
     case Type.Bool:
-      return JSON.stringify({ type: "bool" });
+      return { type: "bool" };
     case Type.Int8:
-      return JSON.stringify({ type: "int8" });
+      return { type: "int8" };
     case Type.Int16:
-      return JSON.stringify({ type: "int16" });
+      return { type: "int16" };
     case Type.Int32:
-      return JSON.stringify({ type: "int32" });
+      return { type: "int32" };
     case Type.Int64:
-      return JSON.stringify({ type: "int64" });
+      return { type: "int64" };
     case Type.Uint8:
-      return JSON.stringify({ type: "uint8" });
+      return { type: "uint8" };
     case Type.Uint16:
-      return JSON.stringify({ type: "uint16" });
+      return { type: "uint16" };
     case Type.Uint32:
-      return JSON.stringify({ type: "uint32" });
+      return { type: "uint32" };
     case Type.Uint64:
-      return JSON.stringify({ type: "uint64" });
+      return { type: "uint64" };
+    case Type.Int: {
+      const bitWidth = (dataType as Int).bitWidth;
+      const signed = (dataType as Int).isSigned;
+      const prefix = signed ? "" : "u";
+      return { type: `${prefix}int${bitWidth}` };
+    }
+    case Type.Float: {
+      switch ((dataType as Float).precision) {
+        case Precision.HALF:
+          return { type: "halffloat" };
+        case Precision.SINGLE:
+          return { type: "float" };
+        case Precision.DOUBLE:
+          return { type: "double" };
+      }
+      throw Error("Unsupported float precision");
+    }
     case Type.Float16:
-      return JSON.stringify({ type: "halffloat" });
+      return { type: "halffloat" };
     case Type.Float32:
-      return JSON.stringify({ type: "float" });
+      return { type: "float" };
     case Type.Float64:
-      return JSON.stringify({ type: "double" });
+      return { type: "double" };
     case Type.Utf8:
-      return JSON.stringify({ type: "string" });
+      return { type: "string" };
     case Type.Binary:
-      return JSON.stringify({ type: "binary" });
+      return { type: "binary" };
     case Type.LargeUtf8:
-      return JSON.stringify({ type: "large_string" });
+      return { type: "large_string" };
     case Type.LargeBinary:
-      return JSON.stringify({ type: "large_binary" });
+      return { type: "large_binary" };
     case Type.List:
-      return JSON.stringify({
+      return {
         type: "list",
-        fields: [dataTypeToJson((dataType as List).valueType)],
-      });
+        fields: [fieldToJson((dataType as List).children[0])],
+      };
     case Type.FixedSizeList: {
       const fixedSizeList = dataType as FixedSizeList;
-      return JSON.stringify({
-        type: `fixed_size_list:${dataTypeToJson(fixedSizeList.valueType)}:${fixedSizeList.listSize}`,
-      });
+      return {
+        type: "fixed_size_list",
+        fields: [fieldToJson(fixedSizeList.children[0])],
+        length: fixedSizeList.listSize,
+      };
     }
+    case Type.Struct:
+      return {
+        type: "struct",
+        fields: (dataType as Struct).children.map(fieldToJson),
+      };
     case Type.Date: {
       const unit = (dataType as Date_).unit;
-      return JSON.stringify({
+      return {
         type: unit === DateUnit.DAY ? "date32:day" : "date64:ms",
-      });
+      };
     }
     case Type.Timestamp: {
       const timestamp = dataType as Timestamp;
       const timezone = timestamp.timezone || "-";
-      return JSON.stringify({
+      return {
         type: `timestamp:${timestamp.unit}:${timezone}`,
-      });
+      };
     }
     case Type.Decimal: {
       const decimal = dataType as Decimal;
-      return JSON.stringify({
+      return {
         type: `decimal:${decimal.bitWidth}:${decimal.precision}:${decimal.scale}`,
-      });
+      };
     }
     case Type.Duration: {
       const duration = dataType as Duration;
-      return JSON.stringify({ type: `duration:${duration.unit}` });
+      return { type: `duration:${duration.unit}` };
     }
     case Type.FixedSizeBinary: {
       const byteWidth = (dataType as FixedSizeBinary).byteWidth;
-      return JSON.stringify({ type: `fixed_size_binary:${byteWidth}` });
+      return { type: `fixed_size_binary:${byteWidth}` };
     }
     case Type.Dictionary: {
       const dict = dataType as Dictionary;
-      return JSON.stringify({
-        type: "dict",
-        valueType: dataTypeToJson(dict.valueType),
-        indexType: dataTypeToJson(dict.indices),
-      });
+      const indexType = dataTypeToJson(dict.indices);
+      const valueType = dataTypeToJson(dict.valueType);
+      return {
+        type: `dict:${valueType.type}:${indexType.type}:false`,
+      };
     }
-    default:
-      throw new Error("Unsupported data type");
   }
+  throw new Error("Unsupported data type");
+}
+
+function fieldToJson(field: Field): JsonField {
+  return {
+    name: field.name,
+    type: dataTypeToJson(field.type),
+    nullable: field.nullable,
+    metadata: field.metadata,
+  };
 }
