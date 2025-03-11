@@ -8,7 +8,11 @@ import {
   Bool,
   BufferType,
   DataType,
+  DateUnit,
+  Date_,
+  Decimal,
   Dictionary,
+  Duration,
   Field,
   FixedSizeBinary,
   FixedSizeList,
@@ -27,6 +31,8 @@ import {
   RecordBatchStreamWriter,
   Schema,
   Struct,
+  Timestamp,
+  Type,
   Utf8,
   Vector,
   makeVector as arrowMakeVector,
@@ -1169,4 +1175,93 @@ function validateSchemaEmbeddings(
   }
 
   return new Schema(fields, schema.metadata);
+}
+
+// Matches format of https://github.com/lancedb/lance/blob/main/rust/lance/src/arrow/json.rs
+export function dataTypeToJson(dataType: DataType): string {
+  switch (dataType.typeId) {
+    // For primitives, matches https://github.com/lancedb/lance/blob/e12bb9eff2a52f753668d4b62c52e4d72b10d294/rust/lance-core/src/datatypes.rs#L185
+    case Type.Null:
+      return JSON.stringify({ type: "null" });
+    case Type.Bool:
+      return JSON.stringify({ type: "bool" });
+    case Type.Int8:
+      return JSON.stringify({ type: "int8" });
+    case Type.Int16:
+      return JSON.stringify({ type: "int16" });
+    case Type.Int32:
+      return JSON.stringify({ type: "int32" });
+    case Type.Int64:
+      return JSON.stringify({ type: "int64" });
+    case Type.Uint8:
+      return JSON.stringify({ type: "uint8" });
+    case Type.Uint16:
+      return JSON.stringify({ type: "uint16" });
+    case Type.Uint32:
+      return JSON.stringify({ type: "uint32" });
+    case Type.Uint64:
+      return JSON.stringify({ type: "uint64" });
+    case Type.Float16:
+      return JSON.stringify({ type: "halffloat" });
+    case Type.Float32:
+      return JSON.stringify({ type: "float" });
+    case Type.Float64:
+      return JSON.stringify({ type: "double" });
+    case Type.Utf8:
+      return JSON.stringify({ type: "string" });
+    case Type.Binary:
+      return JSON.stringify({ type: "binary" });
+    case Type.LargeUtf8:
+      return JSON.stringify({ type: "large_string" });
+    case Type.LargeBinary:
+      return JSON.stringify({ type: "large_binary" });
+    case Type.List:
+      return JSON.stringify({
+        type: "list",
+        fields: [dataTypeToJson((dataType as List).valueType)],
+      });
+    case Type.FixedSizeList: {
+      const fixedSizeList = dataType as FixedSizeList;
+      return JSON.stringify({
+        type: `fixed_size_list:${dataTypeToJson(fixedSizeList.valueType)}:${fixedSizeList.listSize}`,
+      });
+    }
+    case Type.Date: {
+      const unit = (dataType as Date_).unit;
+      return JSON.stringify({
+        type: unit === DateUnit.DAY ? "date32:day" : "date64:ms",
+      });
+    }
+    case Type.Timestamp: {
+      const timestamp = dataType as Timestamp;
+      const timezone = timestamp.timezone || "-";
+      return JSON.stringify({
+        type: `timestamp:${timestamp.unit}:${timezone}`,
+      });
+    }
+    case Type.Decimal: {
+      const decimal = dataType as Decimal;
+      return JSON.stringify({
+        type: `decimal:${decimal.bitWidth}:${decimal.precision}:${decimal.scale}`,
+      });
+    }
+    case Type.Duration: {
+      const duration = dataType as Duration;
+      return JSON.stringify({ type: `duration:${duration.unit}` });
+    }
+    case Type.FixedSizeBinary: {
+      const byteWidth = (dataType as FixedSizeBinary).byteWidth;
+      return JSON.stringify({ type: `fixed_size_binary:${byteWidth}` });
+    }
+    case Type.Dictionary: {
+      const dict = dataType as Dictionary;
+      return JSON.stringify({
+        type: "dict",
+        valueType: dataTypeToJson(dict.valueType),
+        indexType: dataTypeToJson(dict.indices),
+      });
+    }
+    default:
+      throw new Error("Unsupported data type");
+  }
 }
