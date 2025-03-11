@@ -13,6 +13,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  # Color output for pytest is off by default.
+  PYTEST_ADDOPTS: "--color=yes"
+  FORCE_COLOR: "1"
+
 jobs:
   lint:
     name: "Lint"
