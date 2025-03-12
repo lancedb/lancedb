@@ -1299,7 +1299,7 @@ export interface IvfPQIndexConfig {
   index_name?: string
 
   /**
-   * Metric type, L2 or Cosine
+   * Metric type, l2 or Cosine
    */
   metric_type?: MetricType
 

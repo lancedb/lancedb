@@ -15,7 +15,7 @@ Currently, LanceDB supports the following metrics:
 
 | Metric    | Description                                                                 |
 | --------- | --------------------------------------------------------------------------- |
-| `l2`      | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
+| `l2`      | [Euclidean / l2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
 | `cosine`  | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)        |
 | `dot`     | [Dot Production](https://en.wikipedia.org/wiki/Dot_product)                 |
 | `hamming` | [Hamming Distance](https://en.wikipedia.org/wiki/Hamming_distance)          |
