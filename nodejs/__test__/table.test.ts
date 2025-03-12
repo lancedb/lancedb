@@ -24,6 +24,7 @@ import {
   Utf8,
   makeArrowTable,
 } from "../lancedb/arrow";
+import * as arrow from "../lancedb/arrow";
 import {
   EmbeddingFunction,
   LanceSchema,
@@ -920,6 +921,93 @@ describe("schema evolution", function () {
       new Field("price", new Float64(), true),
     ]);
     expect(await table.schema()).toEqual(expectedSchema2);
+
+    await table.alterColumns([
+      {
+        path: "vector",
+        dataType: new FixedSizeList(2, new Field("item", new Float64(), true)),
+      },
+    ]);
+    const expectedSchema3 = new Schema([
+      new Field("new_id", new Int32(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float64(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema3);
+  });
+
+  it("can cast to various types", async function () {
+    const con = await connect(tmpDir.name);
+
+    // integers
+    const intTypes = [
+      new arrow.Int8(),
+      new arrow.Int16(),
+      new arrow.Int32(),
+      new arrow.Int64(),
+      new arrow.Uint8(),
+      new arrow.Uint16(),
+      new arrow.Uint32(),
+      new arrow.Uint64(),
+    ];
+    const tableInts = await con.createTable("ints", [{ id: 1n }], {
+      schema: new Schema([new Field("id", new Int64(), true)]),
+    });
+    for (const intType of intTypes) {
+      await tableInts.alterColumns([{ path: "id", dataType: intType }]);
+      const schema = new Schema([new Field("id", intType, true)]);
+      expect(await tableInts.schema()).toEqual(schema);
+    }
+
+    // floats
+    const floatTypes = [
+      new arrow.Float16(),
+      new arrow.Float32(),
+      new arrow.Float64(),
+    ];
+    const tableFloats = await con.createTable("floats", [{ val: 2.1 }], {
+      schema: new Schema([new Field("val", new Float32(), true)]),
+    });
+    for (const floatType of floatTypes) {
+      await tableFloats.alterColumns([{ path: "val", dataType: floatType }]);
+      const schema = new Schema([new Field("val", floatType, true)]);
+      expect(await tableFloats.schema()).toEqual(schema);
+    }
+
+    // Lists of floats
+    const listTypes = [
+      new arrow.List(new arrow.Field("item", new arrow.Float32(), true)),
+      new arrow.FixedSizeList(
+        2,
+        new arrow.Field("item", new arrow.Float64(), true),
+      ),
+      new arrow.FixedSizeList(
+        2,
+        new arrow.Field("item", new arrow.Float16(), true),
+      ),
+      new arrow.FixedSizeList(
+        2,
+        new arrow.Field("item", new arrow.Float32(), true),
+      ),
+    ];
+    const tableLists = await con.createTable("lists", [{ val: [2.1, 3.2] }], {
+      schema: new Schema([
+        new Field(
+          "val",
+          new FixedSizeList(2, new arrow.Field("item", new Float32())),
+          true,
+        ),
+      ]),
+    });
+    for (const listType of listTypes) {
+      await tableLists.alterColumns([{ path: "val", dataType: listType }]);
+      const schema = new Schema([new Field("val", listType, true)]);
+      expect(await tableLists.schema()).toEqual(schema);
+    }
   });
 
   it("can drop a column from the schema", async function () {

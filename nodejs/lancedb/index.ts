@@ -14,7 +14,6 @@ import {
 
 export {
   AddColumnsSql,
-  ColumnAlteration,
   ConnectionOptions,
   IndexStatistics,
   IndexConfig,
@@ -65,6 +64,7 @@ export {
   UpdateOptions,
   OptimizeOptions,
   Version,
+  ColumnAlteration,
 } from "./table";
 
 export { MergeInsertBuilder } from "./merge";
