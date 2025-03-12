@@ -11,7 +11,7 @@ use lance::dataset::{ReadParams, WriteMode};
 use lance::io::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
-use lance_table::io::commit::commit_handler_from_url;
+use lance_table::io::commit::{commit_handler_from_url, RenameCommitHandler};
 use object_store::local::LocalFileSystem;
 use snafu::{OptionExt, ResultExt};
 
@@ -128,6 +128,8 @@ pub struct ListingDatabase {
 
     // Options for tables created by this connection
     new_table_config: NewTableConfig,
+
+    store_params: Option<ObjectStoreParams>,
 }
 
 impl std::fmt::Display for ListingDatabase {
@@ -226,9 +228,19 @@ impl ListingDatabase {
 
                 let registry = Arc::new(ObjectStoreRegistry::default());
                 let storage_options = request.storage_options.clone();
-                let os_params = ObjectStoreParams {
-                    storage_options: Some(storage_options.clone()),
-                    ..Default::default()
+                let os_params = if let Some(os) = &request.object_store {
+                    ObjectStoreParams {
+                        storage_options: Some(storage_options.clone()),
+                        object_store: Some((os.0.clone(), url)),
+                        use_constant_size_upload_parts: os.1.is_some(),
+                        block_size: os.1,
+                        ..Default::default()
+                    }
+                } else {
+                    ObjectStoreParams {
+                        storage_options: Some(storage_options.clone()),
+                        ..Default::default()
+                    }
                 };
                 let (object_store, base_path) =
                     ObjectStore::from_uri_and_params(registry, &plain_uri, &os_params).await?;
@@ -254,6 +266,11 @@ impl ListingDatabase {
                     read_consistency_interval: request.read_consistency_interval,
                     storage_options,
                     new_table_config: options.new_table_config,
+                    store_params: if os_params.object_store.is_some() {
+                        Some(os_params)
+                    } else {
+                        None
+                    },
                 })
             }
             Err(_) => {
@@ -286,6 +303,7 @@ impl ListingDatabase {
             read_consistency_interval,
             storage_options: HashMap::new(),
             new_table_config,
+            store_params: None,
         })
     }
 
@@ -432,6 +450,11 @@ impl Database for ListingDatabase {
             write_params.mode = WriteMode::Overwrite;
         }
 
+        if self.store_params.is_some() {
+            write_params.commit_handler = Some(Arc::new(RenameCommitHandler));
+            write_params.store_params = self.store_params.clone();
+        }
+
         let data_schema = request.data.arrow_schema();
 
         match NativeTable::create(
@@ -496,13 +519,18 @@ impl Database for ListingDatabase {
         // If we have a user provided ReadParams use that
         // If we don't then start with the default ReadParams and customize it with
         // the options from the OpenTableBuilder
-        let read_params = request.lance_read_params.unwrap_or_else(|| {
+        let mut read_params = request.lance_read_params.unwrap_or_else(|| {
             let mut default_params = ReadParams::default();
             if let Some(index_cache_size) = request.index_cache_size {
                 default_params.index_cache_size = index_cache_size as usize;
             }
             default_params
         });
+
+        if self.store_params.is_some() {
+            read_params.commit_handler = Some(Arc::new(RenameCommitHandler));
+            read_params.store_options = self.store_params.clone();
+        }
 
         let native_table = Arc::new(
             NativeTable::open_with_params(

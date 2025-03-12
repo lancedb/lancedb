@@ -42,7 +42,7 @@ use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
 use lance_table::format::Manifest;
-use lance_table::io::commit::ManifestNamingScheme;
+use lance_table::io::commit::{ManifestNamingScheme, RenameCommitHandler};
 use log::info;
 use serde::{Deserialize, Serialize};
 
@@ -1213,16 +1213,20 @@ impl NativeTable {
             None => params,
         };
 
-        let dataset = DatasetBuilder::from_uri(uri)
-            .with_read_params(params)
-            .load()
-            .await
-            .map_err(|e| match e {
-                lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
-                    name: name.to_string(),
-                },
-                source => Error::Lance { source },
-            })?;
+        let object_store = params
+            .store_options
+            .as_ref()
+            .and_then(|opts| opts.object_store.clone());
+        let mut dataset = DatasetBuilder::from_uri(uri).with_read_params(params);
+        if let Some((object_store, url)) = object_store {
+            dataset = dataset.with_object_store(object_store, url, Arc::new(RenameCommitHandler));
+        }
+        let dataset = dataset.load().await.map_err(|e| match e {
+            lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
+                name: name.to_string(),
+            },
+            source => Error::Lance { source },
+        })?;
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
 
