@@ -117,6 +117,7 @@ impl DatabaseOptions for ListingDatabaseOptions {
     }
 }
 
+#[derive(Clone, Debug, Default)]
 pub struct ListingDatabaseOptionsBuilder {
     options: ListingDatabaseOptions,
 }

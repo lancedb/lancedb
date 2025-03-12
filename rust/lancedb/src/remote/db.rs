@@ -86,9 +86,9 @@ impl RemoteDatabaseOptions {
     }
 
     pub(crate) fn parse_from_map(map: &HashMap<String, String>) -> Result<Self> {
-        let api_key = map.get(OPT_REMOTE_API_KEY).map(|v| v.clone());
-        let region = map.get(OPT_REMOTE_REGION).map(|v| v.clone());
-        let host_override = map.get(OPT_REMOTE_HOST_OVERRIDE).map(|v| v.clone());
+        let api_key = map.get(OPT_REMOTE_API_KEY).cloned();
+        let region = map.get(OPT_REMOTE_REGION).cloned();
+        let host_override = map.get(OPT_REMOTE_HOST_OVERRIDE).cloned();
         let storage_options = map
             .iter()
             .filter(|(key, _)| !key.starts_with(OPT_REMOTE_PREFIX))
@@ -120,6 +120,7 @@ impl DatabaseOptions for RemoteDatabaseOptions {
     }
 }
 
+#[derive(Clone, Debug, Default)]
 pub struct RemoteDatabaseOptionsBuilder {
     options: RemoteDatabaseOptions,
 }
