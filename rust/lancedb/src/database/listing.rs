@@ -51,10 +51,22 @@ pub struct NewTableConfig {
 pub struct ListingDatabaseOptions {
     /// Controls what kind of Lance tables will be created by this database
     pub new_table_config: NewTableConfig,
+    /// Storage options configure the storage layer (e.g. S3, GCS, Azure, etc.)
+    ///
+    /// These are used to create/list tables and they are inherited by all tables
+    /// opened by this database.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub storage_options: HashMap<String, String>,
 }
 
 impl ListingDatabaseOptions {
-    fn parse_from_map(map: &HashMap<String, String>) -> Result<Self> {
+    /// Create a new builder for the listing database options
+    pub fn builder() -> ListingDatabaseOptionsBuilder {
+        ListingDatabaseOptionsBuilder::new()
+    }
+
+    pub(crate) fn parse_from_map(map: &HashMap<String, String>) -> Result<Self> {
         let new_table_config = NewTableConfig {
             data_storage_version: map
                 .get(OPT_NEW_TABLE_STORAGE_VERSION)
@@ -72,7 +84,19 @@ impl ListingDatabaseOptions {
                 })
                 .transpose()?,
         };
-        Ok(Self { new_table_config })
+        // We just assume that any options that are not new table config options are storage options
+        let storage_options = map
+            .iter()
+            .filter(|(key, _)| {
+                key.as_str() != OPT_NEW_TABLE_STORAGE_VERSION
+                    && key.as_str() != OPT_NEW_TABLE_V2_MANIFEST_PATHS
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        Ok(Self {
+            new_table_config,
+            storage_options,
+        })
     }
 }
 
@@ -90,6 +114,70 @@ impl DatabaseOptions for ListingDatabaseOptions {
                 enable_v2_manifest_paths.to_string(),
             );
         }
+    }
+}
+
+pub struct ListingDatabaseOptionsBuilder {
+    options: ListingDatabaseOptions,
+}
+
+impl ListingDatabaseOptionsBuilder {
+    pub fn new() -> Self {
+        Self {
+            options: ListingDatabaseOptions::default(),
+        }
+    }
+}
+
+impl ListingDatabaseOptionsBuilder {
+    /// Set the storage version to use for new tables
+    ///
+    /// # Arguments
+    ///
+    /// * `data_storage_version` - The storage version to use for new tables
+    pub fn data_storage_version(mut self, data_storage_version: LanceFileVersion) -> Self {
+        self.options.new_table_config.data_storage_version = Some(data_storage_version);
+        self
+    }
+
+    /// Enable V2 manifest paths for new tables
+    ///
+    /// # Arguments
+    ///
+    /// * `enable_v2_manifest_paths` - Whether to enable V2 manifest paths for new tables
+    pub fn enable_v2_manifest_paths(mut self, enable_v2_manifest_paths: bool) -> Self {
+        self.options.new_table_config.enable_v2_manifest_paths = Some(enable_v2_manifest_paths);
+        self
+    }
+
+    /// Set an option for the storage layer.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.options
+            .storage_options
+            .insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple options for the storage layer.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (key, value) in pairs {
+            self.options
+                .storage_options
+                .insert(key.into(), value.into());
+        }
+        self
+    }
+
+    /// Build the options
+    pub fn build(self) -> ListingDatabaseOptions {
+        self.options
     }
 }
 
@@ -164,7 +252,7 @@ impl ListingDatabase {
         let uri = &request.uri;
         let parse_res = url::Url::parse(uri);
 
-        let options = ListingDatabaseOptions::parse_from_map(&request.storage_options)?;
+        let options = ListingDatabaseOptions::parse_from_map(&request.options)?;
 
         // TODO: pass params regardless of OS
         match parse_res {
@@ -225,9 +313,8 @@ impl ListingDatabase {
                 let plain_uri = url.to_string();
 
                 let registry = Arc::new(ObjectStoreRegistry::default());
-                let storage_options = request.storage_options.clone();
                 let os_params = ObjectStoreParams {
-                    storage_options: Some(storage_options.clone()),
+                    storage_options: Some(options.storage_options.clone()),
                     ..Default::default()
                 };
                 let (object_store, base_path) =
@@ -252,7 +339,7 @@ impl ListingDatabase {
                     object_store,
                     store_wrapper: write_store_wrapper,
                     read_consistency_interval: request.read_consistency_interval,
-                    storage_options,
+                    storage_options: options.storage_options,
                     new_table_config: options.new_table_config,
                 })
             }
