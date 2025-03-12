@@ -52,6 +52,7 @@ impl ListingCatalogOptions {
     }
 }
 
+#[derive(Clone, Debug, Default)]
 pub struct ListingCatalogOptionsBuilder {
     options: ListingCatalogOptions,
 }
