@@ -12,6 +12,10 @@ use crate::database::Database;
 use crate::error::Result;
 use async_trait::async_trait;
 
+pub trait CatalogOptions {
+    fn serialize_into_map(&self, map: &mut HashMap<String, String>);
+}
+
 /// Request parameters for listing databases
 #[derive(Clone, Debug, Default)]
 pub struct DatabaseNamesRequest {
