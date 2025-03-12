@@ -26,7 +26,10 @@ use crate::embeddings::{
 };
 use crate::error::{Error, Result};
 #[cfg(feature = "remote")]
-use crate::remote::client::ClientConfig;
+use crate::remote::{
+    client::ClientConfig,
+    db::{OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION},
+};
 use crate::table::{TableDefinition, WriteOptions};
 use crate::Table;
 pub use lance_encoding::version::LanceFileVersion;
@@ -607,16 +610,11 @@ pub struct ConnectRequest {
     /// - `db://dbname` - LanceDB Cloud
     pub uri: String,
 
-    /// LanceDB Cloud API key, required if using Lance Cloud
-    pub api_key: Option<String>,
-    /// LanceDB Cloud region, required if using Lance Cloud
-    pub region: Option<String>,
-    /// LanceDB Cloud host override, only required if using an on-premises Lance Cloud instance
-    pub host_override: Option<String>,
     #[cfg(feature = "remote")]
     pub client_config: ClientConfig,
 
-    pub storage_options: HashMap<String, String>,
+    /// Database/Catalog specific options
+    pub options: HashMap<String, String>,
 
     /// The interval at which to check for updates from other processes.
     ///
@@ -643,35 +641,73 @@ impl ConnectBuilder {
         Self {
             request: ConnectRequest {
                 uri: uri.to_string(),
-                api_key: None,
-                region: None,
-                host_override: None,
                 #[cfg(feature = "remote")]
                 client_config: Default::default(),
                 read_consistency_interval: None,
-                storage_options: HashMap::new(),
+                options: HashMap::new(),
             },
             embedding_registry: None,
         }
     }
 
+    /// Set the LanceDB Cloud API key.
+    ///
+    /// This option is only used when connecting to LanceDB Cloud (db:// URIs)
+    /// and will be ignored for other URIs.
+    ///
+    /// # Arguments
+    ///
+    /// * `api_key` - The API key to use for the connection
+    #[cfg(feature = "remote")]
     pub fn api_key(mut self, api_key: &str) -> Self {
-        self.request.api_key = Some(api_key.to_string());
+        self.request
+            .options
+            .insert(OPT_REMOTE_API_KEY.to_string(), api_key.to_string());
         self
     }
 
+    /// Set the LanceDB Cloud region.
+    ///
+    /// This option is only used when connecting to LanceDB Cloud (db:// URIs)
+    /// and will be ignored for other URIs.
+    ///
+    /// # Arguments
+    ///
+    /// * `region` - The region to use for the connection
+    #[cfg(feature = "remote")]
     pub fn region(mut self, region: &str) -> Self {
-        self.request.region = Some(region.to_string());
+        self.request
+            .options
+            .insert(OPT_REMOTE_REGION.to_string(), region.to_string());
         self
     }
 
+    /// Set the LanceDB Cloud host override.
+    ///
+    /// This option is only used when connecting to LanceDB Cloud (db:// URIs)
+    /// and will be ignored for other URIs.
+    ///
+    /// # Arguments
+    ///
+    /// * `host_override` - The host override to use for the connection
+    #[cfg(feature = "remote")]
     pub fn host_override(mut self, host_override: &str) -> Self {
-        self.request.host_override = Some(host_override.to_string());
+        self.request.options.insert(
+            OPT_REMOTE_HOST_OVERRIDE.to_string(),
+            host_override.to_string(),
+        );
         self
     }
 
+    /// Set the database specific options
+    ///
+    /// See [crate::database::listing::ListingDatabaseOptions] for the options available for
+    /// native LanceDB databases.
+    ///
+    /// See [crate::remote::db::RemoteDatabaseOptions] for the options available for
+    /// LanceDB Cloud and LanceDB Enterprise.
     pub fn database_options(mut self, database_options: &dyn DatabaseOptions) -> Self {
-        database_options.serialize_into_map(&mut self.request.storage_options);
+        database_options.serialize_into_map(&mut self.request.options);
         self
     }
 
@@ -709,14 +745,14 @@ impl ConnectBuilder {
     #[deprecated(note = "Pass through storage_options instead")]
     pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
         self.request
-            .storage_options
+            .options
             .insert("aws_access_key_id".into(), aws_creds.key_id.clone());
         self.request
-            .storage_options
+            .options
             .insert("aws_secret_access_key".into(), aws_creds.secret_key.clone());
         if let Some(token) = &aws_creds.token {
             self.request
-                .storage_options
+                .options
                 .insert("aws_session_token".into(), token.clone());
         }
         self
@@ -726,9 +762,7 @@ impl ConnectBuilder {
     ///
     /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.request
-            .storage_options
-            .insert(key.into(), value.into());
+        self.request.options.insert(key.into(), value.into());
         self
     }
 
@@ -740,9 +774,7 @@ impl ConnectBuilder {
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
         for (key, value) in pairs {
-            self.request
-                .storage_options
-                .insert(key.into(), value.into());
+            self.request.options.insert(key.into(), value.into());
         }
         self
     }
@@ -772,19 +804,23 @@ impl ConnectBuilder {
 
     #[cfg(feature = "remote")]
     fn execute_remote(self) -> Result<Connection> {
-        let region = self.request.region.ok_or_else(|| Error::InvalidInput {
+        use crate::remote::db::RemoteDatabaseOptions;
+
+        let options = RemoteDatabaseOptions::parse_from_map(&self.request.options)?;
+
+        let region = options.region.ok_or_else(|| Error::InvalidInput {
             message: "A region is required when connecting to LanceDb Cloud".to_string(),
         })?;
-        let api_key = self.request.api_key.ok_or_else(|| Error::InvalidInput {
+        let api_key = options.api_key.ok_or_else(|| Error::InvalidInput {
             message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
         })?;
 
-        let storage_options = StorageOptions(self.request.storage_options.clone());
+        let storage_options = StorageOptions(options.storage_options.clone());
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
             &self.request.uri,
             &api_key,
             &region,
-            self.request.host_override,
+            options.host_override,
             self.request.client_config,
             storage_options.into(),
         )?);
@@ -844,19 +880,16 @@ impl CatalogConnectBuilder {
         Self {
             request: ConnectRequest {
                 uri: uri.to_string(),
-                api_key: None,
-                region: None,
-                host_override: None,
                 #[cfg(feature = "remote")]
                 client_config: Default::default(),
                 read_consistency_interval: None,
-                storage_options: HashMap::new(),
+                options: HashMap::new(),
             },
         }
     }
 
     pub fn catalog_options(mut self, catalog_options: &dyn CatalogOptions) -> Self {
-        catalog_options.serialize_into_map(&mut self.request.storage_options);
+        catalog_options.serialize_into_map(&mut self.request.options);
         self
     }
 
@@ -1036,6 +1069,7 @@ mod tests {
                     data_storage_version: Some(LanceFileVersion::Legacy),
                     ..Default::default()
                 },
+                ..Default::default()
             })
             .execute()
             .await
@@ -1068,6 +1102,7 @@ mod tests {
                     data_storage_version: Some(LanceFileVersion::Stable),
                     ..Default::default()
                 },
+                ..Default::default()
             })
             .execute()
             .await
