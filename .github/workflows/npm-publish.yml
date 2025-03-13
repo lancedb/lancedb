@@ -156,6 +156,7 @@ jobs:
           curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
           echo "source $HOME/.cargo/env" >> saved_env
           echo "export CC=clang" >> saved_env
+          echo "export CXX=clang++" >> saved_env
           echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'" >> saved_env
       - name: Configure aarch64 build
         if: ${{ matrix.config.arch == 'aarch64' }}
@@ -255,6 +256,7 @@ jobs:
           curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
           echo "source $HOME/.cargo/env" >> saved_env
           echo "export CC=clang" >> saved_env
+          echo "export CXX=clang++" >> saved_env
           echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'" >> saved_env
           echo "export X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_INCLUDE_DIR=/usr/include" >> saved_env
           echo "export X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_LIB_DIR=/usr/lib" >> saved_env
