@@ -28,5 +28,13 @@ napi-derive = "2.16.4"
 lzma-sys = { version = "*", features = ["static"] }
 log.workspace = true
 
+aws-lc-rs = "1"
+
 [build-dependencies]
 napi-build = "2.1"
+
+[features]
+default = ["remote"]
+fp16kernels = ["lancedb/fp16kernels"]
+remote = ["lancedb/remote"]
+fips = ["aws-lc-rs/fips"]

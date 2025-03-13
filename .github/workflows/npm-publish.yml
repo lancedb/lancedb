@@ -1,500 +1,29 @@
 name: NPM Publish
 
+env:
+  MACOSX_DEPLOYMENT_TARGET: '10.13'
+  CARGO_INCREMENTAL: '1'
+
+permissions:
+  contents: write
+  id-token: write
+
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
+  pull_request:
+    # This should trigger a dry run (we skip the final publish step)
+    paths:
+      - .github/workflows/npm-publish.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  node:
-    name: vectordb Typescript
-    runs-on: ubuntu-latest
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    defaults:
-      run:
-        shell: bash
-        working-directory: node
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - uses: actions/setup-node@v3
-        with:
-          node-version: 20
-          cache: "npm"
-          cache-dependency-path: node/package-lock.json
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y protobuf-compiler libssl-dev
-      - name: Build
-        run: |
-          npm ci
-          npm run tsc
-          npm pack
-      - name: Upload Linux Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-package
-          path: |
-            node/vectordb-*.tgz
-
-  node-macos:
-    name: vectordb ${{ matrix.config.arch }}
-    strategy:
-      matrix:
-        config:
-          - arch: x86_64-apple-darwin
-            runner: macos-13
-          - arch: aarch64-apple-darwin
-            # xlarge is implicitly arm64.
-            runner: macos-14
-    runs-on: ${{ matrix.config.runner }}
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install system dependencies
-        run: brew install protobuf
-      - name: Install npm dependencies
-        run: |
-          cd node
-          npm ci
-      - name: Build MacOS native node modules
-        run: bash ci/build_macos_artifacts.sh ${{ matrix.config.arch }}
-      - name: Upload Darwin Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-native-darwin-${{ matrix.config.arch }}
-          path: |
-            node/dist/lancedb-vectordb-darwin*.tgz
-
-  nodejs-macos:
-    name: lancedb ${{ matrix.config.arch }}
-    strategy:
-      matrix:
-        config:
-          - arch: x86_64-apple-darwin
-            runner: macos-13
-          - arch: aarch64-apple-darwin
-            # xlarge is implicitly arm64.
-            runner: macos-14
-    runs-on: ${{ matrix.config.runner }}
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install system dependencies
-        run: brew install protobuf
-      - name: Install npm dependencies
-        run: |
-          cd nodejs
-          npm ci
-      - name: Build MacOS native nodejs modules
-        run: bash ci/build_macos_artifacts_nodejs.sh ${{ matrix.config.arch }}
-      - name: Upload Darwin Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nodejs-native-darwin-${{ matrix.config.arch }}
-          path: |
-            nodejs/dist/*.node
-
-  node-linux-gnu:
-    name: vectordb (${{ matrix.config.arch}}-unknown-linux-gnu)
-    runs-on: ${{ matrix.config.runner }}
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - arch: x86_64
-            runner: ubuntu-latest
-          - arch: aarch64
-            # For successful fat LTO builds, we need a large runner to avoid OOM errors.
-            runner: warp-ubuntu-latest-arm64-4x
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      # To avoid OOM errors on ARM, we create a swap file.
-      - name: Configure aarch64 build
-        if: ${{ matrix.config.arch == 'aarch64' }}
-        run: |
-          free -h
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          echo "/swapfile swap swap defaults 0 0" >> sudo /etc/fstab
-          # print info
-          swapon --show
-          free -h
-      - name: Build Linux Artifacts
-        run: |
-          bash ci/build_linux_artifacts.sh ${{ matrix.config.arch }} ${{ matrix.config.arch }}-unknown-linux-gnu
-      - name: Upload Linux Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-native-linux-${{ matrix.config.arch }}-gnu
-          path: |
-            node/dist/lancedb-vectordb-linux*.tgz
-
-  nodejs-linux-gnu:
-    name: lancedb (${{ matrix.config.arch}}-unknown-linux-gnu
-    runs-on: ${{ matrix.config.runner }}
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - arch: x86_64
-            runner: ubuntu-latest
-          - arch: aarch64
-            # For successful fat LTO builds, we need a large runner to avoid OOM errors.
-            runner: buildjet-16vcpu-ubuntu-2204-arm
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      # Buildjet aarch64 runners have only 1.5 GB RAM per core, vs 3.5 GB per core for
-      # x86_64 runners. To avoid OOM errors on ARM, we create a swap file.
-      - name: Configure aarch64 build
-        if: ${{ matrix.config.arch == 'aarch64' }}
-        run: |
-          free -h
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          echo "/swapfile swap swap defaults 0 0" >> sudo /etc/fstab
-          # print info
-          swapon --show
-          free -h
-      - name: Build Linux Artifacts
-        run: |
-          bash ci/build_linux_artifacts_nodejs.sh ${{ matrix.config.arch }}
-      - name: Upload Linux Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nodejs-native-linux-${{ matrix.config.arch }}-gnu
-          path: |
-            nodejs/dist/*.node
-      # The generic files are the same in all distros so we just pick
-      # one to do the upload.
-      - name: Upload Generic Artifacts
-        if: ${{ matrix.config.arch == 'x86_64' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: nodejs-dist
-          path: |
-            nodejs/dist/*
-            !nodejs/dist/*.node
-
-  nodejs-linux-musl:
-    name: lancedb (${{ matrix.config.arch}}-unknown-linux-musl
-    runs-on: ubuntu-latest
-    container: alpine:edge
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - arch: x86_64
-          - arch: aarch64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install common dependencies
-        run: |
-          apk add protobuf-dev curl clang mold grep npm bash
-          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
-          echo "source $HOME/.cargo/env" >> saved_env
-          echo "export CC=clang" >> saved_env
-          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'" >> saved_env
-      - name: Configure aarch64 build
-        if: ${{ matrix.config.arch == 'aarch64' }}
-        run: |
-          source "$HOME/.cargo/env"
-          rustup target add aarch64-unknown-linux-musl
-          crt=$(realpath $(dirname $(rustup which rustc))/../lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained)
-          sysroot_lib=/usr/aarch64-unknown-linux-musl/usr/lib
-          apk_url=https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64/
-          curl -sSf $apk_url > apk_list
-          for pkg in gcc libgcc musl; do curl -sSf $apk_url$(cat apk_list | grep -oP '(?<=")'$pkg'-\d.*?(?=")') | tar zxf -; done
-          mkdir -p $sysroot_lib
-          echo 'GROUP ( libgcc_s.so.1 -lgcc )' > $sysroot_lib/libgcc_s.so
-          cp usr/lib/libgcc_s.so.1 $sysroot_lib
-          cp usr/lib/gcc/aarch64-alpine-linux-musl/*/libgcc.a $sysroot_lib
-          cp lib/ld-musl-aarch64.so.1 $sysroot_lib/libc.so
-          echo '!<arch>' > $sysroot_lib/libdl.a
-          (cd $crt && cp crti.o crtbeginS.o crtendS.o crtn.o -t $sysroot_lib)
-          echo "export CARGO_BUILD_TARGET=aarch64-unknown-linux-musl" >> saved_env
-          echo "export RUSTFLAGS='-Ctarget-feature=-crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=--target=aarch64-unknown-linux-musl -Clink-arg=--sysroot=/usr/aarch64-unknown-linux-musl -Clink-arg=-lc'" >> saved_env
-      - name: Build Linux Artifacts
-        run: |
-          source ./saved_env
-          bash ci/manylinux_node/build_lancedb.sh ${{ matrix.config.arch }}
-      - name: Upload Linux Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nodejs-native-linux-${{ matrix.config.arch }}-musl
-          path: |
-            nodejs/dist/*.node
-
-  node-windows:
-    name: vectordb ${{ matrix.target }}
-    runs-on: windows-2022
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [x86_64-pc-windows-msvc]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Protoc v21.12
-        working-directory: C:\
-        run: |
-          New-Item -Path 'C:\protoc' -ItemType Directory
-          Set-Location C:\protoc
-          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-          7z x protoc.zip
-          Add-Content $env:GITHUB_PATH "C:\protoc\bin"
-        shell: powershell
-      - name: Install npm dependencies
-        run: |
-          cd node
-          npm ci
-      - name: Build Windows native node modules
-        run: .\ci\build_windows_artifacts.ps1 ${{ matrix.target }}
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-native-windows
-          path: |
-            node/dist/lancedb-vectordb-win32*.tgz
-
-  nodejs-windows:
-    name: lancedb ${{ matrix.target }}
-    runs-on: windows-2022
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [x86_64-pc-windows-msvc]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Protoc v21.12
-        working-directory: C:\
-        run: |
-          New-Item -Path 'C:\protoc' -ItemType Directory
-          Set-Location C:\protoc
-          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-          7z x protoc.zip
-          Add-Content $env:GITHUB_PATH "C:\protoc\bin"
-        shell: powershell
-      - name: Install npm dependencies
-        run: |
-          cd nodejs
-          npm ci
-      - name: Build Windows native node modules
-        run: .\ci\build_windows_artifacts_nodejs.ps1 ${{ matrix.target }}
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nodejs-native-windows
-          path: |
-            nodejs/dist/*.node
-
-  nodejs-windows-arm64:
-    name: lancedb ${{ matrix.config.arch }}-pc-windows-msvc
-    # Only runs on tags that matches the make-release action
-    # if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    container: alpine:edge
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          # - arch: x86_64
-          - arch: aarch64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
-          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
-          echo "source $HOME/.cargo/env" >> saved_env
-          echo "export CC=clang" >> saved_env
-          echo "export AR=llvm-ar" >> saved_env
-          source "$HOME/.cargo/env"
-          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc
-          (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
-          echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
-          echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
-          printf '#!/bin/sh\ncargo "$@"' > $HOME/.cargo/bin/cargo-xwin
-          chmod u+x $HOME/.cargo/bin/cargo-xwin
-      - name: Configure x86_64 build
-        if: ${{ matrix.config.arch == 'x86_64' }}
-        run: |
-          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=+crt-static,+avx2,+fma,+f16c -Clinker=lld -Clink-arg=/LIBPATH:/usr/x86_64-pc-windows-msvc/usr/lib'" >> saved_env
-      - name: Configure aarch64 build
-        if: ${{ matrix.config.arch == 'aarch64' }}
-        run: |
-          echo "export RUSTFLAGS='-Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib'" >> saved_env
-      - name: Build Windows Artifacts
-        run: |
-          source ./saved_env
-          bash ci/manylinux_node/build_lancedb.sh ${{ matrix.config.arch }}
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nodejs-native-windows-${{ matrix.config.arch }}
-          path: |
-            nodejs/dist/*.node
-
-  release:
-    name: vectordb NPM Publish
-    needs: [node, node-macos, node-linux-gnu, node-windows]
-    runs-on: ubuntu-latest
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: node-*
-      - name: Display structure of downloaded files
-        run: ls -R
-      - uses: actions/setup-node@v3
-        with:
-          node-version: 20
-          registry-url: "https://registry.npmjs.org"
-      - name: Publish to NPM
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
-        run: |
-          # Tag beta as "preview" instead of default "latest". See lancedb
-          # npm publish step for more info.
-          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
-            PUBLISH_ARGS="--tag preview"
-          fi
-
-          mv */*.tgz .
-          for filename in *.tgz; do
-            npm publish $PUBLISH_ARGS $filename
-          done
-      - name: Notify Slack Action
-        uses: ravsamhq/notify-slack-action@2.3.0
-        if: ${{ always() }}
-        with:
-          status: ${{ job.status }}
-          notify_when: "failure"
-          notification_title: "{workflow} is failing"
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
-
-  release-nodejs:
-    name: lancedb NPM Publish
-    needs: [nodejs-macos, nodejs-linux-gnu, nodejs-linux-musl, nodejs-windows, nodejs-windows-arm64]
-    runs-on: ubuntu-latest
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    defaults:
-      run:
-        shell: bash
-        working-directory: nodejs
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: nodejs-dist
-          path: nodejs/dist
-      - uses: actions/download-artifact@v4
-        name: Download arch-specific binaries
-        with:
-          pattern: nodejs-*
-          path: nodejs/nodejs-artifacts
-          merge-multiple: true
-      - name: Display structure of downloaded files
-        run: find .
-      - uses: actions/setup-node@v3
-        with:
-          node-version: 20
-          registry-url: "https://registry.npmjs.org"
-      - name: Install napi-rs
-        run: npm install -g @napi-rs/cli
-      - name: Prepare artifacts
-        run: npx napi artifacts -d nodejs-artifacts
-      - name: Display structure of staged files
-        run: find npm
-      - name: Publish to NPM
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
-        # By default, things are published to the latest tag. This is what is
-        # installed by default if the user does not specify a version. This is
-        # good for stable releases, but for pre-releases, we want to publish to
-        # the "preview" tag so they can install with `npm install lancedb@preview`.
-        # See: https://medium.com/@mbostock/prereleases-and-npm-e778fc5e2420
-        run: |
-          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
-            npm publish --access public --tag preview
-          else
-            npm publish --access public
-          fi
-      - name: Notify Slack Action
-        uses: ravsamhq/notify-slack-action@2.3.0
-        if: ${{ always() }}
-        with:
-          status: ${{ job.status }}
-          notify_when: "failure"
-          notification_title: "{workflow} is failing"
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
-
-  update-package-lock:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
-          fetch-depth: 0
-          lfs: true
-      - uses: ./.github/workflows/update_package_lock
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-  update-package-lock-nodejs:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [release-nodejs]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
-          fetch-depth: 0
-          lfs: true
-      - uses: ./.github/workflows/update_package_lock_nodejs
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
   gh-release:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -561,3 +90,472 @@ jobs:
           generate_release_notes: false
           name: Node/Rust LanceDB v${{ steps.extract_version.outputs.version }}
           body: ${{ steps.release_notes.outputs.changelog }}
+
+  build-lancedb:
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - target: x86_64-apple-darwin
+            host: macos-latest
+            features: fips
+            pre_build: |-
+                brew install protobuf
+                rustup target add x86_64-apple-darwin
+          - target: aarch64-apple-darwin
+            host: macos-latest
+            features: fp16kernels,fips
+            pre_build: brew install protobuf
+          - target: x86_64-pc-windows-msvc
+            host: windows-latest
+            features: fips
+            pre_build: |-
+              choco install --no-progress protoc ninja nasm
+              tail -n 1000 /c/ProgramData/chocolatey/logs/chocolatey.log
+              # There is an issue where choco doesn't add nasm to the path
+              export PATH="$PATH:/c/Program Files/NASM"
+              nasm -v
+          - target: aarch64-pc-windows-msvc
+            host: windows-latest
+            # TODO: figure out how to get FIPS working here.
+            features: ","
+            pre_build: |-
+                choco install --no-progress protoc
+                rustup target add aarch64-pc-windows-msvc
+          - target: x86_64-unknown-linux-gnu
+            host: ubuntu-latest
+            features: fp16kernels,fips
+            # https://github.com/napi-rs/napi-rs/blob/main/debian.Dockerfile
+            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
+            pre_build: |-
+              set -e &&
+              add-apt-repository -y ppa:longsleep/golang-backports &&
+              apt-get update &&
+              apt-get install -y protobuf-compiler pkg-config golang-go
+          # - target: x86_64-unknown-linux-musl
+          #   host: ubuntu-latest
+          #   # https://github.com/napi-rs/napi-rs/blob/main/alpine.Dockerfile
+          #   docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
+          #   features: fips
+          #   pre_build: |-
+          #     set -e &&
+          #     apk add protobuf-dev curl perl &&
+          #     ln -s /usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/crtbeginS.o /usr/lib/crtbeginS.o &&
+          #     ln -s /usr/lib/libgcc_s.so /usr/lib/libgcc.so &&
+          #     curl -L -o /tmp/go.tar.gz https://go.dev/dl/go1.24.1.linux-amd64.tar.gz &&
+          #     tar -C /usr/local -xzf /tmp/go.tar.gz &&
+          #     rm /tmp/go.tar.gz &&
+          #     export PATH="$PATH:/usr/local/go/bin"
+          - target: x86_64-unknown-linux-musl
+            host: ubuntu-latest
+            features: fips,fp16kernels
+            pre_build: |-
+              set -e &&
+              add-apt-repository -y ppa:longsleep/golang-backports &&
+              apt-get update &&
+              apt-get install -y protobuf-compiler pkg-config golang-go curl xz-utils &&
+              curl https://ziglang.org/download/0.14.0/zig-linux-$(uname -m)-0.14.0.tar.xz --output /tmp/zig.tar.xz &&
+              tar -C /usr/local -xf /tmp/zig.tar.xz &&
+              rm /tmp/zig.tar.xz &&
+              export PATH="$PATH:/usr/local/zig-linux-$(uname -m)-0.14.0"
+          - target: aarch64-unknown-linux-musl
+            host: ubuntu-latest
+            features: fips,fp16kernels
+            pre_build: |-
+              set -e &&
+              add-apt-repository -y ppa:longsleep/golang-backports &&
+              apt-get update &&
+              apt-get install -y protobuf-compiler pkg-config golang-go curl xz-utils &&
+              curl https://ziglang.org/download/0.14.0/zig-linux-$(uname -m)-0.14.0.tar.xz --output /tmp/zig.tar.xz &&
+              tar -C /usr/local -xf /tmp/zig.tar.xz &&
+              rm /tmp/zig.tar.xz &&
+              export PATH="$PATH:/usr/local/zig-linux-$(uname -m)-0.14.0"
+          - target: aarch64-unknown-linux-gnu
+            host: ubuntu-latest
+            # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
+            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
+            # TODO: enable fp16kernels after https://github.com/lancedb/lance/pull/3559
+            features: fips
+            pre_build: |-
+              set -e &&
+              add-apt-repository -y ppa:longsleep/golang-backports &&
+              apt-get update &&
+              apt-get install -y protobuf-compiler pkg-config golang-go &&
+              # https://github.com/aws/aws-lc-rs/issues/737#issuecomment-2725918627
+              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
+              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
+              rustup target add aarch64-unknown-linux-gnu
+          # - target: aarch64-unknown-linux-musl
+          #   host: ubuntu-latest
+          #   # https://github.com/napi-rs/napi-rs/blob/main/alpine.Dockerfile
+          #   docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
+          #   features: fips
+          #   pre_build: |-
+          #     set -e &&
+          #     apk add protobuf-dev curl perl &&
+          #     rustup target add aarch64-unknown-linux-musl &&
+          #     curl -L -o /tmp/go.tar.gz https://go.dev/dl/go1.24.1.linux-amd64.tar.gz &&
+          #     tar -C /usr/local -xzf /tmp/go.tar.gz &&
+          #     rm /tmp/go.tar.gz &&
+          #     export PATH="$PATH:/usr/local/go/bin" &&
+          #     export CC="/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" &&
+          #     export CXX="/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++"
+    name: ${{ matrix.settings.target }}
+    runs-on: ${{ matrix.settings.host }}
+    defaults:
+      run:
+        working-directory: nodejs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup node
+        uses: actions/setup-node@v4
+        if: ${{ !matrix.settings.docker }}
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: nodejs/package-lock.json
+      - name: Setup Go # Go is used for FIPS feature of aws-lc-rs.
+        if: ${{ !matrix.settings.docker }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.24.1
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.settings.docker }}
+        with:
+          toolchain: stable
+          targets: ${{ matrix.settings.target }}
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            .cargo-cache
+            target/
+          key: nodejs-${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+      - name: Setup toolchain
+        run: ${{ matrix.settings.setup }}
+        if: ${{ matrix.settings.setup }}
+        shell: bash
+      - name: Install dependencies
+        run: npm ci
+      - name: Build in docker
+        uses: addnab/docker-run-action@v3
+        if: ${{ matrix.settings.docker }}
+        with:
+          image: ${{ matrix.settings.docker }}
+          options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
+                    -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache \
+                    -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index \
+                    -v ${{ github.workspace }}:/build -w /build/nodejs"
+          run: |
+            set -e
+            ${{ matrix.settings.pre_build }}
+            npx napi build --platform  --release --no-const-enum \
+              --features ${{ matrix.settings.features }} \
+              --target ${{ matrix.settings.target }} \
+              --dts ../lancedb/native.d.ts \
+              --js ../lancedb/native.js \
+              --strip \
+              dist/
+      - name: Build
+        env:
+          USE_ZIG: ${{ endsWith(matrix.settings.target, 'linux-musl') }}
+        run: |
+          ${{ matrix.settings.pre_build }}
+          if [[ $USE_ZIG == "true" ]]; then
+            EXTRA_ARGS="--zig"
+          fi
+          npx napi build --platform  --release --no-const-enum \
+              --features ${{ matrix.settings.features }} \
+              --target ${{ matrix.settings.target }} \
+              --dts ../lancedb/native.d.ts \
+              --js ../lancedb/native.js \
+              --strip \
+              $EXTRA_ARGS \
+              dist/
+        if: ${{ !matrix.settings.docker }}
+        shell: bash
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lancedb-${{ matrix.settings.target }}
+          path: nodejs/dist/*.node
+          if-no-files-found: error
+  test-lancedb:
+    name: "Test: ${{ matrix.settings.target }} - node@${{ matrix.node }}"
+    needs:
+      - build-lancedb
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+          - host: macos-latest
+            target: aarch64-apple-darwin
+          - target: x86_64-unknown-linux-gnu
+            host: ubuntu-latest
+          - target: aaarch64-unknown-linux-gnu
+            host: buildjet-16vcpu-ubuntu-2204-arm
+        node:
+          - '20'
+    runs-on: ${{ matrix.settings.host }}
+    defaults:
+      run:
+        working-directory: nodejs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Install dependencies
+        run: npm install
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: lancedb-${{ matrix.settings.target }}
+          path: nodejs/dist/
+      - name: List packages
+        run: ls -R .
+        shell: bash
+      - name: Build Typescript
+        run: npm run tsc
+      - name: Test bindings
+        run: npm test
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nodejs
+    needs:
+      - test-lancedb
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm install
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Move artifacts
+        run: npm artifacts
+      - name: List packages
+        run: ls -R ./npm
+        shell: bash
+      - name: Publish
+        env:
+          # NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
+          DRY_RUN: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          ARGS="--access public"
+          if [[ $DRY_RUN == "true" ]]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
+            ARGS="$ARGS --tag preview"
+          fi
+          npm publish $ARGS
+
+
+  # ----------------------------------------------------------------------------
+  # vectordb release (legacy)
+  # ----------------------------------------------------------------------------
+  # TODO: delete this when we drop vectordb
+  node:
+    name: vectordb Typescript
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: node/package-lock.json
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - name: Build
+        run: |
+          npm ci
+          npm run tsc
+          npm pack
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-package
+          path: |
+            node/vectordb-*.tgz
+
+  node-macos:
+    name: vectordb ${{ matrix.config.arch }}
+    strategy:
+      matrix:
+        config:
+          - arch: x86_64-apple-darwin
+            runner: macos-13
+          - arch: aarch64-apple-darwin
+            # xlarge is implicitly arm64.
+            runner: macos-14
+    runs-on: ${{ matrix.config.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: brew install protobuf
+      - name: Install npm dependencies
+        run: |
+          cd node
+          npm ci
+      - name: Build MacOS native node modules
+        run: bash ci/build_macos_artifacts.sh ${{ matrix.config.arch }}
+      - name: Upload Darwin Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-native-darwin-${{ matrix.config.arch }}
+          path: |
+            node/dist/lancedb-vectordb-darwin*.tgz
+
+  node-linux-gnu:
+    name: vectordb (${{ matrix.config.arch}}-unknown-linux-gnu)
+    runs-on: ${{ matrix.config.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            # For successful fat LTO builds, we need a large runner to avoid OOM errors.
+            runner: warp-ubuntu-latest-arm64-4x
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      # To avoid OOM errors on ARM, we create a swap file.
+      - name: Configure aarch64 build
+        if: ${{ matrix.config.arch == 'aarch64' }}
+        run: |
+          free -h
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "/swapfile swap swap defaults 0 0" >> sudo /etc/fstab
+          # print info
+          swapon --show
+          free -h
+      - name: Build Linux Artifacts
+        run: |
+          bash ci/build_linux_artifacts.sh ${{ matrix.config.arch }} ${{ matrix.config.arch }}-unknown-linux-gnu
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-native-linux-${{ matrix.config.arch }}-gnu
+          path: |
+            node/dist/lancedb-vectordb-linux*.tgz
+
+  node-windows:
+    name: vectordb ${{ matrix.target }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-pc-windows-msvc]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Protoc v21.12
+        working-directory: C:\
+        run: |
+          New-Item -Path 'C:\protoc' -ItemType Directory
+          Set-Location C:\protoc
+          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
+          7z x protoc.zip
+          Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+        shell: powershell
+      - name: Install npm dependencies
+        run: |
+          cd node
+          npm ci
+      - name: Build Windows native node modules
+        run: .\ci\build_windows_artifacts.ps1 ${{ matrix.target }}
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-native-windows
+          path: |
+            node/dist/lancedb-vectordb-win32*.tgz
+
+  release:
+    name: vectordb NPM Publish
+    needs: [node, node-macos, node-linux-gnu, node-windows]
+    runs-on: ubuntu-latest
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: node-*
+      - name: Display structure of downloaded files
+        run: ls -R
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+      - name: Publish to NPM
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
+        run: |
+          # Tag beta as "preview" instead of default "latest". See lancedb
+          # npm publish step for more info.
+          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
+            PUBLISH_ARGS="--tag preview"
+          fi
+
+          mv */*.tgz .
+          for filename in *.tgz; do
+            npm publish $PUBLISH_ARGS $filename
+          done
+      - name: Notify Slack Action
+        uses: ravsamhq/notify-slack-action@2.3.0
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          notify_when: "failure"
+          notification_title: "{workflow} is failing"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
+
+  update-package-lock:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          fetch-depth: 0
+          lfs: true
+      - uses: ./.github/workflows/update_package_lock
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
