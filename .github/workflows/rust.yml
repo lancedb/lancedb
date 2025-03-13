@@ -201,6 +201,7 @@ jobs:
       - name: Check
         env:
           CC: clang
+          CXX: clang++
           AR: llvm-ar
           C_INCLUDE_PATH: /usr/aarch64-pc-windows-msvc/usr/include
           CARGO_BUILD_TARGET: aarch64-pc-windows-msvc

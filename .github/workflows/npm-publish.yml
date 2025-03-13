@@ -4,13 +4,15 @@ on:
   push:
     tags:
       - "v*"
+  pull_request:
+    # This should trigger a dry run (we skip the final publish step)
+    paths:
+      - .github/workflows/npm-publish.yml
 
 jobs:
   node:
     name: vectordb Typescript
     runs-on: ubuntu-latest
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
     defaults:
       run:
         shell: bash
@@ -50,8 +52,6 @@ jobs:
             # xlarge is implicitly arm64.
             runner: macos-14
     runs-on: ${{ matrix.config.runner }}
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,8 +81,6 @@ jobs:
             # xlarge is implicitly arm64.
             runner: macos-14
     runs-on: ${{ matrix.config.runner }}
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -104,8 +102,6 @@ jobs:
   node-linux-gnu:
     name: vectordb (${{ matrix.config.arch}}-unknown-linux-gnu)
     runs-on: ${{ matrix.config.runner }}
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -145,8 +141,6 @@ jobs:
     name: vectordb (${{ matrix.config.arch}}-unknown-linux-musl)
     runs-on: ubuntu-latest
     container: alpine:edge
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -196,8 +190,6 @@ jobs:
   nodejs-linux-gnu:
     name: lancedb (${{ matrix.config.arch}}-unknown-linux-gnu
     runs-on: ${{ matrix.config.runner }}
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -248,8 +240,6 @@ jobs:
     name: lancedb (${{ matrix.config.arch}}-unknown-linux-musl
     runs-on: ubuntu-latest
     container: alpine:edge
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -303,8 +293,6 @@ jobs:
   node-windows:
     name: vectordb ${{ matrix.target }}
     runs-on: windows-2022
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -336,7 +324,6 @@ jobs:
 
   node-windows-arm64:
     name: vectordb ${{ matrix.config.arch }}-pc-windows-msvc
-    # if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     container: alpine:edge
     strategy:
@@ -350,10 +337,11 @@ jobs:
         uses: actions/checkout@v4
       - name: Install dependencies
         run: |
-          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
+          apk add protobuf-dev curl clang cmake lld llvm19 grep npm bash msitools sed
           curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
           echo "source $HOME/.cargo/env" >> saved_env
           echo "export CC=clang" >> saved_env
+          echo "export CXX=clang++" >> saved_env
           echo "export AR=llvm-ar" >> saved_env
           source "$HOME/.cargo/env"
           rustup target add ${{ matrix.config.arch }}-pc-windows-msvc
@@ -382,8 +370,6 @@ jobs:
   nodejs-windows:
     name: lancedb ${{ matrix.target }}
     runs-on: windows-2022
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -415,8 +401,6 @@ jobs:
 
   nodejs-windows-arm64:
     name: lancedb ${{ matrix.config.arch }}-pc-windows-msvc
-    # Only runs on tags that matches the make-release action
-    # if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     container: alpine:edge
     strategy:
@@ -430,10 +414,11 @@ jobs:
         uses: actions/checkout@v4
       - name: Install dependencies
         run: |
-          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
+          apk add protobuf-dev curl clang cmake lld llvm19 grep npm bash msitools sed
           curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
           echo "source $HOME/.cargo/env" >> saved_env
           echo "export CC=clang" >> saved_env
+          echo "export CXX=clang++" >> saved_env
           echo "export AR=llvm-ar" >> saved_env
           source "$HOME/.cargo/env"
           rustup target add ${{ matrix.config.arch }}-pc-windows-msvc
