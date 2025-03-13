@@ -60,16 +60,24 @@ test("vector search", async () => {
         new Field("id", new Int32(), true),
         new Field("vec", new FixedSizeList(32, new Field("item", new Uint8()))),
       ]);
-      const data = lancedb.makeArrowTable(Array(10_000).fill(0).map((_, i) => ({
-        // the 256 bits would be store in 32 bytes,
-        // if your data is already in this format, you can skip the packBits step
-        id: i,
-        vec: lancedb.packBits(Array(256).fill(i % 2)),
-      })), { schema: schema });
+      const data = lancedb.makeArrowTable(
+        Array(10_000)
+          .fill(0)
+          .map((_, i) => ({
+            // the 256 bits would be store in 32 bytes,
+            // if your data is already in this format, you can skip the packBits step
+            id: i,
+            vec: lancedb.packBits(Array(256).fill(i % 2)),
+          })),
+        { schema: schema },
+      );
 
       const tbl = await db.createTable("binary_table", data);
       await tbl.createIndex("vec", {
-        config: lancedb.Index.ivfFlat({ numPartitions: 10, distanceType: "hamming" }),
+        config: lancedb.Index.ivfFlat({
+          numPartitions: 10,
+          distanceType: "hamming",
+        }),
       });
       // --8<-- [end:ingest_binary_data]
 
