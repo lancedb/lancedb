@@ -4,9 +4,10 @@ import { expect, test } from "@jest/globals";
 // --8<-- [start:import]
 import * as lancedb from "@lancedb/lancedb";
 // --8<-- [end:import]
-import { withTempDirectory } from "./util.ts";
+// --8<-- [start:import_bin_util]
 import { packBits } from "@lancedb/lancedb/util.ts";
-import { Field, FixedSizeList, Int32, Schema, Uint8 } from "apache-arrow";
+// --8<-- [end:import_bin_util]
+import { withTempDirectory } from "./util.ts";
 
 test("vector search", async () => {
   await withTempDirectory(async (databaseDir) => {
@@ -55,10 +56,6 @@ test("vector search", async () => {
 
     {
       // --8<-- [start:ingest_binary_data]
-      const schema = new Schema([
-        new Field("id", new Int32(), true),
-        new Field("vec", new FixedSizeList(32, new Field("item", new Uint8()))),
-      ]);
       const data = Array.from({ length: 10_000 }, (_, i) => ({
         vector: packBits(new Uint8Array(256).fill(i % 2)),  // the 256 bits would be store in 32 bytes, if your data is already in this format, you can skip the packBits step
         id: `${i}`,
