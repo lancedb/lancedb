@@ -245,7 +245,6 @@ def _sanitize_data(
         target_schema = target_schema.with_metadata(new_metadata)
 
     _validate_schema(target_schema)
-
     reader = _cast_to_target_schema(reader, target_schema, allow_subschema)
 
     return reader
@@ -263,12 +262,7 @@ def _cast_to_target_schema(
         # Fast path when the schemas are already the same
         return reader
 
-    fields = []
-    for field in reader.schema:
-        target_field = target_schema.field(field.name)
-        if target_field is None:
-            raise ValueError(f"Field {field.name} not found in target schema")
-        fields.append(target_field)
+    fields = _align_field_types(list(iter(reader.schema)), list(iter(target_schema)))
     reordered_schema = pa.schema(fields, metadata=target_schema.metadata)
     if not allow_subschema and len(reordered_schema) != len(target_schema):
         raise ValueError(
@@ -287,6 +281,53 @@ def _cast_to_target_schema(
             yield pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()[0]
 
     return pa.RecordBatchReader.from_batches(reordered_schema, gen())
+
+
+def _align_field_types(
+    fields: List[pa.Field],
+    target_fields: List[pa.Field],
+) -> List[pa.Field]:
+    """
+    Apply the data types from the target_fields to the fields.
+    """
+    new_fields = []
+    for field in fields:
+        target_field = next((f for f in target_fields if f.name == field.name), None)
+        if target_field is None:
+            raise ValueError(f"Field '{field.name}' not found in target schema")
+        if pa.types.is_struct(target_field.type):
+            new_type = pa.struct(
+                _align_field_types(
+                    field.type.fields,
+                    target_field.type.fields,
+                )
+            )
+        elif pa.types.is_list(target_field.type):
+            new_type = pa.list_(
+                _align_field_types(
+                    [field.type.value_field],
+                    [target_field.type.value_field],
+                )[0]
+            )
+        elif pa.types.is_large_list(target_field.type):
+            new_type = pa.large_list(
+                _align_field_types(
+                    [field.type.value_field],
+                    [target_field.type.value_field],
+                )[0]
+            )
+        elif pa.types.is_fixed_size_list(target_field.type):
+            new_type = pa.list_(
+                _align_field_types(
+                    [field.type.value_field],
+                    [target_field.type.value_field],
+                )[0],
+                target_field.type.list_size,
+            )
+        else:
+            new_type = target_field.type
+        new_fields.append(pa.field(field.name, new_type, field.nullable))
+    return new_fields
 
 
 def _infer_subschema(

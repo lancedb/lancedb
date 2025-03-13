@@ -231,6 +231,59 @@ def test_add(mem_db: DBConnection):
     _add(table, schema)
 
 
+def test_add_struct(mem_db: DBConnection):
+    # https://github.com/lancedb/lancedb/issues/2114
+    schema = pa.schema(
+        [
+            (
+                "stuff",
+                pa.struct(
+                    [
+                        ("b", pa.int64()),
+                        ("a", pa.int64()),
+                        # TODO: also test subset of nested.
+                    ]
+                ),
+            )
+        ]
+    )
+
+    # Create test data with fields in same order
+    data = [{"stuff": {"b": 1, "a": 2}}]
+    # pa.Table.from_pylist() will reorder the fields. We need to make sure
+    # we fix the field order later, before casting.
+    table = mem_db.create_table("test", schema=schema)
+    table.add(data)
+
+    data = [{"stuff": {"b": 4}}]
+    table.add(data)
+
+    expected = pa.table(
+        {
+            "stuff": [{"b": 1, "a": 2}, {"b": 4, "a": None}],
+        },
+        schema=schema,
+    )
+    assert table.to_arrow() == expected
+
+    # Also check struct in list
+    schema = pa.schema(
+        {
+            "s_list": pa.list_(
+                pa.struct(
+                    [
+                        ("b", pa.int64()),
+                        ("a", pa.int64()),
+                    ]
+                )
+            )
+        }
+    )
+    data = [{"s_list": [{"b": 1, "a": 2}, {"b": 4}]}]
+    table = mem_db.create_table("test", schema=schema)
+    table.add(data)
+
+
 def test_add_subschema(mem_db: DBConnection):
     schema = pa.schema(
         [
@@ -324,7 +377,10 @@ def test_add_nullability(mem_db: DBConnection):
     # We can't add nullable schema if it contains nulls
     with pytest.raises(
         Exception,
-        match="Casting field 'vector' with null values to non-nullable",
+        match=(
+            "The field `vector` contained null values even though "
+            "the field is marked non-null in the schema"
+        ),
     ):
         table.add(data)
 
