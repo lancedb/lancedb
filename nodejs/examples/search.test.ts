@@ -63,7 +63,7 @@ test("vector search", async () => {
         id: `${i}`,
       }));
 
-      await db.createTable("my_vectors", data);
+      await db.createTable("binary_table", data);
       // --8<-- [end:ingest_binary_data]
 
       // --8<-- [start:search_binary_data]
