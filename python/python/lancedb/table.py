@@ -293,6 +293,20 @@ def _align_field_types(
                     target_field.type.fields,
                 )
             )
+        elif pa.types.is_list(field.type):
+            new_type = pa.list_(
+                _align_field_types(
+                    [field.type.value_field],
+                    [target_field.type.value_field],
+                )[0]
+            )
+        elif pa.types.is_large_list(field.type):
+            new_type = pa.large_list(
+                _align_field_types(
+                    [field.type.value_field],
+                    [target_field.type.value_field],
+                )[0]
+            )
         else:
             new_type = target_field.type
         new_fields.append(pa.field(field.name, new_type, field.nullable))

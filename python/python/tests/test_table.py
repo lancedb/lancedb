@@ -266,6 +266,23 @@ def test_add_struct(mem_db: DBConnection):
     )
     assert table.to_arrow() == expected
 
+    # Also check struct in list
+    schema = pa.schema(
+        {
+            "s_list": pa.list_(
+                pa.struct(
+                    [
+                        ("b", pa.int64()),
+                        ("a", pa.int64()),
+                    ]
+                )
+            )
+        }
+    )
+    data = [{"s_list": [{"b": 1, "a": 2}, {"b": 4}]}]
+    table = mem_db.create_table("test", schema=schema)
+    table.add(data)
+
 
 def test_add_subschema(mem_db: DBConnection):
     schema = pa.schema(
