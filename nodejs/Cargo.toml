@@ -18,7 +18,7 @@ arrow-array.workspace = true
 arrow-schema.workspace = true
 env_logger.workspace = true
 futures.workspace = true
-lancedb = { path = "../rust/lancedb", features = ["remote"] }
+lancedb = { path = "../rust/lancedb" }
 napi = { version = "2.16.8", default-features = false, features = [
     "napi9",
     "async"
@@ -30,3 +30,8 @@ log.workspace = true
 
 [build-dependencies]
 napi-build = "2.1"
+
+[features]
+default = ["remote"]
+fp16kernels = ["lancedb/fp16kernels"]
+remote = ["lancedb/remote"]
