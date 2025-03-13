@@ -377,7 +377,10 @@ def test_add_nullability(mem_db: DBConnection):
     # We can't add nullable schema if it contains nulls
     with pytest.raises(
         Exception,
-        match="Casting field 'vector' with null values to non-nullable",
+        match=(
+            "The field `vector` contained null values even though "
+            "the field is marked non-null in the schema"
+        ),
     ):
         table.add(data)
 
