@@ -5,7 +5,7 @@ import { expect, test } from "@jest/globals";
 import * as lancedb from "@lancedb/lancedb";
 // --8<-- [end:import]
 // --8<-- [start:import_bin_util]
-import { packBits } from "@lancedb/lancedb/util.ts";
+import { packBits } from "@lancedb/lancedb/util";
 // --8<-- [end:import_bin_util]
 import { withTempDirectory } from "./util.ts";
 
