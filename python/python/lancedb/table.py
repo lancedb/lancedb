@@ -286,26 +286,34 @@ def _align_field_types(
         target_field = next((f for f in target_fields if f.name == field.name), None)
         if target_field is None:
             raise ValueError(f"Field '{field.name}' not found in target schema")
-        if pa.types.is_struct(field.type):
+        if pa.types.is_struct(target_field.type):
             new_type = pa.struct(
                 _align_field_types(
                     field.type.fields,
                     target_field.type.fields,
                 )
             )
-        elif pa.types.is_list(field.type):
+        elif pa.types.is_list(target_field.type):
             new_type = pa.list_(
                 _align_field_types(
                     [field.type.value_field],
                     [target_field.type.value_field],
                 )[0]
             )
-        elif pa.types.is_large_list(field.type):
+        elif pa.types.is_large_list(target_field.type):
             new_type = pa.large_list(
                 _align_field_types(
                     [field.type.value_field],
                     [target_field.type.value_field],
                 )[0]
+            )
+        elif pa.types.is_fixed_size_list(target_field.type):
+            new_type = pa.list_(
+                _align_field_types(
+                    [field.type.value_field],
+                    [target_field.type.value_field],
+                )[0],
+                target_field.type.list_size,
             )
         else:
             new_type = target_field.type
