@@ -35,8 +35,8 @@ export function toSQL(value: IntoSql): string {
   }
 }
 
-export function packBits(data: Uint8Array): Uint8Array {
-  const packed = new Uint8Array(data.length / 8);
+export function packBits(data: Array<number>): Array<number> {
+  const packed = Array(data.length >> 3).fill(0);
   for (let i = 0; i < data.length; i++) {
     const byte = i >> 3;
     const bit = i & 7;

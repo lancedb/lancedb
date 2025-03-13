@@ -5,7 +5,7 @@ import { expect, test } from "@jest/globals";
 import * as lancedb from "@lancedb/lancedb";
 // --8<-- [end:import]
 // --8<-- [start:import_bin_util]
-import { packBits } from "@lancedb/lancedb/util";
+import { Field, FixedSizeList, Int32, Schema, Uint8 } from "apache-arrow";
 // --8<-- [end:import_bin_util]
 import { withTempDirectory } from "./util.ts";
 
@@ -56,21 +56,28 @@ test("vector search", async () => {
 
     {
       // --8<-- [start:ingest_binary_data]
-      const data = Array.from({ length: 10_000 }, (_, i) => ({
+      const schema = new Schema([
+        new Field("id", new Int32(), true),
+        new Field("vec", new FixedSizeList(32, new Field("item", new Uint8()))),
+      ]);
+      const data = lancedb.makeArrowTable(Array(10_000).fill(0).map((_, i) => ({
         // the 256 bits would be store in 32 bytes,
         // if your data is already in this format, you can skip the packBits step
-        vector: packBits(new Uint8Array(256).fill(i % 2)),
-        id: `${i}`,
-      }));
+        id: i,
+        vec: lancedb.packBits(Array(256).fill(i % 2)),
+      })), { schema: schema });
 
       const tbl = await db.createTable("binary_table", data);
+      await tbl.createIndex("vec", {
+        config: lancedb.Index.ivfFlat({ numPartitions: 10, distanceType: "hamming" }),
+      });
       // --8<-- [end:ingest_binary_data]
 
       // --8<-- [start:search_binary_data]
       const query = Array(32)
         .fill(1)
         .map(() => Math.floor(Math.random() * 255));
-      const results = await tbl.search(query).limit(10).toArrow();
+      const results = await tbl.query().nearestTo(query).limit(10).toArrow();
       // --8<-- [end:search_binary_data
       expect(results.numRows).toBe(10);
     }
