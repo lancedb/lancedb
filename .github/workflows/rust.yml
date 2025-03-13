@@ -187,7 +187,7 @@ jobs:
       - name: Install dependencies (part 1)
         run: |
           set -e
-          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
+          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed cmake
       - name: Install rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -296,6 +296,11 @@ jobs:
           Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
           & 'C:\Program Files\7-Zip\7z.exe' x protoc.zip
         shell: powershell
+      - name: Install CMake 3.31
+        run: |
+          Invoke-WebRequest https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-windows-arm64.zip -OutFile C:\cmake.zip
+          & 'C:\Program Files\7-Zip\7z.exe' x cmake.zip
+          Add-Content $env:GITHUB_PATH "C:\cmake\bin"
       - name: Add Protoc to PATH
         run: Add-Content $env:GITHUB_PATH "C:\protoc\bin"
         shell: powershell
