@@ -57,7 +57,9 @@ test("vector search", async () => {
     {
       // --8<-- [start:ingest_binary_data]
       const data = Array.from({ length: 10_000 }, (_, i) => ({
-        vector: packBits(new Uint8Array(256).fill(i % 2)),  // the 256 bits would be store in 32 bytes, if your data is already in this format, you can skip the packBits step
+        // the 256 bits would be store in 32 bytes,
+        // if your data is already in this format, you can skip the packBits step
+        vector: packBits(new Uint8Array(256).fill(i % 2)),
         id: `${i}`,
       }));
 
