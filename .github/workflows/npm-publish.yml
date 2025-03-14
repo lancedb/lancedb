@@ -100,12 +100,12 @@ jobs:
             host: macos-latest
             build: |-
                 brew install protobuf
-                npm run build-release --target x86_64-apple-darwin
+                CARGO_BUILD_TARGET=x86_64-apple-darwin npm run build-release
           - target: aarch64-apple-darwin
             host: macos-latest
             build: |-
                 brew install protobuf
-                npm run build-release --target aarch64-apple-darwin
+                CARGO_BUILD_TARGET=aarch64-apple-darwin npm run build-release
           - target: x86_64-pc-windows-msvc
             host: windows-latest
             build: |-
@@ -115,7 +115,7 @@ jobs:
                 echo "/c/protoc/bin" >> $GITHUB_PATH
                 export PATH="/c/protoc/bin:$PATH"
                 protoc --version
-                npm run build-release --target x86_64-pc-windows-msvc
+                CARGO_BUILD_TARGET=x86_64-pc-windows-msvc npm run build-release
           - target: aarch64-pc-windows-msvc
             host: windows-latest
             build: |-
@@ -124,7 +124,7 @@ jobs:
                 unzip /c/protoc/protoc.zip -d /c/protoc
                 export PATH="/c/protoc/bin:$PATH"
                 protoc --version
-                npm run build-release --target aarch64-pc-windows-msvc
+                CARGO_BUILD_TARGET=aarch64-pc-windows-msvc npm run build-release
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
@@ -132,16 +132,16 @@ jobs:
               set -e &&
               apt-get update &&
               apt-get install -y protobuf-compiler pkg-config libssl-dev &&
-              npm run build-release --target x86_64-unknown-linux-gnu
+              CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu npm run build-release
           - target: x86_64-unknown-linux-musl
             host: ubuntu-latest
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
             build: |-
               set -e &&
               apk add protobuf-dev openssl-dev &&
-              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
-              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
-              npm run build-release --target x86_64-unknown-linux-musl
+              ln -s /usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/crtbeginS.o /usr/lib/crtbeginS.o &&
+              ln -s /usr/lib/libgcc_s.so /usr/lib/libgcc.so &&
+              CARGO_BUILD_TARGET=x86_64-unknown-linux-musl npm run build-release
           - target: aarch64-unknown-linux-gnu
             host: ubuntu-latest
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
@@ -149,10 +149,11 @@ jobs:
               set -e &&
               apt-get update &&
               apt-get install -y protobuf-compiler pkg-config libssl-dev &&
+              # https://github.com/aws/aws-lc-rs/issues/737#issuecomment-2725918627
               ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
               ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
               rustup target add aarch64-unknown-linux-gnu &&
-              npm run build-release --target aarch64-unknown-linux-gnu
+              CARGO_BUILD_TARGET=aarch64-unknown-linux-gnu npm run build-release
           - target: aarch64-unknown-linux-musl
             host: ubuntu-latest
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
@@ -160,9 +161,7 @@ jobs:
               set -e &&
               apk add protobuf-dev openssl-dev &&
               rustup target add aarch64-unknown-linux-musl &&
-              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
-              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
-              npm run build-release --target aarch64-unknown-linux-musl
+              CARGO_BUILD_TARGET=aarch64-unknown-linux-musl npm run build-release
     name: stable - ${{ matrix.settings.target }} - node@20
     runs-on: ${{ matrix.settings.host }}
     defaults:
