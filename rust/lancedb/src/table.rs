@@ -71,7 +71,7 @@ use crate::utils::{
     PatchReadParam, PatchWriteParam,
 };
 
-use self::dataset::DatasetConsistencyWrapper;
+pub use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
 
 pub mod datafusion;
