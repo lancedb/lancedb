@@ -438,6 +438,8 @@ jobs:
         run: |
           echo "export RUSTFLAGS='-Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib'" >> saved_env
       - name: Build Windows Artifacts
+        env:
+          VISUALSTUDIOVERSION:
         run: |
           source ./saved_env
           bash ci/manylinux_node/build_lancedb.sh ${{ matrix.config.arch }}
