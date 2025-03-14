@@ -39,8 +39,8 @@
 - [IndexConfig](interfaces/IndexConfig.md)
 - [IndexOptions](interfaces/IndexOptions.md)
 - [IndexStatistics](interfaces/IndexStatistics.md)
-- [IvfPqOptions](interfaces/IvfPqOptions.md)
 - [IvfFlatOptions](interfaces/IvfFlatOptions.md)
+- [IvfPqOptions](interfaces/IvfPqOptions.md)
 - [OpenTableOptions](interfaces/OpenTableOptions.md)
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)
@@ -67,3 +67,4 @@
 
 - [connect](functions/connect.md)
 - [makeArrowTable](functions/makeArrowTable.md)
+- [packBits](functions/packBits.md)

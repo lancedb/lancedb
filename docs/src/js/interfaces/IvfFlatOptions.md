@@ -63,7 +63,7 @@ optional maxIterations: number;
 
 Max iteration to train IVF kmeans.
 
-When training an IVF_FLAT index we use kmeans to calculate the partitions.  This parameter
+When training an IVF FLAT index we use kmeans to calculate the partitions.  This parameter
 controls how many iterations of kmeans to run.
 
 Increasing this might improve the quality of the index but in most cases these extra
@@ -99,7 +99,7 @@ optional sampleRate: number;
 
 The number of vectors, per partition, to sample when training IVF kmeans.
 
-When an IVF_FLAT index is trained, we need to calculate partitions.  These are groups
+When an IVF FLAT index is trained, we need to calculate partitions.  These are groups
 of vectors that are similar to each other.  To do this we use an algorithm called kmeans.
 
 Running kmeans on a large dataset can be slow.  To speed this up we run kmeans on a
