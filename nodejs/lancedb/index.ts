@@ -53,6 +53,7 @@ export {
   Index,
   IndexOptions,
   IvfPqOptions,
+  IvfFlatOptions,
   HnswPqOptions,
   HnswSqOptions,
   FtsOptions,
@@ -79,7 +80,7 @@ export {
   DataLike,
   IntoVector,
 } from "./arrow";
-export { IntoSql } from "./util";
+export { IntoSql, packBits } from "./util";
 
 /**
  * Connect to a LanceDB instance at the given URI.

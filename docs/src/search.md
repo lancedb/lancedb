@@ -138,6 +138,19 @@ LanceDB supports binary vectors as a data type, and has the ability to search bi
         --8<-- "python/python/tests/docs/test_binary_vector.py:async_binary_vector"
         ```
 
+    === "TypeScript"
+
+        ```ts
+        --8<-- "nodejs/examples/search.test.ts:import"
+
+        --8<-- "nodejs/examples/search.test.ts:import_bin_util"
+
+        --8<-- "nodejs/examples/search.test.ts:ingest_binary_data"
+
+        --8<-- "nodejs/examples/search.test.ts:search_binary_data"
+        ```
+
+
 ## Multivector type
 
 LanceDB supports multivector type, this is useful when you have multiple vectors for a single item (e.g. with ColBert and ColPali).
