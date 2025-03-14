@@ -1,7 +1,7 @@
 openapi: 3.1.1
 info:
   title: LanceDB REST Catalog API
-  version: 0.1.0
+  version: 0.0.1
   description: REST interface for managing LanceDB databases and tables
 
 paths:
@@ -37,6 +37,13 @@ paths:
               description: URI of created database
               schema: {type: string}
 
+    delete:
+      tags: [ Database ]
+      summary: Delete all databases
+      responses:
+        204:
+          description: All databases deleted
+
   /v1/databases/{dbName}:
     get:
       tags: [Database]
@@ -60,7 +67,7 @@ paths:
         204:
           description: Database deleted
 
-    patch:
+    put:
       tags: [Database]
       summary: Rename database
       parameters:
@@ -72,7 +79,7 @@ paths:
             schema:
               $ref: '#/components/schemas/RenameRequest'
       responses:
-        200:
+        204:
           description: Database renamed
 
   /v1/databases/{dbName}/tables:
@@ -109,6 +116,16 @@ paths:
             Location:
               schema: {type: string}
 
+    delete:
+      tags: [ Table ]
+      summary: Delete all tables
+      parameters:
+        - $ref: '#/components/parameters/dbName'
+      responses:
+        204:
+          description: All tables deleted
+
+
   /v1/databases/{dbName}/tables/{tableName}:
     get:
       tags: [Table]
@@ -138,6 +155,26 @@ paths:
       responses:
         200:
           description: Update successful
+
+  /v1/databases/{dbName}/tables/{tableName}/name:
+    put:
+      tags: [ Table ]
+      summary: Rename table
+      parameters:
+        - $ref: '#/components/parameters/dbName'
+        - $ref: '#/components/parameters/tableName'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ newName ]
+              properties:
+                newName: { type: string }
+      responses:
+        204:
+          description: Table renamed
+
 
 components:
   parameters:
@@ -180,6 +217,9 @@ components:
         mode:
           type: string
           enum: [Create, ExistOk, Overwrite]
+        options:
+          type: object
+          additionalProperties: { type: string }
 
     DatabaseMetadata:
       type: object
@@ -227,3 +267,9 @@ components:
           type: array
           items: {type: object}
         options: {type: object}
+
+    TableDefinition:
+      type: object
+      properties:
+        column_definitions: {type: object}
+        schema: {type: object}
