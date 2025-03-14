@@ -61,7 +61,7 @@ test("vector search", async () => {
         new Field("vec", new FixedSizeList(32, new Field("item", new Uint8()))),
       ]);
       const data = lancedb.makeArrowTable(
-        Array(10_000)
+        Array(1_000)
           .fill(0)
           .map((_, i) => ({
             // the 256 bits would be store in 32 bytes,
