@@ -16,9 +16,8 @@ from functools import wraps
 from typing import Callable, List, Union
 import numpy as np
 import pyarrow as pa
-from lance.vector import vec_to_table
 
-from ..util import deprecated, safe_import_pandas
+from ..dependencies import pandas as pd
 
 
 # ruff: noqa: PERF203
@@ -40,8 +39,6 @@ def retry(tries=10, delay=1, max_delay=30, backoff=3, jitter=1):
 
     return wrapper
 
-
-pd = safe_import_pandas()
 
 DATA = Union[pa.Table, "pd.DataFrame"]
 TEXT = Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
@@ -85,52 +82,6 @@ class RateLimiter:
             return func(*args, **kwargs)
 
         return wrapper
-
-
-@deprecated
-def with_embeddings(
-    func: Callable,
-    data: DATA,
-    column: str = "text",
-    wrap_api: bool = True,
-    show_progress: bool = False,
-    batch_size: int = 1000,
-) -> pa.Table:
-    """Add a vector column to a table using the given embedding function.
-
-    The new columns will be called "vector".
-
-    Parameters
-    ----------
-    func : Callable
-        A function that takes a list of strings and returns a list of vectors.
-    data : pa.Table or pd.DataFrame
-        The data to add an embedding column to.
-    column : str, default "text"
-        The name of the column to use as input to the embedding function.
-    wrap_api : bool, default True
-        Whether to wrap the embedding function in a retry and rate limiter.
-    show_progress : bool, default False
-        Whether to show a progress bar.
-    batch_size : int, default 1000
-        The number of row values to pass to each call of the embedding function.
-
-    Returns
-    -------
-    pa.Table
-        The input table with a new column called "vector" containing the embeddings.
-    """
-    func = FunctionWrapper(func)
-    if wrap_api:
-        func = func.retry().rate_limit()
-    func = func.batch_size(batch_size)
-    if show_progress:
-        func = func.show_progress()
-    if pd is not None and isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data, preserve_index=False)
-    embeddings = func(data[column].to_numpy())
-    table = vec_to_table(np.array(embeddings))
-    return data.append_column("vector", table["vector"])
 
 
 class FunctionWrapper:

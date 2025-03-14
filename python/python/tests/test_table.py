@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import pyarrow as pa
+import pyarrow.dataset
 import pytest
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import AsyncConnection, DBConnection
