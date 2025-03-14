@@ -131,7 +131,7 @@ jobs:
             build: |-
               set -e &&
               apt-get update &&
-              apt-get install -y protobuf-compiler libssl-dev &&
+              apt-get install -y protobuf-compiler pkg-config libssl-dev &&
               npm run build-release --target x86_64-unknown-linux-gnu
           - target: x86_64-unknown-linux-musl
             host: ubuntu-latest
@@ -139,6 +139,8 @@ jobs:
             build: |-
               set -e &&
               apk add protobuf-dev openssl-dev &&
+              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
+              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
               npm run build-release --target x86_64-unknown-linux-musl
           - target: aarch64-unknown-linux-gnu
             host: ubuntu-latest
@@ -146,7 +148,9 @@ jobs:
             build: |-
               set -e &&
               apt-get update &&
-              apt-get install -y protobuf-compiler libssl-dev &&
+              apt-get install -y protobuf-compiler pkg-config libssl-dev &&
+              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
+              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
               rustup target add aarch64-unknown-linux-gnu &&
               npm run build-release --target aarch64-unknown-linux-gnu
           - target: aarch64-unknown-linux-musl
@@ -156,6 +160,8 @@ jobs:
               set -e &&
               apk add protobuf-dev openssl-dev &&
               rustup target add aarch64-unknown-linux-musl &&
+              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
+              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
               npm run build-release --target aarch64-unknown-linux-musl
     name: stable - ${{ matrix.settings.target }} - node@20
     runs-on: ${{ matrix.settings.host }}
