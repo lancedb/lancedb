@@ -42,18 +42,18 @@ jobs:
           - target: x86_64-pc-windows-msvc
             host: windows-latest
             build: |-
-                New-Item -Path 'C:\protoc' -ItemType Directory
-                Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-                7z x C:\protoc\protoc.zip -oC:\protoc
-                Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+                mkdir -p /c/protoc
+                curl -L -o /c/protoc/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip
+                unzip /c/protoc/protoc.zip -d /c/protoc
+                echo "/c/protoc/bin" >> $GITHUB_PATH
                 npm run build-release --target x86_64-pc-windows-msvc
           - target: aarch64-pc-windows-msvc
             host: windows-latest
             build: |-
-                New-Item -Path 'C:\protoc' -ItemType Directory
-                Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-                7z x C:\protoc\protoc.zip -oC:\protoc
-                Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+                mkdir -p /c/protoc
+                curl -L -o /c/protoc/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip
+                unzip /c/protoc/protoc.zip -d /c/protoc
+                echo "/c/protoc/bin" >> $GITHUB_PATH
                 npm run build-release --target aarch64-pc-windows-msvc
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
@@ -115,10 +115,10 @@ jobs:
         if: ${{ matrix.settings.docker }}
         with:
           image: ${{ matrix.settings.docker }}
-          options: '--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
+          options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
                     -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache \
                     -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index \
-                    -v ${{ github.workspace }}/nodejs:/build -w /build'
+                    -v ${{ github.workspace }}/nodejs:/build -w /build"
           run: ${{ matrix.settings.build }}
       - name: Build
         run: ${{ matrix.settings.build }}
