@@ -40,6 +40,7 @@
 - [IndexOptions](interfaces/IndexOptions.md)
 - [IndexStatistics](interfaces/IndexStatistics.md)
 - [IvfPqOptions](interfaces/IvfPqOptions.md)
+- [IvfFlatOptions](interfaces/IvfFlatOptions.md)
 - [OpenTableOptions](interfaces/OpenTableOptions.md)
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)

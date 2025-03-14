@@ -53,6 +53,7 @@ export {
   Index,
   IndexOptions,
   IvfPqOptions,
+  IvfFlatOptions,
   HnswPqOptions,
   HnswSqOptions,
   FtsOptions,
