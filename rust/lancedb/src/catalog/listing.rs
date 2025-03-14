@@ -9,17 +9,70 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::{
-    Catalog, CreateDatabaseMode, CreateDatabaseRequest, DatabaseNamesRequest, OpenDatabaseRequest,
+    Catalog, CatalogOptions, CreateDatabaseMode, CreateDatabaseRequest, DatabaseNamesRequest,
+    OpenDatabaseRequest,
 };
 use crate::connection::ConnectRequest;
-use crate::database::listing::ListingDatabase;
-use crate::database::Database;
+use crate::database::listing::{ListingDatabase, ListingDatabaseOptions};
+use crate::database::{Database, DatabaseOptions};
 use crate::error::{CreateDirSnafu, Error, Result};
 use async_trait::async_trait;
 use lance::io::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry};
 use lance_io::local::to_local_path;
 use object_store::path::Path as ObjectStorePath;
 use snafu::ResultExt;
+
+/// Options for the listing catalog
+///
+/// Note: the catalog will use the `storage_options` configured on
+/// db_options to configure storage for listing / creating / deleting
+/// databases.
+#[derive(Clone, Debug, Default)]
+pub struct ListingCatalogOptions {
+    /// The options to use for databases opened by this catalog
+    ///
+    /// This also contains the storage options used by the catalog
+    pub db_options: ListingDatabaseOptions,
+}
+
+impl CatalogOptions for ListingCatalogOptions {
+    fn serialize_into_map(&self, map: &mut HashMap<String, String>) {
+        self.db_options.serialize_into_map(map);
+    }
+}
+
+impl ListingCatalogOptions {
+    pub fn builder() -> ListingCatalogOptionsBuilder {
+        ListingCatalogOptionsBuilder::new()
+    }
+
+    pub(crate) fn parse_from_map(map: &HashMap<String, String>) -> Result<Self> {
+        let db_options = ListingDatabaseOptions::parse_from_map(map)?;
+        Ok(Self { db_options })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ListingCatalogOptionsBuilder {
+    options: ListingCatalogOptions,
+}
+
+impl ListingCatalogOptionsBuilder {
+    pub fn new() -> Self {
+        Self {
+            options: ListingCatalogOptions::default(),
+        }
+    }
+
+    pub fn db_options(mut self, db_options: ListingDatabaseOptions) -> Self {
+        self.options.db_options = db_options;
+        self
+    }
+
+    pub fn build(self) -> ListingCatalogOptions {
+        self.options
+    }
+}
 
 /// A catalog implementation that works by listing subfolders in a directory
 ///
@@ -34,7 +87,7 @@ pub struct ListingCatalog {
 
     base_path: ObjectStorePath,
 
-    storage_options: HashMap<String, String>,
+    options: ListingCatalogOptions,
 }
 
 impl ListingCatalog {
@@ -61,7 +114,7 @@ impl ListingCatalog {
             uri: path.to_string(),
             base_path,
             object_store,
-            storage_options: HashMap::new(),
+            options: ListingCatalogOptions::default(),
         })
     }
 
@@ -69,13 +122,15 @@ impl ListingCatalog {
         let uri = &request.uri;
         let parse_res = url::Url::parse(uri);
 
+        let options = ListingCatalogOptions::parse_from_map(&request.options)?;
+
         match parse_res {
             Ok(url) if url.scheme().len() == 1 && cfg!(windows) => Self::open_path(uri).await,
             Ok(url) => {
                 let plain_uri = url.to_string();
 
                 let registry = Arc::new(ObjectStoreRegistry::default());
-                let storage_options = request.storage_options.clone();
+                let storage_options = options.db_options.storage_options.clone();
                 let os_params = ObjectStoreParams {
                     storage_options: Some(storage_options.clone()),
                     ..Default::default()
@@ -90,7 +145,7 @@ impl ListingCatalog {
                     uri: String::from(url.clone()),
                     base_path,
                     object_store,
-                    storage_options,
+                    options,
                 })
             }
             Err(_) => Self::open_path(uri).await,
@@ -155,16 +210,18 @@ impl Catalog for ListingCatalog {
 
         let db_uri = format!("/{}/{}", self.base_path, request.name);
 
-        let connect_request = ConnectRequest {
+        let mut connect_request = ConnectRequest {
             uri: db_uri,
-            api_key: None,
-            region: None,
-            host_override: None,
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             read_consistency_interval: None,
-            storage_options: self.storage_options.clone(),
+            options: Default::default(),
         };
+
+        // Add the db options to the connect request
+        self.options
+            .db_options
+            .serialize_into_map(&mut connect_request.options);
 
         Ok(Arc::new(
             ListingDatabase::connect_with_options(&connect_request).await?,
@@ -180,16 +237,18 @@ impl Catalog for ListingCatalog {
             return Err(Error::DatabaseNotFound { name: request.name });
         }
 
-        let connect_request = ConnectRequest {
+        let mut connect_request = ConnectRequest {
             uri: db_path.to_string(),
-            api_key: None,
-            region: None,
-            host_override: None,
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             read_consistency_interval: None,
-            storage_options: self.storage_options.clone(),
+            options: Default::default(),
         };
+
+        // Add the db options to the connect request
+        self.options
+            .db_options
+            .serialize_into_map(&mut connect_request.options);
 
         Ok(Arc::new(
             ListingDatabase::connect_with_options(&connect_request).await?,
@@ -249,12 +308,9 @@ mod tests {
 
         let request = ConnectRequest {
             uri: uri.clone(),
-            api_key: None,
-            region: None,
-            host_override: None,
             #[cfg(feature = "remote")]
             client_config: Default::default(),
-            storage_options: HashMap::new(),
+            options: Default::default(),
             read_consistency_interval: None,
         };
 
@@ -513,12 +569,9 @@ mod tests {
 
         let request = ConnectRequest {
             uri: path.to_string(),
-            api_key: None,
-            region: None,
-            host_override: None,
             #[cfg(feature = "remote")]
             client_config: Default::default(),
-            storage_options: HashMap::new(),
+            options: Default::default(),
             read_consistency_interval: None,
         };
 
@@ -535,12 +588,9 @@ mod tests {
 
         let request = ConnectRequest {
             uri: uri.clone(),
-            api_key: None,
-            region: None,
-            host_override: None,
             #[cfg(feature = "remote")]
             client_config: Default::default(),
-            storage_options: HashMap::new(),
+            options: Default::default(),
             read_consistency_interval: None,
         };
 
@@ -554,12 +604,9 @@ mod tests {
         let invalid_uri = "invalid:///path";
         let request = ConnectRequest {
             uri: invalid_uri.to_string(),
-            api_key: None,
-            region: None,
-            host_override: None,
             #[cfg(feature = "remote")]
             client_config: Default::default(),
-            storage_options: HashMap::new(),
+            options: Default::default(),
             read_consistency_interval: None,
         };
 
