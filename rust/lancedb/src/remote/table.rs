@@ -5,11 +5,11 @@ use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::table::{AddDataMode, AnyQuery, Filter};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
-use crate::{index::Index, table::dataset};
 use crate::{DistanceType, Error, Table};
 use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::FileReader;
@@ -395,9 +395,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
     fn name(&self) -> &str {
         &self.name
-    }
-    fn dataset(&self) -> &dataset::DatasetConsistencyWrapper {
-        unimplemented!()
     }
     async fn version(&self) -> Result<u64> {
         self.describe().await.map(|desc| desc.version)
