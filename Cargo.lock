@@ -2688,14 +2688,6 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 [[package]]
 name = "fsst"
 version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2#15420d5437c3232e87c7d004932cbca3294ece64"
-dependencies = [
- "rand",
-]
-
-[[package]]
-name = "fsst"
-version = "0.25.0"
 source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3#20bda34fcb09ee290b36f1ebe94ad42690e9ed72"
 dependencies = [
  "rand",
@@ -3682,7 +3674,7 @@ dependencies = [
 [[package]]
 name = "lance"
 version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2#15420d5437c3232e87c7d004932cbca3294ece64"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3#20bda34fcb09ee290b36f1ebe94ad42690e9ed72"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3709,15 +3701,15 @@ dependencies = [
  "futures",
  "half",
  "itertools 0.13.0",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-datafusion 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-encoding 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-file 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-index 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-io 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-linalg 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-table 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
+ "lance-arrow",
+ "lance-core",
+ "lance-datafusion",
+ "lance-encoding",
+ "lance-file",
+ "lance-index",
+ "lance-io",
+ "lance-linalg",
+ "lance-table",
  "lazy_static",
  "log",
  "moka",
@@ -3742,24 +3734,6 @@ dependencies = [
 [[package]]
 name = "lance-arrow"
 version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2#15420d5437c3232e87c7d004932cbca3294ece64"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-cast",
- "arrow-data",
- "arrow-schema",
- "arrow-select",
- "bytes",
- "getrandom 0.2.15",
- "half",
- "num-traits",
- "rand",
-]
-
-[[package]]
-name = "lance-arrow"
-version = "0.25.0"
 source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3#20bda34fcb09ee290b36f1ebe94ad42690e9ed72"
 dependencies = [
  "arrow-array",
@@ -3778,43 +3752,6 @@ dependencies = [
 [[package]]
 name = "lance-core"
 version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2#15420d5437c3232e87c7d004932cbca3294ece64"
-dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-schema",
- "async-trait",
- "byteorder",
- "bytes",
- "chrono",
- "datafusion-common",
- "datafusion-sql",
- "deepsize",
- "futures",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lazy_static",
- "libc",
- "log",
- "mock_instant",
- "moka",
- "num_cpus",
- "object_store",
- "pin-project",
- "prost",
- "rand",
- "roaring",
- "serde_json",
- "snafu",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "lance-core"
-version = "0.25.0"
 source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3#20bda34fcb09ee290b36f1ebe94ad42690e9ed72"
 dependencies = [
  "arrow-array",
@@ -3828,7 +3765,7 @@ dependencies = [
  "datafusion-sql",
  "deepsize",
  "futures",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
+ "lance-arrow",
  "lazy_static",
  "libc",
  "log",
@@ -3852,32 +3789,6 @@ dependencies = [
 [[package]]
 name = "lance-datafusion"
 version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2#15420d5437c3232e87c7d004932cbca3294ece64"
-dependencies = [
- "arrow",
- "arrow-array",
- "arrow-buffer",
- "arrow-ord",
- "arrow-schema",
- "arrow-select",
- "async-trait",
- "datafusion",
- "datafusion-common",
- "datafusion-functions",
- "datafusion-physical-expr",
- "futures",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lazy_static",
- "log",
- "prost",
- "snafu",
- "tokio",
-]
-
-[[package]]
-name = "lance-datafusion"
-version = "0.25.0"
 source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3#20bda34fcb09ee290b36f1ebe94ad42690e9ed72"
 dependencies = [
  "arrow",
@@ -3892,52 +3803,13 @@ dependencies = [
  "datafusion-functions",
  "datafusion-physical-expr",
  "futures",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
+ "lance-arrow",
+ "lance-core",
  "lazy_static",
  "log",
  "prost",
  "snafu",
  "tokio",
-]
-
-[[package]]
-name = "lance-encoding"
-version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2#15420d5437c3232e87c7d004932cbca3294ece64"
-dependencies = [
- "arrayref",
- "arrow",
- "arrow-arith",
- "arrow-array",
- "arrow-buffer",
- "arrow-cast",
- "arrow-data",
- "arrow-schema",
- "arrow-select",
- "bytemuck",
- "byteorder",
- "bytes",
- "fsst 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "futures",
- "hex",
- "hyperloglogplus",
- "itertools 0.13.0",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lazy_static",
- "log",
- "num-traits",
- "paste",
- "prost",
- "prost-build",
- "prost-types",
- "rand",
- "seq-macro",
- "snafu",
- "tokio",
- "tracing",
- "zstd",
 ]
 
 [[package]]
@@ -3957,13 +3829,13 @@ dependencies = [
  "bytemuck",
  "byteorder",
  "bytes",
- "fsst 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
+ "fsst",
  "futures",
  "hex",
  "hyperloglogplus",
  "itertools 0.13.0",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
+ "lance-arrow",
+ "lance-core",
  "lazy_static",
  "log",
  "num-traits",
@@ -3977,41 +3849,6 @@ dependencies = [
  "tokio",
  "tracing",
  "zstd",
-]
-
-[[package]]
-name = "lance-file"
-version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2#15420d5437c3232e87c7d004932cbca3294ece64"
-dependencies = [
- "arrow-arith",
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
- "arrow-select",
- "async-recursion",
- "async-trait",
- "byteorder",
- "bytes",
- "datafusion-common",
- "deepsize",
- "futures",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-encoding 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-io 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "log",
- "num-traits",
- "object_store",
- "prost",
- "prost-build",
- "prost-types",
- "roaring",
- "snafu",
- "tempfile",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -4032,10 +3869,10 @@ dependencies = [
  "datafusion-common",
  "deepsize",
  "futures",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-encoding 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-io 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
+ "lance-arrow",
+ "lance-core",
+ "lance-encoding",
+ "lance-io",
  "log",
  "num-traits",
  "object_store",
@@ -4047,59 +3884,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "lance-index"
-version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2#15420d5437c3232e87c7d004932cbca3294ece64"
-dependencies = [
- "arrow",
- "arrow-array",
- "arrow-ord",
- "arrow-schema",
- "arrow-select",
- "async-recursion",
- "async-trait",
- "bitvec",
- "bytes",
- "crossbeam-queue",
- "datafusion",
- "datafusion-common",
- "datafusion-expr",
- "datafusion-physical-expr",
- "datafusion-sql",
- "deepsize",
- "dirs",
- "futures",
- "half",
- "itertools 0.13.0",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-datafusion 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-encoding 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-file 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-io 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-linalg 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-table 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lazy_static",
- "log",
- "moka",
- "num-traits",
- "object_store",
- "prost",
- "prost-build",
- "rand",
- "rayon",
- "roaring",
- "serde",
- "serde_json",
- "snafu",
- "tantivy",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -4127,14 +3911,14 @@ dependencies = [
  "futures",
  "half",
  "itertools 0.13.0",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-datafusion 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-encoding 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-file 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-io 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-linalg 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-table 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
+ "lance-arrow",
+ "lance-core",
+ "lance-datafusion",
+ "lance-encoding",
+ "lance-file",
+ "lance-io",
+ "lance-linalg",
+ "lance-table",
  "lazy_static",
  "log",
  "moka",
@@ -4158,45 +3942,6 @@ dependencies = [
 [[package]]
 name = "lance-io"
 version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2#15420d5437c3232e87c7d004932cbca3294ece64"
-dependencies = [
- "arrow",
- "arrow-arith",
- "arrow-array",
- "arrow-buffer",
- "arrow-cast",
- "arrow-data",
- "arrow-schema",
- "arrow-select",
- "async-priority-channel",
- "async-recursion",
- "async-trait",
- "aws-config",
- "aws-credential-types",
- "byteorder",
- "bytes",
- "chrono",
- "deepsize",
- "futures",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lazy_static",
- "log",
- "object_store",
- "path_abs",
- "pin-project",
- "prost",
- "rand",
- "shellexpand",
- "snafu",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "lance-io"
-version = "0.25.0"
 source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3#20bda34fcb09ee290b36f1ebe94ad42690e9ed72"
 dependencies = [
  "arrow",
@@ -4217,8 +3962,8 @@ dependencies = [
  "chrono",
  "deepsize",
  "futures",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
+ "lance-arrow",
+ "lance-core",
  "lazy_static",
  "log",
  "object_store",
@@ -4236,30 +3981,6 @@ dependencies = [
 [[package]]
 name = "lance-linalg"
 version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2#15420d5437c3232e87c7d004932cbca3294ece64"
-dependencies = [
- "arrow-array",
- "arrow-ord",
- "arrow-schema",
- "bitvec",
- "cc",
- "deepsize",
- "futures",
- "half",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lazy_static",
- "log",
- "num-traits",
- "rand",
- "rayon",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "lance-linalg"
-version = "0.25.0"
 source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3#20bda34fcb09ee290b36f1ebe94ad42690e9ed72"
 dependencies = [
  "arrow-array",
@@ -4270,8 +3991,8 @@ dependencies = [
  "deepsize",
  "futures",
  "half",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
+ "lance-arrow",
+ "lance-core",
  "lazy_static",
  "log",
  "num-traits",
@@ -4284,7 +4005,7 @@ dependencies = [
 [[package]]
 name = "lance-table"
 version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2#15420d5437c3232e87c7d004932cbca3294ece64"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3#20bda34fcb09ee290b36f1ebe94ad42690e9ed72"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4299,49 +4020,11 @@ dependencies = [
  "chrono",
  "deepsize",
  "futures",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-file 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
- "lance-io 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.2)",
+ "lance-arrow",
+ "lance-core",
+ "lance-file",
+ "lance-io",
  "lazy_static",
- "log",
- "object_store",
- "prost",
- "prost-build",
- "prost-types",
- "rand",
- "rangemap",
- "roaring",
- "serde",
- "serde_json",
- "snafu",
- "tokio",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "lance-table"
-version = "0.25.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3#20bda34fcb09ee290b36f1ebe94ad42690e9ed72"
-dependencies = [
- "arrow",
- "arrow-array",
- "arrow-buffer",
- "arrow-ipc",
- "arrow-schema",
- "async-trait",
- "aws-credential-types",
- "byteorder",
- "bytes",
- "chrono",
- "deepsize",
- "futures",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-core 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-file 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-io 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
  "log",
  "object_store",
  "prost",
@@ -4366,7 +4049,7 @@ source = "git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3#20bda34fcb
 dependencies = [
  "arrow-array",
  "arrow-schema",
- "lance-arrow 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
+ "lance-arrow",
  "num-traits",
  "rand",
 ]
@@ -4408,12 +4091,12 @@ dependencies = [
  "http 1.3.1",
  "http-body 1.0.1",
  "lance",
- "lance-datafusion 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-encoding 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-index 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-io 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-linalg 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-table 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
+ "lance-datafusion",
+ "lance-encoding",
+ "lance-index",
+ "lance-io",
+ "lance-linalg",
+ "lance-table",
  "lance-testing",
  "lazy_static",
  "log",
@@ -4471,8 +4154,8 @@ dependencies = [
  "futures",
  "half",
  "lance",
- "lance-index 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
- "lance-linalg 0.25.0 (git+https://github.com/lancedb/lance.git?tag=v0.25.0-beta.3)",
+ "lance-index",
+ "lance-linalg",
  "lancedb",
  "lzma-sys",
  "neon",
