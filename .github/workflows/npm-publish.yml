@@ -31,35 +31,35 @@ jobs:
         settings:
           - target: x86_64-apple-darwin
             host: macos-latest
-            build: npm build --target x86_64-apple-darwin
+            build: npm run build-release --target x86_64-apple-darwin
           - target: aarch64-apple-darwin
             host: macos-latest
-            build: npm build --target aarch64-apple-darwin
+            build: npm run build-release --target aarch64-apple-darwin
           - target: x86_64-pc-windows-msvc
             host: windows-latest
-            build: npm build --target x86_64-pc-windows-msvc
+            build: npm run build-release --target x86_64-pc-windows-msvc
           - target: aarch64-pc-windows-msvc
             host: windows-latest
-            build: npm build --target aarch64-pc-windows-msvc
+            build: npm run build-release --target aarch64-pc-windows-msvc
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
-            build: npm build --target x86_64-unknown-linux-gnu
+            build: npm run build-release --target x86_64-unknown-linux-gnu
           - target: x86_64-unknown-linux-musl
             host: ubuntu-latest
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
-            build: npm build --target x86_64-unknown-linux-musl
+            build: npm run build-release --target x86_64-unknown-linux-musl
           - target: aarch64-unknown-linux-gnu
             host: ubuntu-latest
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
-            build: npm build --target aarch64-unknown-linux-gnu
+            build: npm run build-release --target aarch64-unknown-linux-gnu
           - target: aarch64-unknown-linux-musl
             host: ubuntu-latest
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
             build: |-
               set -e &&
               rustup target add aarch64-unknown-linux-musl &&
-              npm build --target aarch64-unknown-linux-musl
+              npm run build-release --target aarch64-unknown-linux-musl
     name: stable - ${{ matrix.settings.target }} - node@20
     runs-on: ${{ matrix.settings.host }}
     defaults:
