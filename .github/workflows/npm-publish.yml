@@ -100,6 +100,7 @@ jobs:
             host: macos-latest
             build: |-
                 brew install protobuf
+                rustup target add x86_64-apple-darwin
                 CARGO_BUILD_TARGET=x86_64-apple-darwin npm run build-release
           - target: aarch64-apple-darwin
             host: macos-latest
@@ -124,6 +125,7 @@ jobs:
                 unzip /c/protoc/protoc.zip -d /c/protoc
                 export PATH="/c/protoc/bin:$PATH"
                 protoc --version
+                rustup target add aarch64-pc-windows-msvc
                 CARGO_BUILD_TARGET=aarch64-pc-windows-msvc npm run build-release
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
@@ -132,6 +134,11 @@ jobs:
               set -e &&
               apt-get update &&
               apt-get install -y protobuf-compiler pkg-config libssl-dev &&
+              # https://github.com/sfackler/rust-openssl/issues/2333
+              export OPENSSL_INCLUDE_DIR=/usr/include/ &&
+              export OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu/ &&
+              ln -s /usr/include/x86_64-linux-gnu/openssl/opensslconf.h /usr/include/openssl/opensslconf.h &&
+              ln -s /usr/include/x86_64-linux-gnu/openssl/configuration.h /usr/include/openssl/configuration.h &&
               CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu npm run build-release
           - target: x86_64-unknown-linux-musl
             host: ubuntu-latest
@@ -152,6 +159,10 @@ jobs:
               # https://github.com/aws/aws-lc-rs/issues/737#issuecomment-2725918627
               ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
               ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
+              export OPENSSL_INCLUDE_DIR=/usr/include/ &&
+              export OPENSSL_LIB_DIR=/usr/lib/aarch64-unknown-linux-gnu/ &&
+              ln -s /usr/include/aarch64-unknown-linux-gnu/openssl/opensslconf.h /usr/include/openssl/opensslconf.h &&
+              ln -s /usr/include/aarch64-unknown-linux-gnu/openssl/configuration.h /usr/include/openssl/configuration.h &&
               rustup target add aarch64-unknown-linux-gnu &&
               CARGO_BUILD_TARGET=aarch64-unknown-linux-gnu npm run build-release
           - target: aarch64-unknown-linux-musl
