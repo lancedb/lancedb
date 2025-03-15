@@ -30,3 +30,12 @@ log.workspace = true
 
 [build-dependencies]
 napi-build = "2.1"
+
+[features]
+default = ["native-tls", "remote"]
+fp16kernels = ["lancedb/fp16kernels"]
+remote = ["lancedb/remote"]
+# TLS
+default-tls = ["lancedb/default-tls"]
+native-tls = ["lancedb/native-tls"]
+rustls-tls = ["lancedb/rustls-tls"]
