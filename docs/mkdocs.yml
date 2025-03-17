@@ -124,6 +124,9 @@ nav:
               - Overview: hybrid_search/hybrid_search.md
               - Comparing Rerankers: hybrid_search/eval.md
               - Airbnb financial data example: notebooks/hybrid_search.ipynb
+          - Late interaction with MultiVector search:
+              - Overview: guides/multi-vector.md
+              - Example: notebooks/Multivector_on_LanceDB.ipynb
           - RAG:
               - Vanilla RAG: rag/vanilla_rag.md
               - Multi-head RAG: rag/multi_head_rag.md
@@ -260,6 +263,9 @@ nav:
           - Overview: hybrid_search/hybrid_search.md
           - Comparing Rerankers: hybrid_search/eval.md
           - Airbnb financial data example: notebooks/hybrid_search.ipynb
+      - Late interaction with MultiVector search:
+          - Overview: guides/multi-vector.md
+          - Document search Example: notebooks/Multivector_on_LanceDB.ipynb
       - RAG:
           - Vanilla RAG: rag/vanilla_rag.md
           - Multi-head RAG: rag/multi_head_rag.md
