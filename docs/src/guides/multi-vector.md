@@ -47,7 +47,7 @@ S(q,d) := Σ max(Eqi⋅EdjT)
 ## LanceDB MultiVector type
 LanceDB supports multivector type, this is useful when you have multiple vectors for a single item (e.g. with ColBert and ColPali).
 
-You can index on a column with multivector type and search on it, the query can be single vector or multiple vectors. For now, only cosine metric is supported for multivector search. The vector value type can be float16, float32 or float64.
+You can index on a column with multivector type and search on it, the query can be single vector or multiple vectors. For now, only cosine metric is supported for multivector search. The vector value type can be float16, float32 or float64. LanceDB integrateds [ConteXtualized Token Retriever(XTR)](https://arxiv.org/abs/2304.01982), which introduces a simple, yet novel, objective function that encourages the model to retrieve the most important document tokens first. 
 
 ```python
 import lancedb
