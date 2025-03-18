@@ -9,4 +9,4 @@ LanceDB provides language APIs, allowing you to embed a database in your languag
 * 🦀 Rust examples (coming soon)
 
 !!! tip "Hosted LanceDB"
-    If you want S3 cost-efficiency and local performance via a simple serverless API, checkout LanceDB Cloud. For private deployments, high performance at extreme scale, or you have strict security requirements, talk to us about LanceDB Enterprise. [Learn more](https://docs.lancedb.com/)
+    If you want S3 cost-efficiency and local performance via a simple serverless API, checkout **LanceDB Cloud**. For private deployments, high performance at extreme scale, or if you have strict security requirements, talk to us about **LanceDB Enterprise**. [Learn more](https://docs.lancedb.com/)
