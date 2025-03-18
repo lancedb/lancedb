@@ -18,3 +18,4 @@ const ARROW_FILE_CONTENT_TYPE: &str = "application/vnd.apache.arrow.file";
 const JSON_CONTENT_TYPE: &str = "application/json";
 
 pub use client::{ClientConfig, RetryConfig, TimeoutConfig};
+pub use db::{RemoteDatabaseOptions, RemoteDatabaseOptionsBuilder};
