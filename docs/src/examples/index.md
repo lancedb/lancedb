@@ -9,7 +9,7 @@ LanceDB provides language APIs, allowing you to embed a database in your languag
 * 🦀 Rust examples (coming soon)
 
 !!! tip "LanceDB Cloud & Enterprise"
-    If your worflow requires hosted LanceDB, checkout [LanceDB Cloud](). If you're looking for custom solutions like private deployment, high performance at extreme scale, you can check out [LanceDB enterprise]().
+    If your worflow requires hosted LanceDB, checkout [LanceDB Cloud](https://lancedb.github.io/lancedb/cloud/). If you're looking for custom solutions like private deployment, high performance at extreme scale, you can check out [LanceDB enterprise](https://docs.lancedb.com/enterprise/introduction).
 
 ## ☁️ LanceDB Cloud Exmaples 🔗
 * 🐍 [Python](https://github.com/lancedb/vectordb-recipes/tree/main/examples/saas_examples/python_notebook) examples
