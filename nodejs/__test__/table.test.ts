@@ -448,6 +448,21 @@ describe("When creating an index", () => {
   });
   afterEach(() => tmpDir.removeCallback());
 
+  it('tests "offset" for "vectorSearch"', async () => {
+    // to trigger an error, change the default limit to 1 on the line below
+    const vectorSearch = (offset: number, limit = 2) =>
+      tbl
+        .vectorSearch(queryVec)
+        .limit(limit)
+        .offset(offset)
+        .select("id")
+        .toArray();
+    const rowsFirstTwo = await vectorSearch(0, 2);
+    const rowsFirst = await vectorSearch(0);
+    const rowsSecond = await vectorSearch(1);
+    expect(rowsFirstTwo).toEqual([rowsFirst[0], rowsSecond[0]]);
+  });
+
   it("should create a vector index on vector columns", async () => {
     await tbl.createIndex("vec");
 
