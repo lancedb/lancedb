@@ -233,13 +233,6 @@ nav:
           - 👾 JavaScript (vectordb): javascript/modules.md
           - 👾 JavaScript (lancedb): js/globals.md
           - 🦀 Rust: https://docs.rs/lancedb/latest/lancedb/
-      - ☁️ LanceDB Cloud:
-          - Overview: cloud/index.md
-          - API reference:
-              - 🐍 Python: python/saas-python.md
-              - 👾 JavaScript: javascript/modules.md
-              - REST API: cloud/rest.md
-          - FAQs: cloud/cloud_faq.md
 
   - Quick start: basic.md
   - Concepts:
@@ -363,13 +356,6 @@ nav:
       - Javascript (vectordb): javascript/modules.md
       - Javascript (lancedb): js/globals.md
       - Rust: https://docs.rs/lancedb/latest/lancedb/index.html
-  - LanceDB Cloud:
-      - Overview: cloud/index.md
-      - API reference:
-          - 🐍 Python: python/saas-python.md
-          - 👾 JavaScript: javascript/modules.md
-          - REST API: cloud/rest.md
-      - FAQs: cloud/cloud_faq.md
 
 extra_css:
   - styles/global.css

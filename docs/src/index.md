@@ -4,8 +4,8 @@ LanceDB is an open-source vector database for AI that's designed to store, manag
 
 Both the database and the underlying data format are designed from the ground up to be **easy-to-use**, **scalable** and **cost-effective**.
 
-!!! tip "LanceDB Cloud & Enterprise"
-    If your worflow requires hosted LanceDB, checkout [LanceDB Cloud](https://lancedb.github.io/lancedb/cloud/). If you're looking for custom solutions like felxible deployment, high performance at extreme scale & security compliance, you can check out [LanceDB enterprise](https://docs.lancedb.com/enterprise/introduction).
+!!! tip "Hosted LanceDB"
+    If you want S3 cost-efficiency and local performance via a simple serverless API, checkout LanceDB Cloud. For private deployments, high performance at extreme scale, or you have strict security requirements, talk to us about LanceDB Enterprise. [Learn more](https://docs.lancedb.com/)
 
 ![](assets/lancedb_and_lance.png)
 

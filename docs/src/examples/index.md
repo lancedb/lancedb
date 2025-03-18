@@ -8,10 +8,5 @@ LanceDB provides language APIs, allowing you to embed a database in your languag
 * 👾 [JavaScript](examples_js.md) examples
 * 🦀 Rust examples (coming soon)
 
-!!! tip "LanceDB Cloud & Enterprise"
-    If your worflow requires hosted LanceDB, checkout [LanceDB Cloud](https://lancedb.github.io/lancedb/cloud/). If you're looking for custom solutions like flexible deployment, high performance at extreme scale & security compliance, you can check out [LanceDB enterprise](https://docs.lancedb.com/enterprise/introduction).
-
-## ☁️ LanceDB Cloud Exmaples 🔗
-* 🐍 [Python](https://github.com/lancedb/vectordb-recipes/tree/main/examples/saas_examples/python_notebook) examples
-* 👾 [JavaScript](https://github.com/lancedb/vectordb-recipes/tree/main/examples/saas_examples/ts_example) examples
-* 🛜 [Rest API](https://github.com/lancedb/vectordb-recipes/tree/main/examples/saas_examples/rest_api_example) examples
+!!! tip "Hosted LanceDB"
+    If you want S3 cost-efficiency and local performance via a simple serverless API, checkout LanceDB Cloud. For private deployments, high performance at extreme scale, or you have strict security requirements, talk to us about LanceDB Enterprise. [Learn more](https://docs.lancedb.com/)
