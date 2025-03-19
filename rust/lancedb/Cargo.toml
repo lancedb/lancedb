@@ -74,6 +74,7 @@ semver = { workspace = true }
 
 # For a workaround, see workspace Cargo.toml
 crunchy.workspace = true
+bytemuck_derive.workspace = true
 
 [dev-dependencies]
 tempfile = "3.5.0"
