@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - 'python-v*'
+  pull_request:
+    # This should trigger a dry run (we skip the final publish step)
+    paths:
+      - .github/workflows/pypi-publish.yml
 
 jobs:
   linux:
@@ -46,6 +50,7 @@ jobs:
           arm-build: ${{ matrix.config.platform == 'aarch64' }}
           manylinux: ${{ matrix.config.manylinux }}
       - uses: ./.github/workflows/upload_wheel
+        if: startsWith(github.ref, 'refs/tags/python-v')
         with:
           pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           fury_token: ${{ secrets.FURY_TOKEN }}
@@ -75,6 +80,7 @@ jobs:
           python-minor-version: 8
           args: "--release --strip --target ${{ matrix.config.target }} --features fp16kernels"
       - uses: ./.github/workflows/upload_wheel
+        if: startsWith(github.ref, 'refs/tags/python-v')
         with:
           pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           fury_token: ${{ secrets.FURY_TOKEN }}
@@ -96,10 +102,12 @@ jobs:
           args: "--release --strip"
           vcpkg_token: ${{ secrets.VCPKG_GITHUB_PACKAGES }}
       - uses: ./.github/workflows/upload_wheel
+        if: startsWith(github.ref, 'refs/tags/python-v')
         with:
           pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           fury_token: ${{ secrets.FURY_TOKEN }}
   gh-release:
+    if: startsWith(github.ref, 'refs/tags/python-v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
