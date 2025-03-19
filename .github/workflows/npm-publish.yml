@@ -2,7 +2,7 @@ name: NPM Publish
 
 env:
   MACOSX_DEPLOYMENT_TARGET: '10.13'
-  CARGO_INCREMENTAL: '1'
+  CARGO_INCREMENTAL: '0'
 
 permissions:
   contents: write
@@ -98,17 +98,17 @@ jobs:
         settings:
           - target: x86_64-apple-darwin
             host: macos-latest
-            features: fips
+            features: ","
             pre_build: |-
                 brew install protobuf
                 rustup target add x86_64-apple-darwin
           - target: aarch64-apple-darwin
             host: macos-latest
-            features: fp16kernels,fips
+            features: fp16kernels
             pre_build: brew install protobuf
           - target: x86_64-pc-windows-msvc
             host: windows-latest
-            features: fips
+            features: ","
             pre_build: |-
               choco install --no-progress protoc ninja nasm
               tail -n 1000 /c/ProgramData/chocolatey/logs/chocolatey.log
@@ -117,71 +117,42 @@ jobs:
               nasm -v
           - target: aarch64-pc-windows-msvc
             host: windows-latest
-            # TODO: figure out how to get FIPS working here.
             features: ","
             pre_build: |-
                 choco install --no-progress protoc
                 rustup target add aarch64-pc-windows-msvc
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
-            features: fp16kernels,fips
+            features: fp16kernels
             # https://github.com/napi-rs/napi-rs/blob/main/debian.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
             pre_build: |-
               set -e &&
-              add-apt-repository -y ppa:longsleep/golang-backports &&
               apt-get update &&
-              apt-get install -y protobuf-compiler pkg-config golang-go
+              apt-get install -y protobuf-compiler pkg-config
           - target: x86_64-unknown-linux-musl
             # This one seems to need some extra memory
             host: ubuntu-2404-8x-x64
             # https://github.com/napi-rs/napi-rs/blob/main/alpine.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
-            features: fips
+            features: ","
             pre_build: |-
               set -e &&
-              apk add protobuf-dev curl perl &&
+              apk add protobuf-dev curl &&
               ln -s /usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/crtbeginS.o /usr/lib/crtbeginS.o &&
               ln -s /usr/lib/libgcc_s.so /usr/lib/libgcc.so &&
-              curl -L -o /tmp/go.tar.gz https://go.dev/dl/go1.24.1.linux-amd64.tar.gz &&
-              tar -C /usr/local -xzf /tmp/go.tar.gz &&
-              rm /tmp/go.tar.gz &&
-              export PATH="$PATH:/usr/local/go/bin"
-          # - target: x86_64-unknown-linux-musl
-          #   host: ubuntu-latest
-          #   features: fips,fp16kernels
-          #   pre_build: |-
-          #     set -e &&
-          #     add-apt-repository -y ppa:longsleep/golang-backports &&
-          #     apt-get update &&
-          #     apt-get install -y protobuf-compiler pkg-config golang-go curl xz-utils &&
-          #     curl https://ziglang.org/download/0.14.0/zig-linux-$(uname -m)-0.14.0.tar.xz --output /tmp/zig.tar.xz &&
-          #     tar -C /usr/local -xf /tmp/zig.tar.xz &&
-          #     rm /tmp/zig.tar.xz &&
-          #     export PATH="$PATH:/usr/local/zig-linux-$(uname -m)-0.14.0"
-          # - target: aarch64-unknown-linux-musl
-          #   host: ubuntu-latest
-          #   features: fips,fp16kernels
-          #   pre_build: |-
-          #     set -e &&
-          #     add-apt-repository -y ppa:longsleep/golang-backports &&
-          #     apt-get update &&
-          #     apt-get install -y protobuf-compiler pkg-config golang-go curl xz-utils &&
-          #     curl https://ziglang.org/download/0.14.0/zig-linux-$(uname -m)-0.14.0.tar.xz --output /tmp/zig.tar.xz &&
-          #     tar -C /usr/local -xf /tmp/zig.tar.xz &&
-          #     rm /tmp/zig.tar.xz &&
-          #     export PATH="$PATH:/usr/local/zig-linux-$(uname -m)-0.14.0"
+              export PATH="$PATH:/usr/local/go/bin" &&
+              export CARGO_BUILD_JOBS=3
           - target: aarch64-unknown-linux-gnu
             host: ubuntu-latest
             # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
             # TODO: enable fp16kernels after https://github.com/lancedb/lance/pull/3559
-            features: fips
+            features: ","
             pre_build: |-
               set -e &&
-              add-apt-repository -y ppa:longsleep/golang-backports &&
               apt-get update &&
-              apt-get install -y protobuf-compiler pkg-config golang-go &&
+              apt-get install -y protobuf-compiler pkg-config &&
               # https://github.com/aws/aws-lc-rs/issues/737#issuecomment-2725918627
               ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
               ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
@@ -193,12 +164,8 @@ jobs:
             features: fips
             pre_build: |-
               set -e &&
-              apk add protobuf-dev curl perl &&
+              apk add protobuf-dev &&
               rustup target add aarch64-unknown-linux-musl &&
-              curl -L -o /tmp/go.tar.gz https://go.dev/dl/go1.24.1.linux-amd64.tar.gz &&
-              tar -C /usr/local -xzf /tmp/go.tar.gz &&
-              rm /tmp/go.tar.gz &&
-              export PATH="$PATH:/usr/local/go/bin" &&
               export CC="/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc" &&
               export CXX="/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++"
     name: ${{ matrix.settings.target }}
@@ -215,11 +182,6 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: nodejs/package-lock.json
-      - name: Setup Go # Go is used for FIPS feature of aws-lc-rs.
-        if: ${{ !matrix.settings.docker }}
-        uses: actions/setup-go@v5
-        with:
-          go-version: 1.24.1
       - name: Install
         uses: dtolnay/rust-toolchain@stable
         if: ${{ !matrix.settings.docker }}
@@ -262,13 +224,8 @@ jobs:
               --strip \
               dist/
       - name: Build
-        # env:
-        #   USE_ZIG: ${{ endsWith(matrix.settings.target, 'linux-musl') }}
         run: |
           ${{ matrix.settings.pre_build }}
-          # if [[ $USE_ZIG == "true" ]]; then
-          #   EXTRA_ARGS="--zig"
-          # fi
           npx napi build --platform  --release --no-const-enum \
               --features ${{ matrix.settings.features }} \
               --target ${{ matrix.settings.target }} \
