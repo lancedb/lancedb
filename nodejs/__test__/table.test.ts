@@ -457,7 +457,7 @@ describe("When creating an index", () => {
 
   it('tests "offset" for "vectorSearch"', async () => {
     // to trigger an error, change the default limit to 1 on the line below
-    const vectorSearch = (offset: number, limit = 2) =>
+    const vectorSearch = (offset: number, limit = 1) =>
       tbl
         .vectorSearch(queryVec)
         .limit(limit)
@@ -465,9 +465,14 @@ describe("When creating an index", () => {
         .select("id")
         .toArray();
     const rowsFirstTwo = await vectorSearch(0, 2);
+    expect(rowsFirstTwo.length).toBe(2);
     const rowsFirst = await vectorSearch(0);
+    expect(rowsFirst.length).toBe(1);
     const rowsSecond = await vectorSearch(1);
-    expect(rowsFirstTwo).toEqual([rowsFirst[0], rowsSecond[0]]);
+    expect(rowsSecond.length).toBe(1);
+    expect([rowsFirst[0].id, rowsSecond[0]?.id]).toEqual(
+      rowsFirstTwo.map((v) => v.id),
+    );
   });
 
   it("should create a vector index on vector columns", async () => {
