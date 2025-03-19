@@ -161,7 +161,7 @@ jobs:
             host: ubuntu-latest
             # https://github.com/napi-rs/napi-rs/blob/main/alpine.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
-            features: fips
+            features: ","
             pre_build: |-
               set -e &&
               apk add protobuf-dev &&
