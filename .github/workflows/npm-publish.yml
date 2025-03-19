@@ -141,58 +141,6 @@ jobs:
           path: |
             node/dist/lancedb-vectordb-linux*.tgz
 
-  node-linux-musl:
-    name: vectordb (${{ matrix.config.arch}}-unknown-linux-musl)
-    runs-on: ubuntu-latest
-    container: alpine:edge
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - arch: x86_64
-          - arch: aarch64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install common dependencies
-        run: |
-          apk add protobuf-dev curl clang mold grep npm bash
-          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
-          echo "source $HOME/.cargo/env" >> saved_env
-          echo "export CC=clang" >> saved_env
-          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'" >> saved_env
-      - name: Configure aarch64 build
-        if: ${{ matrix.config.arch == 'aarch64' }}
-        run: |
-          source "$HOME/.cargo/env"
-          rustup target add aarch64-unknown-linux-musl
-          crt=$(realpath $(dirname $(rustup which rustc))/../lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained)
-          sysroot_lib=/usr/aarch64-unknown-linux-musl/usr/lib
-          apk_url=https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64/
-          curl -sSf $apk_url > apk_list
-          for pkg in gcc libgcc musl; do curl -sSf $apk_url$(cat apk_list | grep -oP '(?<=")'$pkg'-\d.*?(?=")') | tar zxf -; done
-          mkdir -p $sysroot_lib
-          echo 'GROUP ( libgcc_s.so.1 -lgcc )' > $sysroot_lib/libgcc_s.so
-          cp usr/lib/libgcc_s.so.1 $sysroot_lib
-          cp usr/lib/gcc/aarch64-alpine-linux-musl/*/libgcc.a $sysroot_lib
-          cp lib/ld-musl-aarch64.so.1 $sysroot_lib/libc.so
-          echo '!<arch>' > $sysroot_lib/libdl.a
-          (cd $crt && cp crti.o crtbeginS.o crtendS.o crtn.o -t $sysroot_lib)
-          echo "export CARGO_BUILD_TARGET=aarch64-unknown-linux-musl" >> saved_env
-          echo "export RUSTFLAGS='-Ctarget-cpu=apple-m1 -Ctarget-feature=-crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=--target=aarch64-unknown-linux-musl -Clink-arg=--sysroot=/usr/aarch64-unknown-linux-musl -Clink-arg=-lc'" >> saved_env
-      - name: Build Linux Artifacts
-        run: |
-          source ./saved_env
-          bash ci/manylinux_node/build_vectordb.sh ${{ matrix.config.arch }} ${{ matrix.config.arch }}-unknown-linux-musl
-      - name: Upload Linux Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-native-linux-${{ matrix.config.arch }}-musl
-          path: |
-            node/dist/lancedb-vectordb-linux*.tgz
-
   nodejs-linux-gnu:
     name: lancedb (${{ matrix.config.arch}}-unknown-linux-gnu
     runs-on: ${{ matrix.config.runner }}
@@ -334,51 +282,6 @@ jobs:
           path: |
             node/dist/lancedb-vectordb-win32*.tgz
 
-  node-windows-arm64:
-    name: vectordb ${{ matrix.config.arch }}-pc-windows-msvc
-    # if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    container: alpine:edge
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          # - arch: x86_64
-          - arch: aarch64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
-          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
-          echo "source $HOME/.cargo/env" >> saved_env
-          echo "export CC=clang" >> saved_env
-          echo "export AR=llvm-ar" >> saved_env
-          source "$HOME/.cargo/env"
-          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc
-          (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
-          echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
-          echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
-      - name: Configure x86_64 build
-        if: ${{ matrix.config.arch == 'x86_64' }}
-        run: |
-          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=+crt-static,+avx2,+fma,+f16c -Clinker=lld -Clink-arg=/LIBPATH:/usr/x86_64-pc-windows-msvc/usr/lib'" >> saved_env
-      - name: Configure aarch64 build
-        if: ${{ matrix.config.arch == 'aarch64' }}
-        run: |
-          echo "export RUSTFLAGS='-Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib'" >> saved_env
-      - name: Build Windows Artifacts
-        run: |
-          source ./saved_env
-          bash ci/manylinux_node/build_vectordb.sh ${{ matrix.config.arch }} ${{ matrix.config.arch }}-pc-windows-msvc
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-native-windows-${{ matrix.config.arch }}
-          path: |
-            node/dist/lancedb-vectordb-win32*.tgz
-
   nodejs-windows:
     name: lancedb ${{ matrix.target }}
     runs-on: windows-2022
@@ -463,7 +366,7 @@ jobs:
 
   release:
     name: vectordb NPM Publish
-    needs: [node, node-macos, node-linux-gnu, node-linux-musl, node-windows, node-windows-arm64]
+    needs: [node, node-macos, node-linux-gnu, node-windows]
     runs-on: ubuntu-latest
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
