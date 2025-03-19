@@ -475,6 +475,23 @@ describe("When creating an index", () => {
     );
   });
 
+  it("runs full text search ", async () => {
+    const pathDb = path.join(tmpDir.name, ".lancedb");
+    const db = await connect(pathDb);
+    const schema = new arrow.Schema([
+      new arrow.Field("text", new arrow.Utf8()),
+    ]);
+    const table = await db.createEmptyTable("full-text-search", schema, {
+      mode: "overwrite",
+      existOk: true,
+    });
+    await table.createIndex("text", { config: Index.fts() });
+    await table.add([{ text: "hello world" }, { text: "goodbye world" }]);
+
+    const results = await table.search("world", "fts", "text").toArray();
+    expect(results.length).toBe(2);
+  });
+
   it("should create a vector index on vector columns", async () => {
     await tbl.createIndex("vec");
 
