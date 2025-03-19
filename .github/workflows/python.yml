@@ -136,6 +136,10 @@ jobs:
       - uses: ./.github/workflows/run_tests
         with:
           integration: true
+      - name: Test without pylance
+        run: |
+          pip uninstall -y pylance
+          pytest -vv python/tests/test_table.py
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels
