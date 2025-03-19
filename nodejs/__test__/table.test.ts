@@ -263,9 +263,13 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       ]);
       const db = await connect(tmpDir.name);
       const table = await db.createEmptyTable("testNull", schema);
+      await table.createIndex("id", { config: Index.btree() });
+      const indices = await table.listIndices();
+      expect(indices.length).toBe(1);
       await table.add([{ id: 1, y: 2 }]);
       await table.add([{ id: 2 }]);
 
+      // incorrectly removes index
       await table
         .mergeInsert("id")
         .whenNotMatchedInsertAll()
@@ -273,6 +277,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           { id: 3, z: 3 },
           { id: 4, z: 5 },
         ]);
+
+      const indices2 = await table.listIndices();
+      expect(indices2.length).toBe(1);
 
       const res = await table.query().toArrow();
       expect(res.getChild("id")?.toJSON()).toEqual([1, 2, 3, 4]);
