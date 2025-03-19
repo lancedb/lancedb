@@ -456,7 +456,6 @@ describe("When creating an index", () => {
   afterEach(() => tmpDir.removeCallback());
 
   it('tests "offset" for "vectorSearch"', async () => {
-    // to trigger an error, change the default limit to 1 on the line below
     const vectorSearch = (offset: number, limit = 1) =>
       tbl
         .vectorSearch(queryVec)
