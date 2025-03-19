@@ -927,7 +927,8 @@ class Table(ABC):
         of the given query vector. We currently support [vector search][search]
         and [full-text search][experimental-full-text-search].
 
-        All query options are defined in [Query][lancedb.query.Query].
+        All query options are defined in
+        [LanceQueryBuilder][lancedb.query.LanceQueryBuilder].
 
         Examples
         --------
@@ -2278,7 +2279,19 @@ class LanceTable(Table):
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
-        return LOOP.run(self._table._execute_query(query, batch_size))
+        async_iter = LOOP.run(self._table._execute_query(query, batch_size))
+
+        def iter_sync():
+            try:
+                while True:
+                    yield LOOP.run(async_iter.__anext__())
+            except StopAsyncIteration:
+                return
+
+        return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
+
+    def _explain_plan(self, query: Query) -> str:
+        return LOOP.run(self._table._explain_plan(query))
 
     def _do_merge(
         self,
@@ -3053,7 +3066,7 @@ class AsyncTable:
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> Union[AsyncHybridQuery | AsyncFTSQuery | AsyncVectorQuery]: ...
+    ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]: ...
 
     @overload
     async def search(
@@ -3102,7 +3115,7 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> Union[AsyncHybridQuery | AsyncFTSQuery | AsyncVectorQuery]:
+    ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
         and [full-text search][experimental-full-text-search].
@@ -3286,16 +3299,13 @@ class AsyncTable:
         """
         return self.query().nearest_to(query_vector)
 
-    async def _execute_query(
-        self, query: Query, batch_size: Optional[int] = None
-    ) -> pa.RecordBatchReader:
-        # The sync remote table calls into this method, so we need to map the
-        # query to the async version of the query and run that here. This is only
-        # used for that code path right now.
+    def _sync_query_to_async(
+        self, query: Query
+    ) -> AsyncHybridQuery | AsyncFTSQuery | AsyncVectorQuery | AsyncQuery:
         async_query = self.query()
-        if query.k is not None:
-            async_query = async_query.limit(query.k)
-        if query.offset > 0:
+        if query.limit is not None:
+            async_query = async_query.limit(query.limit)
+        if query.offset is not None:
             async_query = async_query.offset(query.offset)
         if query.columns:
             async_query = async_query.select(query.columns)
@@ -3307,24 +3317,23 @@ class AsyncTable:
             async_query = async_query.with_row_id()
 
         if query.vector:
-            # we need the schema to get the vector column type
-            # to determine whether the vectors is batch queries or not
-            async_query = (
-                async_query.nearest_to(query.vector)
-                .distance_type(query.metric)
-                .nprobes(query.nprobes)
-                .distance_range(query.lower_bound, query.upper_bound)
+            async_query = async_query.nearest_to(query.vector).distance_range(
+                query.lower_bound, query.upper_bound
             )
-            if query.refine_factor:
+            if query.distance_type is not None:
+                async_query = async_query.distance_type(query.distance_type)
+            if query.nprobes is not None:
+                async_query = async_query.nprobes(query.nprobes)
+            if query.refine_factor is not None:
                 async_query = async_query.refine_factor(query.refine_factor)
             if query.vector_column:
                 async_query = async_query.column(query.vector_column)
             if query.ef:
                 async_query = async_query.ef(query.ef)
-            if not query.use_index:
+            if query.bypass_vector_index:
                 async_query = async_query.bypass_vector_index()
 
-        if not query.prefilter:
+        if query.postfilter:
             async_query = async_query.postfilter()
 
         if isinstance(query.full_text_query, str):
@@ -3334,8 +3343,23 @@ class AsyncTable:
             fts_columns = query.full_text_query.get("columns", []) or []
             async_query = async_query.nearest_to_text(fts_query, columns=fts_columns)
 
-        table = await async_query.to_arrow()
-        return table.to_reader()
+        return async_query
+
+    async def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
+        # The sync table calls into this method, so we need to map the
+        # query to the async version of the query and run that here. This is only
+        # used for that code path right now.
+
+        async_query = self._sync_query_to_async(query)
+
+        return await async_query.to_batches(max_batch_length=batch_size)
+
+    async def _explain_plan(self, query: Query) -> str:
+        # This method is used by the sync table
+        async_query = self._sync_query_to_async(query)
+        return await async_query.explain_plan()
 
     async def _do_merge(
         self,
