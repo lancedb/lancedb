@@ -162,6 +162,9 @@ jobs:
         target:
         - x86_64-pc-windows-msvc
         - aarch64-pc-windows-msvc
+    defaults:
+      run:
+        working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
