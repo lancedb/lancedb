@@ -261,13 +261,11 @@ jobs:
         uses: actions/checkout@v4
       - name: Install common dependencies
         run: |
-          apk add protobuf-dev curl clang mold grep npm bash openssl-dev openssl-libs-static
+          apk add protobuf-dev curl clang mold grep npm bash
           curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
           echo "source $HOME/.cargo/env" >> saved_env
           echo "export CC=clang" >> saved_env
           echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'" >> saved_env
-          echo "export X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_INCLUDE_DIR=/usr/include" >> saved_env
-          echo "export X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_LIB_DIR=/usr/lib" >> saved_env
       - name: Configure aarch64 build
         if: ${{ matrix.config.arch == 'aarch64' }}
         run: |
@@ -277,7 +275,7 @@ jobs:
           sysroot_lib=/usr/aarch64-unknown-linux-musl/usr/lib
           apk_url=https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64/
           curl -sSf $apk_url > apk_list
-          for pkg in gcc libgcc musl openssl-dev openssl-libs-static; do curl -sSf $apk_url$(cat apk_list | grep -oP '(?<=")'$pkg'-\d.*?(?=")') | tar zxf -; done
+          for pkg in gcc libgcc musl; do curl -sSf $apk_url$(cat apk_list | grep -oP '(?<=")'$pkg'-\d.*?(?=")') | tar zxf -; done
           mkdir -p $sysroot_lib
           echo 'GROUP ( libgcc_s.so.1 -lgcc )' > $sysroot_lib/libgcc_s.so
           cp usr/lib/libgcc_s.so.1 $sysroot_lib
@@ -287,8 +285,6 @@ jobs:
           (cd $crt && cp crti.o crtbeginS.o crtendS.o crtn.o -t $sysroot_lib)
           echo "export CARGO_BUILD_TARGET=aarch64-unknown-linux-musl" >> saved_env
           echo "export RUSTFLAGS='-Ctarget-feature=-crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=--target=aarch64-unknown-linux-musl -Clink-arg=--sysroot=/usr/aarch64-unknown-linux-musl -Clink-arg=-lc'" >> saved_env
-          echo "export AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_INCLUDE_DIR=$(realpath usr/include)" >> saved_env
-          echo "export AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_LIB_DIR=$(realpath usr/lib)" >> saved_env
       - name: Build Linux Artifacts
         run: |
           source ./saved_env
