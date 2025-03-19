@@ -171,6 +171,7 @@ jobs:
         run: choco install --no-progress protoc
       - name: Build
         run: |
+          rustup target add ${{ matrix.target }}
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cargo build --features remote --tests --locked --target ${{ matrix.target }}
       - name: Run tests
