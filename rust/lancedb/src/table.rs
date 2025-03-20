@@ -2379,11 +2379,7 @@ impl BaseTable for NativeTable {
             .map(|index| index.loss.unwrap_or_default())
             .sum::<f64>();
 
-        let loss = if let Some(first_loss) = first_index.loss {
-            Some(first_loss + loss)
-        } else {
-            None
-        };
+        let loss = first_index.loss.map(|first_loss| first_loss + loss);
         Ok(Some(IndexStatistics {
             num_indexed_rows: stats.num_indexed_rows,
             num_unindexed_rows: stats.num_unindexed_rows,
