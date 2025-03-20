@@ -1,10 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+
 from functools import lru_cache
-from typing import List, Union, TYPE_CHECKING
+from typing import List, Union, Optional
 import numpy as np
-from PIL import Image
 import torch
 import requests
 import io
+from transformers import BitsAndBytesConfig
 
 from ..util import attempt_import_or_raise
 from .base import EmbeddingFunction
@@ -15,7 +19,8 @@ from .utils import TEXT, IMAGES, is_flash_attn_2_available
 @register("colpali")
 class ColPaliEmbeddings(EmbeddingFunction):
     """
-    An embedding function that uses the ColPali engine for multimodal multi-vector embeddings.
+    An embedding function that uses the ColPali engine for
+    multimodal multi-vector embeddings.
 
     This embedding function supports ColQwen2.5 models, producing multivector outputs
     for both text and image inputs. The output embeddings are lists of vectors, each
@@ -24,7 +29,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
     Parameters
     ----------
     model_name : str
-        The name of the model to use (e.g., "Metric-AI/ColQwen2.5-3b-multilingual-v1.0").
+        The name of the model to use (e.g., "Metric-AI/ColQwen2.5-3b-multilingual-v1.0")
     device : str
         The device for inference (default "cuda:0").
     dtype : str
@@ -33,6 +38,10 @@ class ColPaliEmbeddings(EmbeddingFunction):
         Whether to use token pooling to reduce embedding size (default True).
     pool_factor : int
         Factor to reduce sequence length if token pooling is enabled (default 2).
+    quantization_config : Optional[BitsAndBytesConfig]
+        Quantization configuration for the model. (default None, bitsandbytes needed)
+    batch_size : int
+        Batch size for processing inputs (default 2).
     """
 
     model_name: str = "Metric-AI/ColQwen2.5-3b-multilingual-v1.0"
@@ -40,6 +49,8 @@ class ColPaliEmbeddings(EmbeddingFunction):
     dtype: str = "bfloat16"
     use_token_pooling: bool = True
     pool_factor: int = 2
+    quantization_config: Optional[BitsAndBytesConfig] = None
+    batch_size: int = 2
 
     _model = None
     _processor = None
@@ -58,16 +69,18 @@ class ColPaliEmbeddings(EmbeddingFunction):
             self.device,
             self.use_token_pooling,
             self.pool_factor,
+            self.quantization_config,
         )
 
     @staticmethod
-    @lru_cache(maxsize=2)
+    @lru_cache(maxsize=1)
     def _load_model(
         model_name: str,
         dtype: str,
         device: str,
         use_token_pooling: bool,
         pool_factor: int,
+        quantization_config: Optional[BitsAndBytesConfig],
     ):
         """
         Initialize and cache the ColPali model, processor, and token pooler.
@@ -86,6 +99,9 @@ class ColPaliEmbeddings(EmbeddingFunction):
             model_name,
             torch_dtype=torch_dtype,
             device_map=device,
+            quantization_config=quantization_config
+            if quantization_config is not None
+            else None,
             attn_implementation="flash_attention_2"
             if is_flash_attn_2_available()
             else None,
@@ -150,15 +166,23 @@ class ColPaliEmbeddings(EmbeddingFunction):
         Generate embeddings for text input.
         """
         text = self.sanitize_input(text)
-        batch_queries = self._processor.process_queries(text).to(self._model.device)
-        with torch.no_grad():
-            query_embeddings = self._model(**batch_queries)
-        return self._process_embeddings(query_embeddings)
+        all_embeddings = []
+
+        for i in range(0, len(text), self.batch_size):
+            batch_text = text[i : i + self.batch_size]
+            batch_queries = self._processor.process_queries(batch_text).to(
+                self._model.device
+            )
+            with torch.no_grad():
+                query_embeddings = self._model(**batch_queries)
+            all_embeddings.extend(self._process_embeddings(query_embeddings))
+        return all_embeddings
 
     def _prepare_images(self, images: IMAGES) -> List:
         """
         Convert image inputs to PIL Images.
         """
+        PIL = attempt_import_or_raise("PIL", "pillow")
         images = self.sanitize_input(images)
         pil_images = []
         try:
@@ -167,11 +191,11 @@ class ColPaliEmbeddings(EmbeddingFunction):
                     if image.startswith(("http://", "https://")):
                         response = requests.get(image, timeout=10)
                         response.raise_for_status()
-                        pil_images.append(Image.open(io.BytesIO(response.content)))
+                        pil_images.append(PIL.Image.open(io.BytesIO(response.content)))
                     else:
-                        pil_images.append(Image.open(image))
+                        pil_images.append(PIL.Image.open(image))
                 elif isinstance(image, bytes):
-                    pil_images.append(Image.open(io.BytesIO(image)))
+                    pil_images.append(PIL.Image.open(io.BytesIO(image)))
                 else:
                     # Assume it's a PIL Image; will raise if invalid
                     pil_images.append(image)
@@ -185,10 +209,17 @@ class ColPaliEmbeddings(EmbeddingFunction):
         Generate embeddings for a batch of images.
         """
         pil_images = self._prepare_images(images)
-        batch_images = self._processor.process_images(pil_images).to(self._model.device)
-        with torch.no_grad():
-            image_embeddings = self._model(**batch_images)
-        return self._process_embeddings(image_embeddings)
+        all_embeddings = []
+
+        for i in range(0, len(pil_images), self.batch_size):
+            batch_images = pil_images[i : i + self.batch_size]
+            batch_images = self._processor.process_images(batch_images).to(
+                self._model.device
+            )
+            with torch.no_grad():
+                image_embeddings = self._model(**batch_images)
+            all_embeddings.extend(self._process_embeddings(image_embeddings))
+        return all_embeddings
 
     def compute_query_embeddings(
         self, query: Union[str, IMAGES], *args, **kwargs
