@@ -157,152 +157,32 @@ jobs:
 
   windows:
     runs-on: windows-2022
+    strategy:
+      matrix:
+        target:
+        - x86_64-pc-windows-msvc
+        - aarch64-pc-windows-msvc
+    defaults:
+      run:
+        working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
       - name: Install Protoc v21.12
-        working-directory: C:\
+        run: choco install --no-progress protoc
+      - name: Build
         run: |
-          New-Item -Path 'C:\protoc' -ItemType Directory
-          Set-Location C:\protoc
-          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-          7z x protoc.zip
-          Add-Content $env:GITHUB_PATH "C:\protoc\bin"
-        shell: powershell
+          rustup target add ${{ matrix.target }}
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          cargo build --features remote --tests --locked --target ${{ matrix.target }}
       - name: Run tests
+        # Can only run tests when target matches host
+        if: ${{ matrix.target == 'x86_64-pc-windows-msvc' }}
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cargo test --features remote --locked
-
-  windows-arm64-cross:
-    # We cross compile in Node releases, so we want to make sure
-    # this can run successfully.
-    runs-on: ubuntu-latest
-    container: alpine:edge
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install dependencies (part 1)
-        run: |
-          set -e
-          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
-      - name: Install rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          target: aarch64-pc-windows-msvc
-      - name: Install dependencies (part 2)
-        run: |
-          set -e
-          mkdir -p sysroot
-          cd sysroot
-          sh ../ci/sysroot-aarch64-pc-windows-msvc.sh
-      - name: Check
-        env:
-          CC: clang
-          AR: llvm-ar
-          C_INCLUDE_PATH: /usr/aarch64-pc-windows-msvc/usr/include
-          CARGO_BUILD_TARGET: aarch64-pc-windows-msvc
-          RUSTFLAGS: -Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib
-        run: |
-          source $HOME/.cargo/env
-          cargo check --features remote --locked
-
-  windows-arm64:
-    runs-on: windows-4x-arm
-    steps:
-      - name: Install Git
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe" -OutFile "git-installer.exe"
-          Start-Process -FilePath "git-installer.exe" -ArgumentList "/VERYSILENT", "/NORESTART" -Wait
-        shell: powershell
-      - name: Add Git to PATH
-        run: |
-          Add-Content $env:GITHUB_PATH "C:\Program Files\Git\bin"
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        shell: powershell
-      - name: Configure Git symlinks
-        run: git config --global core.symlinks true
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Install Visual Studio Build Tools
-        run: |
-          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "vs_buildtools.exe"
-          Start-Process -FilePath "vs_buildtools.exe" -ArgumentList "--quiet", "--wait", "--norestart", "--nocache", `
-            "--installPath", "C:\BuildTools", `
-            "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", `
-            "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", `
-            "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621", `
-            "--add", "Microsoft.VisualStudio.Component.VC.ATL", `
-            "--add", "Microsoft.VisualStudio.Component.VC.ATLMFC", `
-            "--add", "Microsoft.VisualStudio.Component.VC.Llvm.Clang" -Wait
-        shell: powershell
-      - name: Add Visual Studio Build Tools to PATH
-        run: |
-          $vsPath = "C:\BuildTools\VC\Tools\MSVC"
-          $latestVersion = (Get-ChildItem $vsPath | Sort-Object {[version]$_.Name} -Descending)[0].Name
-          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\arm64"
-          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\x64"
-          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\arm64"
-          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
-          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\Llvm\x64\bin"
-
-          # Add MSVC runtime libraries to LIB
-          $env:LIB = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\lib\arm64;" +
-                     "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\arm64;" +
-                     "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\arm64"
-          Add-Content $env:GITHUB_ENV "LIB=$env:LIB"
-
-          # Add INCLUDE paths
-          $env:INCLUDE = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\include;" +
-                        "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\ucrt;" +
-                        "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um;" +
-                        "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\shared"
-          Add-Content $env:GITHUB_ENV "INCLUDE=$env:INCLUDE"
-        shell: powershell
-      - name: Install Rust
-        run: |
-          Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
-          .\rustup-init.exe -y --default-host aarch64-pc-windows-msvc --default-toolchain 1.83.0
-        shell: powershell
-      - name: Add Rust to PATH
-        run: |
-          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.cargo\bin"
-        shell: powershell
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Install 7-Zip ARM
-        run: |
-          New-Item -Path 'C:\7zip' -ItemType Directory
-          Invoke-WebRequest https://7-zip.org/a/7z2408-arm64.exe -OutFile C:\7zip\7z-installer.exe
-          Start-Process -FilePath C:\7zip\7z-installer.exe -ArgumentList '/S' -Wait
-        shell: powershell
-      - name: Add 7-Zip to PATH
-        run: Add-Content $env:GITHUB_PATH "C:\Program Files\7-Zip"
-        shell: powershell
-      - name: Install Protoc v21.12
-        working-directory: C:\
-        run: |
-          if (Test-Path 'C:\protoc') {
-            Write-Host "Protoc directory exists, skipping installation"
-            return
-          }
-          New-Item -Path 'C:\protoc' -ItemType Directory
-          Set-Location C:\protoc
-          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-          & 'C:\Program Files\7-Zip\7z.exe' x protoc.zip
-        shell: powershell
-      - name: Add Protoc to PATH
-        run: Add-Content $env:GITHUB_PATH "C:\protoc\bin"
-        shell: powershell
-      - name: Run tests
-        run: |
-          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo test --target aarch64-pc-windows-msvc --features remote --locked
 
   msrv:
     # Check the minimum supported Rust version
