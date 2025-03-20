@@ -312,11 +312,12 @@ impl Table {
     }
 
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.
-    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None))]
+    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, retrain=None))]
     pub fn optimize(
         self_: PyRef<'_, Self>,
         cleanup_since_ms: Option<u64>,
         delete_unverified: Option<bool>,
+        retrain: Option<bool>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let older_than = if let Some(ms) = cleanup_since_ms {
@@ -352,9 +353,10 @@ impl Table {
                 .prune
                 .unwrap();
             inner
-                .optimize(lancedb::table::OptimizeAction::Index(
-                    OptimizeOptions::default(),
-                ))
+                .optimize(lancedb::table::OptimizeAction::Index(match retrain {
+                    Some(true) => OptimizeOptions::retrain(),
+                    _ => OptimizeOptions::default(),
+                }))
                 .await
                 .infer_error()?;
             Ok(OptimizeStats {
