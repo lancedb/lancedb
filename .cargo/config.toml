@@ -2,9 +2,9 @@
 lto = "fat"
 codegen-units = 1
 
-[profile.release-thin-lto]
+[profile.release-no-lto]
 inherits = "release"
-lto = "thin"
+lto = "no"
 
 [profile.release-with-debug]
 inherits = "release"

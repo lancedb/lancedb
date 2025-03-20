@@ -227,12 +227,7 @@ jobs:
           run: |
             set -e
             ${{ matrix.settings.pre_build }}
-            if [[ ${{ matrix.settings.target }} == "x86_64-unknown-linux-musl" ]]; then
-              PROFILE=release-thin-lto
-            else
-              PROFILE=release
-            fi
-            npx napi build --platform  --profile $PROFILE --no-const-enum \
+            npx napi build --platform  --profile release-no-lto --no-const-enum \
               --features ${{ matrix.settings.features }} \
               --target ${{ matrix.settings.target }} \
               --dts ../lancedb/native.d.ts \
@@ -242,7 +237,7 @@ jobs:
       - name: Build
         run: |
           ${{ matrix.settings.pre_build }}
-          npx napi build --platform  --release --no-const-enum \
+          npx napi build --platform  --profile release-no-lto --no-const-enum \
               --features ${{ matrix.settings.features }} \
               --target ${{ matrix.settings.target }} \
               --dts ../lancedb/native.d.ts \
