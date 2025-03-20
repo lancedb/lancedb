@@ -130,17 +130,17 @@ jobs:
               set -e &&
               apt-get update &&
               apt-get install -y protobuf-compiler pkg-config
-          - target: x86_64-unknown-linux-musl
-            # This one seems to need some extra memory
-            host: ubuntu-2404-8x-x64
-            # https://github.com/napi-rs/napi-rs/blob/main/alpine.Dockerfile
-            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
-            features: ","
-            pre_build: |-
-              set -e &&
-              apk add protobuf-dev curl &&
-              ln -s /usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/crtbeginS.o /usr/lib/crtbeginS.o &&
-              ln -s /usr/lib/libgcc_s.so /usr/lib/libgcc.so
+          # - target: x86_64-unknown-linux-musl
+          #   # This one seems to need some extra memory
+          #   host: ubuntu-2404-8x-x64
+          #   # https://github.com/napi-rs/napi-rs/blob/main/alpine.Dockerfile
+          #   docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
+          #   features: ","
+          #   pre_build: |-
+          #     set -e &&
+          #     apk add protobuf-dev curl &&
+          #     ln -s /usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/crtbeginS.o /usr/lib/crtbeginS.o &&
+          #     ln -s /usr/lib/libgcc_s.so /usr/lib/libgcc.so
           - target: aarch64-unknown-linux-gnu
             host: ubuntu-2404-8x-x64
             # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
