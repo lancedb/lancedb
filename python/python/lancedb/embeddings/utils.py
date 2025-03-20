@@ -17,7 +17,7 @@ from typing import Callable, List, Union
 import numpy as np
 import pyarrow as pa
 
-from ..dependencies import pandas as pd
+from ..dependencies import pandas as pd, attempt_import_or_raise
 
 
 # ruff: noqa: PERF203
@@ -279,7 +279,7 @@ def api_key_not_found_help(provider):
 
 def is_flash_attn_2_available():
     try:
-        import flash_attn
+        attempt_import_or_raise("flash_attn", "flash_attn")
 
         return True
     except ImportError:

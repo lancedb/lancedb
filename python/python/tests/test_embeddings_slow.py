@@ -584,7 +584,6 @@ def test_voyageai_multimodal_embedding_text_function():
 )
 def test_colpali(tmp_path):
     import requests
-    from PIL import Image
     from lancedb.pydantic import LanceModel
 
     db = lancedb.connect(tmp_path)
