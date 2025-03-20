@@ -129,15 +129,15 @@ jobs:
             pre_build: |-
               set -e &&
               apt-get update &&
-              apt-get install -y protobuf-compiler pkg-config &&
-              rustup target add x86_64-unknown-linux-musl
+              apt-get install -y protobuf-compiler pkg-config
           - target: x86_64-unknown-linux-musl
             host: ubuntu-2404-8x-x64
             features: fp16kernels
             pre_build: |-
               set -e &&
-              apt-get update &&
-              apt-get install -y protobuf-compiler pkg-config
+              sudo apt-get update &&
+              sudo apt-get install -y protobuf-compiler pkg-config &&
+              rustup target add x86_64-unknown-linux-musl
           # - target: x86_64-unknown-linux-musl
           #   # This one seems to need some extra memory
           #   host: ubuntu-2404-8x-x64
