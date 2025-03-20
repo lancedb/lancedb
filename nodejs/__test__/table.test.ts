@@ -462,7 +462,7 @@ describe("When creating an index", () => {
       columns: ["vec"],
     });
     const stats = await tbl.indexStats("vec_idx");
-    expect(stats?.loss).toBeUndefined();
+    expect(stats?.loss).toBeDefined();
 
     // Search without specifying the column
     let rst = await tbl
