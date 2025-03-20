@@ -2373,12 +2373,24 @@ impl BaseTable for NativeTable {
                 .ok_or_else(|| Error::InvalidInput {
                     message: "index statistics was missing index type".to_string(),
                 })?;
+        let loss = stats
+            .indices
+            .iter()
+            .map(|index| index.loss.unwrap_or_default())
+            .sum::<f64>();
+
+        let loss = if stats.indices.iter().any(|index| index.loss.is_some()) {
+            Some(loss)
+        } else {
+            None
+        };
         Ok(Some(IndexStatistics {
             num_indexed_rows: stats.num_indexed_rows,
             num_unindexed_rows: stats.num_unindexed_rows,
             index_type,
             distance_type: first_index.metric_type,
             num_indices: stats.num_indices,
+            loss,
         }))
     }
 }
