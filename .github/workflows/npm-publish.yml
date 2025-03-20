@@ -130,6 +130,17 @@ jobs:
               set -e &&
               apt-get update &&
               apt-get install -y protobuf-compiler pkg-config
+          - target: x86_64-unknown-linux-musl
+            host: ubuntu-latest
+            docker: alpine:edge
+            features: ","
+            pre_build: |-
+              apk add protobuf-dev curl clang mold grep npm
+              curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
+              source $HOME/.cargo/env
+              export CC=clang
+              export CXX=clang++
+              export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'
           # - target: x86_64-unknown-linux-musl
           #   # This one seems to need some extra memory
           #   host: ubuntu-2404-8x-x64
