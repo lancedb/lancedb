@@ -129,7 +129,8 @@ jobs:
             pre_build: |-
               set -e &&
               apt-get update &&
-              apt-get install -y protobuf-compiler pkg-config
+              apt-get install -y protobuf-compiler pkg-config &&
+              rustup target add x86_64-unknown-linux-musl
           - target: x86_64-unknown-linux-musl
             host: ubuntu-2404-8x-x64
             features: fp16kernels
@@ -149,7 +150,7 @@ jobs:
           #     ln -s /usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/crtbeginS.o /usr/lib/crtbeginS.o &&
           #     ln -s /usr/lib/libgcc_s.so /usr/lib/libgcc.so
           - target: aarch64-unknown-linux-gnu
-            host: ubuntu-2404-8x-arm64
+            host: ubuntu-2404-8x-x64
             # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
             # TODO: enable fp16kernels after https://github.com/lancedb/lance/pull/3559
@@ -163,7 +164,7 @@ jobs:
               ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
               rustup target add aarch64-unknown-linux-gnu
           - target: aarch64-unknown-linux-musl
-            host: ubuntu-2404-8x-arm64
+            host: ubuntu-2404-8x-x64
             # https://github.com/napi-rs/napi-rs/blob/main/alpine.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
             features: ","
@@ -180,18 +181,18 @@ jobs:
         working-directory: nodejs
     steps:
       - uses: actions/checkout@v4
-      - name: Add swap file
-        if: ${{ startsWith(matrix.settings.host, 'ubuntu-') }}
-        run: |
-          free -h
-          sudo fallocate -l 30G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          echo "/swapfile swap swap defaults 0 0" >> sudo /etc/fstab
-          # print info
-          swapon --show
-          free -h
+      # - name: Add swap file
+      #   if: ${{ startsWith(matrix.settings.host, 'ubuntu-') }}
+      #   run: |
+      #     free -h
+      #     sudo fallocate -l 30G /swapfile
+      #     sudo chmod 600 /swapfile
+      #     sudo mkswap /swapfile
+      #     sudo swapon /swapfile
+      #     echo "/swapfile swap swap defaults 0 0" >> sudo /etc/fstab
+      #     # print info
+      #     swapon --show
+      #     free -h
       - name: Setup node
         uses: actions/setup-node@v4
         if: ${{ !matrix.settings.docker }}
