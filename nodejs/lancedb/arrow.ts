@@ -37,10 +37,10 @@ import {
   Utf8,
   Vector,
   makeVector as arrowMakeVector,
+  vectorFromArray as badVectorFromArray,
   makeBuilder,
   makeData,
   makeTable,
-  vectorFromArray,
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
@@ -183,6 +183,21 @@ export class VectorColumnOptions {
 
   constructor(values?: Partial<VectorColumnOptions>) {
     Object.assign(this, values);
+  }
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: skip
+function vectorFromArray(data: any, type?: DataType) {
+  // Workaround for: https://github.com/apache/arrow/issues/45862
+  // If FSL type with float
+  if (DataType.isFixedSizeList(type) && DataType.isFloat(type.valueType)) {
+    const extendedData = [...data, new Array(type.listSize).fill(0.0)];
+    const array = badVectorFromArray(extendedData, type);
+    return array.slice(0, data.length);
+  } else if (type === undefined) {
+    return badVectorFromArray(data);
+  } else {
+    return badVectorFromArray(data, type);
   }
 }
 
