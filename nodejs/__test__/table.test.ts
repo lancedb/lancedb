@@ -518,6 +518,22 @@ describe("When creating an index", () => {
     const results2 = await runSearch();
     expect(results2.length).toBe(2); // all data is now indexed
     expect(results2.map((v) => ({ text: v.text }))).toEqual(data);
+
+    const searchWithOffset = (offset: number, limit = 1) =>
+      table
+        .search("world", "fts", "text")
+        .limit(limit)
+        .offset(offset)
+        .toArray();
+    const rowsFirstTwo = await searchWithOffset(0, 2);
+    expect(rowsFirstTwo.length).toBe(2);
+    const rowsFirst = await searchWithOffset(0);
+    expect(rowsFirst.length).toBe(1);
+    const rowsSecond = await searchWithOffset(1);
+    expect(rowsSecond.length).toBe(1);
+    expect([rowsFirst[0].text, rowsSecond[0]?.text]).toEqual(
+      rowsFirstTwo.map((v) => v.text),
+    );
   });
 
   it("should create a vector index on vector columns", async () => {
