@@ -2379,8 +2379,8 @@ impl BaseTable for NativeTable {
             .map(|index| index.loss.unwrap_or_default())
             .sum::<f64>();
 
-        let loss = if stats.indices.iter().any(|index| index.loss.is_some()) {
-            Some(loss)
+        let loss = if let Some(first_loss) = first_index.loss {
+            Some(first_loss + loss)
         } else {
             None
         };
@@ -3057,6 +3057,7 @@ mod tests {
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.index_type, crate::index::IndexType::IvfPq);
         assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
+        assert!(stats.loss.is_some());
 
         table.drop_index(index_name).await.unwrap();
         assert_eq!(table.list_indices().await.unwrap().len(), 0);
