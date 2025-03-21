@@ -1,0 +1,275 @@
+openapi: 3.1.1
+info:
+  title: LanceDB REST Catalog API
+  version: 0.0.1
+  description: REST interface for managing LanceDB databases and tables
+
+paths:
+  /v1/databases:
+    get:
+      tags: [Database]
+      summary: List databases
+      parameters:
+        - $ref: '#/components/parameters/startAfter'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        200:
+          description: Database list response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatabaseList'
+
+    post:
+      tags: [Database]
+      summary: Create new database
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDatabaseRequest'
+      responses:
+        201:
+          description: Database created
+          headers:
+            Location:
+              description: URI of created database
+              schema: {type: string}
+
+    delete:
+      tags: [ Database ]
+      summary: Delete all databases
+      responses:
+        204:
+          description: All databases deleted
+
+  /v1/databases/{dbName}:
+    get:
+      tags: [Database]
+      summary: Get database metadata
+      parameters:
+        - $ref: '#/components/parameters/dbName'
+      responses:
+        200:
+          description: Database metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatabaseMetadata'
+
+    delete:
+      tags: [Database]
+      summary: Delete database
+      parameters:
+        - $ref: '#/components/parameters/dbName'
+      responses:
+        204:
+          description: Database deleted
+
+    put:
+      tags: [Database]
+      summary: Rename database
+      parameters:
+        - $ref: '#/components/parameters/dbName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameRequest'
+      responses:
+        204:
+          description: Database renamed
+
+  /v1/databases/{dbName}/tables:
+    get:
+      tags: [Table]
+      summary: List tables in database
+      parameters:
+        - $ref: '#/components/parameters/dbName'
+        - $ref: '#/components/parameters/startAfter'
+        - $ref: '#/components/parameters/limit'
+      responses:
+        200:
+          description: Table list response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableList'
+
+    post:
+      tags: [Table]
+      summary: Create new table
+      parameters:
+        - $ref: '#/components/parameters/dbName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTableRequest'
+      responses:
+        201:
+          description: Table created
+          headers:
+            Location:
+              schema: {type: string}
+
+    delete:
+      tags: [ Table ]
+      summary: Delete all tables
+      parameters:
+        - $ref: '#/components/parameters/dbName'
+      responses:
+        204:
+          description: All tables deleted
+
+
+  /v1/databases/{dbName}/tables/{tableName}:
+    get:
+      tags: [Table]
+      summary: Get table metadata
+      parameters:
+        - $ref: '#/components/parameters/dbName'
+        - $ref: '#/components/parameters/tableName'
+      responses:
+        200:
+          description: Table metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableMetadata'
+
+    put:
+      tags: [Table]
+      summary: Update table data
+      parameters:
+        - $ref: '#/components/parameters/dbName'
+        - $ref: '#/components/parameters/tableName'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TableUpdate'
+      responses:
+        200:
+          description: Update successful
+
+  /v1/databases/{dbName}/tables/{tableName}/name:
+    put:
+      tags: [ Table ]
+      summary: Rename table
+      parameters:
+        - $ref: '#/components/parameters/dbName'
+        - $ref: '#/components/parameters/tableName'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ newName ]
+              properties:
+                newName: { type: string }
+      responses:
+        204:
+          description: Table renamed
+
+
+components:
+  parameters:
+    dbName:
+      name: dbName
+      in: path
+      required: true
+      schema: {type: string}
+
+    tableName:
+      name: tableName
+      in: path
+      required: true
+      schema: {type: string}
+
+    startAfter:
+      name: startAfter
+      in: query
+      schema: {type: string}
+
+    limit:
+      name: limit
+      in: query
+      schema: {type: integer}
+
+  schemas:
+    DatabaseList:
+      type: object
+      properties:
+        databases:
+          type: array
+          items: {type: string}
+        nextToken: {type: string}
+
+    CreateDatabaseRequest:
+      type: object
+      required: [name, mode]
+      properties:
+        name: {type: string}
+        mode:
+          type: string
+          enum: [Create, ExistOk, Overwrite]
+        options:
+          type: object
+          additionalProperties: { type: string }
+
+    DatabaseMetadata:
+      type: object
+      properties:
+        name: {type: string}
+        created: {type: string}
+        tableCount: {type: integer}
+
+    RenameRequest:
+      type: object
+      required: [newName]
+      properties:
+        newName: {type: string}
+
+    TableList:
+      type: object
+      properties:
+        tables:
+          type: array
+          items: {type: string}
+        nextToken: {type: string}
+
+    CreateTableRequest:
+      type: object
+      required: [name, definition]
+      properties:
+        name: {type: string}
+        definition:
+          $ref: '#/components/schemas/TableDefinition'
+        mode:
+          type: string
+          enum: [Create, ExistOk, Overwrite]
+
+    TableMetadata:
+      type: object
+      properties:
+        schema: {type: object}
+        version: {type: integer}
+        location: {type: string}
+
+    TableUpdate:
+      type: object
+      properties:
+        data:
+          type: array
+          items: {type: object}
+        options: {type: object}
+
+    TableDefinition:
+      type: object
+      properties:
+        column_definitions: {type: object}
+        schema: {type: object}
