@@ -850,9 +850,9 @@ def check_set_props(q, **kwargs):
     for k in dict(q):
         if not k.startswith("_"):
             if k in kwargs:
-                assert kwargs[k] == getattr(
-                    q, k
-                ), f"{k} should be {kwargs[k]} but is {getattr(q, k)}"
+                assert kwargs[k] == getattr(q, k), (
+                    f"{k} should be {kwargs[k]} but is {getattr(q, k)}"
+                )
             else:
                 assert getattr(q, k) is None, f"{k} should be None"
 
