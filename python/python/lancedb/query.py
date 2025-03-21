@@ -499,23 +499,7 @@ class LanceQueryBuilder(ABC):
         -------
         plan : str
         """  # noqa: E501
-        ds = self._table.to_lance()
-        return ds.scanner(
-            nearest={
-                "column": self._vector_column,
-                "q": self._query,
-                "k": self._limit,
-                "metric": self._distance_type,
-                "nprobes": self._nprobes,
-                "refine_factor": self._refine_factor,
-                "use_index": self._use_index,
-            },
-            prefilter=self._prefilter,
-            filter=self._str_query,
-            limit=self._limit,
-            with_row_id=self._with_row_id,
-            offset=self._offset,
-        ).explain_plan(verbose)
+        raise NotImplementedError
 
     def vector(self, vector: Union[np.ndarray, list]) -> LanceQueryBuilder:
         """Set the vector to search for.
@@ -798,6 +782,30 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         return result_set
 
+    def explain_plan(self, verbose = False):
+        vector = self._query if isinstance(self._query, list) else self._query.tolist()
+        if isinstance(vector[0], np.ndarray):
+            vector = [v.tolist() for v in vector]
+        query = Query(
+            vector=vector,
+            filter=self._where,
+            prefilter=self._prefilter,
+            k=self._limit,
+            metric=self._distance_type,
+            columns=self._columns,
+            nprobes=self._nprobes,
+            lower_bound=self._lower_bound,
+            upper_bound=self._upper_bound,
+            refine_factor=self._refine_factor,
+            vector_column=self._vector_column,
+            with_row_id=self._with_row_id,
+            offset=self._offset,
+            fast_search=self._fast_search,
+            ef=self._ef,
+            use_index=self._use_index,
+        )
+        return self._table._explain_plan(query, verbose=verbose)
+
     def where(self, where: str, prefilter: bool = True) -> LanceVectorQueryBuilder:
         """Set the where clause.
 
@@ -946,6 +954,22 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
     def to_batches(self, /, batch_size: Optional[int] = None):
         raise NotImplementedError("to_batches on an FTS query")
+
+    def explain_plan(self, verbose = False):
+        query = Query(
+            columns=self._columns,
+            filter=self._where,
+            k=self._limit,
+            prefilter=self._prefilter,
+            with_row_id=self._with_row_id,
+            full_text_query={
+                "query": self._query,
+                "columns": self._fts_columns,
+            },
+            vector=[],
+            offset=self._offset,
+        )
+        return self._table._explain_plan(query, verbose=verbose)
 
     def tantivy_to_arrow(self) -> pa.Table:
         try:

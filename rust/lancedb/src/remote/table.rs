@@ -525,6 +525,45 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(0) // TODO: support returning number of modified rows once supported in SaaS.
     }
+
+    async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
+        println!("Lu debug, remote table send explain plan");
+        let request = self.client.post(&format!("/v1/table/{}/explain_plan/", self.name));
+        let version = self.current_version().await;
+            let mut query_body = serde_json::json!({
+                "version": version,
+            });
+
+        match query {
+            AnyQuery::Query(query) => {
+                Self::apply_query_params(&mut query_body, query)?;
+                // Empty vector can be passed if no vector search is performed.
+                query_body["vector"] = serde_json::Value::Array(Vec::new());
+            }
+            AnyQuery::VectorQuery(query) => {
+                Self::apply_vector_query_params(&mut query_body, query)?;
+            }
+        }
+        let request_body = serde_json::json!({
+            "verbose": verbose,
+            "query": query_body
+        });
+
+        let request = request.json(&request_body);
+        // Don't need to read arrow stream for explain plan, just get text response
+        let (request_id, response) = self.client.send(request, false).await?;
+
+        let response = self.check_table_response(&request_id, response).await?;
+
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse explain plan: {}", e).into(),
+            request_id,
+            status_code: None,
+        })
+    }
+
     async fn delete(&self, predicate: &str) -> Result<()> {
         self.check_mutable().await?;
         let body = serde_json::json!({ "predicate": predicate });

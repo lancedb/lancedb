@@ -355,6 +355,11 @@ class RemoteTable(Table):
     ) -> pa.RecordBatchReader:
         return LOOP.run(self._table._execute_query(query, batch_size=batch_size))
 
+    def _explain_plan(
+        self, query: Query, verbose: bool = False
+    ) -> str:
+        return LOOP.run(self._table._explain_plan(query, verbose))
+
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
         that can be used to create a "merge insert" operation.

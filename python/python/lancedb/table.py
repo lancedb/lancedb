@@ -953,6 +953,11 @@ class Table(ABC):
     ) -> pa.RecordBatchReader: ...
 
     @abstractmethod
+    def _explain_plan(
+        self, query: Query, verbose: bool = False
+    ) -> str: ...
+
+    @abstractmethod
     def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
@@ -2213,6 +2218,11 @@ class LanceTable(Table):
     ) -> pa.RecordBatchReader:
         return LOOP.run(self._table._execute_query(query, batch_size))
 
+    def _explain_plan(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
+        return LOOP.run(self._table._execute_query(query, batch_size))
+
     def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
@@ -3237,6 +3247,55 @@ class AsyncTable:
 
         table = await async_query.to_arrow()
         return table.to_reader()
+
+
+    async def _explain_plan(
+        self, query: Query, verbose: bool = False
+    ) -> str:
+        # The sync remote table calls into this method, so we need to map the
+        # query to the async version of the query and run that here. This is only
+        # used for that code path right now.
+        async_query = self.query().limit(query.k)
+        if query.offset > 0:
+            async_query = async_query.offset(query.offset)
+        if query.columns:
+            async_query = async_query.select(query.columns)
+        if query.filter:
+            async_query = async_query.where(query.filter)
+        if query.fast_search:
+            async_query = async_query.fast_search()
+        if query.with_row_id:
+            async_query = async_query.with_row_id()
+
+        if query.vector:
+            # we need the schema to get the vector column type
+            # to determine whether the vectors is batch queries or not
+            async_query = (
+                async_query.nearest_to(query.vector)
+                .distance_type(query.metric)
+                .nprobes(query.nprobes)
+                .distance_range(query.lower_bound, query.upper_bound)
+            )
+            if query.refine_factor:
+                async_query = async_query.refine_factor(query.refine_factor)
+            if query.vector_column:
+                async_query = async_query.column(query.vector_column)
+            if query.ef:
+                async_query = async_query.ef(query.ef)
+            if not query.use_index:
+                async_query = async_query.bypass_vector_index()
+
+        if not query.prefilter:
+            async_query = async_query.postfilter()
+
+        if isinstance(query.full_text_query, str):
+            async_query = async_query.nearest_to_text(query.full_text_query)
+        elif isinstance(query.full_text_query, dict):
+            fts_query = query.full_text_query["query"]
+            fts_columns = query.full_text_query.get("columns", []) or []
+            async_query = async_query.nearest_to_text(fts_query, columns=fts_columns)
+
+        return await async_query.explain_plan(verbose)
 
     async def _do_merge(
         self,
