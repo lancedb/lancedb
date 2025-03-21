@@ -315,7 +315,7 @@ def test_query_sync_minimal():
         assert body == {
             "distance_type": "l2",
             "k": 10,
-            "prefilter": False,
+            "prefilter": True,
             "refine_factor": None,
             "lower_bound": None,
             "upper_bound": None,
@@ -340,7 +340,7 @@ def test_query_sync_empty_query():
             "filter": "true",
             "vector": [],
             "columns": ["id"],
-            "prefilter": False,
+            "prefilter": True,
             "version": None,
         }
 
@@ -478,7 +478,7 @@ def test_query_sync_hybrid():
             assert body == {
                 "distance_type": "l2",
                 "k": 42,
-                "prefilter": False,
+                "prefilter": True,
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "nprobes": 20,
