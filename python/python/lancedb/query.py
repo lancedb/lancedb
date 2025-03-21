@@ -226,7 +226,7 @@ class Query(pydantic.BaseModel):
     postfilter: Optional[bool] = None
 
     # full text search query
-    full_text_query: Optional[Union[str, dict]] = None
+    full_text_query: Optional[FullTextSearchQuery] = None
 
     # top k results to return
     limit: Optional[int] = None
@@ -474,7 +474,7 @@ class LanceQueryBuilder(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.Table:
+    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.RecordBatchReader:
         """
         Execute the query and return the results as a pyarrow
         [RecordBatchReader](https://arrow.apache.org/docs/python/generated/pyarrow.RecordBatchReader.html)
@@ -1047,7 +1047,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         table: "Table",
         query: str,
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str]] = [],
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ):
         super().__init__(table)
         self._query = query
@@ -2076,7 +2076,6 @@ class AsyncFTSQuery(AsyncQueryBase):
         super().__init__(inner)
         self._inner = inner
         self._reranker = None
-
     def get_query(self) -> str:
         return self._inner.get_query()
 

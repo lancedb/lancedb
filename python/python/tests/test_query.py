@@ -609,6 +609,12 @@ async def test_query_async(table_async: AsyncTable):
 @pytest.mark.asyncio
 @pytest.mark.slow
 async def test_query_reranked_async(table_async: AsyncTable):
+    # CrossEncoderReranker requires torch
+    try:
+        import torch
+    except ImportError:
+        pytest.skip("torch not installed")
+
     # FTS with rerank
     await table_async.create_index("text", config=FTS(with_position=False))
     await check_query(

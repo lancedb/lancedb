@@ -101,7 +101,9 @@ def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
             schema = data.features.arrow_schema
             return pa.RecordBatchReader.from_batches(schema, data.data.to_batches())
         elif isinstance(data, datasets.dataset_dict.DatasetDict):
-            schema = _schema_from_hf(data, schema)
+            schema = _schema_from_hf(data, None)
+            if "split" not in schema.names:
+                schema = schema.append(pa.field("split", pa.string()))
             return pa.RecordBatchReader.from_batches(
                 schema, _to_batches_with_split(data)
             )
@@ -415,7 +417,7 @@ def sanitize_create_table(
     return data, schema
 
 
-def _schema_from_hf(data, schema):
+def _schema_from_hf(data, schema) -> pa.Schema:
     """
     Extract pyarrow schema from HuggingFace DatasetDict
     and validate that they're all the same schema between
@@ -3336,12 +3338,10 @@ class AsyncTable:
         if query.postfilter:
             async_query = async_query.postfilter()
 
-        if isinstance(query.full_text_query, str):
-            async_query = async_query.nearest_to_text(query.full_text_query)
-        elif isinstance(query.full_text_query, dict):
-            fts_query = query.full_text_query["query"]
-            fts_columns = query.full_text_query.get("columns", []) or []
-            async_query = async_query.nearest_to_text(fts_query, columns=fts_columns)
+        if query.full_text_query:
+            async_query = async_query.nearest_to_text(query.full_text_query.query, query.full_text_query.columns)
+            if query.full_text_query.limit is not None:
+                async_query = async_query.limit(query.full_text_query.limit)                
 
         return async_query
 
