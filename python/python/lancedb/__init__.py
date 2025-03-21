@@ -7,6 +7,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Dict, Optional, Union, Any
+import warnings
 
 __version__ = importlib.metadata.version("lancedb")
 
@@ -213,3 +214,12 @@ __all__ = [
     "RemoteDBConnection",
     "__version__",
 ]
+
+
+def __warn_on_fork():
+    warnings.warn(
+        "lance is not fork-safe. If you are using multiprocessing, use spawn instead.",
+    )
+
+
+os.register_at_fork(before=__warn_on_fork)
