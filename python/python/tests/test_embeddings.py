@@ -15,7 +15,6 @@ from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.embeddings import (
     EmbeddingFunctionConfig,
     EmbeddingFunctionRegistry,
-    with_embeddings,
 )
 from lancedb.embeddings.base import TextEmbeddingFunction
 from lancedb.embeddings.registry import get_registry, register
@@ -25,23 +24,6 @@ from lancedb.pydantic import LanceModel, Vector
 
 def mock_embed_func(input_data):
     return [np.random.randn(128).tolist() for _ in range(len(input_data))]
-
-
-def test_with_embeddings():
-    for wrap_api in [True, False]:
-        data = pa.Table.from_arrays(
-            [
-                pa.array(["foo", "bar"]),
-                pa.array([10.0, 20.0]),
-            ],
-            names=["text", "price"],
-        )
-        data = with_embeddings(mock_embed_func, data, wrap_api=wrap_api)
-        assert data.num_columns == 3
-        assert data.num_rows == 2
-        assert data.column_names == ["text", "price", "vector"]
-        assert data.column("text").to_pylist() == ["foo", "bar"]
-        assert data.column("price").to_pylist() == [10.0, 20.0]
 
 
 def test_embedding_function(tmp_path):

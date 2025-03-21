@@ -28,12 +28,19 @@ from urllib.parse import urlparse
 from . import __version__
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP
-from .dependencies import _check_for_hugging_face, _check_for_pandas
+from .dependencies import (
+    _check_for_hugging_face,
+    _check_for_lance,
+    _check_for_pandas,
+    lance,
+    pandas as pd,
+    polars as pl,
+)
 import pyarrow as pa
+import pyarrow.dataset
 import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 import numpy as np
-from lance import LanceDataset
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
@@ -58,8 +65,6 @@ from .util import (
     get_uri_scheme,
     infer_vector_column_name,
     join_uri,
-    safe_import_pandas,
-    safe_import_polars,
     value_to_sql,
 )
 from .index import lang_mapping
@@ -86,10 +91,6 @@ if TYPE_CHECKING:
         BaseTokenizerType,
         DistanceType,
     )
-
-
-pd = safe_import_pandas()
-pl = safe_import_polars()
 
 
 def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
@@ -130,7 +131,7 @@ def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
         return data.to_reader()
     elif isinstance(data, pa.RecordBatch):
         return pa.RecordBatchReader.from_batches(data.schema, [data])
-    elif isinstance(data, LanceDataset):
+    elif _check_for_lance(data) and isinstance(data, lance.LanceDataset):
         return data.scanner().to_reader()
     elif isinstance(data, pa.dataset.Dataset):
         return data.scanner().to_reader()
@@ -1440,7 +1441,7 @@ class LanceTable(Table):
         # Cacheable since it's deterministic
         return _table_path(self._conn.uri, self.name)
 
-    def to_lance(self, **kwargs) -> LanceDataset:
+    def to_lance(self, **kwargs) -> lance.LanceDataset:
         """Return the LanceDataset backing this table."""
         try:
             import lance

@@ -59,8 +59,6 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.embeddings.open_clip.OpenClipEmbeddings
 
-::: lancedb.embeddings.utils.with_embeddings
-
 ## Context
 
 ::: lancedb.context.contextualize

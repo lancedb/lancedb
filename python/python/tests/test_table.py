@@ -8,13 +8,13 @@ from time import sleep
 from typing import List
 from unittest.mock import patch
 
-import lance
 import lancedb
 from lancedb.index import HnswPq, HnswSq, IvfPq
 import numpy as np
 import pandas as pd
 import polars as pl
 import pyarrow as pa
+import pyarrow.dataset
 import pytest
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import AsyncConnection, DBConnection
@@ -650,6 +650,9 @@ def test_restore(mem_db: DBConnection):
 
 
 def test_merge(tmp_db: DBConnection, tmp_path):
+    pytest.importorskip("lance")
+    import lance
+
     table = tmp_db.create_table(
         "my_table",
         schema=pa.schema(
@@ -1145,6 +1148,7 @@ def test_search_with_schema_inf_multiple_vector(mem_db: DBConnection):
 
 
 def test_compact_cleanup(tmp_db: DBConnection):
+    pytest.importorskip("lance")
     table = tmp_db.create_table(
         "my_table",
         data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
@@ -1222,6 +1226,7 @@ def setup_hybrid_search_table(db: DBConnection, embedding_func):
 def test_hybrid_search(tmp_db: DBConnection):
     # This test uses an FTS index
     pytest.importorskip("lancedb.fts")
+    pytest.importorskip("lance")
 
     table, MyTable, emb = setup_hybrid_search_table(tmp_db, "test")
 
@@ -1292,6 +1297,7 @@ def test_hybrid_search(tmp_db: DBConnection):
 def test_hybrid_search_metric_type(tmp_db: DBConnection):
     # This test uses an FTS index
     pytest.importorskip("lancedb.fts")
+    pytest.importorskip("lance")
 
     # Need to use nonnorm as the embedding function so l2 and dot results
     # are different

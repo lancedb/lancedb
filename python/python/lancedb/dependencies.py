@@ -30,6 +30,7 @@ _TORCH_AVAILABLE = True
 _HUGGING_FACE_AVAILABLE = True
 _TENSORFLOW_AVAILABLE = True
 _RAY_AVAILABLE = True
+_LANCE_AVAILABLE = True
 
 
 class _LazyModule(ModuleType):
@@ -53,6 +54,7 @@ class _LazyModule(ModuleType):
         "torch": "torch.",
         "tensorflow": "tf.",
         "ray": "ray.",
+        "lance": "lance.",
     }
 
     def __init__(
@@ -169,6 +171,7 @@ if TYPE_CHECKING:
     import ray
     import tensorflow
     import torch
+    import lance
 else:
     # heavy/optional third party libs
     numpy, _NUMPY_AVAILABLE = _lazy_import("numpy")
@@ -178,6 +181,7 @@ else:
     datasets, _HUGGING_FACE_AVAILABLE = _lazy_import("datasets")
     tensorflow, _TENSORFLOW_AVAILABLE = _lazy_import("tensorflow")
     ray, _RAY_AVAILABLE = _lazy_import("ray")
+    lance, _LANCE_AVAILABLE = _lazy_import("lance")
 
 
 @lru_cache(maxsize=None)
@@ -232,6 +236,12 @@ def _check_for_ray(obj: Any, *, check_type: bool = True) -> bool:
     )
 
 
+def _check_for_lance(obj: Any, *, check_type: bool = True) -> bool:
+    return _LANCE_AVAILABLE and _might_be(
+        cast(Hashable, type(obj) if check_type else obj), "lance"
+    )
+
+
 __all__ = [
     # lazy-load third party libs
     "datasets",
@@ -241,6 +251,7 @@ __all__ = [
     "ray",
     "tensorflow",
     "torch",
+    "lance",
     # lazy utilities
     "_check_for_hugging_face",
     "_check_for_numpy",
@@ -249,6 +260,7 @@ __all__ = [
     "_check_for_tensorflow",
     "_check_for_torch",
     "_check_for_ray",
+    "_check_for_lance",
     "_LazyModule",
     # exported flags/guards
     "_NUMPY_AVAILABLE",
@@ -258,4 +270,5 @@ __all__ = [
     "_HUGGING_FACE_AVAILABLE",
     "_TENSORFLOW_AVAILABLE",
     "_RAY_AVAILABLE",
+    "_LANCE_AVAILABLE",
 ]

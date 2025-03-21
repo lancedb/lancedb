@@ -7,10 +7,9 @@ from typing import Iterable, List, Optional, Union
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.dataset
 
-from .util import safe_import_pandas
-
-pd = safe_import_pandas()
+from .dependencies import pandas as pd
 
 DATA = Union[List[dict], "pd.DataFrame", pa.Table, Iterable[pa.RecordBatch]]
 VEC = Union[list, np.ndarray, pa.Array, pa.ChunkedArray]
