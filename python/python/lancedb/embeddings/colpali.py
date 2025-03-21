@@ -3,9 +3,8 @@
 
 
 from functools import lru_cache
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Any
 import numpy as np
-from transformers import BitsAndBytesConfig
 import requests
 import io
 
@@ -13,8 +12,6 @@ from ..util import attempt_import_or_raise
 from .base import EmbeddingFunction
 from .registry import register
 from .utils import TEXT, IMAGES, is_flash_attn_2_available
-
-torch = attempt_import_or_raise("torch", "torch")
 
 
 @register("colpali")
@@ -50,7 +47,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
     dtype: str = "bfloat16"
     use_token_pooling: bool = True
     pool_factor: int = 2
-    quantization_config: Optional[BitsAndBytesConfig] = None
+    quantization_config: Optional[Any] = None
     batch_size: int = 2
 
     _model = None
@@ -81,13 +78,19 @@ class ColPaliEmbeddings(EmbeddingFunction):
         device: str,
         use_token_pooling: bool,
         pool_factor: int,
-        quantization_config: Optional[BitsAndBytesConfig],
+        quantization_config: Optional[Any],
     ):
         """
         Initialize and cache the ColPali model, processor, and token pooler.
         """
+        torch = attempt_import_or_raise("torch", "torch")
+        transformers = attempt_import_or_raise("transformers", "transformers")
         colpali_engine = attempt_import_or_raise("colpali_engine", "colpali_engine")
         from colpali_engine.compression.token_pooling import HierarchicalTokenPooler
+
+        if quantization_config is not None:
+            if not isinstance(quantization_config, transformers.BitsAndBytesConfig):
+                raise ValueError("quantization_config must be a BitsAndBytesConfig")
 
         if dtype == "bfloat16":
             torch_dtype = torch.bfloat16
@@ -121,6 +124,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
         """
         Return the dimension of a vector in the multivector output (e.g., 128).
         """
+        torch = attempt_import_or_raise("torch", "torch")
         if self._vector_dim is None:
             dummy_query = "test"
             batch_queries = self._processor.process_queries([dummy_query]).to(
@@ -144,6 +148,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
         Format model embeddings into List[List[float]].
         Use token pooling if enabled.
         """
+        torch = attempt_import_or_raise("torch", "torch")
         if self.use_token_pooling and self._token_pooler is not None:
             embeddings = self._token_pooler.pool_embeddings(
                 embeddings,
@@ -166,6 +171,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
         """
         Generate embeddings for text input.
         """
+        torch = attempt_import_or_raise("torch", "torch")
         text = self.sanitize_input(text)
         all_embeddings = []
 
@@ -209,6 +215,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
         """
         Generate embeddings for a batch of images.
         """
+        torch = attempt_import_or_raise("torch", "torch")
         pil_images = self._prepare_images(images)
         all_embeddings = []
 
