@@ -5,15 +5,16 @@
 from functools import lru_cache
 from typing import List, Union, Optional
 import numpy as np
-import torch
+from transformers import BitsAndBytesConfig
 import requests
 import io
-from transformers import BitsAndBytesConfig
 
 from ..util import attempt_import_or_raise
 from .base import EmbeddingFunction
 from .registry import register
 from .utils import TEXT, IMAGES, is_flash_attn_2_available
+
+torch = attempt_import_or_raise("torch", "torch")
 
 
 @register("colpali")
