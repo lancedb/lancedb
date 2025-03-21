@@ -174,6 +174,7 @@ pub(crate) struct IndexMetadata {
     pub metric_type: Option<DistanceType>,
     // Sometimes the index type is provided at this level.
     pub index_type: Option<IndexType>,
+    pub loss: Option<f64>,
 }
 
 // This struct is used to deserialize the JSON data returned from the Lance API
@@ -205,4 +206,6 @@ pub struct IndexStatistics {
     pub distance_type: Option<DistanceType>,
     /// The number of parts this index is split into.
     pub num_indices: Option<u32>,
+    /// The loss value used by the index.
+    pub loss: Option<f64>,
 }

@@ -1185,6 +1185,7 @@ class Table(ABC):
         *,
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
+        retrain: bool = False,
     ):
         """
         Optimize the on-disk data and indices for better performance.
@@ -1208,6 +1209,11 @@ class Table(ABC):
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+        retrain: bool, default False
+            If True, retrain the vector indices, this would refine the IVF clustering
+            and quantization, which may improve the search accuracy. It's faster than
+            re-creating the index from scratch, so it's recommended to try this first,
+            when the data distribution has changed significantly.
 
         Experimental API
         ----------------
@@ -2342,6 +2348,7 @@ class LanceTable(Table):
         *,
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
+        retrain: bool = False,
     ):
         """
         Optimize the on-disk data and indices for better performance.
@@ -2365,6 +2372,11 @@ class LanceTable(Table):
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+        retrain: bool, default False
+            If True, retrain the vector indices, this would refine the IVF clustering
+            and quantization, which may improve the search accuracy. It's faster than
+            re-creating the index from scratch, so it's recommended to try this first,
+            when the data distribution has changed significantly.
 
         Experimental API
         ----------------
@@ -2388,6 +2400,7 @@ class LanceTable(Table):
             self._table.optimize(
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
+                retrain=retrain,
             )
         )
 
@@ -3590,6 +3603,7 @@ class AsyncTable:
         *,
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
+        retrain=False,
     ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
@@ -3613,6 +3627,11 @@ class AsyncTable:
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+        retrain: bool, default False
+            If True, retrain the vector indices, this would refine the IVF clustering
+            and quantization, which may improve the search accuracy. It's faster than
+            re-creating the index from scratch, so it's recommended to try this first,
+            when the data distribution has changed significantly.
 
         Experimental API
         ----------------
@@ -3636,7 +3655,9 @@ class AsyncTable:
         if cleanup_older_than is not None:
             cleanup_since_ms = round(cleanup_older_than.total_seconds() * 1000)
         return await self._inner.optimize(
-            cleanup_since_ms=cleanup_since_ms, delete_unverified=delete_unverified
+            cleanup_since_ms=cleanup_since_ms,
+            delete_unverified=delete_unverified,
+            retrain=retrain,
         )
 
     async def list_indices(self) -> Iterable[IndexConfig]:
@@ -3729,6 +3750,8 @@ class IndexStatistics:
         The distance type used by the index.
     num_indices: Optional[int]
         The number of parts the index is split into.
+    loss: Optional[float]
+        The KMeans loss for the index, for only vector indices.
     """
 
     num_indexed_rows: int
@@ -3738,6 +3761,7 @@ class IndexStatistics:
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None
+    loss: Optional[float] = None
 
     # This exists for backwards compatibility with an older API, which returned
     # a dictionary instead of a class.
