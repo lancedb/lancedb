@@ -13,6 +13,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  # Color output for pytest is off by default.
+  PYTEST_ADDOPTS: "--color=yes"
+  FORCE_COLOR: "1"
+
 jobs:
   lint:
     name: "Lint"
@@ -33,13 +38,14 @@ jobs:
           python-version: "3.12"
       - name: Install ruff
         run: |
-          pip install ruff==0.8.4
+          pip install ruff==0.9.9
       - name: Format check
         run: ruff format --check .
       - name: Lint
         run: ruff check .
-  doctest:
-    name: "Doctest"
+
+  type-check:
+    name: "Type Check"
     timeout-minutes: 30
     runs-on: "ubuntu-22.04"
     defaults:
@@ -54,7 +60,36 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
+      - name: Install protobuf compiler
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+          pip install toml
+      - name: Install dependencies
+        run: |
+          python ../ci/parse_requirements.py pyproject.toml --extras dev,tests,embeddings > requirements.txt
+          pip install -r requirements.txt
+      - name: Run pyright
+        run: pyright
+
+  doctest:
+    name: "Doctest"
+    timeout-minutes: 30
+    runs-on: "ubuntu-24.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
           cache: "pip"
       - name: Install protobuf
         run: |
@@ -75,8 +110,8 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        python-minor-version: ["9", "11"]
-    runs-on: "ubuntu-22.04"
+        python-minor-version: ["9", "12"]
+    runs-on: "ubuntu-24.04"
     defaults:
       run:
         shell: bash
@@ -101,6 +136,10 @@ jobs:
       - uses: ./.github/workflows/run_tests
         with:
           integration: true
+      - name: Test without pylance
+        run: |
+          pip uninstall -y pylance
+          pytest -vv python/tests/test_table.py
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels
@@ -127,7 +166,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: python
@@ -157,7 +196,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: python
@@ -168,7 +207,7 @@ jobs:
         run: rm -rf target/wheels
   pydantic1x:
     timeout-minutes: 30
-    runs-on: "ubuntu-22.04"
+    runs-on: "ubuntu-24.04"
     defaults:
       run:
         shell: bash

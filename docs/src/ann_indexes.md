@@ -69,7 +69,7 @@ Lance supports `IVF_PQ` index type by default.
 
 The following IVF_PQ paramters can be specified:
 
-- **distance_type**: The distance metric to use. By default it uses euclidean distance "`L2`".
+- **distance_type**: The distance metric to use. By default it uses euclidean distance "`l2`".
   We also support "cosine" and "dot" distance as well.
 - **num_partitions**: The number of partitions in the index. The default is the square root
   of the number of rows.

@@ -15,7 +15,7 @@ Currently, LanceDB supports the following metrics:
 
 | Metric    | Description                                                                 |
 | --------- | --------------------------------------------------------------------------- |
-| `l2`      | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
+| `l2`      | [Euclidean / l2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
 | `cosine`  | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)        |
 | `dot`     | [Dot Production](https://en.wikipedia.org/wiki/Dot_product)                 |
 | `hamming` | [Hamming Distance](https://en.wikipedia.org/wiki/Hamming_distance)          |
@@ -137,6 +137,19 @@ LanceDB supports binary vectors as a data type, and has the ability to search bi
 
         --8<-- "python/python/tests/docs/test_binary_vector.py:async_binary_vector"
         ```
+
+    === "TypeScript"
+
+        ```ts
+        --8<-- "nodejs/examples/search.test.ts:import"
+
+        --8<-- "nodejs/examples/search.test.ts:import_bin_util"
+
+        --8<-- "nodejs/examples/search.test.ts:ingest_binary_data"
+
+        --8<-- "nodejs/examples/search.test.ts:search_binary_data"
+        ```
+
 
 ## Multivector type
 

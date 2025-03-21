@@ -14,6 +14,7 @@ from ._lancedb import connect as lancedb_connect
 from .common import URI, sanitize_uri
 from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
+from .remote.db import RemoteDBConnection
 from .schema import vector
 from .table import AsyncTable
 
@@ -86,8 +87,6 @@ def connect(
     conn : DBConnection
         A connection to a LanceDB database.
     """
-    from .remote.db import RemoteDBConnection
-
     if isinstance(uri, str) and uri.startswith("db://"):
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")

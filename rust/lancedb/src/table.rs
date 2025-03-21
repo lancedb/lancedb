@@ -28,13 +28,13 @@ pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::{
-    Dataset, InsertBuilder, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode,
-    WriteParams,
+    InsertBuilder, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::io::WrappingObjectStore;
 use lance_datafusion::exec::execute_plan;
+use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
@@ -511,6 +511,27 @@ mod test_utils {
             let inner = Arc::new(crate::remote::table::RemoteTable::new_mock(
                 name.into(),
                 handler,
+                None,
+            ));
+            Self {
+                inner,
+                // Registry is unused.
+                embedding_registry: Arc::new(MemoryRegistry::new()),
+            }
+        }
+
+        pub fn new_with_handler_version<T>(
+            name: impl Into<String>,
+            version: semver::Version,
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let inner = Arc::new(crate::remote::table::RemoteTable::new_mock(
+                name.into(),
+                handler,
+                Some(version),
             ));
             Self {
                 inner,
@@ -560,6 +581,13 @@ impl Table {
     /// Get the name of the table.
     pub fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    /// Get the dataset of the table if it is a native table
+    ///
+    /// Returns None otherwise
+    pub fn dataset(&self) -> Option<&dataset::DatasetConsistencyWrapper> {
+        self.inner.as_native().map(|t| &t.dataset)
     }
 
     /// Get the arrow [Schema] of the table.
@@ -1245,7 +1273,7 @@ impl NativeTable {
     pub async fn create(
         uri: &str,
         name: &str,
-        batches: impl RecordBatchReader + Send + 'static,
+        batches: impl StreamingWriteSource,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
@@ -1260,7 +1288,9 @@ impl NativeTable {
             None => params,
         };
 
-        let dataset = Dataset::write(batches, uri, Some(params))
+        let insert_builder = InsertBuilder::new(uri).with_params(&params);
+        let dataset = insert_builder
+            .execute_stream(batches)
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
@@ -1268,6 +1298,7 @@ impl NativeTable {
                 },
                 source => Error::Lance { source },
             })?;
+
         Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
@@ -2344,12 +2375,20 @@ impl BaseTable for NativeTable {
                 .ok_or_else(|| Error::InvalidInput {
                     message: "index statistics was missing index type".to_string(),
                 })?;
+        let loss = stats
+            .indices
+            .iter()
+            .map(|index| index.loss.unwrap_or_default())
+            .sum::<f64>();
+
+        let loss = first_index.loss.map(|first_loss| first_loss + loss);
         Ok(Some(IndexStatistics {
             num_indexed_rows: stats.num_indexed_rows,
             num_unindexed_rows: stats.num_unindexed_rows,
             index_type,
             distance_type: first_index.metric_type,
             num_indices: stats.num_indices,
+            loss,
         }))
     }
 }
@@ -2372,8 +2411,9 @@ mod tests {
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
-    use lance::dataset::{Dataset, WriteMode};
+    use lance::dataset::WriteMode;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
+    use lance::Dataset;
     use rand::Rng;
     use tempfile::tempdir;
 
@@ -2423,6 +2463,7 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         let batches = make_test_batches();
+        let batches = Box::new(batches) as Box<dyn RecordBatchReader + Send>;
         let table = NativeTable::create(uri, "test", batches, None, None, None)
             .await
             .unwrap();
@@ -3014,6 +3055,7 @@ mod tests {
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.index_type, crate::index::IndexType::IvfPq);
         assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
+        assert!(stats.loss.is_some());
 
         table.drop_index(index_name).await.unwrap();
         assert_eq!(table.list_indices().await.unwrap().len(), 0);

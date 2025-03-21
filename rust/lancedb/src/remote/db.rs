@@ -14,16 +14,154 @@ use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
 use crate::database::{
-    CreateTableData, CreateTableMode, CreateTableRequest, Database, OpenTableRequest,
-    TableNamesRequest,
+    CreateTableData, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
+    OpenTableRequest, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::table::BaseTable;
+use crate::Error;
 
 use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender};
 use super::table::RemoteTable;
-use super::util::batches_to_ipc_bytes;
+use super::util::{batches_to_ipc_bytes, parse_server_version};
 use super::ARROW_STREAM_CONTENT_TYPE;
+
+// the versions of the server that we support
+// for any new feature that we need to change the SDK behavior, we should bump the server version,
+// and add a feature flag as method of `ServerVersion` here.
+pub const DEFAULT_SERVER_VERSION: semver::Version = semver::Version::new(0, 1, 0);
+#[derive(Debug, Clone)]
+pub struct ServerVersion(pub semver::Version);
+
+impl Default for ServerVersion {
+    fn default() -> Self {
+        Self(DEFAULT_SERVER_VERSION.clone())
+    }
+}
+
+impl ServerVersion {
+    pub fn parse(version: &str) -> Result<Self> {
+        let version = Self(
+            semver::Version::parse(version).map_err(|e| Error::InvalidInput {
+                message: e.to_string(),
+            })?,
+        );
+        Ok(version)
+    }
+
+    pub fn support_multivector(&self) -> bool {
+        self.0 >= semver::Version::new(0, 2, 0)
+    }
+}
+
+pub const OPT_REMOTE_PREFIX: &str = "remote_database_";
+pub const OPT_REMOTE_API_KEY: &str = "remote_database_api_key";
+pub const OPT_REMOTE_REGION: &str = "remote_database_region";
+pub const OPT_REMOTE_HOST_OVERRIDE: &str = "remote_database_host_override";
+// TODO: add support for configuring client config via key/value options
+
+#[derive(Clone, Debug, Default)]
+pub struct RemoteDatabaseOptions {
+    /// The LanceDB Cloud API key
+    pub api_key: Option<String>,
+    /// The LanceDB Cloud region
+    pub region: Option<String>,
+    /// The LanceDB Enterprise host override
+    ///
+    /// This is required when connecting to LanceDB Enterprise and should be
+    /// provided if using an on-premises LanceDB Enterprise instance.
+    pub host_override: Option<String>,
+    /// Storage options configure the storage layer (e.g. S3, GCS, Azure, etc.)
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    ///
+    /// These options are only used for LanceDB Enterprise and only a subset of options
+    /// are supported.
+    pub storage_options: HashMap<String, String>,
+}
+
+impl RemoteDatabaseOptions {
+    pub fn builder() -> RemoteDatabaseOptionsBuilder {
+        RemoteDatabaseOptionsBuilder::new()
+    }
+
+    pub(crate) fn parse_from_map(map: &HashMap<String, String>) -> Result<Self> {
+        let api_key = map.get(OPT_REMOTE_API_KEY).cloned();
+        let region = map.get(OPT_REMOTE_REGION).cloned();
+        let host_override = map.get(OPT_REMOTE_HOST_OVERRIDE).cloned();
+        let storage_options = map
+            .iter()
+            .filter(|(key, _)| !key.starts_with(OPT_REMOTE_PREFIX))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        Ok(Self {
+            api_key,
+            region,
+            host_override,
+            storage_options,
+        })
+    }
+}
+
+impl DatabaseOptions for RemoteDatabaseOptions {
+    fn serialize_into_map(&self, map: &mut HashMap<String, String>) {
+        for (key, value) in &self.storage_options {
+            map.insert(key.clone(), value.clone());
+        }
+        if let Some(api_key) = &self.api_key {
+            map.insert(OPT_REMOTE_API_KEY.to_string(), api_key.clone());
+        }
+        if let Some(region) = &self.region {
+            map.insert(OPT_REMOTE_REGION.to_string(), region.clone());
+        }
+        if let Some(host_override) = &self.host_override {
+            map.insert(OPT_REMOTE_HOST_OVERRIDE.to_string(), host_override.clone());
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RemoteDatabaseOptionsBuilder {
+    options: RemoteDatabaseOptions,
+}
+
+impl RemoteDatabaseOptionsBuilder {
+    pub fn new() -> Self {
+        Self {
+            options: RemoteDatabaseOptions::default(),
+        }
+    }
+
+    /// Set the LanceDB Cloud API key
+    ///
+    /// # Arguments
+    ///
+    /// * `api_key` - The LanceDB Cloud API key
+    pub fn api_key(mut self, api_key: String) -> Self {
+        self.options.api_key = Some(api_key);
+        self
+    }
+
+    /// Set the LanceDB Cloud region
+    ///
+    /// # Arguments
+    ///
+    /// * `region` - The LanceDB Cloud region
+    pub fn region(mut self, region: String) -> Self {
+        self.options.region = Some(region);
+        self
+    }
+
+    /// Set the LanceDB Enterprise host override
+    ///
+    /// # Arguments
+    ///
+    /// * `host_override` - The LanceDB Enterprise host override
+    pub fn host_override(mut self, host_override: String) -> Self {
+        self.options.host_override = Some(host_override);
+        self
+    }
+}
 
 #[derive(Deserialize)]
 struct ListTablesResponse {
@@ -33,7 +171,7 @@ struct ListTablesResponse {
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
-    table_cache: Cache<String, ()>,
+    table_cache: Cache<String, Arc<RemoteTable<S>>>,
 }
 
 impl RemoteDatabase {
@@ -115,13 +253,19 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
         let (request_id, rsp) = self.client.send(req, true).await?;
         let rsp = self.client.check_response(&request_id, rsp).await?;
+        let version = parse_server_version(&request_id, &rsp)?;
         let tables = rsp
             .json::<ListTablesResponse>()
             .await
             .err_to_http(request_id)?
             .tables;
         for table in &tables {
-            self.table_cache.insert(table.clone(), ()).await;
+            let remote_table = Arc::new(RemoteTable::new(
+                self.client.clone(),
+                table.clone(),
+                version.clone(),
+            ));
+            self.table_cache.insert(table.clone(), remote_table).await;
         }
         Ok(tables)
     }
@@ -129,6 +273,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         let data = match request.data {
             CreateTableData::Data(data) => data,
+            CreateTableData::StreamingData(_) => {
+                return Err(Error::NotSupported {
+                    message: "Creating a remote table from a streaming source".to_string(),
+                })
+            }
             CreateTableData::Empty(table_definition) => {
                 let schema = table_definition.schema.clone();
                 Box::new(RecordBatchIterator::new(vec![], schema))
@@ -187,34 +336,42 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 return Err(crate::Error::InvalidInput { message: body });
             }
         }
-
-        self.client.check_response(&request_id, rsp).await?;
-
-        self.table_cache.insert(request.name.clone(), ()).await;
-
-        Ok(Arc::new(RemoteTable::new(
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let version = parse_server_version(&request_id, &rsp)?;
+        let table = Arc::new(RemoteTable::new(
             self.client.clone(),
-            request.name,
-        )))
+            request.name.clone(),
+            version,
+        ));
+        self.table_cache
+            .insert(request.name.clone(), table.clone())
+            .await;
+
+        Ok(table)
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
         // We describe the table to confirm it exists before moving on.
-        if self.table_cache.get(&request.name).await.is_none() {
+        if let Some(table) = self.table_cache.get(&request.name).await {
+            Ok(table.clone())
+        } else {
             let req = self
                 .client
                 .post(&format!("/v1/table/{}/describe/", request.name));
-            let (request_id, resp) = self.client.send(req, true).await?;
-            if resp.status() == StatusCode::NOT_FOUND {
+            let (request_id, rsp) = self.client.send(req, true).await?;
+            if rsp.status() == StatusCode::NOT_FOUND {
                 return Err(crate::Error::TableNotFound { name: request.name });
             }
-            self.client.check_response(&request_id, resp).await?;
+            let rsp = self.client.check_response(&request_id, rsp).await?;
+            let version = parse_server_version(&request_id, &rsp)?;
+            let table = Arc::new(RemoteTable::new(
+                self.client.clone(),
+                request.name.clone(),
+                version,
+            ));
+            self.table_cache.insert(request.name, table.clone()).await;
+            Ok(table)
         }
-
-        Ok(Arc::new(RemoteTable::new(
-            self.client.clone(),
-            request.name,
-        )))
     }
 
     async fn rename_table(&self, current_name: &str, new_name: &str) -> Result<()> {
@@ -224,8 +381,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let req = req.json(&serde_json::json!({ "new_table_name": new_name }));
         let (request_id, resp) = self.client.send(req, false).await?;
         self.client.check_response(&request_id, resp).await?;
-        self.table_cache.remove(current_name).await;
-        self.table_cache.insert(new_name.into(), ()).await;
+        let table = self.table_cache.remove(current_name).await;
+        if let Some(table) = table {
+            self.table_cache.insert(new_name.into(), table).await;
+        }
         Ok(())
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-python"
-version = "0.19.1-beta.3"
+version = "0.21.2-beta.0"
 edition.workspace = true
 description = "Python bindings for LanceDB"
 license.workspace = true
@@ -14,30 +14,25 @@ name = "_lancedb"
 crate-type = ["cdylib"]
 
 [dependencies]
-arrow = { version = "53.2", features = ["pyarrow"] }
+arrow = { version = "54.1", features = ["pyarrow"] }
 lancedb = { path = "../rust/lancedb", default-features = false }
 env_logger.workspace = true
-pyo3 = { version = "0.22.2", features = [
-    "extension-module",
-    "abi3-py39",
-    "gil-refs"
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
+pyo3-async-runtimes = { version = "0.23", features = [
+    "attributes",
+    "tokio-runtime",
 ] }
-pyo3-async-runtimes = { version = "0.22", features = ["attributes", "tokio-runtime"] }
 pin-project = "1.1.5"
 futures.workspace = true
 tokio = { version = "1.40", features = ["sync"] }
 
 [build-dependencies]
-pyo3-build-config = { version = "0.20.3", features = [
+pyo3-build-config = { version = "0.23", features = [
     "extension-module",
     "abi3-py39",
 ] }
 
 [features]
-default = ["default-tls", "remote"]
+default = ["remote"]
 fp16kernels = ["lancedb/fp16kernels"]
 remote = ["lancedb/remote"]
-# TLS
-default-tls = ["lancedb/default-tls"]
-native-tls = ["lancedb/native-tls"]
-rustls-tls = ["lancedb/rustls-tls"]

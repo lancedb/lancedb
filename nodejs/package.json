@@ -11,7 +11,7 @@
     "ann"
   ],
   "private": false,
-  "version": "0.16.1-beta.3",
+  "version": "0.18.2-beta.0",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
@@ -29,7 +29,6 @@
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
-        "x86_64-unknown-linux-musl",
         "aarch64-unknown-linux-musl",
         "x86_64-pc-windows-msvc",
         "aarch64-pc-windows-msvc"
@@ -74,8 +73,10 @@
     "artifacts": "napi artifacts",
     "build:debug": "napi build --platform --no-const-enum --dts ../lancedb/native.d.ts --js ../lancedb/native.js lancedb",
     "build:release": "napi build --platform --no-const-enum --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js dist/",
-    "build": "npm run build:debug && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts && shx cp lancedb/*.node dist/",
-    "build-release": "npm run build:release && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts",
+    "build": "npm run build:debug && npm run tsc && shx cp lancedb/*.node dist/",
+    "build-release": "npm run build:release && npm run tsc",
+    "tsc": "tsc -b",
+    "posttsc": "shx cp lancedb/native.d.ts dist/native.d.ts",
     "lint-ci": "biome ci .",
     "docs": "typedoc --plugin typedoc-plugin-markdown --treatWarningsAsErrors --out ../docs/src/js lancedb/index.ts",
     "postdocs": "node typedoc_post_process.js",

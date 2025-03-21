@@ -157,24 +157,6 @@ def attempt_import_or_raise(module: str, mitigation=None):
         raise ImportError(f"Please install {mitigation or module}")
 
 
-def safe_import_pandas():
-    try:
-        import pandas as pd
-
-        return pd
-    except ImportError:
-        return None
-
-
-def safe_import_polars():
-    try:
-        import polars as pl
-
-        return pl
-    except ImportError:
-        return None
-
-
 def flatten_columns(tbl: pa.Table, flatten: Optional[Union[int, bool]] = None):
     """
     Flatten all struct columns in a table.

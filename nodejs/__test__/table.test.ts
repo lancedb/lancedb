@@ -21,9 +21,11 @@ import {
   Int64,
   List,
   Schema,
+  Uint8,
   Utf8,
   makeArrowTable,
 } from "../lancedb/arrow";
+import * as arrow from "../lancedb/arrow";
 import {
   EmbeddingFunction,
   LanceSchema,
@@ -278,6 +280,15 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(res.getChild("y")?.toJSON()).toEqual([2, null, null, null]);
       expect(res.getChild("z")?.toJSON()).toEqual([null, null, 3n, 5n]);
     });
+
+    it("should handle null vectors at end of data", async () => {
+      // https://github.com/lancedb/lancedb/issues/2240
+      const data = [{ vector: [1, 2, 3] }, { vector: null }];
+      const db = await connect("memory://");
+
+      const table = await db.createTable("my_table", data);
+      expect(await table.countRows()).toEqual(2);
+    });
   },
 );
 
@@ -460,6 +471,8 @@ describe("When creating an index", () => {
       indexType: "IvfPq",
       columns: ["vec"],
     });
+    const stats = await tbl.indexStats("vec_idx");
+    expect(stats?.loss).toBeDefined();
 
     // Search without specifying the column
     let rst = await tbl
@@ -666,11 +679,11 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
 
     for await (const r of tbl.query().where("id > 1").select(["id"])) {
-      expect(r.numRows).toBe(10);
+      expect(r.numRows).toBe(298);
     }
     // should also work with 'filter' alias
     for await (const r of tbl.query().filter("id > 1").select(["id"])) {
-      expect(r.numRows).toBe(10);
+      expect(r.numRows).toBe(298);
     }
   });
 
@@ -720,11 +733,44 @@ describe("When creating an index", () => {
     expect(stats?.distanceType).toBeUndefined();
     expect(stats?.indexType).toEqual("BTREE");
     expect(stats?.numIndices).toEqual(1);
+    expect(stats?.loss).toBeUndefined();
   });
 
   test("when getting stats on non-existent index", async () => {
     const stats = await tbl.indexStats("some non-existent index");
     expect(stats).toBeUndefined();
+  });
+
+  test("create ivf_flat with binary vectors", async () => {
+    const db = await connect(tmpDir.name);
+    const binarySchema = new Schema([
+      new Field("id", new Int32(), true),
+      new Field("vec", new FixedSizeList(32, new Field("item", new Uint8()))),
+    ]);
+    const tbl = await db.createTable(
+      "binary",
+      makeArrowTable(
+        Array(300)
+          .fill(1)
+          .map((_, i) => ({
+            id: i,
+            vec: Array(32)
+              .fill(1)
+              .map(() => Math.floor(Math.random() * 255)),
+          })),
+        { schema: binarySchema },
+      ),
+    );
+    await tbl.createIndex("vec", {
+      config: Index.ivfFlat({ numPartitions: 10, distanceType: "hamming" }),
+    });
+
+    // query with binary vectors
+    const queryVec = Array(32)
+      .fill(1)
+      .map(() => Math.floor(Math.random() * 255));
+    const rst = await tbl.query().limit(5).nearestTo(queryVec).toArrow();
+    expect(rst.numRows).toBe(5);
   });
 
   // TODO: Move this test to the query API test (making sure we can reject queries
@@ -920,6 +966,93 @@ describe("schema evolution", function () {
       new Field("price", new Float64(), true),
     ]);
     expect(await table.schema()).toEqual(expectedSchema2);
+
+    await table.alterColumns([
+      {
+        path: "vector",
+        dataType: new FixedSizeList(2, new Field("item", new Float64(), true)),
+      },
+    ]);
+    const expectedSchema3 = new Schema([
+      new Field("new_id", new Int32(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float64(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema3);
+  });
+
+  it("can cast to various types", async function () {
+    const con = await connect(tmpDir.name);
+
+    // integers
+    const intTypes = [
+      new arrow.Int8(),
+      new arrow.Int16(),
+      new arrow.Int32(),
+      new arrow.Int64(),
+      new arrow.Uint8(),
+      new arrow.Uint16(),
+      new arrow.Uint32(),
+      new arrow.Uint64(),
+    ];
+    const tableInts = await con.createTable("ints", [{ id: 1n }], {
+      schema: new Schema([new Field("id", new Int64(), true)]),
+    });
+    for (const intType of intTypes) {
+      await tableInts.alterColumns([{ path: "id", dataType: intType }]);
+      const schema = new Schema([new Field("id", intType, true)]);
+      expect(await tableInts.schema()).toEqual(schema);
+    }
+
+    // floats
+    const floatTypes = [
+      new arrow.Float16(),
+      new arrow.Float32(),
+      new arrow.Float64(),
+    ];
+    const tableFloats = await con.createTable("floats", [{ val: 2.1 }], {
+      schema: new Schema([new Field("val", new Float32(), true)]),
+    });
+    for (const floatType of floatTypes) {
+      await tableFloats.alterColumns([{ path: "val", dataType: floatType }]);
+      const schema = new Schema([new Field("val", floatType, true)]);
+      expect(await tableFloats.schema()).toEqual(schema);
+    }
+
+    // Lists of floats
+    const listTypes = [
+      new arrow.List(new arrow.Field("item", new arrow.Float32(), true)),
+      new arrow.FixedSizeList(
+        2,
+        new arrow.Field("item", new arrow.Float64(), true),
+      ),
+      new arrow.FixedSizeList(
+        2,
+        new arrow.Field("item", new arrow.Float16(), true),
+      ),
+      new arrow.FixedSizeList(
+        2,
+        new arrow.Field("item", new arrow.Float32(), true),
+      ),
+    ];
+    const tableLists = await con.createTable("lists", [{ val: [2.1, 3.2] }], {
+      schema: new Schema([
+        new Field(
+          "val",
+          new FixedSizeList(2, new arrow.Field("item", new Float32())),
+          true,
+        ),
+      ]),
+    });
+    for (const listType of listTypes) {
+      await tableLists.alterColumns([{ path: "val", dataType: listType }]);
+      const schema = new Schema([new Field("val", listType, true)]);
+      expect(await tableLists.schema()).toEqual(schema);
+    }
   });
 
   it("can drop a column from the schema", async function () {

@@ -10,12 +10,13 @@ use lancedb::table::{
     Table as LanceDbTable,
 };
 use pyo3::{
-    exceptions::{PyRuntimeError, PyValueError},
+    exceptions::{PyKeyError, PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
-    Bound, FromPyObject, PyAny, PyRef, PyResult, Python, ToPyObject,
+    Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
+use std::collections::HashMap;
 
 use crate::{
     error::PythonErrorExt,
@@ -221,7 +222,7 @@ impl Table {
             let stats = inner.index_stats(&index_name).await.infer_error()?;
             if let Some(stats) = stats {
                 Python::with_gil(|py| {
-                    let dict = PyDict::new_bound(py);
+                    let dict = PyDict::new(py);
                     dict.set_item("num_indexed_rows", stats.num_indexed_rows)?;
                     dict.set_item("num_unindexed_rows", stats.num_unindexed_rows)?;
                     dict.set_item("index_type", stats.index_type.to_string())?;
@@ -234,7 +235,11 @@ impl Table {
                         dict.set_item("num_indices", num_indices)?;
                     }
 
-                    Ok(Some(dict.to_object(py)))
+                    if let Some(loss) = stats.loss {
+                        dict.set_item("loss", loss)?;
+                    }
+
+                    Ok(Some(dict.unbind()))
                 })
             } else {
                 Ok(None)
@@ -265,7 +270,7 @@ impl Table {
                 versions
                     .iter()
                     .map(|v| {
-                        let dict = PyDict::new_bound(py);
+                        let dict = PyDict::new(py);
                         dict.set_item("version", v.version).unwrap();
                         dict.set_item(
                             "timestamp",
@@ -274,14 +279,13 @@ impl Table {
                         .unwrap();
 
                         let tup: Vec<(&String, &String)> = v.metadata.iter().collect();
-                        dict.set_item("metadata", tup.into_py_dict_bound(py))
-                            .unwrap();
-                        dict.to_object(py)
+                        dict.set_item("metadata", tup.into_py_dict(py)?).unwrap();
+                        Ok(dict.unbind())
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<PyResult<Vec<_>>>()
             });
 
-            Ok(versions_as_dict)
+            versions_as_dict
         })
     }
 
@@ -312,11 +316,12 @@ impl Table {
     }
 
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.
-    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None))]
+    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, retrain=None))]
     pub fn optimize(
         self_: PyRef<'_, Self>,
         cleanup_since_ms: Option<u64>,
         delete_unverified: Option<bool>,
+        retrain: Option<bool>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let older_than = if let Some(ms) = cleanup_since_ms {
@@ -352,9 +357,10 @@ impl Table {
                 .prune
                 .unwrap();
             inner
-                .optimize(lancedb::table::OptimizeAction::Index(
-                    OptimizeOptions::default(),
-                ))
+                .optimize(lancedb::table::OptimizeAction::Index(match retrain {
+                    Some(true) => OptimizeOptions::retrain(),
+                    _ => OptimizeOptions::default(),
+                }))
                 .await
                 .infer_error()?;
             Ok(OptimizeStats {
@@ -483,6 +489,37 @@ impl Table {
         future_into_py(self_.py(), async move {
             let column_refs = columns.iter().map(String::as_str).collect::<Vec<&str>>();
             inner.drop_columns(&column_refs).await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn replace_field_metadata<'a>(
+        self_: PyRef<'a, Self>,
+        field_name: String,
+        metadata: &Bound<'_, PyDict>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let mut new_metadata = HashMap::<String, String>::new();
+        for (column_name, value) in metadata.into_iter() {
+            let key: String = column_name.extract()?;
+            let value: String = value.extract()?;
+            new_metadata.insert(key, value);
+        }
+
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let native_tbl = inner
+                .as_native()
+                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?;
+            let schema = native_tbl.manifest().await.infer_error()?.schema;
+            let field = schema
+                .field(&field_name)
+                .ok_or_else(|| PyKeyError::new_err(format!("Field {} not found", field_name)))?;
+
+            native_tbl
+                .replace_field_metadata(vec![(field.id as u32, new_metadata)])
+                .await
+                .infer_error()?;
+
             Ok(())
         })
     }

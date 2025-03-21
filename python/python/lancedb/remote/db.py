@@ -9,7 +9,8 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 from urllib.parse import urlparse
 import warnings
 
-from lancedb import connect_async
+# Remove this import to fix circular dependency
+# from lancedb import connect_async
 from lancedb.remote import ClientConfig
 import pyarrow as pa
 from overrides import override
@@ -77,6 +78,9 @@ class RemoteDBConnection(DBConnection):
         self.db_name = parsed.netloc
 
         self.client_config = client_config
+
+        # Import connect_async here to avoid circular import
+        from lancedb import connect_async
 
         self._conn = LOOP.run(
             connect_async(

@@ -14,7 +14,6 @@ import {
 
 export {
   AddColumnsSql,
-  ColumnAlteration,
   ConnectionOptions,
   IndexStatistics,
   IndexConfig,
@@ -54,6 +53,7 @@ export {
   Index,
   IndexOptions,
   IvfPqOptions,
+  IvfFlatOptions,
   HnswPqOptions,
   HnswSqOptions,
   FtsOptions,
@@ -65,6 +65,7 @@ export {
   UpdateOptions,
   OptimizeOptions,
   Version,
+  ColumnAlteration,
 } from "./table";
 
 export { MergeInsertBuilder } from "./merge";
@@ -79,7 +80,7 @@ export {
   DataLike,
   IntoVector,
 } from "./arrow";
-export { IntoSql } from "./util";
+export { IntoSql, packBits } from "./util";
 
 /**
  * Connect to a LanceDB instance at the given URI.

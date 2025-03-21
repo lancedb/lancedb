@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Tuple, Any, Union, Literal
 import pyarrow as pa
 
 from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from .remote import ClientConfig
 
 class Connection(object):
     uri: str
@@ -71,11 +72,15 @@ async def connect(
     region: Optional[str],
     host_override: Optional[str],
     read_consistency_interval: Optional[float],
+    client_config: Optional[Union[ClientConfig, Dict[str, Any]]],
+    storage_options: Optional[Dict[str, str]],
 ) -> Connection: ...
 
 class RecordBatchStream:
+    @property
     def schema(self) -> pa.Schema: ...
-    async def next(self) -> Optional[pa.RecordBatch]: ...
+    def __aiter__(self) -> "RecordBatchStream": ...
+    async def __anext__(self) -> pa.RecordBatch: ...
 
 class Query:
     def where(self, filter: str): ...
@@ -89,7 +94,9 @@ class Query:
     def nearest_to(self, query_vec: pa.Array) -> VectorQuery: ...
     def nearest_to_text(self, query: dict) -> FTSQuery: ...
     async def execute(self, max_batch_length: Optional[int]) -> RecordBatchStream: ...
+    # TODO(lu) it should be sync or async
     async def explain_plan(self, verbose: Optional[bool]) -> str: ...
+    def to_query_request(self) -> PyQueryRequest: ...
 
 class FTSQuery:
     def where(self, filter: str): ...
@@ -104,6 +111,7 @@ class FTSQuery:
     def nearest_to(self, query_vec: pa.Array) -> HybridQuery: ...
     async def execute(self, max_batch_length: Optional[int]) -> RecordBatchStream: ...
     async def explain_plan(self) -> str: ...
+    def to_query_request(self) -> PyQueryRequest: ...
 
 class VectorQuery:
     async def execute(self) -> RecordBatchStream: ...
@@ -120,6 +128,7 @@ class VectorQuery:
     def nprobes(self, nprobes: int): ...
     def bypass_vector_index(self): ...
     def nearest_to_text(self, query: dict) -> HybridQuery: ...
+    def to_query_request(self) -> PyQueryRequest: ...
 
 class HybridQuery:
     def where(self, filter: str): ...
@@ -137,12 +146,43 @@ class HybridQuery:
     def to_fts_query(self) -> FTSQuery: ...
     def get_limit(self) -> int: ...
     def get_with_row_id(self) -> bool: ...
+    def to_query_request(self) -> PyQueryRequest: ...
+
+class PyFullTextSearchQuery:
+    columns: Optional[List[str]]
+    query: str
+    limit: Optional[int]
+    wand_factor: Optional[float]
+
+class PyQueryRequest:
+    limit: Optional[int]
+    offset: Optional[int]
+    filter: Optional[Union[str, bytes]]
+    full_text_search: Optional[PyFullTextSearchQuery]
+    select: Optional[Union[str, List[str]]]
+    fast_search: Optional[bool]
+    with_row_id: Optional[bool]
+    column: Optional[str]
+    query_vector: Optional[List[pa.Array]]
+    nprobes: Optional[int]
+    lower_bound: Optional[float]
+    upper_bound: Optional[float]
+    ef: Optional[int]
+    refine_factor: Optional[int]
+    distance_type: Optional[str]
+    bypass_vector_index: Optional[bool]
+    postfilter: Optional[bool]
+    norm: Optional[str]
 
 class CompactionStats:
     fragments_removed: int
     fragments_added: int
     files_removed: int
     files_added: int
+
+class CleanupStats:
+    bytes_removed: int
+    old_versions: int
 
 class RemovalStats:
     bytes_removed: int

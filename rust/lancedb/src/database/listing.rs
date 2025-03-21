@@ -7,9 +7,9 @@ use std::fs::create_dir_all;
 use std::path::Path;
 use std::{collections::HashMap, sync::Arc};
 
-use arrow_array::RecordBatchIterator;
 use lance::dataset::{ReadParams, WriteMode};
 use lance::io::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry, WrappingObjectStore};
+use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
@@ -22,8 +22,8 @@ use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
 use super::{
-    BaseTable, CreateTableData, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    OpenTableRequest, TableNamesRequest,
+    BaseTable, CreateTableMode, CreateTableRequest, Database, DatabaseOptions, OpenTableRequest,
+    TableNamesRequest,
 };
 
 /// File extension to indicate a lance table
@@ -51,10 +51,22 @@ pub struct NewTableConfig {
 pub struct ListingDatabaseOptions {
     /// Controls what kind of Lance tables will be created by this database
     pub new_table_config: NewTableConfig,
+    /// Storage options configure the storage layer (e.g. S3, GCS, Azure, etc.)
+    ///
+    /// These are used to create/list tables and they are inherited by all tables
+    /// opened by this database.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub storage_options: HashMap<String, String>,
 }
 
 impl ListingDatabaseOptions {
-    fn parse_from_map(map: &HashMap<String, String>) -> Result<Self> {
+    /// Create a new builder for the listing database options
+    pub fn builder() -> ListingDatabaseOptionsBuilder {
+        ListingDatabaseOptionsBuilder::new()
+    }
+
+    pub(crate) fn parse_from_map(map: &HashMap<String, String>) -> Result<Self> {
         let new_table_config = NewTableConfig {
             data_storage_version: map
                 .get(OPT_NEW_TABLE_STORAGE_VERSION)
@@ -72,7 +84,19 @@ impl ListingDatabaseOptions {
                 })
                 .transpose()?,
         };
-        Ok(Self { new_table_config })
+        // We just assume that any options that are not new table config options are storage options
+        let storage_options = map
+            .iter()
+            .filter(|(key, _)| {
+                key.as_str() != OPT_NEW_TABLE_STORAGE_VERSION
+                    && key.as_str() != OPT_NEW_TABLE_V2_MANIFEST_PATHS
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        Ok(Self {
+            new_table_config,
+            storage_options,
+        })
     }
 }
 
@@ -90,6 +114,71 @@ impl DatabaseOptions for ListingDatabaseOptions {
                 enable_v2_manifest_paths.to_string(),
             );
         }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ListingDatabaseOptionsBuilder {
+    options: ListingDatabaseOptions,
+}
+
+impl ListingDatabaseOptionsBuilder {
+    pub fn new() -> Self {
+        Self {
+            options: ListingDatabaseOptions::default(),
+        }
+    }
+}
+
+impl ListingDatabaseOptionsBuilder {
+    /// Set the storage version to use for new tables
+    ///
+    /// # Arguments
+    ///
+    /// * `data_storage_version` - The storage version to use for new tables
+    pub fn data_storage_version(mut self, data_storage_version: LanceFileVersion) -> Self {
+        self.options.new_table_config.data_storage_version = Some(data_storage_version);
+        self
+    }
+
+    /// Enable V2 manifest paths for new tables
+    ///
+    /// # Arguments
+    ///
+    /// * `enable_v2_manifest_paths` - Whether to enable V2 manifest paths for new tables
+    pub fn enable_v2_manifest_paths(mut self, enable_v2_manifest_paths: bool) -> Self {
+        self.options.new_table_config.enable_v2_manifest_paths = Some(enable_v2_manifest_paths);
+        self
+    }
+
+    /// Set an option for the storage layer.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.options
+            .storage_options
+            .insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple options for the storage layer.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (key, value) in pairs {
+            self.options
+                .storage_options
+                .insert(key.into(), value.into());
+        }
+        self
+    }
+
+    /// Build the options
+    pub fn build(self) -> ListingDatabaseOptions {
+        self.options
     }
 }
 
@@ -164,7 +253,7 @@ impl ListingDatabase {
         let uri = &request.uri;
         let parse_res = url::Url::parse(uri);
 
-        let options = ListingDatabaseOptions::parse_from_map(&request.storage_options)?;
+        let options = ListingDatabaseOptions::parse_from_map(&request.options)?;
 
         // TODO: pass params regardless of OS
         match parse_res {
@@ -225,9 +314,8 @@ impl ListingDatabase {
                 let plain_uri = url.to_string();
 
                 let registry = Arc::new(ObjectStoreRegistry::default());
-                let storage_options = request.storage_options.clone();
                 let os_params = ObjectStoreParams {
-                    storage_options: Some(storage_options.clone()),
+                    storage_options: Some(options.storage_options.clone()),
                     ..Default::default()
                 };
                 let (object_store, base_path) =
@@ -252,7 +340,7 @@ impl ListingDatabase {
                     object_store,
                     store_wrapper: write_store_wrapper,
                     read_consistency_interval: request.read_consistency_interval,
-                    storage_options,
+                    storage_options: options.storage_options,
                     new_table_config: options.new_table_config,
                 })
             }
@@ -321,6 +409,37 @@ impl ListingDatabase {
         }
 
         Ok(uri)
+    }
+
+    async fn drop_tables(&self, names: Vec<String>) -> Result<()> {
+        let object_store_params = ObjectStoreParams {
+            storage_options: Some(self.storage_options.clone()),
+            ..Default::default()
+        };
+        let mut uri = self.uri.clone();
+        if let Some(query_string) = &self.query_string {
+            uri.push_str(&format!("?{}", query_string));
+        }
+        let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params)).await?;
+        for name in names {
+            let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
+            let full_path = self.base_path.child(dir_name.clone());
+
+            commit_handler.delete(&full_path).await?;
+
+            self.object_store
+                .remove_dir_all(full_path.clone())
+                .await
+                .map_err(|err| match err {
+                    // this error is not lance::Error::DatasetNotFound, as the method
+                    // `remove_dir_all` may be used to remove something not be a dataset
+                    lance::Error::NotFound { .. } => Error::TableNotFound {
+                        name: name.to_owned(),
+                    },
+                    _ => Error::from(err),
+                })?;
+        }
+        Ok(())
     }
 }
 
@@ -401,19 +520,12 @@ impl Database for ListingDatabase {
             write_params.mode = WriteMode::Overwrite;
         }
 
-        let data = match request.data {
-            CreateTableData::Data(data) => data,
-            CreateTableData::Empty(table_definition) => {
-                let schema = table_definition.schema.clone();
-                Box::new(RecordBatchIterator::new(vec![], schema))
-            }
-        };
-        let data_schema = data.schema();
+        let data_schema = request.data.arrow_schema();
 
         match NativeTable::create(
             &table_uri,
             &request.name,
-            data,
+            request.data,
             self.store_wrapper.clone(),
             Some(write_params),
             self.read_consistency_interval,
@@ -500,40 +612,12 @@ impl Database for ListingDatabase {
     }
 
     async fn drop_table(&self, name: &str) -> Result<()> {
-        let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
-        let full_path = self.base_path.child(dir_name.clone());
-        self.object_store
-            .remove_dir_all(full_path.clone())
-            .await
-            .map_err(|err| match err {
-                // this error is not lance::Error::DatasetNotFound,
-                // as the method `remove_dir_all` may be used to remove something not be a dataset
-                lance::Error::NotFound { .. } => Error::TableNotFound {
-                    name: name.to_owned(),
-                },
-                _ => Error::from(err),
-            })?;
-
-        let object_store_params = ObjectStoreParams {
-            storage_options: Some(self.storage_options.clone()),
-            ..Default::default()
-        };
-        let mut uri = self.uri.clone();
-        if let Some(query_string) = &self.query_string {
-            uri.push_str(&format!("?{}", query_string));
-        }
-        let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params))
-            .await
-            .unwrap();
-        commit_handler.delete(&full_path).await.unwrap();
-        Ok(())
+        self.drop_tables(vec![name.to_string()]).await
     }
 
     async fn drop_all_tables(&self) -> Result<()> {
-        self.object_store
-            .remove_dir_all(self.base_path.clone())
-            .await?;
-        Ok(())
+        let tables = self.table_names(TableNamesRequest::default()).await?;
+        self.drop_tables(tables).await
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

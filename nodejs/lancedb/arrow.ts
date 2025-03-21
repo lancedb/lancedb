@@ -8,7 +8,11 @@ import {
   Bool,
   BufferType,
   DataType,
+  DateUnit,
+  Date_,
+  Decimal,
   Dictionary,
+  Duration,
   Field,
   FixedSizeBinary,
   FixedSizeList,
@@ -21,19 +25,22 @@ import {
   LargeBinary,
   List,
   Null,
+  Precision,
   RecordBatch,
   RecordBatchFileReader,
   RecordBatchFileWriter,
   RecordBatchStreamWriter,
   Schema,
   Struct,
+  Timestamp,
+  Type,
   Utf8,
   Vector,
   makeVector as arrowMakeVector,
+  vectorFromArray as badVectorFromArray,
   makeBuilder,
   makeData,
   makeTable,
-  vectorFromArray,
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
@@ -176,6 +183,21 @@ export class VectorColumnOptions {
 
   constructor(values?: Partial<VectorColumnOptions>) {
     Object.assign(this, values);
+  }
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: skip
+function vectorFromArray(data: any, type?: DataType) {
+  // Workaround for: https://github.com/apache/arrow/issues/45862
+  // If FSL type with float
+  if (DataType.isFixedSizeList(type) && DataType.isFloat(type.valueType)) {
+    const extendedData = [...data, new Array(type.listSize).fill(0.0)];
+    const array = badVectorFromArray(extendedData, type);
+    return array.slice(0, data.length);
+  } else if (type === undefined) {
+    return badVectorFromArray(data);
+  } else {
+    return badVectorFromArray(data, type);
   }
 }
 
@@ -1169,4 +1191,138 @@ function validateSchemaEmbeddings(
   }
 
   return new Schema(fields, schema.metadata);
+}
+
+interface JsonDataType {
+  type: string;
+  fields?: JsonField[];
+  length?: number;
+}
+
+interface JsonField {
+  name: string;
+  type: JsonDataType;
+  nullable: boolean;
+  metadata: Map<string, string>;
+}
+
+// Matches format of https://github.com/lancedb/lance/blob/main/rust/lance/src/arrow/json.rs
+export function dataTypeToJson(dataType: DataType): JsonDataType {
+  switch (dataType.typeId) {
+    // For primitives, matches https://github.com/lancedb/lance/blob/e12bb9eff2a52f753668d4b62c52e4d72b10d294/rust/lance-core/src/datatypes.rs#L185
+    case Type.Null:
+      return { type: "null" };
+    case Type.Bool:
+      return { type: "bool" };
+    case Type.Int8:
+      return { type: "int8" };
+    case Type.Int16:
+      return { type: "int16" };
+    case Type.Int32:
+      return { type: "int32" };
+    case Type.Int64:
+      return { type: "int64" };
+    case Type.Uint8:
+      return { type: "uint8" };
+    case Type.Uint16:
+      return { type: "uint16" };
+    case Type.Uint32:
+      return { type: "uint32" };
+    case Type.Uint64:
+      return { type: "uint64" };
+    case Type.Int: {
+      const bitWidth = (dataType as Int).bitWidth;
+      const signed = (dataType as Int).isSigned;
+      const prefix = signed ? "" : "u";
+      return { type: `${prefix}int${bitWidth}` };
+    }
+    case Type.Float: {
+      switch ((dataType as Float).precision) {
+        case Precision.HALF:
+          return { type: "halffloat" };
+        case Precision.SINGLE:
+          return { type: "float" };
+        case Precision.DOUBLE:
+          return { type: "double" };
+      }
+      throw Error("Unsupported float precision");
+    }
+    case Type.Float16:
+      return { type: "halffloat" };
+    case Type.Float32:
+      return { type: "float" };
+    case Type.Float64:
+      return { type: "double" };
+    case Type.Utf8:
+      return { type: "string" };
+    case Type.Binary:
+      return { type: "binary" };
+    case Type.LargeUtf8:
+      return { type: "large_string" };
+    case Type.LargeBinary:
+      return { type: "large_binary" };
+    case Type.List:
+      return {
+        type: "list",
+        fields: [fieldToJson((dataType as List).children[0])],
+      };
+    case Type.FixedSizeList: {
+      const fixedSizeList = dataType as FixedSizeList;
+      return {
+        type: "fixed_size_list",
+        fields: [fieldToJson(fixedSizeList.children[0])],
+        length: fixedSizeList.listSize,
+      };
+    }
+    case Type.Struct:
+      return {
+        type: "struct",
+        fields: (dataType as Struct).children.map(fieldToJson),
+      };
+    case Type.Date: {
+      const unit = (dataType as Date_).unit;
+      return {
+        type: unit === DateUnit.DAY ? "date32:day" : "date64:ms",
+      };
+    }
+    case Type.Timestamp: {
+      const timestamp = dataType as Timestamp;
+      const timezone = timestamp.timezone || "-";
+      return {
+        type: `timestamp:${timestamp.unit}:${timezone}`,
+      };
+    }
+    case Type.Decimal: {
+      const decimal = dataType as Decimal;
+      return {
+        type: `decimal:${decimal.bitWidth}:${decimal.precision}:${decimal.scale}`,
+      };
+    }
+    case Type.Duration: {
+      const duration = dataType as Duration;
+      return { type: `duration:${duration.unit}` };
+    }
+    case Type.FixedSizeBinary: {
+      const byteWidth = (dataType as FixedSizeBinary).byteWidth;
+      return { type: `fixed_size_binary:${byteWidth}` };
+    }
+    case Type.Dictionary: {
+      const dict = dataType as Dictionary;
+      const indexType = dataTypeToJson(dict.indices);
+      const valueType = dataTypeToJson(dict.valueType);
+      return {
+        type: `dict:${valueType.type}:${indexType.type}:false`,
+      };
+    }
+  }
+  throw new Error("Unsupported data type");
+}
+
+function fieldToJson(field: Field): JsonField {
+  return {
+    name: field.name,
+    type: dataTypeToJson(field.type),
+    nullable: field.nullable,
+    metadata: field.metadata,
+  };
 }

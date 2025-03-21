@@ -9,6 +9,7 @@ import json
 import threading
 from unittest.mock import MagicMock
 import uuid
+from packaging.version import Version
 
 import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
@@ -277,11 +278,12 @@ def test_table_create_indices():
 
 
 @contextlib.contextmanager
-def query_test_table(query_handler):
+def query_test_table(query_handler, *, server_version=Version("0.1.0")):
     def handler(request):
         if request.path == "/v1/table/test/describe/":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
+            request.send_header("phalanx-version", str(server_version))
             request.end_headers()
             request.wfile.write(b"{}")
         elif request.path == "/v1/table/test/query/":
@@ -313,7 +315,7 @@ def test_query_sync_minimal():
         assert body == {
             "distance_type": "l2",
             "k": 10,
-            "prefilter": False,
+            "prefilter": True,
             "refine_factor": None,
             "lower_bound": None,
             "upper_bound": None,
@@ -338,7 +340,7 @@ def test_query_sync_empty_query():
             "filter": "true",
             "vector": [],
             "columns": ["id"],
-            "prefilter": False,
+            "prefilter": True,
             "version": None,
         }
 
@@ -388,17 +390,25 @@ def test_query_sync_maximal():
         )
 
 
-def test_query_sync_multiple_vectors():
+@pytest.mark.parametrize("server_version", [Version("0.1.0"), Version("0.2.0")])
+def test_query_sync_batch_queries(server_version):
     def handler(body):
         # TODO: we will add the ability to get the server version,
         # so that we can decide how to perform batch quires.
         vectors = body["vector"]
-        res = []
-        for i, vector in enumerate(vectors):
-            res.append({"id": 1, "query_index": i})
-        return pa.Table.from_pylist(res)
+        if server_version >= Version(
+            "0.2.0"
+        ):  # we can handle batch queries in single request since 0.2.0
+            assert len(vectors) == 2
+            res = []
+            for i, vector in enumerate(vectors):
+                res.append({"id": 1, "query_index": i})
+            return pa.Table.from_pylist(res)
+        else:
+            assert len(vectors) == 3  # matching dim
+            return pa.table({"id": [1]})
 
-    with query_test_table(handler) as table:
+    with query_test_table(handler, server_version=server_version) as table:
         results = table.search([[1, 2, 3], [4, 5, 6]]).limit(1).to_list()
         assert len(results) == 2
         results.sort(key=lambda x: x["query_index"])
@@ -468,7 +478,7 @@ def test_query_sync_hybrid():
             assert body == {
                 "distance_type": "l2",
                 "k": 42,
-                "prefilter": False,
+                "prefilter": True,
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "nprobes": 20,

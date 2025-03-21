@@ -171,7 +171,7 @@ paths:
                 distance_type:
                   type: string
                   description: |
-                    The distance metric to use for search. L2, Cosine, Dot and Hamming are supported. Default is L2.
+                    The distance metric to use for search. l2, Cosine, Dot and Hamming are supported. Default is l2.
                 bypass_vector_index:
                   type: boolean
                   description: |
@@ -450,7 +450,7 @@ paths:
                   type: string
                   nullable: false
                   description: |
-                    The metric type to use for the index. L2, Cosine, Dot are supported.
+                    The metric type to use for the index. l2, Cosine, Dot are supported.
                 index_type:
                   type: string
       responses:

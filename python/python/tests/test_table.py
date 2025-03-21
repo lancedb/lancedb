@@ -8,13 +8,13 @@ from time import sleep
 from typing import List
 from unittest.mock import patch
 
-import lance
 import lancedb
 from lancedb.index import HnswPq, HnswSq, IvfPq
 import numpy as np
 import pandas as pd
 import polars as pl
 import pyarrow as pa
+import pyarrow.dataset
 import pytest
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import AsyncConnection, DBConnection
@@ -231,6 +231,59 @@ def test_add(mem_db: DBConnection):
     _add(table, schema)
 
 
+def test_add_struct(mem_db: DBConnection):
+    # https://github.com/lancedb/lancedb/issues/2114
+    schema = pa.schema(
+        [
+            (
+                "stuff",
+                pa.struct(
+                    [
+                        ("b", pa.int64()),
+                        ("a", pa.int64()),
+                        # TODO: also test subset of nested.
+                    ]
+                ),
+            )
+        ]
+    )
+
+    # Create test data with fields in same order
+    data = [{"stuff": {"b": 1, "a": 2}}]
+    # pa.Table.from_pylist() will reorder the fields. We need to make sure
+    # we fix the field order later, before casting.
+    table = mem_db.create_table("test", schema=schema)
+    table.add(data)
+
+    data = [{"stuff": {"b": 4}}]
+    table.add(data)
+
+    expected = pa.table(
+        {
+            "stuff": [{"b": 1, "a": 2}, {"b": 4, "a": None}],
+        },
+        schema=schema,
+    )
+    assert table.to_arrow() == expected
+
+    # Also check struct in list
+    schema = pa.schema(
+        {
+            "s_list": pa.list_(
+                pa.struct(
+                    [
+                        ("b", pa.int64()),
+                        ("a", pa.int64()),
+                    ]
+                )
+            )
+        }
+    )
+    data = [{"s_list": [{"b": 1, "a": 2}, {"b": 4}]}]
+    table = mem_db.create_table("test", schema=schema)
+    table.add(data)
+
+
 def test_add_subschema(mem_db: DBConnection):
     schema = pa.schema(
         [
@@ -324,7 +377,10 @@ def test_add_nullability(mem_db: DBConnection):
     # We can't add nullable schema if it contains nulls
     with pytest.raises(
         Exception,
-        match="Casting field 'vector' with null values to non-nullable",
+        match=(
+            "The field `vector` contained null values even though "
+            "the field is marked non-null in the schema"
+        ),
     ):
         table.add(data)
 
@@ -480,7 +536,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
     )
 
     table.create_index(
-        metric="L2",
+        metric="l2",
         num_partitions=256,
         num_sub_vectors=96,
         vector_column_name="vector",
@@ -489,7 +545,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_bits=4,
     )
     expected_config = IvfPq(
-        distance_type="L2",
+        distance_type="l2",
         num_partitions=256,
         num_sub_vectors=96,
         num_bits=4,
@@ -594,6 +650,9 @@ def test_restore(mem_db: DBConnection):
 
 
 def test_merge(tmp_db: DBConnection, tmp_path):
+    pytest.importorskip("lance")
+    import lance
+
     table = tmp_db.create_table(
         "my_table",
         schema=pa.schema(
@@ -1025,13 +1084,13 @@ def test_empty_query(mem_db: DBConnection):
 
     table = mem_db.create_table("my_table2", data=[{"id": i} for i in range(100)])
     df = table.search().select(["id"]).to_pandas()
-    assert len(df) == 10
+    assert len(df) == 100
     # None is the same as default
     df = table.search().select(["id"]).limit(None).to_pandas()
-    assert len(df) == 10
+    assert len(df) == 100
     # invalid limist is the same as None, wihch is the same as default
     df = table.search().select(["id"]).limit(-1).to_pandas()
-    assert len(df) == 10
+    assert len(df) == 100
     # valid limit should work
     df = table.search().select(["id"]).limit(42).to_pandas()
     assert len(df) == 42
@@ -1089,6 +1148,7 @@ def test_search_with_schema_inf_multiple_vector(mem_db: DBConnection):
 
 
 def test_compact_cleanup(tmp_db: DBConnection):
+    pytest.importorskip("lance")
     table = tmp_db.create_table(
         "my_table",
         data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
@@ -1166,6 +1226,7 @@ def setup_hybrid_search_table(db: DBConnection, embedding_func):
 def test_hybrid_search(tmp_db: DBConnection):
     # This test uses an FTS index
     pytest.importorskip("lancedb.fts")
+    pytest.importorskip("lance")
 
     table, MyTable, emb = setup_hybrid_search_table(tmp_db, "test")
 
@@ -1236,8 +1297,9 @@ def test_hybrid_search(tmp_db: DBConnection):
 def test_hybrid_search_metric_type(tmp_db: DBConnection):
     # This test uses an FTS index
     pytest.importorskip("lancedb.fts")
+    pytest.importorskip("lance")
 
-    # Need to use nonnorm as the embedding function so L2 and dot results
+    # Need to use nonnorm as the embedding function so l2 and dot results
     # are different
     table, _, _ = setup_hybrid_search_table(tmp_db, "nonnorm")
 
@@ -1481,3 +1543,12 @@ async def test_optimize_delete_unverified(tmp_db_async: AsyncConnection, tmp_pat
         cleanup_older_than=timedelta(seconds=0), delete_unverified=True
     )
     assert stats.prune.old_versions_removed == 2
+
+
+def test_replace_field_metadata(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("my_table", data=[{"x": 0}])
+    table.replace_field_metadata("x", {"foo": "bar"})
+    schema = table.schema
+    field = schema[0].metadata
+    assert field == {b"foo": b"bar"}

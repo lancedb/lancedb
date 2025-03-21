@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import deprecation
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -24,16 +25,22 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-import lance
+from . import __version__
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP
-from .dependencies import _check_for_pandas
+from .dependencies import (
+    _check_for_hugging_face,
+    _check_for_lance,
+    _check_for_pandas,
+    lance,
+    pandas as pd,
+    polars as pl,
+)
 import pyarrow as pa
+import pyarrow.dataset
 import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 import numpy as np
-from lance import LanceDataset
-from lance.dependencies import _check_for_hugging_face
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
@@ -58,37 +65,45 @@ from .util import (
     get_uri_scheme,
     infer_vector_column_name,
     join_uri,
-    safe_import_pandas,
-    safe_import_polars,
     value_to_sql,
 )
 from .index import lang_mapping
 
 
 if TYPE_CHECKING:
-    from ._lancedb import Table as LanceDBTable, OptimizeStats, CompactionStats
+    from ._lancedb import (
+        Table as LanceDBTable,
+        OptimizeStats,
+        CleanupStats,
+        CompactionStats,
+    )
     from .db import LanceDBConnection
     from .index import IndexConfig
-    from lance.dataset import CleanupStats, ReaderLike
     import pandas
     import PIL
-
-pd = safe_import_pandas()
-pl = safe_import_polars()
-
-QueryType = Literal["vector", "fts", "hybrid", "auto"]
+    from .types import (
+        QueryType,
+        OnBadVectorsType,
+        AddMode,
+        CreateMode,
+        VectorIndexType,
+        ScalarIndexType,
+        BaseTokenizerType,
+        DistanceType,
+    )
 
 
 def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
-    if _check_for_hugging_face(data):
-        # Huggingface datasets
-        from lance.dependencies import datasets
+    from lancedb.dependencies import datasets
 
+    if _check_for_hugging_face(data):
         if isinstance(data, datasets.Dataset):
             schema = data.features.arrow_schema
             return pa.RecordBatchReader.from_batches(schema, data.data.to_batches())
         elif isinstance(data, datasets.dataset_dict.DatasetDict):
-            schema = _schema_from_hf(data, schema)
+            schema = _schema_from_hf(data, None)
+            if "split" not in schema.names:
+                schema = schema.append(pa.field("split", pa.string()))
             return pa.RecordBatchReader.from_batches(
                 schema, _to_batches_with_split(data)
             )
@@ -118,7 +133,7 @@ def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
         return data.to_reader()
     elif isinstance(data, pa.RecordBatch):
         return pa.RecordBatchReader.from_batches(data.schema, [data])
-    elif isinstance(data, LanceDataset):
+    elif _check_for_lance(data) and isinstance(data, lance.LanceDataset):
         return data.scanner().to_reader()
     elif isinstance(data, pa.dataset.Dataset):
         return data.scanner().to_reader()
@@ -175,7 +190,7 @@ def _sanitize_data(
     data: "DATA",
     target_schema: Optional[pa.Schema] = None,
     metadata: Optional[dict] = None,  # embedding metadata
-    on_bad_vectors: Literal["error", "drop", "fill", "null"] = "error",
+    on_bad_vectors: OnBadVectorsType = "error",
     fill_value: float = 0.0,
     *,
     allow_subschema: bool = False,
@@ -233,7 +248,6 @@ def _sanitize_data(
         target_schema = target_schema.with_metadata(new_metadata)
 
     _validate_schema(target_schema)
-
     reader = _cast_to_target_schema(reader, target_schema, allow_subschema)
 
     return reader
@@ -251,12 +265,7 @@ def _cast_to_target_schema(
         # Fast path when the schemas are already the same
         return reader
 
-    fields = []
-    for field in reader.schema:
-        target_field = target_schema.field(field.name)
-        if target_field is None:
-            raise ValueError(f"Field {field.name} not found in target schema")
-        fields.append(target_field)
+    fields = _align_field_types(list(iter(reader.schema)), list(iter(target_schema)))
     reordered_schema = pa.schema(fields, metadata=target_schema.metadata)
     if not allow_subschema and len(reordered_schema) != len(target_schema):
         raise ValueError(
@@ -275,6 +284,53 @@ def _cast_to_target_schema(
             yield pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()[0]
 
     return pa.RecordBatchReader.from_batches(reordered_schema, gen())
+
+
+def _align_field_types(
+    fields: List[pa.Field],
+    target_fields: List[pa.Field],
+) -> List[pa.Field]:
+    """
+    Apply the data types from the target_fields to the fields.
+    """
+    new_fields = []
+    for field in fields:
+        target_field = next((f for f in target_fields if f.name == field.name), None)
+        if target_field is None:
+            raise ValueError(f"Field '{field.name}' not found in target schema")
+        if pa.types.is_struct(target_field.type):
+            new_type = pa.struct(
+                _align_field_types(
+                    field.type.fields,
+                    target_field.type.fields,
+                )
+            )
+        elif pa.types.is_list(target_field.type):
+            new_type = pa.list_(
+                _align_field_types(
+                    [field.type.value_field],
+                    [target_field.type.value_field],
+                )[0]
+            )
+        elif pa.types.is_large_list(target_field.type):
+            new_type = pa.large_list(
+                _align_field_types(
+                    [field.type.value_field],
+                    [target_field.type.value_field],
+                )[0]
+            )
+        elif pa.types.is_fixed_size_list(target_field.type):
+            new_type = pa.list_(
+                _align_field_types(
+                    [field.type.value_field],
+                    [target_field.type.value_field],
+                )[0],
+                target_field.type.list_size,
+            )
+        else:
+            new_type = target_field.type
+        new_fields.append(pa.field(field.name, new_type, field.nullable))
+    return new_fields
 
 
 def _infer_subschema(
@@ -321,7 +377,7 @@ def sanitize_create_table(
     data,
     schema: Union[pa.Schema, LanceModel],
     metadata=None,
-    on_bad_vectors: str = "error",
+    on_bad_vectors: OnBadVectorsType = "error",
     fill_value: float = 0.0,
 ):
     if inspect.isclass(schema) and issubclass(schema, LanceModel):
@@ -361,7 +417,7 @@ def sanitize_create_table(
     return data, schema
 
 
-def _schema_from_hf(data, schema):
+def _schema_from_hf(data, schema) -> pa.Schema:
     """
     Extract pyarrow schema from HuggingFace DatasetDict
     and validate that they're all the same schema between
@@ -565,7 +621,7 @@ class Table(ABC):
 
     def create_index(
         self,
-        metric="L2",
+        metric="l2",
         num_partitions=256,
         num_sub_vectors=96,
         vector_column_name: str = VECTOR_COLUMN_NAME,
@@ -573,9 +629,7 @@ class Table(ABC):
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         *,
-        index_type: Literal[
-            "IVF_FLAT", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
-        ] = "IVF_PQ",
+        index_type: VectorIndexType = "IVF_PQ",
         num_bits: int = 8,
         max_iterations: int = 50,
         sample_rate: int = 256,
@@ -586,10 +640,10 @@ class Table(ABC):
 
         Parameters
         ----------
-        metric: str, default "L2"
+        metric: str, default "l2"
             The distance metric to use when creating the index.
-            Valid values are "L2", "cosine", "dot", or "hamming".
-            L2 is euclidean distance.
+            Valid values are "l2", "cosine", "dot", or "hamming".
+            l2 is euclidean distance.
             Hamming is available only for binary vectors.
         num_partitions: int, default 256
             The number of IVF partitions to use when creating the index.
@@ -640,7 +694,7 @@ class Table(ABC):
         column: str,
         *,
         replace: bool = True,
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
+        index_type: ScalarIndexType = "BTREE",
     ):
         """Create a scalar index on a column.
 
@@ -705,7 +759,7 @@ class Table(ABC):
         tokenizer_name: Optional[str] = None,
         with_position: bool = True,
         # tokenizer configs:
-        base_tokenizer: Literal["simple", "raw", "whitespace"] = "simple",
+        base_tokenizer: BaseTokenizerType = "simple",
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
@@ -774,8 +828,8 @@ class Table(ABC):
     def add(
         self,
         data: DATA,
-        mode: str = "append",
-        on_bad_vectors: str = "error",
+        mode: AddMode = "append",
+        on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
     ):
         """Add more data to the [Table](Table).
@@ -875,7 +929,8 @@ class Table(ABC):
         of the given query vector. We currently support [vector search][search]
         and [full-text search][experimental-full-text-search].
 
-        All query options are defined in [Query][lancedb.query.Query].
+        All query options are defined in
+        [LanceQueryBuilder][lancedb.query.LanceQueryBuilder].
 
         Examples
         --------
@@ -962,7 +1017,7 @@ class Table(ABC):
         self,
         merge: LanceMergeInsertBuilder,
         new_data: DATA,
-        on_bad_vectors: str,
+        on_bad_vectors: OnBadVectorsType,
         fill_value: float,
     ): ...
 
@@ -1079,7 +1134,7 @@ class Table(ABC):
         older_than: Optional[timedelta] = None,
         *,
         delete_unverified: bool = False,
-    ) -> CleanupStats:
+    ) -> "CleanupStats":
         """
         Clean up old versions of the table, freeing disk space.
 
@@ -1139,6 +1194,7 @@ class Table(ABC):
         *,
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
+        retrain: bool = False,
     ):
         """
         Optimize the on-disk data and indices for better performance.
@@ -1162,6 +1218,11 @@ class Table(ABC):
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+        retrain: bool, default False
+            If True, retrain the vector indices, this would refine the IVF clustering
+            and quantization, which may improve the search accuracy. It's faster than
+            re-creating the index from scratch, so it's recommended to try this first,
+            when the data distribution has changed significantly.
 
         Experimental API
         ----------------
@@ -1388,8 +1449,16 @@ class LanceTable(Table):
         # Cacheable since it's deterministic
         return _table_path(self._conn.uri, self.name)
 
-    def to_lance(self, **kwargs) -> LanceDataset:
+    def to_lance(self, **kwargs) -> lance.LanceDataset:
         """Return the LanceDataset backing this table."""
+        try:
+            import lance
+        except ImportError:
+            raise ImportError(
+                "The lance library is required to use this function. "
+                "Please install with `pip install pylance`."
+            )
+
         return lance.dataset(
             self._dataset_path,
             version=self.version,
@@ -1566,10 +1635,10 @@ class LanceTable(Table):
 
     def create_index(
         self,
-        metric="L2",
+        metric: DistanceType = "l2",
         num_partitions=None,
         num_sub_vectors=None,
-        vector_column_name=VECTOR_COLUMN_NAME,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
@@ -1655,7 +1724,7 @@ class LanceTable(Table):
         column: str,
         *,
         replace: bool = True,
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
+        index_type: ScalarIndexType = "BTREE",
     ):
         if index_type == "BTREE":
             config = BTree()
@@ -1680,7 +1749,7 @@ class LanceTable(Table):
         tokenizer_name: Optional[str] = None,
         with_position: bool = True,
         # tokenizer configs:
-        base_tokenizer: str = "simple",
+        base_tokenizer: BaseTokenizerType = "simple",
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
@@ -1814,8 +1883,8 @@ class LanceTable(Table):
     def add(
         self,
         data: DATA,
-        mode: str = "append",
-        on_bad_vectors: str = "error",
+        mode: AddMode = "append",
+        on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
     ):
         """Add data to the table.
@@ -1849,7 +1918,7 @@ class LanceTable(Table):
 
     def merge(
         self,
-        other_table: Union[LanceTable, ReaderLike],
+        other_table: Union[LanceTable, DATA],
         left_on: str,
         right_on: Optional[str] = None,
         schema: Optional[Union[pa.Schema, LanceModel]] = None,
@@ -1899,12 +1968,13 @@ class LanceTable(Table):
         1  2  b  e
         2  3  c  f
         """
-        if isinstance(schema, LanceModel):
-            schema = schema.to_arrow_schema()
         if isinstance(other_table, LanceTable):
             other_table = other_table.to_lance()
-        if isinstance(other_table, LanceDataset):
-            other_table = other_table.to_table()
+        else:
+            other_table = _sanitize_data(
+                other_table,
+                schema,
+            )
         self.to_lance().merge(
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
@@ -2052,7 +2122,7 @@ class LanceTable(Table):
             query_type,
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
-            fts_columns=fts_columns,
+            fts_columns=fts_columns or [],
         )
 
     @classmethod
@@ -2062,13 +2132,13 @@ class LanceTable(Table):
         name: str,
         data: Optional[DATA] = None,
         schema: Optional[pa.Schema] = None,
-        mode: Literal["create", "overwrite"] = "create",
+        mode: CreateMode = "create",
         exist_ok: bool = False,
-        on_bad_vectors: str = "error",
+        on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        storage_options: Optional[Dict[str, str]] = None,
+        storage_options: Optional[Dict[str, str | bool]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ):
@@ -2216,7 +2286,19 @@ class LanceTable(Table):
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
-        return LOOP.run(self._table._execute_query(query, batch_size))
+        async_iter = LOOP.run(self._table._execute_query(query, batch_size))
+
+        def iter_sync():
+            try:
+                while True:
+                    yield LOOP.run(async_iter.__anext__())
+            except StopAsyncIteration:
+                return
+
+        return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
+
+    def _explain_plan(self, query: Query) -> str:
+        return LOOP.run(self._table._explain_plan(query))
 
     def _explain_plan(
         self, query: Query, batch_size: Optional[int] = None
@@ -2227,17 +2309,22 @@ class LanceTable(Table):
         self,
         merge: LanceMergeInsertBuilder,
         new_data: DATA,
-        on_bad_vectors: str,
+        on_bad_vectors: OnBadVectorsType,
         fill_value: float,
     ):
         LOOP.run(self._table._do_merge(merge, new_data, on_bad_vectors, fill_value))
 
+    @deprecation.deprecated(
+        deprecated_in="0.21.0",
+        current_version=__version__,
+        details="Use `Table.optimize` instead.",
+    )
     def cleanup_old_versions(
         self,
         older_than: Optional[timedelta] = None,
         *,
         delete_unverified: bool = False,
-    ) -> CleanupStats:
+    ) -> "CleanupStats":
         """
         Clean up old versions of the table, freeing disk space.
 
@@ -2262,6 +2349,11 @@ class LanceTable(Table):
             older_than, delete_unverified=delete_unverified
         )
 
+    @deprecation.deprecated(
+        deprecated_in="0.21.0",
+        current_version=__version__,
+        details="Use `Table.optimize` instead.",
+    )
     def compact_files(self, *args, **kwargs) -> CompactionStats:
         """
         Run the compaction process on the table.
@@ -2282,6 +2374,7 @@ class LanceTable(Table):
         *,
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
+        retrain: bool = False,
     ):
         """
         Optimize the on-disk data and indices for better performance.
@@ -2305,6 +2398,11 @@ class LanceTable(Table):
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+        retrain: bool, default False
+            If True, retrain the vector indices, this would refine the IVF clustering
+            and quantization, which may improve the search accuracy. It's faster than
+            re-creating the index from scratch, so it's recommended to try this first,
+            when the data distribution has changed significantly.
 
         Experimental API
         ----------------
@@ -2328,6 +2426,7 @@ class LanceTable(Table):
             self._table.optimize(
                 cleanup_older_than=cleanup_older_than,
                 delete_unverified=delete_unverified,
+                retrain=retrain,
             )
         )
 
@@ -2392,6 +2491,19 @@ class LanceTable(Table):
         to check if the table is already using the new path style.
         """
         LOOP.run(self._table.migrate_v2_manifest_paths())
+
+    def replace_field_metadata(self, field_name: str, new_metadata: Dict[str, str]):
+        """
+        Replace the metadata of a field in the schema
+
+        Parameters
+        ----------
+        field_name: str
+            The name of the field to replace the metadata for
+        new_metadata: dict
+            The new metadata to set
+        """
+        LOOP.run(self._table.replace_field_metadata(field_name, new_metadata))
 
 
 def _handle_bad_vectors(
@@ -2855,7 +2967,7 @@ class AsyncTable:
         data: DATA,
         *,
         mode: Optional[Literal["append", "overwrite"]] = "append",
-        on_bad_vectors: Optional[str] = None,
+        on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
     ):
         """Add more data to the [Table](Table).
@@ -2961,17 +3073,17 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[Union[str]] = None,
+        query: Optional[str] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> Union[AsyncHybridQuery | AsyncFTSQuery | AsyncVectorQuery]: ...
+    ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]: ...
 
     @overload
     async def search(
         self,
-        query: Optional[Union[str]] = None,
+        query: Optional[str] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["hybrid"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -3015,7 +3127,7 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> AsyncQuery:
+    ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
         and [full-text search][experimental-full-text-search].
@@ -3177,12 +3289,12 @@ class AsyncTable:
                 builder = builder.column(vector_column_name)
             return builder
         elif query_type == "fts":
-            return self.query().nearest_to_text(query, columns=fts_columns or [])
+            return self.query().nearest_to_text(query, columns=fts_columns)
         elif query_type == "hybrid":
             builder = self.query().nearest_to(vector_query)
             if vector_column_name:
                 builder = builder.column(vector_column_name)
-            return builder.nearest_to_text(query, columns=fts_columns or [])
+            return builder.nearest_to_text(query, columns=fts_columns)
         else:
             raise ValueError(f"Unknown query type: '{query_type}'")
 
@@ -3199,14 +3311,13 @@ class AsyncTable:
         """
         return self.query().nearest_to(query_vector)
 
-    async def _execute_query(
-        self, query: Query, batch_size: Optional[int] = None
-    ) -> pa.RecordBatchReader:
-        # The sync remote table calls into this method, so we need to map the
-        # query to the async version of the query and run that here. This is only
-        # used for that code path right now.
-        async_query = self.query().limit(query.k)
-        if query.offset > 0:
+    def _sync_query_to_async(
+        self, query: Query
+    ) -> AsyncHybridQuery | AsyncFTSQuery | AsyncVectorQuery | AsyncQuery:
+        async_query = self.query()
+        if query.limit is not None:
+            async_query = async_query.limit(query.limit)
+        if query.offset is not None:
             async_query = async_query.offset(query.offset)
         if query.columns:
             async_query = async_query.select(query.columns)
@@ -3218,35 +3329,49 @@ class AsyncTable:
             async_query = async_query.with_row_id()
 
         if query.vector:
-            # we need the schema to get the vector column type
-            # to determine whether the vectors is batch queries or not
-            async_query = (
-                async_query.nearest_to(query.vector)
-                .distance_type(query.metric)
-                .nprobes(query.nprobes)
-                .distance_range(query.lower_bound, query.upper_bound)
+            async_query = async_query.nearest_to(query.vector).distance_range(
+                query.lower_bound, query.upper_bound
             )
-            if query.refine_factor:
+            if query.distance_type is not None:
+                async_query = async_query.distance_type(query.distance_type)
+            if query.nprobes is not None:
+                async_query = async_query.nprobes(query.nprobes)
+            if query.refine_factor is not None:
                 async_query = async_query.refine_factor(query.refine_factor)
             if query.vector_column:
                 async_query = async_query.column(query.vector_column)
             if query.ef:
                 async_query = async_query.ef(query.ef)
-            if not query.use_index:
+            if query.bypass_vector_index:
                 async_query = async_query.bypass_vector_index()
 
-        if not query.prefilter:
+        if query.postfilter:
             async_query = async_query.postfilter()
 
-        if isinstance(query.full_text_query, str):
-            async_query = async_query.nearest_to_text(query.full_text_query)
-        elif isinstance(query.full_text_query, dict):
-            fts_query = query.full_text_query["query"]
-            fts_columns = query.full_text_query.get("columns", []) or []
-            async_query = async_query.nearest_to_text(fts_query, columns=fts_columns)
+        if query.full_text_query:
+            async_query = async_query.nearest_to_text(
+                query.full_text_query.query, query.full_text_query.columns
+            )
+            if query.full_text_query.limit is not None:
+                async_query = async_query.limit(query.full_text_query.limit)
 
-        table = await async_query.to_arrow()
-        return table.to_reader()
+        return async_query
+
+    async def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
+        # The sync table calls into this method, so we need to map the
+        # query to the async version of the query and run that here. This is only
+        # used for that code path right now.
+
+        async_query = self._sync_query_to_async(query)
+
+        return await async_query.to_batches(max_batch_length=batch_size)
+
+    async def _explain_plan(self, query: Query) -> str:
+        # This method is used by the sync table
+        async_query = self._sync_query_to_async(query)
+        return await async_query.explain_plan()
 
 
     async def _explain_plan(
@@ -3301,7 +3426,7 @@ class AsyncTable:
         self,
         merge: LanceMergeInsertBuilder,
         new_data: DATA,
-        on_bad_vectors: str,
+        on_bad_vectors: OnBadVectorsType,
         fill_value: float,
     ):
         schema = await self.schema()
@@ -3564,6 +3689,7 @@ class AsyncTable:
         *,
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
+        retrain=False,
     ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
@@ -3587,6 +3713,11 @@ class AsyncTable:
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+        retrain: bool, default False
+            If True, retrain the vector indices, this would refine the IVF clustering
+            and quantization, which may improve the search accuracy. It's faster than
+            re-creating the index from scratch, so it's recommended to try this first,
+            when the data distribution has changed significantly.
 
         Experimental API
         ----------------
@@ -3610,7 +3741,9 @@ class AsyncTable:
         if cleanup_older_than is not None:
             cleanup_since_ms = round(cleanup_older_than.total_seconds() * 1000)
         return await self._inner.optimize(
-            cleanup_since_ms=cleanup_since_ms, delete_unverified=delete_unverified
+            cleanup_since_ms=cleanup_since_ms,
+            delete_unverified=delete_unverified,
+            retrain=retrain,
         )
 
     async def list_indices(self) -> Iterable[IndexConfig]:
@@ -3670,6 +3803,21 @@ class AsyncTable:
         """
         await self._inner.migrate_manifest_paths_v2()
 
+    async def replace_field_metadata(
+        self, field_name: str, new_metadata: dict[str, str]
+    ):
+        """
+        Replace the metadata of a field in the schema
+
+        Parameters
+        ----------
+        field_name: str
+            The name of the field to replace the metadata for
+        new_metadata: dict
+            The new metadata to set
+        """
+        await self._inner.replace_field_metadata(field_name, new_metadata)
+
 
 @dataclass
 class IndexStatistics:
@@ -3688,6 +3836,8 @@ class IndexStatistics:
         The distance type used by the index.
     num_indices: Optional[int]
         The number of parts the index is split into.
+    loss: Optional[float]
+        The KMeans loss for the index, for only vector indices.
     """
 
     num_indexed_rows: int
@@ -3697,6 +3847,7 @@ class IndexStatistics:
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None
+    loss: Optional[float] = None
 
     # This exists for backwards compatibility with an older API, which returned
     # a dictionary instead of a class.

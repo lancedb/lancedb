@@ -10,7 +10,7 @@ Distance metrics type.
 
 - [Cosine](MetricType.md#cosine)
 - [Dot](MetricType.md#dot)
-- [L2](MetricType.md#l2)
+- [l2](MetricType.md#l2)
 
 ## Enumeration Members
 

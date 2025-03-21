@@ -154,7 +154,7 @@ class RemoteTable(Table):
 
     def create_index(
         self,
-        metric="L2",
+        metric="l2",
         vector_column_name: str = VECTOR_COLUMN_NAME,
         index_cache_size: Optional[int] = None,
         num_partitions: Optional[int] = None,
@@ -170,7 +170,7 @@ class RemoteTable(Table):
         Parameters
         ----------
         metric : str
-            The metric to use for the index. Default is "L2".
+            The metric to use for the index. Default is "l2".
         vector_column_name : str
             The name of the vector column. Default is "vector".
 
@@ -193,7 +193,7 @@ class RemoteTable(Table):
         ...     table_name, # doctest: +SKIP
         ...     schema=schema, # doctest: +SKIP
         ... )
-        >>> table.create_index("L2", "vector") # doctest: +SKIP
+        >>> table.create_index("l2", "vector") # doctest: +SKIP
         """
 
         if num_partitions is not None:
@@ -282,7 +282,8 @@ class RemoteTable(Table):
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
 
-        All query options are defined in [Query][lancedb.query.Query].
+        All query options are defined in
+        [LanceVectorQueryBuilder][lancedb.query.LanceVectorQueryBuilder].
 
         Examples
         --------
@@ -353,7 +354,16 @@ class RemoteTable(Table):
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
-        return LOOP.run(self._table._execute_query(query, batch_size=batch_size))
+        async_iter = LOOP.run(self._table._execute_query(query, batch_size=batch_size))
+
+        def iter_sync():
+            try:
+                while True:
+                    yield LOOP.run(async_iter.__anext__())
+            except StopAsyncIteration:
+                return
+
+        return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
 
     def _explain_plan(
         self, query: Query, verbose: bool = False

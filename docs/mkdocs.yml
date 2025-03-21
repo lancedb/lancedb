@@ -124,6 +124,9 @@ nav:
               - Overview: hybrid_search/hybrid_search.md
               - Comparing Rerankers: hybrid_search/eval.md
               - Airbnb financial data example: notebooks/hybrid_search.ipynb
+          - Late interaction with MultiVector search:
+              - Overview: guides/multi-vector.md
+              - Example: notebooks/Multivector_on_LanceDB.ipynb
           - RAG:
               - Vanilla RAG: rag/vanilla_rag.md
               - Multi-head RAG: rag/multi_head_rag.md
@@ -233,13 +236,6 @@ nav:
           - 👾 JavaScript (vectordb): javascript/modules.md
           - 👾 JavaScript (lancedb): js/globals.md
           - 🦀 Rust: https://docs.rs/lancedb/latest/lancedb/
-      - ☁️ LanceDB Cloud:
-          - Overview: cloud/index.md
-          - API reference:
-              - 🐍 Python: python/saas-python.md
-              - 👾 JavaScript: javascript/modules.md
-              - REST API: cloud/rest.md
-          - FAQs: cloud/cloud_faq.md
 
   - Quick start: basic.md
   - Concepts:
@@ -260,6 +256,9 @@ nav:
           - Overview: hybrid_search/hybrid_search.md
           - Comparing Rerankers: hybrid_search/eval.md
           - Airbnb financial data example: notebooks/hybrid_search.ipynb
+      - Late interaction with MultiVector search:
+          - Overview: guides/multi-vector.md
+          - Document search Example: notebooks/Multivector_on_LanceDB.ipynb
       - RAG:
           - Vanilla RAG: rag/vanilla_rag.md
           - Multi-head RAG: rag/multi_head_rag.md
@@ -363,13 +362,6 @@ nav:
       - Javascript (vectordb): javascript/modules.md
       - Javascript (lancedb): js/globals.md
       - Rust: https://docs.rs/lancedb/latest/lancedb/index.html
-  - LanceDB Cloud:
-      - Overview: cloud/index.md
-      - API reference:
-          - 🐍 Python: python/saas-python.md
-          - 👾 JavaScript: javascript/modules.md
-          - REST API: cloud/rest.md
-      - FAQs: cloud/cloud_faq.md
 
 extra_css:
   - styles/global.css
@@ -377,6 +369,7 @@ extra_css:
 
 extra_javascript:
   - "extra_js/init_ask_ai_widget.js"
+  - "extra_js/reo.js"
 
 extra:
   analytics:
