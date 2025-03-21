@@ -1,4 +1,8 @@
 <div align="center">
+  <h2>Public Beta for LanceDB Cloud is now available! <a href="https://cloud.lancedb.com">Try it out!</a> ↗️</h2>
+</div>
+
+<div align="center">
 <p align="center">
 
 <img width="275" alt="LanceDB Logo" src="https://github.com/lancedb/lancedb/assets/5846846/37d7c7ad-c2fd-4f56-9f16-fffb0d17c73a">
