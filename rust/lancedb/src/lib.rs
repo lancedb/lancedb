@@ -20,7 +20,7 @@
 //! LanceDB runs in process, to use it in your Rust project, put the following in your `Cargo.toml`:
 //!
 //! ```shell
-//! cargo install lancedb
+//! cargo add lancedb
 //! ```
 //!
 //! ## Crate Features
