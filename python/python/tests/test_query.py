@@ -31,6 +31,7 @@ from lancedb.query import (
 from lancedb.rerankers.cross_encoder import CrossEncoderReranker
 from lancedb.table import AsyncTable, LanceTable
 from utils import exception_output
+from importlib.util import find_spec
 
 
 @pytest.fixture(scope="module")
@@ -610,9 +611,7 @@ async def test_query_async(table_async: AsyncTable):
 @pytest.mark.slow
 async def test_query_reranked_async(table_async: AsyncTable):
     # CrossEncoderReranker requires torch
-    try:
-        import torch
-    except ImportError:
+    if find_spec("torch") is None:
         pytest.skip("torch not installed")
 
     # FTS with rerank
@@ -851,9 +850,9 @@ def check_set_props(q, **kwargs):
     for k in dict(q):
         if not k.startswith("_"):
             if k in kwargs:
-                assert kwargs[k] == getattr(q, k), (
-                    f"{k} should be {kwargs[k]} but is {getattr(q, k)}"
-                )
+                assert kwargs[k] == getattr(
+                    q, k
+                ), f"{k} should be {kwargs[k]} but is {getattr(q, k)}"
             else:
                 assert getattr(q, k) is None, f"{k} should be None"
 
