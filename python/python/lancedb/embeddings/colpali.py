@@ -5,7 +5,6 @@
 from functools import lru_cache
 from typing import List, Union, Optional, Any
 import numpy as np
-import requests
 import io
 
 from ..util import attempt_import_or_raise
@@ -190,6 +189,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
         Convert image inputs to PIL Images.
         """
         PIL = attempt_import_or_raise("PIL", "pillow")
+        requests = attempt_import_or_raise("requests", "requests")
         images = self.sanitize_input(images)
         pil_images = []
         try:
