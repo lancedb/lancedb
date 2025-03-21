@@ -21,6 +21,7 @@ import {
   Int64,
   List,
   Schema,
+  Uint8,
   Utf8,
   makeArrowTable,
 } from "../lancedb/arrow";
@@ -738,6 +739,38 @@ describe("When creating an index", () => {
   test("when getting stats on non-existent index", async () => {
     const stats = await tbl.indexStats("some non-existent index");
     expect(stats).toBeUndefined();
+  });
+
+  test("create ivf_flat with binary vectors", async () => {
+    const db = await connect(tmpDir.name);
+    const binarySchema = new Schema([
+      new Field("id", new Int32(), true),
+      new Field("vec", new FixedSizeList(32, new Field("item", new Uint8()))),
+    ]);
+    const tbl = await db.createTable(
+      "binary",
+      makeArrowTable(
+        Array(300)
+          .fill(1)
+          .map((_, i) => ({
+            id: i,
+            vec: Array(32)
+              .fill(1)
+              .map(() => Math.floor(Math.random() * 255)),
+          })),
+        { schema: binarySchema },
+      ),
+    );
+    await tbl.createIndex("vec", {
+      config: Index.ivfFlat({ numPartitions: 10, distanceType: "hamming" }),
+    });
+
+    // query with binary vectors
+    const queryVec = Array(32)
+      .fill(1)
+      .map(() => Math.floor(Math.random() * 255));
+    const rst = await tbl.query().limit(5).nearestTo(queryVec).toArrow();
+    expect(rst.numRows).toBe(5);
   });
 
   // TODO: Move this test to the query API test (making sure we can reject queries
