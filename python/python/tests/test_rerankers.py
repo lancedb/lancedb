@@ -369,14 +369,16 @@ def test_rrf_reranker_distance():
     assert found_match, "No results matched between hybrid and fts search"
 
     # Test for empty fts results
-    fts_results = table.search("abcxyz" * 100, query_type="fts").with_row_id(True).to_list()
+    fts_results = (
+        table.search("abcxyz" * 100, query_type="fts").with_row_id(True).to_list()
+    )
     hybrid_results = (
         table.search(query_type="hybrid")
-       .vector([0.0] * 32)
-       .text("abcxyz" * 100)
-       .with_row_id(True)
-       .rerank(reranker)
-       .to_list()
+        .vector([0.0] * 32)
+        .text("abcxyz" * 100)
+        .with_row_id(True)
+        .rerank(reranker)
+        .to_list()
     )
     assert len(fts_results) == 0
     # confirm if _rowid, _score, _distance & _relevance_score are present in hybrid
