@@ -1005,7 +1005,8 @@ class Table(ABC):
     @abstractmethod
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
-    ) -> pa.RecordBatchReader: ...
+    ) -> pa.RecordBatchReader:
+        ...
 
     @abstractmethod
     def _do_merge(
@@ -1014,7 +1015,8 @@ class Table(ABC):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
-    ): ...
+    ):
+        ...
 
     @abstractmethod
     def delete(self, where: str):
@@ -1998,7 +2000,8 @@ class LanceTable(Table):
         query_type: Literal["vector"] = "vector",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceVectorQueryBuilder: ...
+    ) -> LanceVectorQueryBuilder:
+        ...
 
     @overload
     def search(
@@ -2008,7 +2011,8 @@ class LanceTable(Table):
         query_type: Literal["fts"] = "fts",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceFtsQueryBuilder: ...
+    ) -> LanceFtsQueryBuilder:
+        ...
 
     @overload
     def search(
@@ -2018,7 +2022,8 @@ class LanceTable(Table):
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceHybridQueryBuilder: ...
+    ) -> LanceHybridQueryBuilder:
+        ...
 
     @overload
     def search(
@@ -2028,7 +2033,8 @@ class LanceTable(Table):
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceEmptyQueryBuilder: ...
+    ) -> LanceEmptyQueryBuilder:
+        ...
 
     def search(
         self,
@@ -2210,9 +2216,9 @@ class LanceTable(Table):
             )
             if storage_options is None:
                 storage_options = {}
-            storage_options["new_table_enable_v2_manifest_paths"] = (
-                enable_v2_manifest_paths
-            )
+            storage_options[
+                "new_table_enable_v2_manifest_paths"
+            ] = enable_v2_manifest_paths
 
         self._table = LOOP.run(
             self._conn._conn.create_table(
@@ -3068,7 +3074,8 @@ class AsyncTable:
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]: ...
+    ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
+        ...
 
     @overload
     async def search(
@@ -3078,7 +3085,8 @@ class AsyncTable:
         query_type: Literal["hybrid"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> AsyncHybridQuery: ...
+    ) -> AsyncHybridQuery:
+        ...
 
     @overload
     async def search(
@@ -3088,7 +3096,8 @@ class AsyncTable:
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> AsyncVectorQuery: ...
+    ) -> AsyncVectorQuery:
+        ...
 
     @overload
     async def search(
@@ -3098,7 +3107,8 @@ class AsyncTable:
         query_type: Literal["fts"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> AsyncFTSQuery: ...
+    ) -> AsyncFTSQuery:
+        ...
 
     @overload
     async def search(
@@ -3108,7 +3118,8 @@ class AsyncTable:
         query_type: Literal["vector"] = ...,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> AsyncVectorQuery: ...
+    ) -> AsyncVectorQuery:
+        ...
 
     async def search(
         self,
@@ -3279,12 +3290,12 @@ class AsyncTable:
                 builder = builder.column(vector_column_name)
             return builder
         elif query_type == "fts":
-            return self.query().nearest_to_text(query, columns=fts_columns or [])
+            return self.query().nearest_to_text(query, columns=fts_columns)
         elif query_type == "hybrid":
             builder = self.query().nearest_to(vector_query)
             if vector_column_name:
                 builder = builder.column(vector_column_name)
-            return builder.nearest_to_text(query, columns=fts_columns or [])
+            return builder.nearest_to_text(query, columns=fts_columns)
         else:
             raise ValueError(f"Unknown query type: '{query_type}'")
 

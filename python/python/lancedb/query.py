@@ -2040,7 +2040,7 @@ class AsyncQuery(AsyncQueryBase):
             )
 
     def nearest_to_text(
-        self, query: str, columns: Union[str, List[str]] = []
+        self, query: str, columns: Union[str, List[str], None] = None
     ) -> AsyncFTSQuery:
         """
         Find the documents that are most relevant to the given text query.
@@ -2064,6 +2064,8 @@ class AsyncQuery(AsyncQueryBase):
         """
         if isinstance(columns, str):
             columns = [columns]
+        if columns is None:
+            columns = []
         return AsyncFTSQuery(
             self._inner.nearest_to_text({"query": query, "columns": columns})
         )
@@ -2349,7 +2351,7 @@ class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
         return self
 
     def nearest_to_text(
-        self, query: str, columns: Union[str, List[str]] = []
+        self, query: str, columns: Union[str, List[str], None] = None
     ) -> AsyncHybridQuery:
         """
         Find the documents that are most relevant to the given text query,
@@ -2377,6 +2379,8 @@ class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
         """
         if isinstance(columns, str):
             columns = [columns]
+        if columns is None:
+            columns = []
         return AsyncHybridQuery(
             self._inner.nearest_to_text({"query": query, "columns": columns})
         )
