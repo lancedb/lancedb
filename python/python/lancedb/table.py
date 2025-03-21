@@ -3339,9 +3339,11 @@ class AsyncTable:
             async_query = async_query.postfilter()
 
         if query.full_text_query:
-            async_query = async_query.nearest_to_text(query.full_text_query.query, query.full_text_query.columns)
+            async_query = async_query.nearest_to_text(
+                query.full_text_query.query, query.full_text_query.columns
+            )
             if query.full_text_query.limit is not None:
-                async_query = async_query.limit(query.full_text_query.limit)                
+                async_query = async_query.limit(query.full_text_query.limit)
 
         return async_query
 

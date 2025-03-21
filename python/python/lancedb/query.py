@@ -2076,6 +2076,7 @@ class AsyncFTSQuery(AsyncQueryBase):
         super().__init__(inner)
         self._inner = inner
         self._reranker = None
+
     def get_query(self) -> str:
         return self._inner.get_query()
 
