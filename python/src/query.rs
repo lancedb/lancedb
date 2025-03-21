@@ -64,7 +64,11 @@ impl<'py> IntoPyObject<'py> for PyQueryVectors {
     type Error = PyErr;
 
     fn into_pyobject(self, py: pyo3::Python<'py>) -> PyResult<Self::Output> {
-        let py_objs = self.0.into_iter().map(|v| v.to_data().into_pyarrow(py)).collect::<Result<Vec<_>, _>>()?;
+        let py_objs = self
+            .0
+            .into_iter()
+            .map(|v| v.to_data().into_pyarrow(py))
+            .collect::<Result<Vec<_>, _>>()?;
         PyList::new(py, py_objs)
     }
 }
@@ -95,50 +99,48 @@ pub struct PyQueryRequest {
 impl From<AnyQuery> for PyQueryRequest {
     fn from(query: AnyQuery) -> Self {
         match query {
-            AnyQuery::Query(query_request) => {
-                PyQueryRequest {
-                    limit: query_request.limit,
-                    offset: query_request.offset,
-                    filter: query_request.filter.map(PyQueryFilter),
-                    full_text_search: query_request.full_text_search.map(PyFullTextSearchQuery::from),
-                    select: PySelect(query_request.select),
-                    fast_search: Some(query_request.fast_search),
-                    with_row_id: Some(query_request.with_row_id),
-                    column: None,
-                    query_vector: None,
-                    nprobes: None,
-                    lower_bound: None,
-                    upper_bound: None,
-                    ef: None,
-                    refine_factor: None,
-                    distance_type: None,
-                    bypass_vector_index: None,
-                    postfilter: None,
-                    norm: None,
-                }
-            }
-            AnyQuery::VectorQuery(vector_query) => {
-                PyQueryRequest {
-                    limit: vector_query.base.limit,
-                    offset: vector_query.base.offset,
-                    filter: vector_query.base.filter.map(PyQueryFilter),
-                    full_text_search: None,
-                    select: PySelect(vector_query.base.select),
-                    fast_search: Some(vector_query.base.fast_search),
-                    with_row_id: Some(vector_query.base.with_row_id),
-                    column: vector_query.column,
-                    query_vector: Some(PyQueryVectors(vector_query.query_vector)),
-                    nprobes: Some(vector_query.nprobes),
-                    lower_bound: vector_query.lower_bound,
-                    upper_bound: vector_query.upper_bound,
-                    ef: vector_query.ef,
-                    refine_factor: vector_query.refine_factor,
-                    distance_type: vector_query.distance_type.map(|d| d.to_string()),
-                    bypass_vector_index: Some(!vector_query.use_index),
-                    postfilter: Some(!vector_query.base.prefilter),
-                    norm: vector_query.base.norm.map(|n| n.to_string()),
-                }
-            }
+            AnyQuery::Query(query_request) => PyQueryRequest {
+                limit: query_request.limit,
+                offset: query_request.offset,
+                filter: query_request.filter.map(PyQueryFilter),
+                full_text_search: query_request
+                    .full_text_search
+                    .map(PyFullTextSearchQuery::from),
+                select: PySelect(query_request.select),
+                fast_search: Some(query_request.fast_search),
+                with_row_id: Some(query_request.with_row_id),
+                column: None,
+                query_vector: None,
+                nprobes: None,
+                lower_bound: None,
+                upper_bound: None,
+                ef: None,
+                refine_factor: None,
+                distance_type: None,
+                bypass_vector_index: None,
+                postfilter: None,
+                norm: None,
+            },
+            AnyQuery::VectorQuery(vector_query) => PyQueryRequest {
+                limit: vector_query.base.limit,
+                offset: vector_query.base.offset,
+                filter: vector_query.base.filter.map(PyQueryFilter),
+                full_text_search: None,
+                select: PySelect(vector_query.base.select),
+                fast_search: Some(vector_query.base.fast_search),
+                with_row_id: Some(vector_query.base.with_row_id),
+                column: vector_query.column,
+                query_vector: Some(PyQueryVectors(vector_query.query_vector)),
+                nprobes: Some(vector_query.nprobes),
+                lower_bound: vector_query.lower_bound,
+                upper_bound: vector_query.upper_bound,
+                ef: vector_query.ef,
+                refine_factor: vector_query.refine_factor,
+                distance_type: vector_query.distance_type.map(|d| d.to_string()),
+                bypass_vector_index: Some(!vector_query.use_index),
+                postfilter: Some(!vector_query.base.prefilter),
+                norm: vector_query.base.norm.map(|n| n.to_string()),
+            },
         }
     }
 }
@@ -172,7 +174,9 @@ impl<'py> IntoPyObject<'py> for PyQueryFilter {
 
     fn into_pyobject(self, py: pyo3::Python<'py>) -> PyResult<Self::Output> {
         match self.0 {
-            QueryFilter::Datafusion(_) => Err(PyNotImplementedError::new_err("Datafusion filter has no conversion to Python")),
+            QueryFilter::Datafusion(_) => Err(PyNotImplementedError::new_err(
+                "Datafusion filter has no conversion to Python",
+            )),
             QueryFilter::Sql(sql) => Ok(sql.into_pyobject(py)?.into_any()),
             QueryFilter::Substrait(substrait) => Ok(substrait.into_pyobject(py)?.into_any()),
         }
