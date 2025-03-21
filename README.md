@@ -1,5 +1,7 @@
 <div align="center">
-  <h2>Public Beta for LanceDB Cloud is now available! <a href="https://cloud.lancedb.com">Try it out!</a> ↗️</h2>
+  <div style="background-color: #645cfb; padding: 10px; border-radius: 6px; margin-bottom: 15px;">
+    <span style="color: white; font-size: 0.8em; font-weight: bold;">Public Beta for LanceDB Cloud is now available! <a href="https://cloud.lancedb.com" style="color: white; text-decoration: underline;">Try it out!</a> ↗️</span>
+  </div>
 </div>
 
 <div align="center">
