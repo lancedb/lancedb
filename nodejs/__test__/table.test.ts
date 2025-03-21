@@ -279,6 +279,15 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(res.getChild("y")?.toJSON()).toEqual([2, null, null, null]);
       expect(res.getChild("z")?.toJSON()).toEqual([null, null, 3n, 5n]);
     });
+
+    it("should handle null vectors at end of data", async () => {
+      // https://github.com/lancedb/lancedb/issues/2240
+      const data = [{ vector: [1, 2, 3] }, { vector: null }];
+      const db = await connect("memory://");
+
+      const table = await db.createTable("my_table", data);
+      expect(await table.countRows()).toEqual(2);
+    });
   },
 );
 

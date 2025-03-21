@@ -33,10 +33,6 @@ pyo3-build-config = { version = "0.23", features = [
 ] }
 
 [features]
-default = ["default-tls", "remote"]
+default = ["remote"]
 fp16kernels = ["lancedb/fp16kernels"]
 remote = ["lancedb/remote"]
-# TLS
-default-tls = ["lancedb/default-tls"]
-native-tls = ["lancedb/native-tls"]
-rustls-tls = ["lancedb/rustls-tls"]

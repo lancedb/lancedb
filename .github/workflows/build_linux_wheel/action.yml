@@ -36,8 +36,7 @@ runs:
         args: ${{ inputs.args }}
         before-script-linux: |
           set -e
-          yum install -y openssl-devel \
-            && curl -L https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-$(uname -m).zip > /tmp/protoc.zip \
+          curl -L https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-$(uname -m).zip > /tmp/protoc.zip \
             && unzip /tmp/protoc.zip -d /usr/local \
             && rm /tmp/protoc.zip
     - name: Build Arm Manylinux Wheel
@@ -52,7 +51,7 @@ runs:
         args: ${{ inputs.args }}
         before-script-linux: |
           set -e
-          yum install -y openssl-devel clang \
+          yum install -y clang \
             && curl -L https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-aarch_64.zip > /tmp/protoc.zip \
             && unzip /tmp/protoc.zip -d /usr/local \
             && rm /tmp/protoc.zip
