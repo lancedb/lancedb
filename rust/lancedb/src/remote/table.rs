@@ -325,24 +325,11 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
         let request = self.client.post(&format!("/v1/table/{}/query/", self.name));
 
-        let version = self.current_version().await;
-        let mut body = serde_json::json!({ "version": version });
-
-        let requests: Vec<reqwest::RequestBuilder> = match query {
-            AnyQuery::Query(query) => {
-                Self::apply_query_params(&mut body, query)?;
-                // Empty vector can be passed if no vector search is performed.
-                body["vector"] = serde_json::Value::Array(Vec::new());
-                vec![request.json(&body)]
-            }
-            AnyQuery::VectorQuery(query) => {
-                let bodies = self.apply_vector_query_params(body, query)?;
-                bodies
-                    .into_iter()
-                    .map(|body| request.try_clone().unwrap().json(&body))
-                    .collect()
-            }
-        };
+        let query_bodies = self.prepare_query_bodies(query).await?;
+        let requests: Vec<reqwest::RequestBuilder> = query_bodies
+            .into_iter()
+            .map(|body| request.try_clone().unwrap().json(&body))
+            .collect();
 
         let futures = requests.into_iter().map(|req| async move {
             let (request_id, response) = self.client.send(req, true).await?;
@@ -350,6 +337,22 @@ impl<S: HttpSend> RemoteTable<S> {
         });
         let streams = futures::future::try_join_all(futures).await?;
         Ok(streams)
+    }
+
+    async fn prepare_query_bodies(&self, query: &AnyQuery) -> Result<Vec<serde_json::Value>> {
+        let version = self.current_version().await;
+        let base_body = serde_json::json!({ "version": version });
+
+        match query {
+            AnyQuery::Query(query) => {
+                let mut body = base_body.clone();
+                Self::apply_query_params(&mut body, query)?;
+                // Empty vector can be passed if no vector search is performed.
+                body["vector"] = serde_json::Value::Array(Vec::new());
+                Ok(vec![body])
+            }
+            AnyQuery::VectorQuery(query) => self.apply_vector_query_params(base_body, query),
+        }
     }
 }
 
@@ -559,50 +562,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             )?))
         }
     }
-    async fn update(&self, update: UpdateBuilder) -> Result<u64> {
-        self.check_mutable().await?;
-        let request = self
-            .client
-            .post(&format!("/v1/table/{}/update/", self.name));
-
-        let mut updates = Vec::new();
-        for (column, expression) in update.columns {
-            updates.push(vec![column, expression]);
-        }
-
-        let request = request.json(&serde_json::json!({
-            "updates": updates,
-            "predicate": update.filter,
-        }));
-
-        let (request_id, response) = self.client.send(request, false).await?;
-
-        self.check_table_response(&request_id, response).await?;
-
-        Ok(0) // TODO: support returning number of modified rows once supported in SaaS.
-    }
 
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
         let base_request = self
             .client
             .post(&format!("/v1/table/{}/explain/", self.name));
 
-        let version = self.current_version().await;
-        let query_body_base = serde_json::json!({ "version": version });
-
-        let query_bodies = match query {
-            AnyQuery::Query(query) => {
-                let mut body = query_body_base.clone();
-                Self::apply_query_params(&mut body, query)?;
-                // Empty vector can be passed if no vector search is performed.
-                body["vector"] = serde_json::Value::Array(Vec::new());
-                vec![body]
-            }
-            AnyQuery::VectorQuery(query) => {
-                self.apply_vector_query_params(query_body_base, query)?
-            }
-        };
-
+        let query_bodies = self.prepare_query_bodies(query).await?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
             .into_iter()
             .map(|query_body| {
@@ -640,6 +606,29 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         };
 
         Ok(final_plan)
+    }
+
+    async fn update(&self, update: UpdateBuilder) -> Result<u64> {
+        self.check_mutable().await?;
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/update/", self.name));
+
+        let mut updates = Vec::new();
+        for (column, expression) in update.columns {
+            updates.push(vec![column, expression]);
+        }
+
+        let request = request.json(&serde_json::json!({
+            "updates": updates,
+            "predicate": update.filter,
+        }));
+
+        let (request_id, response) = self.client.send(request, false).await?;
+
+        self.check_table_response(&request_id, response).await?;
+
+        Ok(0) // TODO: support returning number of modified rows once supported in SaaS.
     }
 
     async fn delete(&self, predicate: &str) -> Result<()> {
