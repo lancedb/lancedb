@@ -5,8 +5,11 @@
 <div align="center">
 <p align="center">
 
-<img width="275" alt="LanceDB Logo" src="https://github.com/user-attachments/assets/ac270358-333e-4bea-a132-acefaa94040e">
-
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/ac270358-333e-4bea-a132-acefaa94040e">
+  <source media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/b864d814-0d29-4784-8fd9-807297c758c0">
+  <img alt="LanceDB Logo" src="https://github.com/user-attachments/assets/b864d814-0d29-4784-8fd9-807297c758c0">
+</picture>
 **Search More, Manage Less**
 
 <a href='https://github.com/lancedb/vectordb-recipes/tree/main' target="_blank"><img alt='LanceDB' src='https://img.shields.io/badge/VectorDB_Recipes-100000?style=for-the-badge&logo=LanceDB&logoColor=white&labelColor=645cfb&color=645cfb'/></a>
