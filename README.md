@@ -1,6 +1,6 @@
-<div style="background-color: #645cfb; padding: 5px; border-radius: 0; margin-bottom: 15px; width: 100%; text-align: center;">
-  <span style="color: white; font-size: 0.8em; font-weight: bold;">Public Beta for LanceDB Cloud is now available! <a href="https://cloud.lancedb.com" style="color: white; text-decoration: underline;">Try it out!</a> ↗️</span>
-</div>
+<a href="https://cloud.lancedb.com" target="_blank">
+  <img src="https://github.com/user-attachments/assets/92dad0a2-2a37-4ce1-b783-0d1b4f30a00c" alt="LanceDB Cloud Public Beta" width="100%" style="max-width: 100%;">
+</a>
 
 <div align="center">
 <p align="center">
