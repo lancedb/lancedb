@@ -366,7 +366,7 @@ class RemoteTable(Table):
         return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
 
     def _explain_plan(
-        self, query: Query, verbose: bool = False
+        self, query: Query, verbose: Optional[bool] = False
     ) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
 

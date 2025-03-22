@@ -428,9 +428,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<DatasetRecordBatchStream>;
     /// Explain the plan for a query.
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
-        println!("Lu debug: table.rs BaseTable: explain_plan");
         let plan = self.create_plan(query, Default::default()).await?;
-
         let display = DisplayableExecutionPlan::new(plan.as_ref());
 
         Ok(format!("{}", display.indent(verbose)))

@@ -274,7 +274,6 @@ impl Query {
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            println!("Lu debug: query.rs: explain_plan");
             inner
                 .explain_plan(verbose)
                 .await
@@ -359,7 +358,6 @@ impl FTSQuery {
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            println!("Lu debug: query.rs: explain_plan");
             inner
                 .explain_plan(verbose)
                 .await

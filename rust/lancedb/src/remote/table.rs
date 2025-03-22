@@ -328,7 +328,7 @@ impl<S: HttpSend> RemoteTable<S> {
         let version = self.current_version().await;
         let mut body = serde_json::json!({ "version": version });
 
-        let requests = match query {
+        let requests: Vec<reqwest::RequestBuilder> = match query {
             AnyQuery::Query(query) => {
                 Self::apply_query_params(&mut body, query)?;
                 // Empty vector can be passed if no vector search is performed.
@@ -583,41 +583,63 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
-        println!("Lu debug, remote table send explain plan");
-        let request = self.client.post(&format!("/v1/table/{}/explain_plan/", self.name));
-        let version = self.current_version().await;
-            let mut query_body = serde_json::json!({
-                "version": version,
-            });
+        let base_request = self
+            .client
+            .post(&format!("/v1/table/{}/explain/", self.name));
 
-        match query {
+        let version = self.current_version().await;
+        let query_body_base = serde_json::json!({ "version": version });
+
+        let query_bodies = match query {
             AnyQuery::Query(query) => {
-                Self::apply_query_params(&mut query_body, query)?;
+                let mut body = query_body_base.clone();
+                Self::apply_query_params(&mut body, query)?;
                 // Empty vector can be passed if no vector search is performed.
-                query_body["vector"] = serde_json::Value::Array(Vec::new());
+                body["vector"] = serde_json::Value::Array(Vec::new());
+                vec![body]
             }
             AnyQuery::VectorQuery(query) => {
-                Self::apply_vector_query_params(&mut query_body, query)?;
+                self.apply_vector_query_params(query_body_base, query)?
             }
-        }
-        let request_body = serde_json::json!({
-            "verbose": verbose,
-            "query": query_body
+        };
+
+        let requests: Vec<reqwest::RequestBuilder> = query_bodies
+            .into_iter()
+            .map(|query_body| {
+                let explain_request = serde_json::json!({
+                    "verbose": verbose,
+                    "query": query_body
+                });
+
+                base_request.try_clone().unwrap().json(&explain_request)
+            })
+            .collect::<Vec<_>>();
+
+        let futures = requests.into_iter().map(|req| async move {
+            let (request_id, response) = self.client.send(req, true).await?;
+            let response = self.check_table_response(&request_id, response).await?;
+            let body = response.text().await.err_to_http(request_id.clone())?;
+
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse explain plan: {}", e).into(),
+                request_id,
+                status_code: None,
+            })
         });
 
-        let request = request.json(&request_body);
-        // Don't need to read arrow stream for explain plan, just get text response
-        let (request_id, response) = self.client.send(request, false).await?;
+        let plan_texts = futures::future::try_join_all(futures).await?;
+        let final_plan = if plan_texts.len() > 1 {
+            plan_texts
+                .into_iter()
+                .enumerate()
+                .map(|(i, plan)| format!("--- Plan #{} ---\n{}", i + 1, plan))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        } else {
+            plan_texts.into_iter().next().unwrap_or_default()
+        };
 
-        let response = self.check_table_response(&request_id, response).await?;
-
-        let body = response.text().await.err_to_http(request_id.clone())?;
-
-        serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse explain plan: {}", e).into(),
-            request_id,
-            status_code: None,
-        })
+        Ok(final_plan)
     }
 
     async fn delete(&self, predicate: &str) -> Result<()> {

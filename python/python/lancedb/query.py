@@ -656,7 +656,7 @@ class LanceQueryBuilder(ABC):
         -------
         plan : str
         """  # noqa: E501
-        return self._table._explain_plan(self.to_query_object())
+        return self._table._explain_plan(self.to_query_object(), verbose=verbose)
 
     def vector(self, vector: Union[np.ndarray, list]) -> Self:
         """Set the vector to search for.
@@ -961,30 +961,6 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         return result_set
 
-    def explain_plan(self, verbose = False):
-        vector = self._query if isinstance(self._query, list) else self._query.tolist()
-        if isinstance(vector[0], np.ndarray):
-            vector = [v.tolist() for v in vector]
-        query = Query(
-            vector=vector,
-            filter=self._where,
-            prefilter=self._prefilter,
-            k=self._limit,
-            metric=self._distance_type,
-            columns=self._columns,
-            nprobes=self._nprobes,
-            lower_bound=self._lower_bound,
-            upper_bound=self._upper_bound,
-            refine_factor=self._refine_factor,
-            vector_column=self._vector_column,
-            with_row_id=self._with_row_id,
-            offset=self._offset,
-            fast_search=self._fast_search,
-            ef=self._ef,
-            use_index=self._use_index,
-        )
-        return self._table._explain_plan(query, verbose=verbose)
-
     def where(self, where: str, prefilter: bool = None) -> LanceVectorQueryBuilder:
         """Set the where clause.
 
@@ -1133,22 +1109,6 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
     def to_batches(self, /, batch_size: Optional[int] = None):
         raise NotImplementedError("to_batches on an FTS query")
-
-    def explain_plan(self, verbose = False):
-        query = Query(
-            columns=self._columns,
-            filter=self._where,
-            k=self._limit,
-            prefilter=self._prefilter,
-            with_row_id=self._with_row_id,
-            full_text_query={
-                "query": self._query,
-                "columns": self._fts_columns,
-            },
-            vector=[],
-            offset=self._offset,
-        )
-        return self._table._explain_plan(query, verbose=verbose)
 
     def tantivy_to_arrow(self) -> pa.Table:
         try:
