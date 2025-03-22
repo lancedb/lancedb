@@ -1,4 +1,6 @@
-[![LanceDB Cloud Beta](https://github.com/user-attachments/assets/92dad0a2-2a37-4ce1-b783-0d1b4f30a00c)](https://cloud.lancedb.com)
+<a href="https://cloud.lancedb.com" target="_blank">
+  <img src="https://github.com/user-attachments/assets/92dad0a2-2a37-4ce1-b783-0d1b4f30a00c" alt="LanceDB Cloud Public Beta" width="100%" style="max-width: 100%;">
+</a>
 
 <div align="center">
 <p align="center">
