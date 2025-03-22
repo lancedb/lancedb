@@ -566,7 +566,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
         let base_request = self
             .client
-            .post(&format!("/v1/table/{}/explain/", self.name));
+            .post(&format!("/v1/table/{}/explain_plan/", self.name));
 
         let query_bodies = self.prepare_query_bodies(query).await?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
