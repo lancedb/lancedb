@@ -42,7 +42,9 @@ class AnswerdotaiRerankers(Reranker):
         rerankers = attempt_import_or_raise(
             "rerankers"
         )  # import here for faster ops later
-        self.reranker = rerankers.Reranker(model_name, model_type, **kwargs)
+        self.reranker = rerankers.Reranker(
+            model_name=model_name, model_type=model_type, **kwargs
+        )
 
     def _rerank(self, result_set: pa.Table, query: str):
         docs = result_set[self.column].to_pylist()

@@ -942,28 +942,6 @@ rewriting the column, which can be a heavy operation.
     ```
     **API Reference:** [lancedb.Table.alterColumns](../js/classes/Table.md/#altercolumns)
 
-You can even cast the a vector column to a different dimension:
-
-=== "Python"
-
-    === "Sync API"
-
-        ```python
-        --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
-        --8<-- "python/python/tests/docs/test_basic.py:alter_columns_vector"
-        ```
-    === "Async API"
-
-        ```python
-        --8<-- "python/python/tests/docs/test_guide_tables.py:import-pyarrow"
-        --8<-- "python/python/tests/docs/test_basic.py:alter_columns_async_vector"
-        ```
-=== "Typescript"
-
-    ```typescript
-    --8<-- "nodejs/examples/basic.test.ts:alter_columns_vector"
-    ```
-
 ### Dropping columns
 
 You can drop columns from the table with the `drop_columns` method. This will
