@@ -1,4 +1,7 @@
-import { FeatureExtractionPipeline, pipeline } from "@huggingface/transformers";
+import {
+  type FeatureExtractionPipeline,
+  pipeline,
+} from "@huggingface/transformers";
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 import { expect, test } from "@jest/globals";

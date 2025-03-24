@@ -11,11 +11,9 @@ npm install @lancedb/lancedb
 This will download the appropriate native library for your platform. We currently
 support:
 
-- Linux (x86_64 and aarch64)
+- Linux (x86_64 and aarch64 on glibc and musl)
 - MacOS (Intel and ARM/M1/M2)
-- Windows (x86_64 only)
-
-We do not yet support musl-based Linux (such as Alpine Linux) or aarch64 Windows.
+- Windows (x86_64 and aarch64)
 
 ## Usage
 
@@ -32,7 +30,7 @@ const results = await table.vectorSearch([0.1, 0.3]).limit(20).toArray();
 console.log(results);
 ```
 
-The [quickstart](../basic.md) contains a more complete example.
+The [quickstart](https://lancedb.github.io/lancedb/basic/) contains a more complete example.
 
 ## Development
 

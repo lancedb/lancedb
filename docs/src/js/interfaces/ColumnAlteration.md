@@ -16,7 +16,7 @@ must be provided.
 ### dataType?
 
 ```ts
-optional dataType: string;
+optional dataType: string | DataType<Type, any>;
 ```
 
 A new data type for the column. If not provided then the data type will not be changed.

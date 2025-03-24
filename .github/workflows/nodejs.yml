@@ -106,6 +106,18 @@ jobs:
         python ci/mock_openai.py &
         cd nodejs/examples
         npm test
+    - name: Check docs
+      run: |
+        # We run this as part of the job because the binary needs to be built
+        # first to export the types of the native code.
+        set -e
+        npm ci
+        npm run docs
+        if ! git diff --exit-code; then
+          echo "Docs need to be updated"
+          echo "Run 'npm run docs', fix any warnings, and commit the changes."
+          exit 1
+        fi
   macos:
     timeout-minutes: 30
     runs-on: "macos-14"

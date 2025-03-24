@@ -8,24 +8,6 @@
 
 Reranks the results using the Reciprocal Rank Fusion (RRF) algorithm.
 
-Internally this uses the Rust implementation
-
-## Constructors
-
-### new RRFReranker()
-
-```ts
-new RRFReranker(inner): RRFReranker
-```
-
-#### Parameters
-
-* **inner**: `RrfReranker`
-
-#### Returns
-
-[`RRFReranker`](RRFReranker.md)
-
 ## Methods
 
 ### rerankHybrid()

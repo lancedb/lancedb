@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use std::{borrow::Cow, fmt::Formatter, str::FromStr, sync::Arc};
 
 use arrow::array::{AsArray, Float32Builder};

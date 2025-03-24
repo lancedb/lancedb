@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 /// Polars and LanceDB both use Arrow for their in memory-representation, but use
 /// different Rust Arrow implementations. LanceDB uses the arrow-rs crate and
 /// Polars uses the polars-arrow crate.

@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 /* eslint-disable @typescript-eslint/naming-convention */
 
@@ -186,6 +175,8 @@ maybeDescribe("storage_options", () => {
 
     tableNames = await db.tableNames();
     expect(tableNames).toEqual([]);
+
+    await db.dropAllTables();
   });
 
   it("can configure encryption at connection and table level", async () => {
@@ -221,6 +212,8 @@ maybeDescribe("storage_options", () => {
     await table.add([{ a: 2, b: 3 }]);
 
     await bucket.assertAllEncrypted("test/table2.lance", kmsKey.keyId);
+
+    await db.dropAllTables();
   });
 });
 
@@ -309,5 +302,32 @@ maybeDescribe("DynamoDB Lock", () => {
 
     const rowCount = await table.countRows();
     expect(rowCount).toBe(6);
+
+    await db.dropAllTables();
+  });
+
+  it("clears dynamodb state after dropping all tables", async () => {
+    const uri = `s3+ddb://${bucket.name}/test?ddbTableName=${commitTable.name}`;
+    const db = await connect(uri, {
+      storageOptions: CONFIG,
+      readConsistencyInterval: 0,
+    });
+
+    await db.createTable("foo", [{ a: 1, b: 2 }]);
+    await db.createTable("bar", [{ a: 1, b: 2 }]);
+
+    let tableNames = await db.tableNames();
+    expect(tableNames).toEqual(["bar", "foo"]);
+
+    await db.dropAllTables();
+    tableNames = await db.tableNames();
+    expect(tableNames).toEqual([]);
+
+    // We can create a new table with the same name as the one we dropped.
+    await db.createTable("foo", [{ a: 1, b: 2 }]);
+    tableNames = await db.tableNames();
+    expect(tableNames).toEqual(["foo"]);
+
+    await db.dropAllTables();
   });
 });

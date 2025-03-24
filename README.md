@@ -1,9 +1,17 @@
+<a href="https://cloud.lancedb.com" target="_blank">
+  <img src="https://github.com/user-attachments/assets/92dad0a2-2a37-4ce1-b783-0d1b4f30a00c" alt="LanceDB Cloud Public Beta" width="100%" style="max-width: 100%;">
+</a>
+
 <div align="center">
 <p align="center">
 
-<img width="275" alt="LanceDB Logo" src="https://github.com/lancedb/lancedb/assets/5846846/37d7c7ad-c2fd-4f56-9f16-fffb0d17c73a">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/ac270358-333e-4bea-a132-acefaa94040e">
+  <source media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/b864d814-0d29-4784-8fd9-807297c758c0">
+  <img alt="LanceDB Logo" src="https://github.com/user-attachments/assets/b864d814-0d29-4784-8fd9-807297c758c0" width=300>
+</picture>
 
-**Developer-friendly, database for multimodal AI**
+**Search More, Manage Less**
 
 <a href='https://github.com/lancedb/vectordb-recipes/tree/main' target="_blank"><img alt='LanceDB' src='https://img.shields.io/badge/VectorDB_Recipes-100000?style=for-the-badge&logo=LanceDB&logoColor=white&labelColor=645cfb&color=645cfb'/></a>
 <a href='https://lancedb.github.io/lancedb/' target="_blank"><img alt='lancdb' src='https://img.shields.io/badge/DOCS-100000?style=for-the-badge&logo=lancdb&logoColor=white&labelColor=645cfb&color=645cfb'/></a>

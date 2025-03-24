@@ -4,6 +4,9 @@ repo_url: https://github.com/lancedb/lancedb
 edit_uri: https://github.com/lancedb/lancedb/tree/main/docs/src
 repo_name: lancedb/lancedb
 docs_dir: src
+watch:
+  - src
+  - ../python/python
 
 theme:
   name: "material"
@@ -63,6 +66,7 @@ plugins:
             - https://arrow.apache.org/docs/objects.inv
             - https://pandas.pydata.org/docs/objects.inv
             - https://lancedb.github.io/lance/objects.inv
+            - https://docs.pydantic.dev/latest/objects.inv
   - mkdocs-jupyter
   - render_swagger:
       allow_arbitrary_locations: true
@@ -105,8 +109,8 @@ nav:
       - 📚 Concepts:
           - Vector search: concepts/vector_search.md
           - Indexing:
-            - IVFPQ: concepts/index_ivfpq.md
-            - HNSW: concepts/index_hnsw.md
+              - IVFPQ: concepts/index_ivfpq.md
+              - HNSW: concepts/index_hnsw.md
           - Storage: concepts/storage.md
           - Data management: concepts/data_management.md
       - 🔨 Guides:
@@ -120,6 +124,9 @@ nav:
               - Overview: hybrid_search/hybrid_search.md
               - Comparing Rerankers: hybrid_search/eval.md
               - Airbnb financial data example: notebooks/hybrid_search.ipynb
+          - Late interaction with MultiVector search:
+              - Overview: guides/multi-vector.md
+              - Example: notebooks/Multivector_on_LanceDB.ipynb
           - RAG:
               - Vanilla RAG: rag/vanilla_rag.md
               - Multi-head RAG: rag/multi_head_rag.md
@@ -130,8 +137,8 @@ nav:
               - Adaptive RAG: rag/adaptive_rag.md
               - SFR RAG: rag/sfr_rag.md
               - Advanced Techniques:
-                - HyDE: rag/advanced_techniques/hyde.md
-                - FLARE: rag/advanced_techniques/flare.md
+                  - HyDE: rag/advanced_techniques/hyde.md
+                  - FLARE: rag/advanced_techniques/flare.md
           - Reranking:
               - Quickstart: reranking/index.md
               - Cohere Reranker: reranking/cohere.md
@@ -146,7 +153,7 @@ nav:
               - Building Custom Rerankers: reranking/custom_reranker.md
               - Example: notebooks/lancedb_reranking.ipynb
           - Filtering: sql.md
-          - Versioning & Reproducibility: 
+          - Versioning & Reproducibility:
               - sync API: notebooks/reproducibility.ipynb
               - async API: notebooks/reproducibility_async.ipynb
           - Configuring Storage: guides/storage.md
@@ -178,6 +185,7 @@ nav:
                   - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md
                   - Jina Embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/jina_multimodal_embedding.md
           - User-defined embedding functions: embeddings/custom_embedding_function.md
+          - Variables and secrets: embeddings/variables_and_secrets.md
           - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
           - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
       - 🔌 Integrations:
@@ -228,20 +236,13 @@ nav:
           - 👾 JavaScript (vectordb): javascript/modules.md
           - 👾 JavaScript (lancedb): js/globals.md
           - 🦀 Rust: https://docs.rs/lancedb/latest/lancedb/
-      - ☁️ LanceDB Cloud:
-          - Overview: cloud/index.md
-          - API reference:
-              - 🐍 Python: python/saas-python.md
-              - 👾 JavaScript: javascript/modules.md
-              - REST API: cloud/rest.md
-          - FAQs: cloud/cloud_faq.md
 
   - Quick start: basic.md
   - Concepts:
       - Vector search: concepts/vector_search.md
       - Indexing:
-        - IVFPQ: concepts/index_ivfpq.md
-        - HNSW: concepts/index_hnsw.md
+          - IVFPQ: concepts/index_ivfpq.md
+          - HNSW: concepts/index_hnsw.md
       - Storage: concepts/storage.md
       - Data management: concepts/data_management.md
   - Guides:
@@ -255,6 +256,9 @@ nav:
           - Overview: hybrid_search/hybrid_search.md
           - Comparing Rerankers: hybrid_search/eval.md
           - Airbnb financial data example: notebooks/hybrid_search.ipynb
+      - Late interaction with MultiVector search:
+          - Overview: guides/multi-vector.md
+          - Document search Example: notebooks/Multivector_on_LanceDB.ipynb
       - RAG:
           - Vanilla RAG: rag/vanilla_rag.md
           - Multi-head RAG: rag/multi_head_rag.md
@@ -265,8 +269,8 @@ nav:
           - Adaptive RAG: rag/adaptive_rag.md
           - SFR RAG: rag/sfr_rag.md
           - Advanced Techniques:
-            - HyDE: rag/advanced_techniques/hyde.md
-            - FLARE: rag/advanced_techniques/flare.md
+              - HyDE: rag/advanced_techniques/hyde.md
+              - FLARE: rag/advanced_techniques/flare.md
       - Reranking:
           - Quickstart: reranking/index.md
           - Cohere Reranker: reranking/cohere.md
@@ -280,7 +284,7 @@ nav:
           - Building Custom Rerankers: reranking/custom_reranker.md
           - Example: notebooks/lancedb_reranking.ipynb
       - Filtering: sql.md
-      - Versioning & Reproducibility: 
+      - Versioning & Reproducibility:
           - sync API: notebooks/reproducibility.ipynb
           - async API: notebooks/reproducibility_async.ipynb
       - Configuring Storage: guides/storage.md
@@ -311,6 +315,7 @@ nav:
               - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md
               - Jina Embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/jina_multimodal_embedding.md
       - User-defined embedding functions: embeddings/custom_embedding_function.md
+      - Variables and secrets: embeddings/variables_and_secrets.md
       - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
       - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
   - Integrations:
@@ -349,21 +354,14 @@ nav:
       - 🦀 Rust:
           - Overview: examples/examples_rust.md
   - Studies:
-    - studies/overview.md
-    - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
+      - studies/overview.md
+      - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
   - API reference:
       - Overview: api_reference.md
       - Python: python/python.md
       - Javascript (vectordb): javascript/modules.md
       - Javascript (lancedb): js/globals.md
       - Rust: https://docs.rs/lancedb/latest/lancedb/index.html
-  - LanceDB Cloud:
-      - Overview: cloud/index.md
-      - API reference:
-          - 🐍 Python: python/saas-python.md
-          - 👾 JavaScript: javascript/modules.md
-          - REST API: cloud/rest.md
-      - FAQs: cloud/cloud_faq.md
 
 extra_css:
   - styles/global.css
@@ -371,6 +369,7 @@ extra_css:
 
 extra_javascript:
   - "extra_js/init_ask_ai_widget.js"
+  - "extra_js/reo.js"
 
 extra:
   analytics:

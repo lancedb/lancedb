@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use lancedb::DistanceType;
 
 pub fn parse_distance_type(distance_type: impl AsRef<str>) -> napi::Result<DistanceType> {

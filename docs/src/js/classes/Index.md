@@ -72,11 +72,9 @@ The results of a full text search are ordered by relevance measured by BM25.
 
 You can combine filters with full text search.
 
-For now, the full text search index only supports English, and doesn't support phrase search.
-
 #### Parameters
 
-* **options?**: `Partial`&lt;`FtsOptions`&gt;
+* **options?**: `Partial`&lt;[`FtsOptions`](../interfaces/FtsOptions.md)&gt;
 
 #### Returns
 
@@ -98,7 +96,7 @@ the vectors.
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`HnswPqOptions`&gt;
+* **options?**: `Partial`&lt;[`HnswPqOptions`](../interfaces/HnswPqOptions.md)&gt;
 
 #### Returns
 
@@ -120,7 +118,38 @@ the vectors.
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`HnswSqOptions`&gt;
+* **options?**: `Partial`&lt;[`HnswSqOptions`](../interfaces/HnswSqOptions.md)&gt;
+
+#### Returns
+
+[`Index`](Index.md)
+
+***
+
+### ivfFlat()
+
+```ts
+static ivfFlat(options?): Index
+```
+
+Create an IvfFlat index
+
+This index groups vectors into partitions of similar vectors.  Each partition keeps track of
+a centroid which is the average value of all vectors in the group.
+
+During a query the centroids are compared with the query vector to find the closest
+partitions.  The vectors in these partitions are then searched to find
+the closest vectors.
+
+The partitioning process is called IVF and the `num_partitions` parameter controls how
+many groups to create.
+
+Note that training an IVF FLAT index on a large dataset is a slow operation and
+currently is also a memory intensive operation.
+
+#### Parameters
+
+* **options?**: `Partial`&lt;[`IvfFlatOptions`](../interfaces/IvfFlatOptions.md)&gt;
 
 #### Returns
 

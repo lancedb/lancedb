@@ -38,6 +38,13 @@ components:
       required: true
       schema:
         type: string
+    index_name:
+      name: index_name
+      in: path
+      description: name of the index
+      required: true
+      schema:
+        type: string
   responses:
     invalid_request:
       description: Invalid request
@@ -164,7 +171,7 @@ paths:
                 distance_type:
                   type: string
                   description: |
-                    The distance metric to use for search. L2, Cosine, Dot and Hamming are supported. Default is L2.
+                    The distance metric to use for search. l2, Cosine, Dot and Hamming are supported. Default is l2.
                 bypass_vector_index:
                   type: boolean
                   description: |
@@ -443,7 +450,7 @@ paths:
                   type: string
                   nullable: false
                   description: |
-                    The metric type to use for the index. L2, Cosine, Dot are supported.
+                    The metric type to use for the index. l2, Cosine, Dot are supported.
                 index_type:
                   type: string
       responses:
@@ -479,6 +486,25 @@ paths:
       responses:
         "200":
           description: Scalar Index successfully created
+        "400":
+          $ref: "#/components/responses/invalid_request"
+        "401":
+          $ref: "#/components/responses/unauthorized"
+        "404":
+          $ref: "#/components/responses/not_found"
+  /v1/table/{name}/index/{index_name}/drop/:
+    post:
+      description: Drop an index from the table
+      tags:
+        - Tables
+      summary: Drop an index from the table
+      operationId: dropIndex
+      parameters:
+        - $ref: "#/components/parameters/table_name"
+        - $ref: "#/components/parameters/index_name"
+      responses:
+        "200":
+          description: Index successfully dropped
         "400":
           $ref: "#/components/responses/invalid_request"
         "401":

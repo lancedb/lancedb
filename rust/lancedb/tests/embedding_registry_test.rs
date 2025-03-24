@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -148,6 +151,48 @@ async fn test_multiple_embeddings() -> Result<()> {
 
         let second_embeddings = second_embeddings.unwrap();
         assert_eq!(second_embeddings.data_type(), func_2.dest_type()?.as_ref());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_open_table_embeddings() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let tempdir = tempdir.path().to_str().unwrap();
+
+    let db = connect(tempdir).execute().await?;
+    let embed_fun = MockEmbed::new("embed_fun".to_string(), 1);
+    db.embedding_registry()
+        .register("embed_fun", Arc::new(embed_fun.clone()))?;
+
+    db.create_table("test", create_some_records()?)
+        .add_embedding(EmbeddingDefinition::new(
+            "text",
+            &embed_fun.name,
+            Some("embeddings"),
+        ))?
+        .execute()
+        .await?;
+
+    // now open the table and check the embeddings
+    let tbl = db.open_table("test").execute().await?;
+
+    let mut res = tbl.query().execute().await?;
+    while let Some(Ok(batch)) = res.next().await {
+        let embeddings = batch.column_by_name("embeddings");
+        assert!(embeddings.is_some());
+        let embeddings = embeddings.unwrap();
+        assert_eq!(embeddings.data_type(), embed_fun.dest_type()?.as_ref());
+    }
+    // now make sure the embeddings are applied when
+    // we add new records too
+    tbl.add(create_some_records()?).execute().await?;
+    let mut res = tbl.query().execute().await?;
+    while let Some(Ok(batch)) = res.next().await {
+        let embeddings = batch.column_by_name("embeddings");
+        assert!(embeddings.is_some());
+        let embeddings = embeddings.unwrap();
+        assert_eq!(embeddings.data_type(), embed_fun.dest_type()?.as_ref());
     }
     Ok(())
 }

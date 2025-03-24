@@ -1,7 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 import logging
 from typing import Any, List, Optional, Tuple, Union, Literal
 
 import pyarrow as pa
+import pyarrow.dataset
 
 from ..table import Table
 

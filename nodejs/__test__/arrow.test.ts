@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 import { Schema } from "apache-arrow";
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
@@ -65,6 +55,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       Float64,
       Struct,
       List,
+      Int16,
       Int32,
       Int64,
       Float,
@@ -118,13 +109,16 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           false,
         ),
       ]);
-
       const table = (await tableCreationMethod(
         records,
         recordsReversed,
         schema,
         // biome-ignore lint/suspicious/noExplicitAny: <explanation>
       )) as any;
+
+      // We expect deterministic ordering of the fields
+      expect(table.schema.names).toEqual(schema.names);
+
       schema.fields.forEach(
         (
           // biome-ignore lint/suspicious/noExplicitAny: <explanation>
@@ -151,13 +145,13 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     describe("The function makeArrowTable", function () {
       it("will use data types from a provided schema instead of inference", async function () {
         const schema = new Schema([
-          new Field("a", new Int32()),
-          new Field("b", new Float32()),
+          new Field("a", new Int32(), false),
+          new Field("b", new Float32(), true),
           new Field(
             "c",
             new FixedSizeList(3, new Field("item", new Float16())),
           ),
-          new Field("d", new Int64()),
+          new Field("d", new Int64(), true),
         ]);
         const table = makeArrowTable(
           [
@@ -175,12 +169,15 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(actual.numRows).toBe(3);
         const actualSchema = actual.schema;
         expect(actualSchema).toEqual(schema);
+        expect(table.getChild("a")?.toJSON()).toEqual([1, 4, 7]);
+        expect(table.getChild("b")?.toJSON()).toEqual([2, 5, 8]);
+        expect(table.getChild("d")?.toJSON()).toEqual([9n, 10n, null]);
       });
 
       it("will assume the column `vector` is FixedSizeList<Float32> by default", async function () {
         const schema = new Schema([
           new Field("a", new Float(Precision.DOUBLE), true),
-          new Field("b", new Float(Precision.DOUBLE), true),
+          new Field("b", new Int64(), true),
           new Field(
             "vector",
             new FixedSizeList(
@@ -191,9 +188,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           ),
         ]);
         const table = makeArrowTable([
-          { a: 1, b: 2, vector: [1, 2, 3] },
-          { a: 4, b: 5, vector: [4, 5, 6] },
-          { a: 7, b: 8, vector: [7, 8, 9] },
+          { a: 1, b: 2n, vector: [1, 2, 3] },
+          { a: 4, b: 5n, vector: [4, 5, 6] },
+          { a: 7, b: 8n, vector: [7, 8, 9] },
         ]);
 
         const buf = await fromTableToBuffer(table);
@@ -203,6 +200,19 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(actual.numRows).toBe(3);
         const actualSchema = actual.schema;
         expect(actualSchema).toEqual(schema);
+
+        expect(table.getChild("a")?.toJSON()).toEqual([1, 4, 7]);
+        expect(table.getChild("b")?.toJSON()).toEqual([2n, 5n, 8n]);
+        expect(
+          table
+            .getChild("vector")
+            ?.toJSON()
+            .map((v) => v.toJSON()),
+        ).toEqual([
+          [1, 2, 3],
+          [4, 5, 6],
+          [7, 8, 9],
+        ]);
       });
 
       it("can support multiple vector columns", async function () {
@@ -216,7 +226,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           ),
           new Field(
             "vec2",
-            new FixedSizeList(3, new Field("item", new Float16(), true)),
+            new FixedSizeList(3, new Field("item", new Float64(), true)),
             true,
           ),
         ]);
@@ -229,7 +239,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           {
             vectorColumns: {
               vec1: { type: new Float16() },
-              vec2: { type: new Float16() },
+              vec2: { type: new Float64() },
             },
           },
         );
@@ -316,6 +326,53 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           async (_, __, schema) => (<any>makeArrowTable)([], { schema }),
           false,
         );
+      });
+
+      it("will allow subsets of columns if nullable", async function () {
+        const schema = new Schema([
+          new Field("a", new Int64(), true),
+          new Field(
+            "s",
+            new Struct([
+              new Field("x", new Int32(), true),
+              new Field("y", new Int32(), true),
+            ]),
+            true,
+          ),
+          new Field("d", new Int16(), true),
+        ]);
+
+        const table = makeArrowTable([{ a: 1n }], { schema });
+        expect(table.numCols).toBe(1);
+        expect(table.numRows).toBe(1);
+
+        const table2 = makeArrowTable([{ a: 1n, d: 2 }], { schema });
+        expect(table2.numCols).toBe(2);
+
+        const table3 = makeArrowTable([{ s: { y: 3 } }], { schema });
+        expect(table3.numCols).toBe(1);
+        const expectedSchema = new Schema([
+          new Field("s", new Struct([new Field("y", new Int32(), true)]), true),
+        ]);
+        expect(table3.schema).toEqual(expectedSchema);
+      });
+
+      it("will work even if columns are sparsely provided", async function () {
+        const sparseRecords = [{ a: 1n }, { b: 2n }, { c: 3n }, { d: 4n }];
+        const table = makeArrowTable(sparseRecords);
+        expect(table.numCols).toBe(4);
+        expect(table.numRows).toBe(4);
+
+        const schema = new Schema([
+          new Field("a", new Int64(), true),
+          new Field("b", new Int32(), true),
+          new Field("c", new Int64(), true),
+          new Field("d", new Int16(), true),
+        ]);
+        const table2 = makeArrowTable(sparseRecords, { schema });
+        expect(table2.numCols).toBe(4);
+        expect(table2.numRows).toBe(4);
+        expect(table2.schema).toEqual(schema);
       });
     });
 

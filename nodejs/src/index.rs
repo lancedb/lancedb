@@ -1,21 +1,12 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::sync::Mutex;
 
 use lancedb::index::scalar::{BTreeIndexBuilder, FtsIndexBuilder};
-use lancedb::index::vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder};
+use lancedb::index::vector::{
+    IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
+};
 use lancedb::index::Index as LanceDbIndex;
 use napi_derive::napi;
 
@@ -71,6 +62,32 @@ impl Index {
         }
         Ok(Self {
             inner: Mutex::new(Some(LanceDbIndex::IvfPq(ivf_pq_builder))),
+        })
+    }
+
+    #[napi(factory)]
+    pub fn ivf_flat(
+        distance_type: Option<String>,
+        num_partitions: Option<u32>,
+        max_iterations: Option<u32>,
+        sample_rate: Option<u32>,
+    ) -> napi::Result<Self> {
+        let mut ivf_flat_builder = IvfFlatIndexBuilder::default();
+        if let Some(distance_type) = distance_type {
+            let distance_type = parse_distance_type(distance_type)?;
+            ivf_flat_builder = ivf_flat_builder.distance_type(distance_type);
+        }
+        if let Some(num_partitions) = num_partitions {
+            ivf_flat_builder = ivf_flat_builder.num_partitions(num_partitions);
+        }
+        if let Some(max_iterations) = max_iterations {
+            ivf_flat_builder = ivf_flat_builder.max_iterations(max_iterations);
+        }
+        if let Some(sample_rate) = sample_rate {
+            ivf_flat_builder = ivf_flat_builder.sample_rate(sample_rate);
+        }
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::IvfFlat(ivf_flat_builder))),
         })
     }
 

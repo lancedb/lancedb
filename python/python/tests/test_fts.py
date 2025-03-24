@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 # Copyright 2023 LanceDB Developers
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
@@ -170,6 +173,10 @@ def test_search_fts(table, use_tantivy):
     results = table.search("puppy").select(["id", "text"]).limit(5).to_list()
     assert len(results) == 5
     assert len(results[0]) == 3  # id, text, _score
+
+    # Default limit of 10
+    results = table.search("puppy").select(["id", "text"]).to_list()
+    assert len(results) == 10
 
 
 @pytest.mark.asyncio

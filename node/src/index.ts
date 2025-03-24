@@ -47,7 +47,8 @@ const {
   tableSchema,
   tableAddColumns,
   tableAlterColumns,
-  tableDropColumns
+  tableDropColumns,
+  tableDropIndex
   // eslint-disable-next-line @typescript-eslint/no-var-requires
 } = require("../native.js");
 
@@ -603,6 +604,13 @@ export interface Table<T = number[]> {
    *                    names (e.g. "a").
    */
   dropColumns(columnNames: string[]): Promise<void>
+
+  /**
+   * Drop an index from the table
+   *
+   * @param indexName The name of the index to drop
+   */
+  dropIndex(indexName: string): Promise<void>
 
   /**
    * Instrument the behavior of this Table with middleware.
@@ -1206,6 +1214,10 @@ export class LocalTable<T = number[]> implements Table<T> {
     return tableDropColumns.call(this._tbl, columnNames);
   }
 
+  async dropIndex(indexName: string): Promise<void> {
+    return tableDropIndex.call(this._tbl, indexName);
+  }
+
   withMiddleware(middleware: HttpMiddleware): Table<T> {
     return this;
   }
@@ -1287,7 +1299,7 @@ export interface IvfPQIndexConfig {
   index_name?: string
 
   /**
-   * Metric type, L2 or Cosine
+   * Metric type, l2 or Cosine
    */
   metric_type?: MetricType
 

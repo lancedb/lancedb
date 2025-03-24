@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, str::FromStr};
 
 use arrow::{
     array::downcast_array,
@@ -22,6 +22,29 @@ const RELEVANCE_SCORE: &str = "_relevance_score";
 pub enum NormalizeMethod {
     Score,
     Rank,
+}
+
+impl FromStr for NormalizeMethod {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "score" => Ok(NormalizeMethod::Score),
+            "rank" => Ok(NormalizeMethod::Rank),
+            _ => Err(Error::InvalidInput {
+                message: format!("invalid normalize method: {}", s),
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for NormalizeMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NormalizeMethod::Score => write!(f, "score"),
+            NormalizeMethod::Rank => write!(f, "rank"),
+        }
+    }
 }
 
 /// Interface for a reranker. A reranker is used to rerank the results from a

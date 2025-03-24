@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use pyo3::{
     exceptions::{PyIOError, PyNotImplementedError, PyOSError, PyRuntimeError, PyValueError},
@@ -54,7 +43,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                 } => Python::with_gil(|py| {
                     let message = err.to_string();
                     let http_err_cls = py
-                        .import_bound(intern!(py, "lancedb.remote.errors"))?
+                        .import(intern!(py, "lancedb.remote.errors"))?
                         .getattr(intern!(py, "HttpError"))?;
                     let err = http_err_cls.call1((
                         message,
@@ -74,7 +63,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                         err.setattr(intern!(py, "__cause__"), cause_err)?;
                     }
 
-                    Err(PyErr::from_value_bound(err))
+                    Err(PyErr::from_value(err))
                 }),
                 LanceError::Retry {
                     request_id,
@@ -96,7 +85,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
 
                     let message = err.to_string();
                     let retry_error_cls = py
-                        .import_bound(intern!(py, "lancedb.remote.errors"))?
+                        .import(intern!(py, "lancedb.remote.errors"))?
                         .getattr("RetryError")?;
                     let err = retry_error_cls.call1((
                         message,
@@ -111,7 +100,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     ))?;
 
                     err.setattr(intern!(py, "__cause__"), cause_err)?;
-                    Err(PyErr::from_value_bound(err))
+                    Err(PyErr::from_value(err))
                 }),
                 _ => self.runtime_error(),
             },
@@ -138,18 +127,16 @@ fn http_from_rust_error(
     status_code: Option<u16>,
 ) -> PyResult<PyErr> {
     let message = err.to_string();
-    let http_err_cls = py
-        .import_bound("lancedb.remote.errors")?
-        .getattr("HttpError")?;
+    let http_err_cls = py.import("lancedb.remote.errors")?.getattr("HttpError")?;
     let py_err = http_err_cls.call1((message, request_id, status_code))?;
 
     // Reset the traceback since it doesn't provide additional information.
-    let py_err = py_err.call_method1(intern!(py, "with_traceback"), (PyNone::get_bound(py),))?;
+    let py_err = py_err.call_method1(intern!(py, "with_traceback"), (PyNone::get(py),))?;
 
     if let Some(cause) = err.source() {
         let cause_err = http_from_rust_error(py, cause, request_id, status_code)?;
         py_err.setattr(intern!(py, "__cause__"), cause_err)?;
     }
 
-    Ok(PyErr::from_value_bound(py_err))
+    Ok(PyErr::from_value(py_err))
 }

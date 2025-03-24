@@ -51,7 +51,7 @@ Fetch an embedding function by name
 
 #### Type Parameters
 
-• **T** *extends* [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`unknown`, `FunctionOptions`&gt;
+• **T** *extends* [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`unknown`, [`FunctionOptions`](../interfaces/FunctionOptions.md)&gt;
 
 #### Parameters
 
@@ -60,7 +60,7 @@ Fetch an embedding function by name
 
 #### Returns
 
-`undefined` \| `EmbeddingFunctionCreate`&lt;`T`&gt;
+`undefined` \| [`EmbeddingFunctionCreate`](../interfaces/EmbeddingFunctionCreate.md)&lt;`T`&gt;
 
 ***
 
@@ -77,6 +77,28 @@ getTableMetadata(functions): Map<string, string>
 #### Returns
 
 `Map`&lt;`string`, `string`&gt;
+
+***
+
+### getVar()
+
+```ts
+getVar(name): undefined | string
+```
+
+Get a variable.
+
+#### Parameters
+
+* **name**: `string`
+
+#### Returns
+
+`undefined` \| `string`
+
+#### See
+
+[setVar](EmbeddingFunctionRegistry.md#setvar)
 
 ***
 
@@ -104,7 +126,7 @@ Register an embedding function
 
 #### Type Parameters
 
-• **T** *extends* `EmbeddingFunctionConstructor`&lt;[`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt; = `EmbeddingFunctionConstructor`&lt;[`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;
+• **T** *extends* [`EmbeddingFunctionConstructor`](../interfaces/EmbeddingFunctionConstructor.md)&lt;[`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, [`FunctionOptions`](../interfaces/FunctionOptions.md)&gt;&gt; = [`EmbeddingFunctionConstructor`](../interfaces/EmbeddingFunctionConstructor.md)&lt;[`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, [`FunctionOptions`](../interfaces/FunctionOptions.md)&gt;&gt;
 
 #### Parameters
 
@@ -141,6 +163,34 @@ reset the registry to the initial state
 #### Parameters
 
 * **this**: [`EmbeddingFunctionRegistry`](EmbeddingFunctionRegistry.md)
+
+#### Returns
+
+`void`
+
+***
+
+### setVar()
+
+```ts
+setVar(name, value): void
+```
+
+Set a variable. These can be accessed in the embedding function
+configuration using the syntax `$var:variable_name`. If they are not
+set, an error will be thrown letting you know which key is unset. If you
+want to supply a default value, you can add an additional part in the
+configuration like so: `$var:variable_name:default_value`. Default values
+can be used for runtime configurations that are not sensitive, such as
+whether to use a GPU for inference.
+
+The name must not contain colons. The default value can contain colons.
+
+#### Parameters
+
+* **name**: `string`
+
+* **value**: `string`
 
 #### Returns
 

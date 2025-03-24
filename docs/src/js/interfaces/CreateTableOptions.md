@@ -8,7 +8,7 @@
 
 ## Properties
 
-### dataStorageVersion?
+### ~~dataStorageVersion?~~
 
 ```ts
 optional dataStorageVersion: string;
@@ -18,6 +18,10 @@ The version of the data storage format to use.
 
 The default is `stable`.
 Set to "legacy" to use the old format.
+
+#### Deprecated
+
+Pass `new_table_data_storage_version` to storageOptions instead.
 
 ***
 
@@ -29,7 +33,7 @@ optional embeddingFunction: EmbeddingFunctionConfig;
 
 ***
 
-### enableV2ManifestPaths?
+### ~~enableV2ManifestPaths?~~
 
 ```ts
 optional enableV2ManifestPaths: boolean;
@@ -40,6 +44,10 @@ opening of datasets with many versions on object stores.  WARNING:
 turning this on will make the dataset unreadable for older versions
 of LanceDB (prior to 0.10.0). To migrate an existing dataset, instead
 use the LocalTable#migrateManifestPathsV2 method.
+
+#### Deprecated
+
+Pass `new_table_enable_v2_manifest_paths` to storageOptions instead.
 
 ***
 
@@ -90,17 +98,3 @@ Options already set on the connection will be inherited by the table,
 but can be overridden here.
 
 The available options are described at https://lancedb.github.io/lancedb/guides/storage/
-
-***
-
-### useLegacyFormat?
-
-```ts
-optional useLegacyFormat: boolean;
-```
-
-If true then data files will be written with the legacy format
-
-The default is false.
-
-Deprecated. Use data storage version instead.

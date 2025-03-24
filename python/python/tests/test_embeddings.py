@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-from typing import List, Union
+import os
+from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
 import lance
@@ -14,7 +15,6 @@ from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.embeddings import (
     EmbeddingFunctionConfig,
     EmbeddingFunctionRegistry,
-    with_embeddings,
 )
 from lancedb.embeddings.base import TextEmbeddingFunction
 from lancedb.embeddings.registry import get_registry, register
@@ -24,23 +24,6 @@ from lancedb.pydantic import LanceModel, Vector
 
 def mock_embed_func(input_data):
     return [np.random.randn(128).tolist() for _ in range(len(input_data))]
-
-
-def test_with_embeddings():
-    for wrap_api in [True, False]:
-        data = pa.Table.from_arrays(
-            [
-                pa.array(["foo", "bar"]),
-                pa.array([10.0, 20.0]),
-            ],
-            names=["text", "price"],
-        )
-        data = with_embeddings(mock_embed_func, data, wrap_api=wrap_api)
-        assert data.num_columns == 3
-        assert data.num_rows == 2
-        assert data.column_names == ["text", "price", "vector"]
-        assert data.column("text").to_pylist() == ["foo", "bar"]
-        assert data.column("price").to_pylist() == [10.0, 20.0]
 
 
 def test_embedding_function(tmp_path):
@@ -56,7 +39,7 @@ def test_embedding_function(tmp_path):
     conf = EmbeddingFunctionConfig(
         source_column="text",
         vector_column="vector",
-        function=MockTextEmbeddingFunction(),
+        function=MockTextEmbeddingFunction.create(),
     )
     metadata = registry.get_table_metadata([conf])
     table = table.replace_schema_metadata(metadata)
@@ -80,6 +63,57 @@ def test_embedding_function(tmp_path):
     assert np.allclose(actual, expected)
 
 
+def test_embedding_function_variables():
+    @register("variable-testing")
+    class VariableTestingFunction(TextEmbeddingFunction):
+        key1: str
+        secret_key: Optional[str] = None
+
+        @staticmethod
+        def sensitive_keys():
+            return ["secret_key"]
+
+        def ndims():
+            pass
+
+        def generate_embeddings(self, _texts):
+            pass
+
+    registry = EmbeddingFunctionRegistry.get_instance()
+
+    # Should error if variable is not set
+    with pytest.raises(ValueError, match="Variable 'test' not found"):
+        registry.get("variable-testing").create(
+            key1="$var:test",
+        )
+
+    # Should use default values if not set
+    func = registry.get("variable-testing").create(key1="$var:test:some_value")
+    assert func.key1 == "some_value"
+
+    # Should set a variable that the embedding function understands
+    registry.set_var("test", "some_value")
+    func = registry.get("variable-testing").create(key1="$var:test")
+    assert func.key1 == "some_value"
+
+    # Should reject secrets that aren't passed in as variables
+    with pytest.raises(
+        ValueError,
+        match="Sensitive key 'secret_key' cannot be set to a hardcoded value",
+    ):
+        registry.get("variable-testing").create(
+            key1="whatever", secret_key="some_value"
+        )
+
+    # Should not serialize secrets.
+    registry.set_var("secret", "secret_value")
+    func = registry.get("variable-testing").create(
+        key1="whatever", secret_key="$var:secret"
+    )
+    assert func.secret_key == "secret_value"
+    assert func.safe_model_dump()["secret_key"] == "$var:secret"
+
+
 def test_embedding_with_bad_results(tmp_path):
     @register("null-embedding")
     class NullEmbeddingFunction(TextEmbeddingFunction):
@@ -91,9 +125,11 @@ def test_embedding_with_bad_results(tmp_path):
         ) -> list[Union[np.array, None]]:
             # Return None, which is bad if field is non-nullable
             a = [
-                np.full(self.ndims(), np.nan)
-                if i % 2 == 0
-                else np.random.randn(self.ndims())
+                (
+                    np.full(self.ndims(), np.nan)
+                    if i % 2 == 0
+                    else np.random.randn(self.ndims())
+                )
                 for i in range(len(texts))
             ]
             return a
@@ -107,7 +143,7 @@ def test_embedding_with_bad_results(tmp_path):
         vector: Vector(model.ndims()) = model.VectorField()
 
     table = db.create_table("test", schema=Schema, mode="overwrite")
-    with pytest.raises(ValueError):
+    with pytest.raises(RuntimeError):
         # Default on_bad_vectors is "error"
         table.add([{"text": "hello world"}])
 
@@ -341,6 +377,7 @@ def test_add_optional_vector(tmp_path):
     assert not (np.abs(tbl.to_pandas()["vector"][0]) < 1e-6).all()
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "embedding_type",
     [
@@ -358,23 +395,23 @@ def test_embedding_function_safe_model_dump(embedding_type):
 
     # Note: Some embedding types might require specific parameters
     try:
-        model = registry.get(embedding_type).create()
+        model = registry.get(embedding_type).create({"max_retries": 1})
     except Exception as e:
         pytest.skip(f"Skipping {embedding_type} due to error: {str(e)}")
 
     dumped_model = model.safe_model_dump()
 
-    assert all(
-        not k.startswith("_") for k in dumped_model.keys()
-    ), f"{embedding_type}: Dumped model contains keys starting with underscore"
+    assert all(not k.startswith("_") for k in dumped_model.keys()), (
+        f"{embedding_type}: Dumped model contains keys starting with underscore"
+    )
 
-    assert (
-        "max_retries" in dumped_model
-    ), f"{embedding_type}: Essential field 'max_retries' is missing from dumped model"
+    assert "max_retries" in dumped_model, (
+        f"{embedding_type}: Essential field 'max_retries' is missing from dumped model"
+    )
 
-    assert isinstance(
-        dumped_model, dict
-    ), f"{embedding_type}: Dumped model is not a dictionary"
+    assert isinstance(dumped_model, dict), (
+        f"{embedding_type}: Dumped model is not a dictionary"
+    )
 
     for key in model.__dict__:
         if key.startswith("_"):
@@ -391,3 +428,33 @@ def test_retry(mock_sleep):
     result = test_function()
     assert mock_sleep.call_count == 9
     assert result == "result"
+
+
+@pytest.mark.skipif(
+    os.environ.get("OPENAI_API_KEY") is None, reason="OpenAI API key not set"
+)
+def test_openai_propagates_api_key(monkeypatch):
+    # Make sure that if we set it as a variable, the API key is propagated
+    api_key = os.environ["OPENAI_API_KEY"]
+    monkeypatch.delenv("OPENAI_API_KEY")
+
+    uri = "memory://"
+    registry = get_registry()
+    registry.set_var("open_api_key", api_key)
+    func = registry.get("openai").create(
+        name="text-embedding-ada-002",
+        max_retries=0,
+        api_key="$var:open_api_key",
+    )
+
+    class Words(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    db = lancedb.connect(uri)
+    table = db.create_table("words", schema=Words, mode="overwrite")
+    table.add([{"text": "hello world"}, {"text": "goodbye world"}])
+
+    query = "greetings"
+    actual = table.search(query).limit(1).to_pydantic(Words)[0]
+    assert len(actual.text) > 0

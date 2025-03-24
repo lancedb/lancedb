@@ -8,6 +8,10 @@ For trouble shooting, the best place to ask is in our Discord, under the relevan
 language channel. By asking in the language-specific channel, it makes it more
 likely that someone who knows the answer will see your question.
 
+## Common issues
+
+* Multiprocessing with `fork` is not supported. You should use `spawn` instead.
+
 ## Enabling logging
 
 To provide more information, especially for LanceDB Cloud related issues, enable

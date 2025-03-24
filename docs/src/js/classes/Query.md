@@ -8,29 +8,13 @@
 
 A builder for LanceDB queries.
 
+## See
+
+[Table#query](Table.md#query), [Table#search](Table.md#search)
+
 ## Extends
 
 - [`QueryBase`](QueryBase.md)&lt;`NativeQuery`&gt;
-
-## Constructors
-
-### new Query()
-
-```ts
-new Query(tbl): Query
-```
-
-#### Parameters
-
-* **tbl**: `Table`
-
-#### Returns
-
-[`Query`](Query.md)
-
-#### Overrides
-
-[`QueryBase`](QueryBase.md).[`constructor`](QueryBase.md#constructors)
 
 ## Properties
 
@@ -46,42 +30,6 @@ protected inner: Query | Promise<Query>;
 
 ## Methods
 
-### \[asyncIterator\]()
-
-```ts
-asyncIterator: AsyncIterator<RecordBatch<any>, any, undefined>
-```
-
-#### Returns
-
-`AsyncIterator`&lt;`RecordBatch`&lt;`any`&gt;, `any`, `undefined`&gt;
-
-#### Inherited from
-
-[`QueryBase`](QueryBase.md).[`[asyncIterator]`](QueryBase.md#%5Basynciterator%5D)
-
-***
-
-### doCall()
-
-```ts
-protected doCall(fn): void
-```
-
-#### Parameters
-
-* **fn**
-
-#### Returns
-
-`void`
-
-#### Inherited from
-
-[`QueryBase`](QueryBase.md).[`doCall`](QueryBase.md#docall)
-
-***
-
 ### execute()
 
 ```ts
@@ -92,7 +40,7 @@ Execute the query and return the results as an
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
 
 #### Returns
 
@@ -161,7 +109,7 @@ fastSearch(): this
 Skip searching un-indexed data. This can make search faster, but will miss
 any data that is not yet indexed.
 
-Use lancedb.Table#optimize to index all un-indexed data.
+Use [Table#optimize](Table.md#optimize) to index all un-indexed data.
 
 #### Returns
 
@@ -189,7 +137,7 @@ A filter statement to be applied to this query.
 
 `this`
 
-#### Alias
+#### See
 
 where
 
@@ -213,7 +161,7 @@ fullTextSearch(query, options?): this
 
 * **query**: `string`
 
-* **options?**: `Partial`&lt;`FullTextSearchOptions`&gt;
+* **options?**: `Partial`&lt;[`FullTextSearchOptions`](../interfaces/FullTextSearchOptions.md)&gt;
 
 #### Returns
 
@@ -250,26 +198,6 @@ called then every valid row from the table will be returned.
 
 ***
 
-### nativeExecute()
-
-```ts
-protected nativeExecute(options?): Promise<RecordBatchIterator>
-```
-
-#### Parameters
-
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
-
-#### Returns
-
-`Promise`&lt;`RecordBatchIterator`&gt;
-
-#### Inherited from
-
-[`QueryBase`](QueryBase.md).[`nativeExecute`](QueryBase.md#nativeexecute)
-
-***
-
 ### nearestTo()
 
 ```ts
@@ -294,7 +222,7 @@ If there is more than one vector column you must use
 
 #### Parameters
 
-* **vector**: `IntoVector`
+* **vector**: [`IntoVector`](../type-aliases/IntoVector.md)
 
 #### Returns
 
@@ -427,7 +355,7 @@ Collect the results as an array of objects.
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
 
 #### Returns
 
@@ -449,7 +377,7 @@ Collect the results as an Arrow
 
 #### Parameters
 
-* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;[`QueryExecutionOptions`](../interfaces/QueryExecutionOptions.md)&gt;
 
 #### Returns
 

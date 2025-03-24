@@ -7,7 +7,7 @@ performed on the top-k results returned by the vector search. However, pre-filte
 option that performs the filter prior to vector search. This can be useful to narrow down
 the search space of a very large dataset to reduce query latency.
 
-Note that both pre-filtering and post-filtering can yield false positives. For pre-filtering, if the filter is too selective, it might eliminate relevant items that the vector search would have otherwise identified as a good match. In this case, increasing `nprobes` parameter will help reduce such false positives. It is recommended to set `use_index=false` if you know that the filter is highly selective.
+Note that both pre-filtering and post-filtering can yield false positives. For pre-filtering, if the filter is too selective, it might eliminate relevant items that the vector search would have otherwise identified as a good match. In this case, increasing `nprobes` parameter will help reduce such false positives. It is recommended to call `bypass_vector_index()` if you know that the filter is highly selective.
 
 Similarly, a highly selective post-filter can lead to false positives. Increasing both `nprobes` and `refine_factor` can mitigate this issue. When deciding between pre-filtering and post-filtering, pre-filtering is generally the safer choice if you're uncertain.
 
@@ -64,6 +64,7 @@ const tbl = await db.createTable('myVectors', data)
         ```ts
         --8<-- "docs/src/sql_legacy.ts:search"
         ```
+
 !!! note
 
     Creating a [scalar index](guides/scalar_index.md) accelerates filtering.
@@ -118,14 +119,14 @@ For example, the following filter string is acceptable:
         --8<-- "docs/src/sql_legacy.ts:vec_search"
         ```
 
-If your column name contains special characters or is a [SQL Keyword](https://docs.rs/sqlparser/latest/sqlparser/keywords/index.html),
+If your column name contains special characters, upper-case characters, or is a [SQL Keyword](https://docs.rs/sqlparser/latest/sqlparser/keywords/index.html),
 you can use backtick (`` ` ``) to escape it. For nested fields, each segment of the
 path must be wrapped in backticks.
 
 === "SQL"
 
     ```sql
-    `CUBE` = 10 AND `column name with space` IS NOT NULL
+    `CUBE` = 10 AND `UpperCaseName` = '3' AND `column name with space` IS NOT NULL
       AND `nested with space`.`inner with space` < 2
     ```
 

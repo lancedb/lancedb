@@ -1,9 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 import os
 import random
 
 import lancedb
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 from lancedb.conftest import MockTextEmbeddingFunction  # noqa
 from lancedb.embeddings import EmbeddingFunctionRegistry
@@ -28,8 +32,8 @@ pytest.importorskip("lancedb.fts")
 def get_test_table(tmp_path, use_tantivy):
     db = lancedb.connect(tmp_path)
     # Create a LanceDB table schema with a vector and a text column
-    emb = EmbeddingFunctionRegistry.get_instance().get("test")()
-    meta_emb = EmbeddingFunctionRegistry.get_instance().get("test")()
+    emb = EmbeddingFunctionRegistry.get_instance().get("test").create()
+    meta_emb = EmbeddingFunctionRegistry.get_instance().get("test").create()
 
     class MyTable(LanceModel):
         text: str = emb.SourceField()
@@ -127,9 +131,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         "represents the relevance of the result to the query & should "
         "be descending."
     )
-    assert np.all(
-        np.diff(result.column("_relevance_score").to_numpy()) <= 0
-    ), ascending_relevance_err
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+        ascending_relevance_err
+    )
 
     # Vector search setting
     result = (
@@ -139,9 +143,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         .to_arrow()
     )
     assert len(result) == 30
-    assert np.all(
-        np.diff(result.column("_relevance_score").to_numpy()) <= 0
-    ), ascending_relevance_err
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+        ascending_relevance_err
+    )
     result_explicit = (
         table.search(query_vector, vector_column_name="vector")
         .rerank(reranker=reranker, query_string=query)
@@ -164,9 +168,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         .to_arrow()
     )
     assert len(result) > 0
-    assert np.all(
-        np.diff(result.column("_relevance_score").to_numpy()) <= 0
-    ), ascending_relevance_err
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+        ascending_relevance_err
+    )
 
     # empty FTS results
     query = "abcxyz" * 100
@@ -181,9 +185,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
 
     # should return _relevance_score column
     assert "_relevance_score" in result.column_names
-    assert np.all(
-        np.diff(result.column("_relevance_score").to_numpy()) <= 0
-    ), ascending_relevance_err
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+        ascending_relevance_err
+    )
 
     # Multi-vector search setting
     rs1 = table.search(query, vector_column_name="vector").limit(10).with_row_id(True)
@@ -258,9 +262,9 @@ def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
         "represents the relevance of the result to the query & should "
         "be descending."
     )
-    assert np.all(
-        np.diff(result.column("_relevance_score").to_numpy()) <= 0
-    ), ascending_relevance_err
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+        ascending_relevance_err
+    )
 
     # Test with empty FTS results
     query = "abcxyz" * 100
@@ -274,9 +278,9 @@ def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
     )
     # should return _relevance_score column
     assert "_relevance_score" in result.column_names
-    assert np.all(
-        np.diff(result.column("_relevance_score").to_numpy()) <= 0
-    ), ascending_relevance_err
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+        ascending_relevance_err
+    )
 
 
 @pytest.mark.parametrize("use_tantivy", [True, False])
@@ -316,6 +320,75 @@ def test_rrf_reranker(tmp_path, use_tantivy):
     _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
 
 
+def test_rrf_reranker_distance():
+    data = pa.table(
+        {
+            "vector": pa.FixedSizeListArray.from_arrays(
+                pc.random(32 * 1024).cast(pa.float32()), 32
+            ),
+            "text": pa.array(["hello"] * 1024),
+        }
+    )
+    db = lancedb.connect("memory://")
+    table = db.create_table("test", data)
+
+    table.create_index(num_partitions=1, num_sub_vectors=2)
+    table.create_fts_index("text", use_tantivy=False)
+
+    reranker = RRFReranker(return_score="all")
+
+    hybrid_results = (
+        table.search(query_type="hybrid")
+        .vector([0.0] * 32)
+        .text("hello")
+        .with_row_id(True)
+        .rerank(reranker)
+        .to_list()
+    )
+    hybrid_distances = {row["_rowid"]: row["_distance"] for row in hybrid_results}
+    hybrid_scores = {row["_rowid"]: row["_score"] for row in hybrid_results}
+
+    vector_results = table.search([0.0] * 32).with_row_id(True).to_list()
+    vector_distances = {row["_rowid"]: row["_distance"] for row in vector_results}
+
+    fts_results = table.search("hello", query_type="fts").with_row_id(True).to_list()
+    fts_scores = {row["_rowid"]: row["_score"] for row in fts_results}
+
+    found_match = False
+    for rowid, distance in hybrid_distances.items():
+        if rowid in vector_distances:
+            found_match = True
+            assert distance == vector_distances[rowid], "Distance mismatch"
+    assert found_match, "No results matched between hybrid and vector search"
+
+    found_match = False
+    for rowid, score in hybrid_scores.items():
+        if rowid in fts_scores and fts_scores[rowid] is not None:
+            found_match = True
+            assert score == fts_scores[rowid], "Score mismatch"
+    assert found_match, "No results matched between hybrid and fts search"
+
+    # Test for empty fts results
+    fts_results = (
+        table.search("abcxyz" * 100, query_type="fts").with_row_id(True).to_list()
+    )
+    hybrid_results = (
+        table.search(query_type="hybrid")
+        .vector([0.0] * 32)
+        .text("abcxyz" * 100)
+        .with_row_id(True)
+        .rerank(reranker)
+        .to_list()
+    )
+    assert len(fts_results) == 0
+    # confirm if _rowid, _score, _distance & _relevance_score are present in hybrid
+    assert len(hybrid_results) > 0
+    assert "_rowid" in hybrid_results[0]
+    assert "_score" in hybrid_results[0]
+    assert "_distance" in hybrid_results[0]
+    assert "_relevance_score" in hybrid_results[0]
+
+
 @pytest.mark.skipif(
     os.environ.get("COHERE_API_KEY") is None, reason="COHERE_API_KEY not set"
 )
@@ -352,7 +425,9 @@ def test_answerdotai_reranker(tmp_path, use_tantivy):
 
 
 @pytest.mark.skipif(
-    os.environ.get("OPENAI_API_KEY") is None, reason="OPENAI_API_KEY not set"
+    os.environ.get("OPENAI_API_KEY") is None
+    or os.environ.get("OPENAI_BASE_URL") is not None,
+    reason="OPENAI_API_KEY not set",
 )
 @pytest.mark.parametrize("use_tantivy", [True, False])
 def test_openai_reranker(tmp_path, use_tantivy):

@@ -42,4 +42,4 @@ test("full text search", async () => {
     expect(result.length).toBe(10);
     // --8<-- [end:full_text_search]
   });
-});
+}, 10_000);

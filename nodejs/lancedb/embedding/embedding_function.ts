@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import "reflect-metadata";
 import {
@@ -26,6 +15,7 @@ import {
   newVectorType,
 } from "../arrow";
 import { sanitizeType } from "../sanitize";
+import { getRegistry } from "./registry";
 
 /**
  * Options for a given embedding function
@@ -43,6 +33,22 @@ export interface EmbeddingFunctionConstructor<
 
 /**
  * An embedding function that automatically creates vector representation for a given column.
+ *
+ * It's important subclasses pass the **original** options to the super constructor
+ * and then pass those options to `resolveVariables` to resolve any variables before
+ * using them.
+ *
+ * @example
+ * ```ts
+ * class MyEmbeddingFunction extends EmbeddingFunction {
+ *   constructor(options: {model: string, timeout: number}) {
+ *     super(optionsRaw);
+ *     const options = this.resolveVariables(optionsRaw);
+ *     this.model = options.model;
+ *     this.timeout = options.timeout;
+ *   }
+ * }
+ * ```
  */
 export abstract class EmbeddingFunction<
   // biome-ignore lint/suspicious/noExplicitAny: we don't know what the implementor will do
@@ -55,33 +61,74 @@ export abstract class EmbeddingFunction<
    */
   // biome-ignore lint/style/useNamingConvention: we want to keep the name as it is
   readonly TOptions!: M;
-  /**
-   * Convert the embedding function to a JSON object
-   * It is used to serialize the embedding function to the schema
-   * It's important that any object returned by this method contains all the necessary
-   * information to recreate the embedding function
-   *
-   * It should return the same object that was passed to the constructor
-   * If it does not, the embedding function will not be able to be recreated, or could be recreated incorrectly
-   *
-   * @example
-   * ```ts
-   * class MyEmbeddingFunction extends EmbeddingFunction {
-   *   constructor(options: {model: string, timeout: number}) {
-   *     super();
-   *     this.model = options.model;
-   *     this.timeout = options.timeout;
-   *   }
-   *   toJSON() {
-   *     return {
-   *       model: this.model,
-   *       timeout: this.timeout,
-   *     };
-   * }
-   * ```
-   */
-  abstract toJSON(): Partial<M>;
 
+  #config: Partial<M>;
+
+  /**
+   * Get the original arguments to the constructor, to serialize them so they
+   * can be used to recreate the embedding function later.
+   */
+  // biome-ignore lint/suspicious/noExplicitAny :
+  toJSON(): Record<string, any> {
+    return JSON.parse(JSON.stringify(this.#config));
+  }
+
+  constructor() {
+    this.#config = {};
+  }
+
+  /**
+   * Provide a list of keys in the function options that should be treated as
+   * sensitive. If users pass raw values for these keys, they will be rejected.
+   */
+  protected getSensitiveKeys(): string[] {
+    return [];
+  }
+
+  /**
+   * Apply variables to the config.
+   */
+  protected resolveVariables(config: Partial<M>): Partial<M> {
+    this.#config = config;
+    const registry = getRegistry();
+    const newConfig = { ...config };
+    for (const [key_, value] of Object.entries(newConfig)) {
+      if (
+        this.getSensitiveKeys().includes(key_) &&
+        !value.startsWith("$var:")
+      ) {
+        throw new Error(
+          `The key "${key_}" is sensitive and cannot be set directly. Please use the $var: syntax to set it.`,
+        );
+      }
+      // Makes TS happy (https://stackoverflow.com/a/78391854)
+      const key = key_ as keyof M;
+      if (typeof value === "string" && value.startsWith("$var:")) {
+        const [name, defaultValue] = value.slice(5).split(":", 2);
+        const variableValue = registry.getVar(name);
+        if (!variableValue) {
+          if (defaultValue) {
+            // biome-ignore lint/suspicious/noExplicitAny:
+            newConfig[key] = defaultValue as any;
+          } else {
+            throw new Error(`Variable "${name}" not found`);
+          }
+        } else {
+          // biome-ignore lint/suspicious/noExplicitAny:
+          newConfig[key] = variableValue as any;
+        }
+      }
+    }
+    return newConfig;
+  }
+
+  /**
+   * Optionally load any resources needed for the embedding function.
+   *
+   * This method is called after the embedding function has been initialized
+   * but before any embeddings are computed. It is useful for loading local models
+   * or other resources that are needed for the embedding function to work.
+   */
   async init?(): Promise<void>;
 
   /**
@@ -89,7 +136,7 @@ export abstract class EmbeddingFunction<
    *
    * @param optionsOrDatatype - The options for the field or the datatype
    *
-   * @see {@link lancedb.LanceSchema}
+   * @see {@link LanceSchema}
    */
   sourceField(
     optionsOrDatatype: Partial<FieldOptions> | DataType,
@@ -111,9 +158,9 @@ export abstract class EmbeddingFunction<
   /**
    * vectorField is used in combination with `LanceSchema` to provide a declarative data model
    *
-   * @param options - The options for the field
+   * @param optionsOrDatatype - The options for the field
    *
-   * @see {@link lancedb.LanceSchema}
+   * @see {@link LanceSchema}
    */
   vectorField(
     optionsOrDatatype?: Partial<FieldOptions> | DataType,

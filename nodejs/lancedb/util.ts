@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 export type IntoSql =
   | string
   | number
@@ -30,6 +33,16 @@ export function toSQL(value: IntoSql): string {
       `Unsupported value type: ${typeof value} value: (${value})`,
     );
   }
+}
+
+export function packBits(data: Array<number>): Array<number> {
+  const packed = Array(data.length >> 3).fill(0);
+  for (let i = 0; i < data.length; i++) {
+    const byte = i >> 3;
+    const bit = i & 7;
+    packed[byte] |= data[i] << bit;
+  }
+  return packed;
 }
 
 export class TTLCache {

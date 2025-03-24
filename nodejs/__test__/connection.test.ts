@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import { readdirSync } from "fs";
 import { Field, Float64, Schema } from "apache-arrow";
@@ -28,14 +17,14 @@ describe("when connecting", () => {
   it("should connect", async () => {
     const db = await connect(tmpDir.name);
     expect(db.display()).toBe(
-      `NativeDatabase(uri=${tmpDir.name}, read_consistency_interval=None)`,
+      `ListingDatabase(uri=${tmpDir.name}, read_consistency_interval=None)`,
     );
   });
 
   it("should allow read consistency interval to be specified", async () => {
     const db = await connect(tmpDir.name, { readConsistencyInterval: 5 });
     expect(db.display()).toBe(
-      `NativeDatabase(uri=${tmpDir.name}, read_consistency_interval=5s)`,
+      `ListingDatabase(uri=${tmpDir.name}, read_consistency_interval=5s)`,
     );
   });
 });
@@ -70,6 +59,26 @@ describe("given a connection", () => {
     });
 
     await expect(tbl.countRows()).resolves.toBe(1);
+  });
+
+  it("should be able to drop tables`", async () => {
+    await db.createTable("test", [{ id: 1 }, { id: 2 }]);
+    await db.createTable("test2", [{ id: 1 }, { id: 2 }]);
+    await db.createTable("test3", [{ id: 1 }, { id: 2 }]);
+
+    await expect(db.tableNames()).resolves.toEqual(["test", "test2", "test3"]);
+
+    await db.dropTable("test2");
+
+    await expect(db.tableNames()).resolves.toEqual(["test", "test3"]);
+
+    await db.dropAllTables();
+
+    await expect(db.tableNames()).resolves.toEqual([]);
+
+    // Make sure we can still create more tables after dropping all
+
+    await db.createTable("test4", [{ id: 1 }, { id: 2 }]);
   });
 
   it("should fail if creating table twice, unless overwrite is true", async () => {
@@ -107,14 +116,15 @@ describe("given a connection", () => {
     const data = [...Array(10000).keys()].map((i) => ({ id: i }));
 
     // Create in v1 mode
-    let table = await db.createTable("test", data, { useLegacyFormat: true });
+    let table = await db.createTable("test", data, {
+      storageOptions: { newTableDataStorageVersion: "legacy" },
+    });
 
     const isV2 = async (table: Table) => {
       const data = await table
         .query()
         .limit(10000)
         .toArrow({ maxBatchLength: 100000 });
-      console.log(data.batches.length);
       return data.batches.length < 5;
     };
 
@@ -133,7 +143,7 @@ describe("given a connection", () => {
     const schema = new Schema([new Field("id", new Float64(), true)]);
 
     table = await db.createEmptyTable("test_v2_empty", schema, {
-      useLegacyFormat: false,
+      storageOptions: { newTableDataStorageVersion: "stable" },
     });
 
     await table.add(data);

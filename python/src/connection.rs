@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
-use lancedb::connection::{Connection as LanceConnection, CreateTableMode, LanceFileVersion};
+use lancedb::{connection::Connection as LanceConnection, database::CreateTableMode};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods, Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
@@ -80,15 +80,13 @@ impl Connection {
         future_into_py(self_.py(), async move { op.execute().await.infer_error() })
     }
 
-    #[pyo3(signature = (name, mode, data, storage_options=None, data_storage_version=None, enable_v2_manifest_paths=None))]
+    #[pyo3(signature = (name, mode, data, storage_options=None))]
     pub fn create_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
         mode: &str,
         data: Bound<'_, PyAny>,
         storage_options: Option<HashMap<String, String>>,
-        data_storage_version: Option<String>,
-        enable_v2_manifest_paths: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -101,32 +99,19 @@ impl Connection {
             builder = builder.storage_options(storage_options);
         }
 
-        if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
-            builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
-        }
-
-        if let Some(data_storage_version) = data_storage_version.as_ref() {
-            builder = builder.data_storage_version(
-                LanceFileVersion::from_str(data_storage_version)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?,
-            );
-        }
-
         future_into_py(self_.py(), async move {
             let table = builder.execute().await.infer_error()?;
             Ok(Table::new(table))
         })
     }
 
-    #[pyo3(signature = (name, mode, schema, storage_options=None, data_storage_version=None, enable_v2_manifest_paths=None))]
+    #[pyo3(signature = (name, mode, schema, storage_options=None))]
     pub fn create_empty_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
         mode: &str,
         schema: Bound<'_, PyAny>,
         storage_options: Option<HashMap<String, String>>,
-        data_storage_version: Option<String>,
-        enable_v2_manifest_paths: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -138,17 +123,6 @@ impl Connection {
 
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
-        }
-
-        if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
-            builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
-        }
-
-        if let Some(data_storage_version) = data_storage_version.as_ref() {
-            builder = builder.data_storage_version(
-                LanceFileVersion::from_str(data_storage_version)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?,
-            );
         }
 
         future_into_py(self_.py(), async move {
@@ -196,12 +170,11 @@ impl Connection {
         })
     }
 
-    pub fn drop_db(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn drop_all_tables(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
-        future_into_py(
-            self_.py(),
-            async move { inner.drop_db().await.infer_error() },
-        )
+        future_into_py(self_.py(), async move {
+            inner.drop_all_tables().await.infer_error()
+        })
     }
 }
 
@@ -249,6 +222,7 @@ pub struct PyClientConfig {
     user_agent: String,
     retry_config: Option<PyClientRetryConfig>,
     timeout_config: Option<PyClientTimeoutConfig>,
+    extra_headers: Option<HashMap<String, String>>,
 }
 
 #[derive(FromPyObject)]
@@ -300,6 +274,7 @@ impl From<PyClientConfig> for lancedb::remote::ClientConfig {
             user_agent: value.user_agent,
             retry_config: value.retry_config.map(Into::into).unwrap_or_default(),
             timeout_config: value.timeout_config.map(Into::into).unwrap_or_default(),
+            extra_headers: value.extra_headers.unwrap_or_default(),
         }
     }
 }

@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 //! [LanceDB](https://github.com/lancedb/lancedb) is an open-source database for vector-search built with persistent storage,
 //! which greatly simplifies retrieval, filtering and management of embeddings.
@@ -31,7 +20,7 @@
 //! LanceDB runs in process, to use it in your Rust project, put the following in your `Cargo.toml`:
 //!
 //! ```shell
-//! cargo install lancedb
+//! cargo add lancedb
 //! ```
 //!
 //! ## Crate Features
@@ -202,8 +191,10 @@
 //! ```
 
 pub mod arrow;
+pub mod catalog;
 pub mod connection;
 pub mod data;
+pub mod database;
 pub mod embeddings;
 pub mod error;
 pub mod index;
@@ -233,13 +224,13 @@ pub use table::Table;
 pub enum DistanceType {
     /// Euclidean distance. This is a very common distance metric that
     /// accounts for both magnitude and direction when determining the distance
-    /// between vectors. L2 distance has a range of [0, ∞).
+    /// between vectors. l2 distance has a range of [0, ∞).
     L2,
     /// Cosine distance.  Cosine distance is a distance metric
     /// calculated from the cosine similarity between two vectors. Cosine
     /// similarity is a measure of similarity between two non-zero vectors of an
     /// inner product space. It is defined to equal the cosine of the angle
-    /// between them.  Unlike L2, the cosine distance is not affected by the
+    /// between them.  Unlike l2, the cosine distance is not affected by the
     /// magnitude of the vectors.  Cosine distance has a range of [0, 2].
     ///
     /// Note: the cosine distance is undefined when one (or both) of the vectors
@@ -248,7 +239,7 @@ pub enum DistanceType {
     Cosine,
     /// Dot product. Dot distance is the dot product of two vectors. Dot
     /// distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
-    /// L2 norm is 1), then dot distance is equivalent to the cosine distance.
+    /// l2 norm is 1), then dot distance is equivalent to the cosine distance.
     Dot,
     /// Hamming distance. Hamming distance is a distance metric that measures
     /// the number of positions at which the corresponding elements are different.

@@ -1,21 +1,13 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 
 import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Dict, Optional, Union, Any
+import warnings
 
 __version__ = importlib.metadata.version("lancedb")
 
@@ -23,6 +15,7 @@ from ._lancedb import connect as lancedb_connect
 from .common import URI, sanitize_uri
 from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
+from .remote.db import RemoteDBConnection
 from .schema import vector
 from .table import AsyncTable
 
@@ -95,8 +88,6 @@ def connect(
     conn : DBConnection
         A connection to a LanceDB database.
     """
-    from .remote.db import RemoteDBConnection
-
     if isinstance(uri, str) and uri.startswith("db://"):
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")
@@ -223,3 +214,13 @@ __all__ = [
     "RemoteDBConnection",
     "__version__",
 ]
+
+
+def __warn_on_fork():
+    warnings.warn(
+        "lance is not fork-safe. If you are using multiprocessing, use spawn instead.",
+    )
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before=__warn_on_fork)

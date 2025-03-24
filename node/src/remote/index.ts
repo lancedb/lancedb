@@ -471,6 +471,18 @@ export class RemoteTable<T = number[]> implements Table<T> {
       )
     }
   }
+  async dropIndex (index_name: string): Promise<void> {
+    const res = await this._client.post(
+        `/v1/table/${encodeURIComponent(this._name)}/index/${encodeURIComponent(index_name)}/drop/`
+    )
+    if (res.status !== 200) {
+      throw new Error(
+          `Server Error, status: ${res.status}, ` +
+          // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+          `message: ${res.statusText}: ${await res.body()}`
+      )
+    }
+  }
 
   async countRows (filter?: string): Promise<number> {
     const result = await this._client.post(`/v1/table/${encodeURIComponent(this._name)}/count_rows/`, {

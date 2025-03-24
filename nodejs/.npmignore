@@ -22,3 +22,4 @@ build.rs
 jest.config.js
 tsconfig.json
 typedoc.json
+typedoc_post_process.js

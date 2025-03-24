@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 //! Scalar indices are exact indices that are used to quickly satisfy a variety of filters
 //! against a column of scalar values.
 //!

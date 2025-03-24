@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import * as tmp from "tmp";
 
@@ -28,6 +17,8 @@ import {
 import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
 
+const testOpenAIInteg = process.env.OPENAI_API_KEY == null ? test.skip : test;
+
 describe("embedding functions", () => {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
@@ -40,9 +31,6 @@ describe("embedding functions", () => {
 
   it("should be able to create a table with an embedding function", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {};
-      }
       ndims() {
         return 3;
       }
@@ -83,12 +71,74 @@ describe("embedding functions", () => {
     expect(vector0).toEqual([1, 2, 3]);
   });
 
+  it("should be able to append and upsert using embedding function", async () => {
+    @register()
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return Array.from({ length: data.length }).fill([
+          1, 2, 3,
+        ]) as number[][];
+      }
+    }
+    const func = new MockEmbeddingFunction();
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable(
+      "test",
+      [
+        { id: 1, text: "hello" },
+        { id: 2, text: "world" },
+      ],
+      {
+        embeddingFunction: {
+          function: func,
+          sourceColumn: "text",
+        },
+      },
+    );
+
+    const schema = await table.schema();
+    expect(schema.metadata.get("embedding_functions")).toBeDefined();
+
+    // Append some new data
+    const data1 = [
+      { id: 3, text: "forest" },
+      { id: 4, text: "mountain" },
+    ];
+    await table.add(data1);
+
+    // Upsert some data
+    const data2 = [
+      { id: 5, text: "river" },
+      { id: 2, text: "canyon" },
+    ];
+    await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute(data2);
+
+    const rows = await table.query().toArray();
+    rows.sort((a, b) => a.id - b.id);
+    const texts = rows.map((row) => row.text);
+    expect(texts).toEqual(["hello", "canyon", "forest", "mountain", "river"]);
+    const vectorsDefined = rows.map(
+      (row) => row.vector !== undefined && row.vector !== null,
+    );
+    expect(vectorsDefined).toEqual(new Array(5).fill(true));
+  });
+
   it("should be able to create an empty table with an embedding function", async () => {
     @register()
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {};
-      }
       ndims() {
         return 3;
       }
@@ -137,9 +187,6 @@ describe("embedding functions", () => {
   it("should error when appending to a table with an unregistered embedding function", async () => {
     @register("mock")
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {};
-      }
       ndims() {
         return 3;
       }
@@ -184,13 +231,35 @@ describe("embedding functions", () => {
       `Function "mock" not found in registry`,
     );
   });
+
+  testOpenAIInteg("propagates variables through all methods", async () => {
+    delete process.env.OPENAI_API_KEY;
+    const registry = getRegistry();
+    registry.setVar("openai_api_key", "sk-...");
+    const func = registry.get("openai")?.create({
+      model: "text-embedding-ada-002",
+      apiKey: "$var:openai_api_key",
+    }) as EmbeddingFunction;
+
+    const db = await connect("memory://");
+    const wordsSchema = LanceSchema({
+      text: func.sourceField(new Utf8()),
+      vector: func.vectorField(),
+    });
+    const tbl = await db.createEmptyTable("words", wordsSchema, {
+      mode: "overwrite",
+    });
+    await tbl.add([{ text: "hello world" }, { text: "goodbye world" }]);
+
+    const query = "greetings";
+    const actual = (await tbl.search(query).limit(1).toArray())[0];
+    expect(actual).toHaveProperty("text");
+  });
+
   test.each([new Float16(), new Float32(), new Float64()])(
     "should be able to provide manual embeddings with multiple float datatype",
     async (floatType) => {
       class MockEmbeddingFunction extends EmbeddingFunction<string> {
-        toJSON(): object {
-          return {};
-        }
         ndims() {
           return 3;
         }
@@ -235,10 +304,6 @@ describe("embedding functions", () => {
     async (floatType) => {
       @register("test1")
       class MockEmbeddingFunctionWithoutNDims extends EmbeddingFunction<string> {
-        toJSON(): object {
-          return {};
-        }
-
         embeddingDataType(): Float {
           return floatType;
         }
@@ -253,9 +318,6 @@ describe("embedding functions", () => {
       }
       @register("test")
       class MockEmbeddingFunction extends EmbeddingFunction<string> {
-        toJSON(): object {
-          return {};
-        }
         ndims() {
           return 3;
         }

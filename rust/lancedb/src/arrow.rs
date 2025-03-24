@@ -1,26 +1,17 @@
-// Copyright 2023 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::{pin::Pin, sync::Arc};
 
 pub use arrow_schema;
-use futures::{Stream, StreamExt};
+use datafusion_common::DataFusionError;
+use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+use futures::{Stream, StreamExt, TryStreamExt};
 
 #[cfg(feature = "polars")]
 use {crate::polars_arrow_convertors, polars::frame::ArrowChunk, polars::prelude::DataFrame};
 
-use crate::error::Result;
+use crate::{error::Result, Error};
 
 /// An iterator of batches that also has a schema
 pub trait RecordBatchReader: Iterator<Item = Result<arrow_array::RecordBatch>> {
@@ -76,6 +67,20 @@ impl<I: lance::io::RecordBatchStream + 'static> From<I> for SendableRecordBatchS
     }
 }
 
+pub trait SendableRecordBatchStreamExt {
+    fn into_df_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream;
+}
+
+impl SendableRecordBatchStreamExt for SendableRecordBatchStream {
+    fn into_df_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream {
+        let schema = self.schema();
+        Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            self.map_err(|ldb_err| DataFusionError::External(ldb_err.into())),
+        ))
+    }
+}
+
 /// A simple RecordBatchStream formed from the two parts (stream + schema)
 #[pin_project::pin_project]
 pub struct SimpleRecordBatchStream<S: Stream<Item = Result<arrow_array::RecordBatch>>> {
@@ -112,7 +117,7 @@ impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> RecordBatchStream
 /// used in methods like [`crate::connection::Connection::create_table`]
 /// or [`crate::table::Table::add`]
 pub trait IntoArrow {
-    /// Convert the data into an Arrow array
+    /// Convert the data into an iterator of Arrow batches
     fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>>;
 }
 
@@ -124,11 +129,38 @@ impl<T: arrow_array::RecordBatchReader + Send + 'static> IntoArrow for T {
     }
 }
 
+/// A trait for converting incoming data to Arrow asynchronously
+///
+/// Serves the same purpose as [`IntoArrow`], but for asynchronous data.
+///
+/// Note: Arrow has no async equivalent to RecordBatchReader and so
+pub trait IntoArrowStream {
+    /// Convert the data into a stream of Arrow batches
+    fn into_arrow(self) -> Result<SendableRecordBatchStream>;
+}
+
 impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> SimpleRecordBatchStream<S> {
     pub fn new(stream: S, schema: Arc<arrow_schema::Schema>) -> Self {
         Self { schema, stream }
     }
 }
+
+impl IntoArrowStream for SendableRecordBatchStream {
+    fn into_arrow(self) -> Result<SendableRecordBatchStream> {
+        Ok(self)
+    }
+}
+
+impl IntoArrowStream for datafusion_physical_plan::SendableRecordBatchStream {
+    fn into_arrow(self) -> Result<SendableRecordBatchStream> {
+        let schema = self.schema();
+        let stream = self.map_err(|df_err| Error::Runtime {
+            message: df_err.to_string(),
+        });
+        Ok(Box::pin(SimpleRecordBatchStream::new(stream, schema)))
+    }
+}
+
 #[cfg(feature = "polars")]
 /// An iterator of record batches formed from a Polars DataFrame.
 pub struct PolarsDataFrameRecordBatchReader {

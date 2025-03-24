@@ -1,13 +1,20 @@
-import { Data, fromDataToBuffer } from "./arrow";
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+import { Data, Schema, fromDataToBuffer } from "./arrow";
 import { NativeMergeInsertBuilder } from "./native";
 
 /** A builder used to create and run a merge insert operation */
 export class MergeInsertBuilder {
   #native: NativeMergeInsertBuilder;
+  #schema: Schema | Promise<Schema>;
 
   /** Construct a MergeInsertBuilder. __Internal use only.__ */
-  constructor(native: NativeMergeInsertBuilder) {
+  constructor(
+    native: NativeMergeInsertBuilder,
+    schema: Schema | Promise<Schema>,
+  ) {
     this.#native = native;
+    this.#schema = schema;
   }
 
   /**
@@ -35,6 +42,7 @@ export class MergeInsertBuilder {
   whenMatchedUpdateAll(options?: { where: string }): MergeInsertBuilder {
     return new MergeInsertBuilder(
       this.#native.whenMatchedUpdateAll(options?.where),
+      this.#schema,
     );
   }
   /**
@@ -42,7 +50,10 @@ export class MergeInsertBuilder {
    * be inserted into the target table.
    */
   whenNotMatchedInsertAll(): MergeInsertBuilder {
-    return new MergeInsertBuilder(this.#native.whenNotMatchedInsertAll());
+    return new MergeInsertBuilder(
+      this.#native.whenNotMatchedInsertAll(),
+      this.#schema,
+    );
   }
   /**
    * Rows that exist only in the target table (old data) will be
@@ -56,6 +67,7 @@ export class MergeInsertBuilder {
   }): MergeInsertBuilder {
     return new MergeInsertBuilder(
       this.#native.whenNotMatchedBySourceDelete(options?.where),
+      this.#schema,
     );
   }
   /**
@@ -64,7 +76,14 @@ export class MergeInsertBuilder {
    * Nothing is returned but the `Table` is updated
    */
   async execute(data: Data): Promise<void> {
-    const buffer = await fromDataToBuffer(data);
+    let schema: Schema;
+    if (this.#schema instanceof Promise) {
+      schema = await this.#schema;
+      this.#schema = schema; // In case of future calls
+    } else {
+      schema = this.#schema;
+    }
+    const buffer = await fromDataToBuffer(data, undefined, schema);
     await this.#native.execute(buffer);
   }
 }

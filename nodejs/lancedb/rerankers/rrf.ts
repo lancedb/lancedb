@@ -8,11 +8,12 @@ import { RrfReranker as NativeRRFReranker } from "../native";
 /**
  * Reranks the results using the Reciprocal Rank Fusion (RRF) algorithm.
  *
- * Internally this uses the Rust implementation
+ * @hideconstructor
  */
 export class RRFReranker {
   private inner: NativeRRFReranker;
 
+  /** @ignore */
   constructor(inner: NativeRRFReranker) {
     this.inner = inner;
   }

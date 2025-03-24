@@ -30,6 +30,17 @@ The type of the index
 
 ***
 
+### loss?
+
+```ts
+optional loss: number;
+```
+
+The KMeans loss value of the index,
+it is only present for vector indices.
+
+***
+
 ### numIndexedRows
 
 ```ts

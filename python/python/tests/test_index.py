@@ -131,6 +131,7 @@ async def test_create_vector_index(some_table: AsyncTable):
     assert stats.num_indexed_rows == await some_table.count_rows()
     assert stats.num_unindexed_rows == 0
     assert stats.num_indices == 1
+    assert stats.loss >= 0.0
 
 
 @pytest.mark.asyncio
@@ -154,6 +155,7 @@ async def test_create_4bit_ivfpq_index(some_table: AsyncTable):
     assert stats.num_indexed_rows == await some_table.count_rows()
     assert stats.num_unindexed_rows == 0
     assert stats.num_indices == 1
+    assert stats.loss >= 0.0
 
 
 @pytest.mark.asyncio

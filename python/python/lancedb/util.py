@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright The Lance Authors
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 
 import binascii
 import functools
@@ -154,24 +155,6 @@ def attempt_import_or_raise(module: str, mitigation=None):
         return importlib.import_module(module)
     except ImportError:
         raise ImportError(f"Please install {mitigation or module}")
-
-
-def safe_import_pandas():
-    try:
-        import pandas as pd
-
-        return pd
-    except ImportError:
-        return None
-
-
-def safe_import_polars():
-    try:
-        import polars as pl
-
-        return pl
-    except ImportError:
-        return None
 
 
 def flatten_columns(tbl: pa.Table, flatten: Optional[Union[int, bool]] = None):

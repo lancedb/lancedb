@@ -3,6 +3,7 @@ import * as vectordb from "vectordb";
 // --8<-- [end:import]
 
 (async () => {
+  console.log("ann_indexes.ts: start");
   // --8<-- [start:ingest]
   const db = await vectordb.connect("data/sample-lancedb");
 
@@ -49,5 +50,5 @@ import * as vectordb from "vectordb";
     .execute();
   // --8<-- [end:search3]
 
-  console.log("Ann indexes: done");
+  console.log("ann_indexes.ts: done");
 })();

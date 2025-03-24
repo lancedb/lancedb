@@ -2,14 +2,19 @@
 
 [Pydantic](https://docs.pydantic.dev/latest/) is a data validation library in Python.
 LanceDB integrates with Pydantic for schema inference, data ingestion, and query result casting.
+Using [LanceModel][lancedb.pydantic.LanceModel], users can seamlessly
+integrate Pydantic with the rest of the LanceDB APIs.
 
-## Schema
+```python
 
-LanceDB supports to create Apache Arrow Schema from a
-[Pydantic BaseModel](https://docs.pydantic.dev/latest/api/main/#pydantic.main.BaseModel)
-via [pydantic_to_schema()](python.md#lancedb.pydantic.pydantic_to_schema) method.
+--8<-- "python/python/tests/docs/test_pydantic_integration.py:imports"
 
-::: lancedb.pydantic.pydantic_to_schema
+--8<-- "python/python/tests/docs/test_pydantic_integration.py:base_model"
+
+--8<-- "python/python/tests/docs/test_pydantic_integration.py:set_url"
+--8<-- "python/python/tests/docs/test_pydantic_integration.py:base_example"
+```
+
 
 ## Vector Field
 
@@ -34,3 +39,9 @@ Current supported type conversions:
 | `list`              | `pyarrow.List`    |
 | `BaseModel`         | `pyarrow.Struct`    |
 | `Vector(n)`         | `pyarrow.FixedSizeList(float32, n)` |
+
+LanceDB supports to create Apache Arrow Schema from a
+[Pydantic BaseModel][pydantic.BaseModel]
+via [pydantic_to_schema()](python.md#lancedb.pydantic.pydantic_to_schema) method.
+
+::: lancedb.pydantic.pydantic_to_schema

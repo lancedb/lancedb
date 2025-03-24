@@ -1,45 +1,29 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import {
   Table as ArrowTable,
   Data,
+  DataType,
   IntoVector,
   Schema,
-  TableLike,
+  dataTypeToJson,
   fromDataToBuffer,
-  fromTableToBuffer,
-  fromTableToStreamBuffer,
-  isArrowTable,
-  makeArrowTable,
   tableFromIPC,
 } from "./arrow";
-import { CreateTableOptions } from "./connection";
 
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsSql,
-  ColumnAlteration,
   IndexConfig,
   IndexStatistics,
   OptimizeStats,
   Table as _NativeTable,
 } from "./native";
 import { Query, VectorQuery } from "./query";
-import { sanitizeTable } from "./sanitize";
+import { sanitizeType } from "./sanitize";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 
@@ -102,8 +86,14 @@ export interface Version {
  * can call the `close` method.  Once the Table is closed, it cannot be used for any
  * further operations.
  *
+ * Tables are created using the methods {@link Connection#createTable}
+ * and {@link Connection#createEmptyTable}. Existing tables are opened
+ * using {@link Connection#openTable}.
+ *
  * Closing a table is optional.  It not closed, it will be closed when it is garbage
  * collected.
+ *
+ * @hideconstructor
  */
 export abstract class Table {
   [Symbol.for("nodejs.util.inspect.custom")](): string {
@@ -201,8 +191,9 @@ export abstract class Table {
    * Indices on scalar columns will speed up filtering (in both
    * vector and non-vector searches)
    *
-   * @note We currently don't support custom named indexes,
-   * The index name will always be `${column}_idx`
+   * We currently don't support custom named indexes.
+   * The index name will always be `${column}_idx`.
+   *
    * @example
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
@@ -232,7 +223,7 @@ export abstract class Table {
    *
    * @param name The name of the index.
    *
-   * @note This does not delete the index from disk, it just removes it from the table.
+   * This does not delete the index from disk, it just removes it from the table.
    * To delete the index, run {@link Table#optimize} after dropping the index.
    *
    * Use {@link Table.listIndices} to find the names of the indices.
@@ -443,41 +434,6 @@ export abstract class Table {
    * Use {@link Table.listIndices} to find the names of the indices.
    */
   abstract indexStats(name: string): Promise<IndexStatistics | undefined>;
-
-  static async parseTableData(
-    data: Record<string, unknown>[] | TableLike,
-    options?: Partial<CreateTableOptions>,
-    streaming = false,
-  ) {
-    let mode: string = options?.mode ?? "create";
-    const existOk = options?.existOk ?? false;
-
-    if (mode === "create" && existOk) {
-      mode = "exist_ok";
-    }
-
-    let table: ArrowTable;
-    if (isArrowTable(data)) {
-      table = sanitizeTable(data);
-    } else {
-      table = makeArrowTable(data as Record<string, unknown>[], options);
-    }
-    if (streaming) {
-      const buf = await fromTableToStreamBuffer(
-        table,
-        options?.embeddingFunction,
-        options?.schema,
-      );
-      return { buf, mode };
-    } else {
-      const buf = await fromTableToBuffer(
-        table,
-        options?.embeddingFunction,
-        options?.schema,
-      );
-      return { buf, mode };
-    }
-  }
 }
 
 export class LocalTable extends Table {
@@ -520,14 +476,8 @@ export class LocalTable extends Table {
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
     const mode = options?.mode ?? "append";
     const schema = await this.schema();
-    const registry = getRegistry();
-    const functions = await registry.parseFunctions(schema.metadata);
 
-    const buffer = await fromDataToBuffer(
-      data,
-      functions.values().next().value,
-      schema,
-    );
+    const buffer = await fromDataToBuffer(data, undefined, schema);
     await this.inner.add(buffer, mode);
   }
 
@@ -670,7 +620,27 @@ export class LocalTable extends Table {
   }
 
   async alterColumns(columnAlterations: ColumnAlteration[]): Promise<void> {
-    await this.inner.alterColumns(columnAlterations);
+    const processedAlterations = columnAlterations.map((alteration) => {
+      if (typeof alteration.dataType === "string") {
+        return {
+          ...alteration,
+          dataType: JSON.stringify({ type: alteration.dataType }),
+        };
+      } else if (alteration.dataType === undefined) {
+        return {
+          ...alteration,
+          dataType: undefined,
+        };
+      } else {
+        const dataType = sanitizeType(alteration.dataType);
+        return {
+          ...alteration,
+          dataType: JSON.stringify(dataTypeToJson(dataType)),
+        };
+      }
+    });
+
+    await this.inner.alterColumns(processedAlterations);
   }
 
   async dropColumns(columnNames: string[]): Promise<void> {
@@ -733,7 +703,7 @@ export class LocalTable extends Table {
   }
   mergeInsert(on: string | string[]): MergeInsertBuilder {
     on = Array.isArray(on) ? on : [on];
-    return new MergeInsertBuilder(this.inner.mergeInsert(on));
+    return new MergeInsertBuilder(this.inner.mergeInsert(on), this.schema());
   }
 
   /**
@@ -762,4 +732,39 @@ export class LocalTable extends Table {
   async migrateManifestPathsV2(): Promise<void> {
     await this.inner.migrateManifestPathsV2();
   }
+}
+
+/**
+ *  A definition of a column alteration. The alteration changes the column at
+ * `path` to have the new name `name`, to be nullable if `nullable` is true,
+ * and to have the data type `data_type`. At least one of `rename` or `nullable`
+ * must be provided.
+ */
+export interface ColumnAlteration {
+  /**
+   * The path to the column to alter. This is a dot-separated path to the column.
+   * If it is a top-level column then it is just the name of the column. If it is
+   * a nested column then it is the path to the column, e.g. "a.b.c" for a column
+   * `c` nested inside a column `b` nested inside a column `a`.
+   */
+  path: string;
+  /**
+   * The new name of the column. If not provided then the name will not be changed.
+   * This must be distinct from the names of all other columns in the table.
+   */
+  rename?: string;
+  /**
+   * A new data type for the column. If not provided then the data type will not be changed.
+   * Changing data types is limited to casting to the same general type. For example, these
+   * changes are valid:
+   * * `int32` -> `int64` (integers)
+   * * `double` -> `float` (floats)
+   * * `string` -> `large_string` (strings)
+   * But these changes are not:
+   * * `int32` -> `double` (mix integers and floats)
+   * * `string` -> `int32` (mix strings and integers)
+   */
+  dataType?: string | DataType;
+  /** Set the new nullability. Note that a nullable column cannot be made non-nullable. */
+  nullable?: boolean;
 }

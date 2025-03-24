@@ -10,6 +10,7 @@ import pyarrow as pa
 import pydantic
 import pytest
 from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, Vector, pydantic_to_schema
+from pydantic import BaseModel
 from pydantic import Field
 
 
@@ -252,3 +253,104 @@ def test_lance_model():
 
     t = TestModel()
     assert t == TestModel(vec=[0.0] * 16, li=[1, 2, 3])
+
+
+def test_optional_nested_model():
+    class WAMedia(BaseModel):
+        url: str
+        mimetype: str
+        filename: Optional[str]
+        error: Optional[str]
+        data: bytes
+
+    class WALocation(BaseModel):
+        description: Optional[str]
+        latitude: str
+        longitude: str
+
+    class ReplyToMessage(BaseModel):
+        id: str
+        participant: str
+        body: str
+
+    class Message(BaseModel):
+        id: str
+        timestamp: int
+        from_: str
+        fromMe: bool
+        to: str
+        body: str
+        hasMedia: Optional[bool]
+        media: WAMedia
+        mediaUrl: Optional[str]
+        ack: Optional[int]
+        ackName: Optional[str]
+        author: Optional[str]
+        location: Optional[WALocation]
+        vCards: Optional[List[str]]
+        replyTo: Optional[ReplyToMessage]
+
+    class AnyEvent(LanceModel):
+        id: str
+        session: str
+        metadata: Optional[str] = None
+        engine: str
+        event: str
+
+    class MessageEvent(AnyEvent):
+        payload: Message
+
+    schema = pydantic_to_schema(MessageEvent)
+
+    payload = schema.field("payload")
+    assert payload.type == pa.struct(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field("timestamp", pa.int64(), False),
+            pa.field("from_", pa.utf8(), False),
+            pa.field("fromMe", pa.bool_(), False),
+            pa.field("to", pa.utf8(), False),
+            pa.field("body", pa.utf8(), False),
+            pa.field("hasMedia", pa.bool_(), True),
+            pa.field(
+                "media",
+                pa.struct(
+                    [
+                        pa.field("url", pa.utf8(), False),
+                        pa.field("mimetype", pa.utf8(), False),
+                        pa.field("filename", pa.utf8(), True),
+                        pa.field("error", pa.utf8(), True),
+                        pa.field("data", pa.binary(), False),
+                    ]
+                ),
+                False,
+            ),
+            pa.field("mediaUrl", pa.utf8(), True),
+            pa.field("ack", pa.int64(), True),
+            pa.field("ackName", pa.utf8(), True),
+            pa.field("author", pa.utf8(), True),
+            pa.field(
+                "location",
+                pa.struct(
+                    [
+                        pa.field("description", pa.utf8(), True),
+                        pa.field("latitude", pa.utf8(), False),
+                        pa.field("longitude", pa.utf8(), False),
+                    ]
+                ),
+                True,  # Optional
+            ),
+            pa.field("vCards", pa.list_(pa.utf8()), True),
+            pa.field(
+                "replyTo",
+                pa.struct(
+                    [
+                        pa.field("id", pa.utf8(), False),
+                        pa.field("participant", pa.utf8(), False),
+                        pa.field("body", pa.utf8(), False),
+                    ]
+                ),
+                True,
+            ),
+        ]
+    )

@@ -1,16 +1,5 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use lancedb::index::vector::IvfFlatIndexBuilder;
 use lancedb::index::{
@@ -18,29 +7,32 @@ use lancedb::index::{
     vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
     Index as LanceDbIndex,
 };
+use pyo3::types::PyStringMethods;
+use pyo3::IntoPyObject;
 use pyo3::{
     exceptions::{PyKeyError, PyValueError},
     intern, pyclass, pymethods,
     types::PyAnyMethods,
-    Bound, FromPyObject, IntoPy, PyAny, PyObject, PyResult, Python,
+    Bound, FromPyObject, PyAny, PyResult, Python,
 };
 
 use crate::util::parse_distance_type;
 
-pub fn class_name<'a>(ob: &'a Bound<'_, PyAny>) -> PyResult<&'a str> {
-    let full_name: &str = ob
+pub fn class_name(ob: &'_ Bound<'_, PyAny>) -> PyResult<String> {
+    let full_name = ob
         .getattr(intern!(ob.py(), "__class__"))?
-        .getattr(intern!(ob.py(), "__name__"))?
-        .extract()?;
+        .getattr(intern!(ob.py(), "__name__"))?;
+    let full_name = full_name.downcast()?.to_string_lossy();
+
     match full_name.rsplit_once('.') {
-        Some((_, name)) => Ok(name),
-        None => Ok(full_name),
+        Some((_, name)) => Ok(name.to_string()),
+        None => Ok(full_name.to_string()),
     }
 }
 
 pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<LanceDbIndex> {
     if let Some(source) = source {
-        match class_name(source)? {
+        match class_name(source)?.as_str() {
             "BTree" => Ok(LanceDbIndex::BTree(BTreeIndexBuilder::default())),
             "Bitmap" => Ok(LanceDbIndex::Bitmap(Default::default())),
             "LabelList" => Ok(LanceDbIndex::LabelList(Default::default())),
@@ -207,11 +199,11 @@ impl IndexConfig {
 
     // For backwards-compatibility with the old sync SDK, we also support getting
     // attributes via __getitem__.
-    pub fn __getitem__(&self, key: String, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn __getitem__<'a>(&self, key: String, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
         match key.as_str() {
-            "index_type" => Ok(self.index_type.clone().into_py(py)),
-            "columns" => Ok(self.columns.clone().into_py(py)),
-            "name" | "index_name" => Ok(self.name.clone().into_py(py)),
+            "index_type" => Ok(self.index_type.clone().into_pyobject(py)?.into_any()),
+            "columns" => Ok(self.columns.clone().into_pyobject(py)?.into_any()),
+            "name" | "index_name" => Ok(self.name.clone().into_pyobject(py)?.into_any()),
             _ => Err(PyKeyError::new_err(format!("Invalid key: {}", key))),
         }
     }

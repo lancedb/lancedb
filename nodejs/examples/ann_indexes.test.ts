@@ -3,7 +3,7 @@
 import { expect, test } from "@jest/globals";
 // --8<-- [start:import]
 import * as lancedb from "@lancedb/lancedb";
-import { VectorQuery } from "@lancedb/lancedb";
+import type { VectorQuery } from "@lancedb/lancedb";
 // --8<-- [end:import]
 import { withTempDirectory } from "./util.ts";
 
