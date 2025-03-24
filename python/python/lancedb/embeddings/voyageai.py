@@ -164,7 +164,6 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
             "voyage-finance-2",
             "voyage-multilingual-2",
             "voyage-law-2",
-            "voyage-multimodal-3",
         ]:
             return 1024
         else:
