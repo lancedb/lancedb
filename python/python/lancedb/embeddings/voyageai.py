@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import base64
 import os
 from typing import ClassVar, TYPE_CHECKING, List, Union, Any
 
@@ -10,7 +11,6 @@ from io import BytesIO
 
 import numpy as np
 import pyarrow as pa
-import requests
 
 from ..util import attempt_import_or_raise
 from .base import EmbeddingFunction
@@ -33,21 +33,47 @@ def transform_input(input: Union[str, bytes, Path]):
     PIL = attempt_import_or_raise("PIL", "pillow")
     if isinstance(input, str):
         if is_valid_url(input):
-            try:
-                response = requests.get(input)
-                return PIL.Image.open(BytesIO(response.content))
-            except Exception:
-                return input
+            content = {
+                "type": "image_url",
+                "image_url": input
+            }
         else:
-            return input
+            content = {
+                "type": "text",
+                "text": input
+            }
     elif isinstance(input, PIL.Image.Image):
-        return input
+        buffered = BytesIO()
+        input.save(buffered, format="JPEG")
+        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        content = {
+            "type": "image_base64",
+            "image_base64": "data:image/jpeg;base64,"+img_str
+        }
     elif isinstance(input, bytes):
-        return PIL.Image.open(BytesIO(input))
+        img = PIL.Image.open(BytesIO(input))
+        buffered = BytesIO()
+        img.save(buffered, format="JPEG")
+        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        content = {
+            "type": "image_base64",
+            "image_base64": "data:image/jpeg;base64,"+img_str
+        }
     elif isinstance(input, Path):
-        return PIL.Image.open(input)
+        img = PIL.Image.open(input)
+        buffered = BytesIO()
+        img.save(buffered, format="JPEG")
+        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        content = {
+            "type": "image_base64",
+            "image_base64": "data:image/jpeg;base64,"+img_str
+        }
     else:
-        raise ValueError("Each input should be either str, bytes, Path or Image.")
+        raise ValueError(f"Each input should be either str, bytes, Path or Image.")
+
+    return {
+        "content": [content]
+    }
 
 
 def sanitize_multmodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
@@ -67,9 +93,9 @@ def sanitize_multmodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
         )
 
     if not all(isinstance(x, (str, bytes, Path, PIL.Image.Image)) for x in inputs):
-        raise ValueError("Each input should be either str, bytes, Path or Image.")
+        raise ValueError(f"Each input should be either str, bytes, Path or Image.")
 
-    return [[transform_input(i)] for i in inputs]
+    return [transform_input(i) for i in inputs]
 
 
 def sanitize_text_input(inputs: TEXT) -> List[Any]:
@@ -86,7 +112,7 @@ def sanitize_text_input(inputs: TEXT) -> List[Any]:
         raise ValueError(f"Input type {type(inputs)} not allowed with text model.")
 
     if not all(isinstance(x, str) for x in inputs):
-        raise ValueError("Each input should be str.")
+        raise ValueError(f"Each input should be str.")
 
     return inputs
 
@@ -164,6 +190,7 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
             "voyage-finance-2",
             "voyage-multilingual-2",
             "voyage-law-2",
+            "voyage-multimodal-3",
         ]:
             return 1024
         else:
