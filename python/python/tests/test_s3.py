@@ -276,3 +276,58 @@ def test_s3_dynamodb_drop_all_tables(s3_bucket: str, commit_table: str, monkeypa
     assert db.table_names() == ["foo"]
 
     db.drop_all_tables()
+
+
+def get_ddb_entries(client, uri):
+    return client.query(
+        TableName="lance-integtest",
+        KeyConditions={
+            "base_uri": {"AttributeValueList": [{"S": uri}], "ComparisonOperator": "EQ"}
+        },
+    ).get("Items", [])
+
+
+@pytest.mark.s3_test
+def test_reuse_table_name(s3_bucket: str, commit_table: str):
+    uri = f"s3+ddb://{s3_bucket}/test3?ddbTableName={commit_table}"
+    db = lancedb.connect(uri, read_consistency_interval=timedelta(hours=1))
+
+    # Create a table
+    data1 = pa.table({"id": range(0, 2)})
+    table = db.create_table("table", data1)
+
+    # Append to create version 2
+    data2 = pa.table({"id": range(2, 3)})
+    table.add(data2)
+
+    # Have a latest handle
+    table_latest = table
+
+    # Have a time travel handle
+    table_version_1 = table.checkout(1)
+
+    assert table_latest.version == 2
+    ddb = get_boto3_client("dynamodb", endpoint_url=CONFIG["dynamodb_endpoint"])
+    assert len(get_ddb_entries(ddb, uri)) == 2
+
+    # Drop the table
+    db.drop_table("table")
+
+    # Assert all files deleted
+    s3 = get_boto3_client("s3", endpoint_url=CONFIG["aws_endpoint"])
+    objects = s3.list_objects_v2(Bucket=s3_bucket, Prefix="test3/table.lance").get(
+        "Contents", []
+    )
+    assert objects == []
+
+    # Assert ddb entries clear
+    assert len(get_ddb_entries(ddb, uri)) == 0
+
+    # Recreate with new data
+    data3 = pa.table({"id": range(10, 12)})
+    table = db.create_table({"table", data3})
+
+    assert table_latest.to_arrow() == data3
+    assert table_latest.version == 1
+
+    assert table_version_1.to_arrow() == data3
