@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
-
 import base64
 import os
 from typing import ClassVar, TYPE_CHECKING, List, Union, Any
@@ -33,22 +32,16 @@ def transform_input(input: Union[str, bytes, Path]):
     PIL = attempt_import_or_raise("PIL", "pillow")
     if isinstance(input, str):
         if is_valid_url(input):
-            content = {
-                "type": "image_url",
-                "image_url": input
-            }
+            content = {"type": "image_url", "image_url": input}
         else:
-            content = {
-                "type": "text",
-                "text": input
-            }
+            content = {"type": "text", "text": input}
     elif isinstance(input, PIL.Image.Image):
         buffered = BytesIO()
         input.save(buffered, format="JPEG")
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
         content = {
             "type": "image_base64",
-            "image_base64": "data:image/jpeg;base64,"+img_str
+            "image_base64": "data:image/jpeg;base64," + img_str,
         }
     elif isinstance(input, bytes):
         img = PIL.Image.open(BytesIO(input))
@@ -57,7 +50,7 @@ def transform_input(input: Union[str, bytes, Path]):
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
         content = {
             "type": "image_base64",
-            "image_base64": "data:image/jpeg;base64,"+img_str
+            "image_base64": "data:image/jpeg;base64," + img_str,
         }
     elif isinstance(input, Path):
         img = PIL.Image.open(input)
@@ -66,14 +59,12 @@ def transform_input(input: Union[str, bytes, Path]):
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
         content = {
             "type": "image_base64",
-            "image_base64": "data:image/jpeg;base64,"+img_str
+            "image_base64": "data:image/jpeg;base64," + img_str,
         }
     else:
         raise ValueError(f"Each input should be either str, bytes, Path or Image.")
 
-    return {
-        "content": [content]
-    }
+    return {"content": [content]}
 
 
 def sanitize_multmodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
