@@ -109,10 +109,11 @@ class FullTextSearchQuery(pydantic.BaseModel):
 class Query(pydantic.BaseModel):
     """A LanceDB Query
 
-    Queries are constructed by the `Table.search` and `Table.query` methods.  This
-    class is a python representation of the query.  Normally you will not need to
-    interact with this class directly.  You can build up a query and execute it using
-    collection methods such as `to_batches()`, `to_arrow()`, `to_pandas()`, etc.
+    Queries are constructed by the `Table.search` method.  This class is a
+    python representation of the query.  Normally you will not need to interact
+    with this class directly.  You can build up a query and execute it using
+    collection methods such as `to_batches()`, `to_arrow()`, `to_pandas()`,
+    etc.
 
     However, you can use the `to_query()` method to get the underlying query object.
     This can be useful for serializing a query or using it in a different context.
