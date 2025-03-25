@@ -62,7 +62,7 @@ def transform_input(input: Union[str, bytes, Path]):
             "image_base64": "data:image/jpeg;base64," + img_str,
         }
     else:
-        raise ValueError(f"Each input should be either str, bytes, Path or Image.")
+        raise ValueError("Each input should be either str, bytes, Path or Image.")
 
     return {"content": [content]}
 
@@ -84,7 +84,7 @@ def sanitize_multmodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
         )
 
     if not all(isinstance(x, (str, bytes, Path, PIL.Image.Image)) for x in inputs):
-        raise ValueError(f"Each input should be either str, bytes, Path or Image.")
+        raise ValueError("Each input should be either str, bytes, Path or Image.")
 
     return [transform_input(i) for i in inputs]
 
@@ -103,7 +103,7 @@ def sanitize_text_input(inputs: TEXT) -> List[Any]:
         raise ValueError(f"Input type {type(inputs)} not allowed with text model.")
 
     if not all(isinstance(x, str) for x in inputs):
-        raise ValueError(f"Each input should be str.")
+        raise ValueError("Each input should be str.")
 
     return inputs
 
