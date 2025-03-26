@@ -36,6 +36,33 @@ protected inner: NativeQueryType | Promise<NativeQueryType>;
 
 ## Methods
 
+### analyzePlan()
+
+```ts
+analyzePlan(): Promise<string>
+```
+
+Executes the query and returns the runtime metrics.
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+execution plan with runtime metrics
+
+#### Example
+
+```ts
+import * as lancedb from "@lancedb/lancedb"
+const db = await lancedb.connect("./.lancedb");
+const table = await db.createTable("my_table", [
+  { vector: [1.1, 0.9], id: "1" },
+]);
+const plan = await table.query().nearestTo([0.5, 0.2]).analyzePlan();
+```
+
+***
+
 ### execute()
 
 ```ts
