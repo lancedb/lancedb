@@ -1008,9 +1008,7 @@ class Table(ABC):
     ) -> pa.RecordBatchReader: ...
 
     @abstractmethod
-    def _explain_plan(
-        self, query: Query, verbose: Optional[bool] = False
-    ) -> str: ...
+    def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str: ...
 
     @abstractmethod
     def _do_merge(
