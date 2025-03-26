@@ -348,6 +348,27 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
       return this.inner.explainPlan(verbose);
     }
   }
+
+  /**
+   * Executes the query and returns the runtime metrics.
+   *
+   * @example
+   * import * as lancedb from "@lancedb/lancedb"
+   * const db = await lancedb.connect("./.lancedb");
+   * const table = await db.createTable("my_table", [
+   *   { vector: [1.1, 0.9], id: "1" },
+   * ]);
+   * const plan = await table.query().nearestTo([0.5, 0.2]).analyzePlan();
+   *
+   * @returns execution plan with runtime metrics
+   */
+  async analyzePlan(): Promise<string> {
+    if (this.inner instanceof Promise) {
+      return this.inner.then((inner) => inner.analyzePlan());
+    } else {
+      return this.inner.analyzePlan();
+    }
+  }
 }
 
 /**

@@ -116,13 +116,9 @@ impl Query {
     }
 
     #[napi(catch_unwind)]
-    pub async fn analyze_plan(&self, max_batch_length: Option<u32>) -> napi::Result<String> {
-        let mut execution_opts = QueryExecutionOptions::default();
-        if let Some(max_batch_length) = max_batch_length {
-            execution_opts.max_batch_length = max_batch_length;
-        }
+    pub async fn analyze_plan(&self) -> napi::Result<String> {
         self.inner
-            .analyze_plan_with_options(execution_opts)
+            .analyze_plan()
             .await
             .map_err(|e| {
                 napi::Error::from_reason(format!(

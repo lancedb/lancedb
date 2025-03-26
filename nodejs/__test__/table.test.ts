@@ -633,6 +633,23 @@ describe("When creating an index", () => {
     expect(plan2).not.toMatch("LanceScan");
   });
 
+  it("should be able to run analyze plan", async () => {
+    await tbl.createIndex("vec");
+    await tbl.add([
+      {
+        id: 300,
+        vec: Array(32)
+          .fill(1)
+          .map(() => Math.random()),
+        tags: [],
+      },
+    ]);
+
+    const plan = await tbl.query().nearestTo(queryVec).analyzePlan();
+    expect(plan).toMatch("AnalyzeExec");
+    expect(plan).toMatch("metrics=");
+  });
+
   it("should be able to query with row id", async () => {
     const results = await tbl
       .query()
@@ -1343,6 +1360,30 @@ describe("when calling explainPlan", () => {
     const plan = await table.query().nearestTo(queryVec).explainPlan(true);
 
     expect(plan).toMatch("KNN");
+  });
+});
+
+describe("when calling analyzePlan", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+  let queryVec: number[];
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const con = await connect(tmpDir.name);
+    table = await con.createTable("vectors", [{ id: 1, vector: [0.1, 0.2] }]);
+  });
+
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("retrieves runtime metrics", async () => {
+    queryVec = Array(2)
+      .fill(1)
+      .map(() => Math.random());
+    const plan = await table.query().nearestTo(queryVec).analyzePlan();
+
+    expect(plan).toMatch("AnalyzeExec");
   });
 });
 
