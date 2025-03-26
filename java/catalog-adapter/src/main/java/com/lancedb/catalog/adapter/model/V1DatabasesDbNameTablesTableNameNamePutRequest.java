@@ -20,7 +20,7 @@ import javax.annotation.Generated;
  */
 
 @JsonTypeName("_v1_databases__dbName__tables__tableName__name_put_request")
-@Generated(value = "org.openapitools.codegen.languages.SpringCodegen", date = "2025-03-26T15:36:49.834244+08:00[Asia/Shanghai]", comments = "Generator version: 7.12.0")
+@Generated(value = "org.openapitools.codegen.languages.SpringCodegen", comments = "Generator version: 7.12.0")
 public class V1DatabasesDbNameTablesTableNameNamePutRequest {
 
   private String newName;
