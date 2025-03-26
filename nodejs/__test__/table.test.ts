@@ -58,7 +58,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
     it("be displayable", async () => {
       expect(table.display()).toMatch(
-        /NativeTable\(some_table, uri=.*, read_consistency_interval=None\)/,
+        /NativeTable\(some_table, uri=.*, read_consistency_interval=5s\)/,
       );
       table.close();
       expect(table.display()).toBe("ClosedTable(some_table)");

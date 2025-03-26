@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use env_logger::Env;
+use napi::{bindgen_prelude::Null, Either};
 use napi_derive::*;
 
 mod connection;
@@ -18,7 +19,6 @@ mod table;
 mod util;
 
 #[napi(object)]
-#[derive(Debug)]
 pub struct ConnectionOptions {
     /// (For LanceDB OSS only): The interval, in seconds, at which to check for
     /// updates to the table from other processes. If None, then consistency is not
@@ -29,7 +29,7 @@ pub struct ConnectionOptions {
     /// has passed since the last check, then the table will be checked for updates.
     /// Note: this consistency only applies to read operations. Write operations are
     /// always consistent.
-    pub read_consistency_interval: Option<f64>,
+    pub read_consistency_interval: Option<Either<f64, Null>>,
     /// (For LanceDB OSS only): configuration for object storage.
     ///
     /// The available options are described at https://lancedb.github.io/lancedb/guides/storage/
