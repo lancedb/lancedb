@@ -659,6 +659,15 @@ class LanceQueryBuilder(ABC):
         """  # noqa: E501
         return self._table._explain_plan(self.to_query_object(), verbose=verbose)
 
+    def analyze_plan(self) -> str:
+        """Execute the plan for this query and display with runtime metrics.
+
+        Returns
+        -------
+        plan : str
+        """
+        return self._table._analyze_plan(self.to_query_object())
+
     def vector(self, vector: Union[np.ndarray, list]) -> Self:
         """Set the vector to search for.
 
@@ -1941,6 +1950,15 @@ class AsyncQueryBase(object):
         """  # noqa: E501
         return await self._inner.explain_plan(verbose)
 
+    async def analyze_plan(self):
+        """Execute the query and display with runtime metrics.
+
+        Returns
+        -------
+        plan : str
+        """
+        return await self._inner.analyze_plan()
+
 
 class AsyncQuery(AsyncQueryBase):
     def __init__(self, inner: LanceQuery):
@@ -2517,5 +2535,19 @@ class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
         results.append(await self._inner.to_vector_query().explain_plan(verbose))
         results.append("FTS Search Plan:")
         results.append(await self._inner.to_fts_query().explain_plan(verbose))
+
+        return "\n".join(results)
+
+    async def analyze_plan(self):
+        """Execute both queries and display with runtime metrics.
+
+        Returns
+        -------
+        plan"
+        """
+        results = ["Vector Search Query:"]
+        results.append(await self._inner.to_vector_query().analyze_plan())
+        results.append("FTS Search Query:")
+        results.append(await self._inner.to_fts_query().analyze_plan())
 
         return "\n".join(results)

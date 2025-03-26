@@ -114,6 +114,23 @@ impl Query {
             ))
         })
     }
+
+    #[napi(catch_unwind)]
+    pub async fn analyze_plan(&self, max_batch_length: Option<u32>) -> napi::Result<String> {
+        let mut execution_opts = QueryExecutionOptions::default();
+        if let Some(max_batch_length) = max_batch_length {
+            execution_opts.max_batch_length = max_batch_length;
+        }
+        self.inner
+            .analyze_plan_with_options(execution_opts)
+            .await
+            .map_err(|e| {
+                napi::Error::from_reason(format!(
+                    "Failed to execute analyze plan: {}",
+                    convert_error(&e)
+                ))
+            })
+    }
 }
 
 #[napi]
@@ -255,6 +272,16 @@ impl VectorQuery {
         self.inner.explain_plan(verbose).await.map_err(|e| {
             napi::Error::from_reason(format!(
                 "Failed to retrieve the query plan: {}",
+                convert_error(&e)
+            ))
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn analyze_plan(&self) -> napi::Result<String> {
+        self.inner.analyze_plan().await.map_err(|e| {
+            napi::Error::from_reason(format!(
+                "Failed to execute analyze plan: {}",
                 convert_error(&e)
             ))
         })

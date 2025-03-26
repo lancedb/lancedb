@@ -579,6 +579,15 @@ pub trait ExecutableQuery {
     ) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send;
 
     fn explain_plan(&self, verbose: bool) -> impl Future<Output = Result<String>> + Send;
+
+    fn analyze_plan(&self) -> impl Future<Output = Result<String>> + Send {
+        self.analyze_plan_with_options(QueryExecutionOptions::default())
+    }
+
+    fn analyze_plan_with_options(
+        &self,
+        options: QueryExecutionOptions,
+    ) -> impl Future<Output = Result<String>> + Send;
 }
 
 /// A query filter that can be applied to a query
@@ -764,6 +773,11 @@ impl ExecutableQuery for Query {
     async fn explain_plan(&self, verbose: bool) -> Result<String> {
         let query = AnyQuery::Query(self.request.clone());
         self.parent.explain_plan(&query, verbose).await
+    }
+
+    async fn analyze_plan_with_options(&self, options: QueryExecutionOptions) -> Result<String> {
+        let query = AnyQuery::Query(self.request.clone());
+        self.parent.analyze_plan(&query, options).await
     }
 }
 
@@ -1089,6 +1103,11 @@ impl ExecutableQuery for VectorQuery {
         let query = AnyQuery::VectorQuery(self.request.clone());
         self.parent.explain_plan(&query, verbose).await
     }
+
+    async fn analyze_plan_with_options(&self, options: QueryExecutionOptions) -> Result<String> {
+        let query = AnyQuery::VectorQuery(self.request.clone());
+        self.parent.analyze_plan(&query, options).await
+    }
 }
 
 impl HasQuery for VectorQuery {
@@ -1368,6 +1387,31 @@ mod tests {
         while let Some(batch) = results.next().await {
             assert!(batch.unwrap().num_rows() <= 10);
         }
+    }
+
+    #[tokio::test]
+    async fn test_analyze_plan() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let result = table.query().analyze_plan().await.unwrap();
+        assert!(result.contains("metrics="));
+    }
+
+    #[tokio::test]
+    async fn test_analyze_plan_with_options() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let result = table
+            .query()
+            .analyze_plan_with_options(QueryExecutionOptions {
+                max_batch_length: 10,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(result.contains("metrics="));
     }
 
     fn assert_plan_exists(plan: &Arc<dyn ExecutionPlan>, name: &str) -> bool {

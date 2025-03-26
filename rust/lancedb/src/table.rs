@@ -33,7 +33,7 @@ use lance::dataset::{
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::io::WrappingObjectStore;
-use lance_datafusion::exec::execute_plan;
+use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
@@ -433,6 +433,12 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
 
         Ok(format!("{}", display.indent(verbose)))
     }
+    async fn analyze_plan(
+        &self,
+        query: &AnyQuery,
+        options: QueryExecutionOptions,
+    ) -> Result<String>;
+
     /// Add new records to the table.
     async fn add(
         &self,
@@ -2190,6 +2196,15 @@ impl BaseTable for NativeTable {
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
         self.generic_query(query, options).await
+    }
+
+    async fn analyze_plan(
+        &self,
+        query: &AnyQuery,
+        options: QueryExecutionOptions,
+    ) -> Result<String> {
+        let plan = self.create_plan(query, options).await?;
+        Ok(lance_analyze_plan(plan, Default::default()).await?)
     }
 
     async fn merge_insert(
