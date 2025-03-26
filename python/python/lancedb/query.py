@@ -657,7 +657,7 @@ class LanceQueryBuilder(ABC):
         -------
         plan : str
         """  # noqa: E501
-        return self._table._explain_plan(self.to_query_object())
+        return self._table._explain_plan(self.to_query_object(), verbose=verbose)
 
     def vector(self, vector: Union[np.ndarray, list]) -> Self:
         """Set the vector to search for.

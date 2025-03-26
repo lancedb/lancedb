@@ -1008,6 +1008,9 @@ class Table(ABC):
     ) -> pa.RecordBatchReader: ...
 
     @abstractmethod
+    def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str: ...
+
+    @abstractmethod
     def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
@@ -2292,8 +2295,8 @@ class LanceTable(Table):
 
         return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
 
-    def _explain_plan(self, query: Query) -> str:
-        return LOOP.run(self._table._explain_plan(query))
+    def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
+        return LOOP.run(self._table._explain_plan(query, verbose))
 
     def _do_merge(
         self,
@@ -3358,10 +3361,10 @@ class AsyncTable:
 
         return await async_query.to_batches(max_batch_length=batch_size)
 
-    async def _explain_plan(self, query: Query) -> str:
+    async def _explain_plan(self, query: Query, verbose: Optional[bool]) -> str:
         # This method is used by the sync table
         async_query = self._sync_query_to_async(query)
-        return await async_query.explain_plan()
+        return await async_query.explain_plan(verbose)
 
     async def _do_merge(
         self,
