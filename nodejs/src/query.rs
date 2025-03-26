@@ -117,15 +117,12 @@ impl Query {
 
     #[napi(catch_unwind)]
     pub async fn analyze_plan(&self) -> napi::Result<String> {
-        self.inner
-            .analyze_plan()
-            .await
-            .map_err(|e| {
-                napi::Error::from_reason(format!(
-                    "Failed to execute analyze plan: {}",
-                    convert_error(&e)
-                ))
-            })
+        self.inner.analyze_plan().await.map_err(|e| {
+            napi::Error::from_reason(format!(
+                "Failed to execute analyze plan: {}",
+                convert_error(&e)
+            ))
+        })
     }
 }
 
