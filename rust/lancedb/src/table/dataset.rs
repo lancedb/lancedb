@@ -2,15 +2,15 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::{
-    ops::{Deref, DerefMut},
-    sync::Arc,
-    time::{self, Duration, Instant},
+    future::Future, ops::{Deref, DerefMut}, sync::Arc, time::{self, Duration, Instant}
 };
 
+use futures::FutureExt;
 use lance::Dataset;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::error::Result;
+use crate::{error::Result, Error};
+use lance::Error as LanceError;
 
 /// A wrapper around a [Dataset] that provides lazy-loading and consistency checks.
 ///
@@ -22,13 +22,16 @@ pub struct DatasetConsistencyWrapper(Arc<RwLock<DatasetRef>>);
 ///
 /// The dataset is lazily loaded, and starts off as None. On the first access,
 /// the dataset is loaded.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum DatasetRef {
     /// In this mode, the dataset is always the latest version.
     Latest {
         dataset: Dataset,
         read_consistency_interval: Option<Duration>,
         last_consistency_check: Option<time::Instant>,
+        /// A background task loading the next version of the dataset. This happens
+        /// in the background so as not to block the current thread.
+        refresh_task: Option<tokio::task::JoinHandle<Result<Dataset>>>,
     },
     /// In this mode, the dataset is a specific version. It cannot be mutated.
     TimeTravel { dataset: Dataset, version: u64 },
@@ -41,9 +44,18 @@ impl DatasetRef {
             Self::Latest {
                 dataset,
                 last_consistency_check,
+                refresh_task,
                 ..
             } => {
-                dataset.checkout_latest().await?;
+                // Replace the refresh task
+                if let Some(refresh_task) = refresh_task {
+                    refresh_task.abort();
+                }
+                let mut new_dataset = dataset.clone();
+                refresh_task.replace(tokio::spawn(async move {
+                    new_dataset.checkout_latest().await?;
+                    Ok(new_dataset)
+                }));
                 last_consistency_check.replace(Instant::now());
             }
             Self::TimeTravel { dataset, version } => {
@@ -57,26 +69,29 @@ impl DatasetRef {
         matches!(self, Self::Latest { .. })
     }
 
-    async fn need_reload(&self) -> Result<bool> {
-        Ok(match self {
-            Self::Latest { dataset, .. } => {
-                dataset.latest_version_id().await? != dataset.version().version
-            }
-            Self::TimeTravel { dataset, version } => dataset.version().version != *version,
-        })
+    fn strong_consistency(&self) -> bool {
+        match self {
+            Self::Latest {
+                read_consistency_interval,
+                ..
+            } => match read_consistency_interval {
+                Some(interval) if interval.as_nanos() == 0 => true,
+                _ => false,
+            },
+            Self::TimeTravel { .. } => false,
+        }
     }
 
     async fn as_latest(&mut self, read_consistency_interval: Option<Duration>) -> Result<()> {
         match self {
             Self::Latest { .. } => Ok(()),
             Self::TimeTravel { dataset, .. } => {
-                dataset
-                    .checkout_version(dataset.latest_version_id().await?)
-                    .await?;
+                dataset.checkout_latest().await?;
                 *self = Self::Latest {
                     dataset: dataset.clone(),
                     read_consistency_interval,
                     last_consistency_check: Some(Instant::now()),
+                    refresh_task: None,
                 };
                 Ok(())
             }
@@ -114,11 +129,82 @@ impl DatasetRef {
         match self {
             Self::Latest {
                 dataset: ref mut ds,
+                refresh_task,
+                last_consistency_check,
                 ..
             } => {
                 *ds = dataset;
+                if let Some(refresh_task) = refresh_task {
+                    refresh_task.abort();
+                }
+                *refresh_task = None;
+                *last_consistency_check = Some(Instant::now());
             }
             _ => unreachable!("Dataset should be in latest mode at this point"),
+        }
+    }
+
+    /// Wait for the background refresh task to complete.
+    async fn await_refresh(&mut self) -> Result<()> {
+        match self {
+            Self::Latest {
+                refresh_task,
+                read_consistency_interval,
+                ..
+            } => {
+                if let Some(refresh_task) = refresh_task {
+                    let dataset = refresh_task.await.expect("Refresh task panicked")?;
+                    *self = Self::Latest {
+                        dataset,
+                        read_consistency_interval: *read_consistency_interval,
+                        last_consistency_check: Some(Instant::now()),
+                        refresh_task: None,
+                    };
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Check if background refresh task is done, and if so, update the dataset.
+    fn check_refresh(&mut self) -> Result<()> {
+        match self {
+            Self::Latest {
+                refresh_task,
+                read_consistency_interval,
+                ..
+            } => {
+                if let Some(refresh_task) = refresh_task {
+                    if refresh_task.is_finished() {
+                        let dataset = refresh_task
+                            .now_or_never()
+                            .unwrap()
+                            .expect("Refresh task panicked")?;
+                        *self = Self::Latest {
+                            dataset,
+                            read_consistency_interval: *read_consistency_interval,
+                            last_consistency_check: Some(Instant::now()),
+                            refresh_task: None,
+                        };
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn refresh_is_ready(&self) -> bool {
+        match self {
+            Self::Latest { refresh_task, .. } => {
+                if let Some(refresh_task) = refresh_task {
+                    refresh_task.is_finished()
+                } else {
+                    false
+                }
+            }
+            _ => false,
         }
     }
 }
@@ -130,6 +216,7 @@ impl DatasetConsistencyWrapper {
             dataset,
             read_consistency_interval,
             last_consistency_check: Some(Instant::now()),
+            refresh_task: None,
         })))
     }
 
@@ -161,6 +248,55 @@ impl DatasetConsistencyWrapper {
         })
     }
 
+    /// Run a function on the dataset.
+    ///
+    /// This is robust to cleanup and recreation of the dataset.
+    pub async fn run_safe<T, F>(&self, f: impl Fn(&Dataset) -> F) -> Result<T>
+    where F: Future<Output = Result<T>> {
+        let dataset = self.get().await?;
+        match f(&*dataset).await {
+            Ok(value) => Ok(value),
+            // This likely means we are reading a version that doesn't exist anymore.
+            Err(Error::Lance { source: LanceError::IO {
+                source,
+                ..
+            } }) if source.to_string().contains("Not found") => {
+                if dataset.guard.is_latest() {
+                    self.reload().await?;
+                    f(&*dataset).await
+                } else {
+                    Err(Error::InvalidInput {
+                        message: "Checked out version no longer exists. This could be because it was deleted by Optimize or the table was dropped.".to_string(),
+                    })
+                }
+            },
+            Err(err) => Err(err),
+        }
+    }
+
+    pub async fn run_safe_mut<T, F>(&self, f: impl Fn(&mut Dataset) -> F) -> Result<T>
+    where F: Future<Output = Result<T>> {
+        let mut dataset = self.get_mut().await?;
+        match f(&mut *dataset).await {
+            Ok(value) => Ok(value),
+            // This likely means we are reading a version that doesn't exist anymore.
+            Err(Error::Lance { source: LanceError::IO {
+                source,
+                ..
+            } }) if source.to_string().contains("Not found") => {
+                if dataset.guard.is_latest() {
+                    self.reload().await?;
+                    f(&mut *dataset).await
+                } else {
+                    Err(Error::InvalidInput {
+                        message: "Checked out version no longer exists. This could be because it was deleted by Optimize or the table was dropped.".to_string(),
+                    })
+                }
+            },
+            Err(err) => Err(err),
+        }
+    }
+
     /// Convert into a wrapper in latest version mode
     pub async fn as_latest(&self, read_consistency_interval: Option<Duration>) -> Result<()> {
         if self.0.read().await.is_latest() {
@@ -187,19 +323,13 @@ impl DatasetConsistencyWrapper {
         self.0.write().await.set_latest(dataset);
     }
 
+    /// Perform a hard reload.
     pub async fn reload(&self) -> Result<()> {
-        if !self.0.read().await.need_reload().await? {
-            return Ok(());
-        }
-
         let mut write_guard = self.0.write().await;
-        // on lock escalation -- check if someone else has already reloaded
-        if !write_guard.need_reload().await? {
-            return Ok(());
-        }
-
         // actually need reloading
-        write_guard.reload().await
+        write_guard.reload().await?;
+
+        write_guard.await_refresh().await
     }
 
     /// Returns the version, if in time travel mode, or None otherwise
@@ -245,9 +375,26 @@ impl DatasetConsistencyWrapper {
     /// Ensures that the dataset is loaded and up-to-date with consistency and
     /// version parameters.
     async fn ensure_up_to_date(&self) -> Result<()> {
+        // We may have previously created a background task to fetch the new
+        // version of the dataset. If that task is done, we should update the
+        // dataset.
+        {
+            let read_guard = self.0.read().await;
+            if read_guard.refresh_is_ready() {
+                drop(read_guard);
+                self.0.write().await.check_refresh()?;
+            }
+        }
+
         if !self.is_up_to_date().await? {
             self.reload().await?;
         }
+
+        // If we are in strong consistency mode, we should await the refresh task.
+        if self.0.read().await.strong_consistency() {
+            self.0.write().await.await_refresh().await?;
+        }
+
         Ok(())
     }
 }
@@ -288,5 +435,146 @@ impl DerefMut for DatasetWriteGuard<'_> {
             DatasetRef::Latest { dataset, .. } => dataset,
             DatasetRef::TimeTravel { dataset, .. } => dataset,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
+    use arrow_schema::{DataType, Field, Schema};
+    use chrono::TimeDelta;
+    use futures::StreamExt;
+    use tempfile::tempdir;
+
+    use crate::{connection::ConnectBuilder, query::ExecutableQuery, table::{AddDataMode, OptimizeAction}, Table};
+
+    use super::*;
+
+    fn batch_from_vec(
+        data: Vec<i64>,
+    ) -> RecordBatch {
+        let schema = Schema::new(vec![Field::new("a", DataType::Int64, false)]);
+        let columns = vec![Arc::new(Int64Array::from(data)) as ArrayRef];
+        RecordBatch::try_new(Arc::new(schema), columns).unwrap()
+    }
+
+    fn reader_from_batch(
+        batch: RecordBatch,
+    ) -> Box<dyn RecordBatchReader + Send + 'static> {
+        let schema = batch.schema();
+        Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+    }
+
+    async fn query_rows(
+        table: &Table
+    ) -> Result<Vec<i64>> {
+        let mut stream = table.query().execute().await?;
+        let mut values = vec![];
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            let a = batch["a"].as_any().downcast_ref::<Int64Array>().unwrap().values();
+            values.extend_from_slice(a);
+        }
+        Ok(values)
+    }
+
+    #[tokio::test]
+    async fn test_aggressive_cleanup() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        // TODO: if we change the consistency interval, make this none
+        let conn = ConnectBuilder::new(uri)
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("my_table", reader_from_batch(batch_from_vec(vec![1])))
+            .execute()
+            .await
+            .unwrap();
+
+        // Checkout one handle as time travel, one as latest
+        let table_latest = table;
+        let table_time_travel = conn.open_table("my_table")
+            .execute()
+            .await
+            .unwrap();
+        table_time_travel.checkout(1)
+            .await.unwrap();
+
+        // In another handle, create a new version
+        let table_new = conn.open_table("my_table").execute().await.unwrap();
+        table_new.add(reader_from_batch(batch_from_vec(vec![2, 3])))
+            .mode(AddDataMode::Overwrite)
+            .execute()
+            .await
+            .unwrap();
+
+        // Check original handles are unchanged.
+        assert_eq!(table_latest.version().await.unwrap(), 1);
+        assert_eq!(table_time_travel.version().await.unwrap(), 1);
+        assert_eq!(query_rows(&table_latest).await.unwrap(), vec![1]);
+        assert_eq!(query_rows(&table_time_travel).await.unwrap(), vec![1]);
+        assert_eq!(query_rows(&table_new).await.unwrap(), vec![2, 3]);
+
+        // In new handle, optimize aggressively, to delete old version
+        let stats= table_new.optimize(OptimizeAction::Prune {
+            older_than: Some(TimeDelta::zero()),
+            delete_unverified: Some(true),
+            error_if_tagged_old_versions: None,
+        }).await.unwrap();
+        dbg!(stats);
+
+        // Show that latest one moves on to new version
+        assert_eq!(query_rows(&table_latest).await.unwrap(), vec![2, 3]);
+        assert_eq!(table_latest.version().await.unwrap(), 2);
+
+        // Show that the time travel one provides a sensible error.
+        let res = query_rows(&table_latest).await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().to_string(), "Checked out version no longer exists.");
+    }
+
+    #[tokio::test]
+    async fn test_recreate_table() {
+        // Create a table
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri)
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("my_table", reader_from_batch(batch_from_vec(vec![1])))
+            .execute()
+            .await
+            .unwrap();
+
+        // Checkout one handle as time travel, one as latest
+        let table_latest = table;
+        let table_time_travel = conn.open_table("my_table")
+            .execute()
+            .await
+            .unwrap();
+
+        // In new handle, recreate the table
+        conn.drop_table("my_table").await.unwrap();
+        conn
+            .create_table("my_table", reader_from_batch(batch_from_vec(vec![2, 3])))
+            .execute()
+            .await
+            .unwrap();
+
+        // Show that latest one moves on to new version
+        assert_eq!(table_latest.version().await.unwrap(), 1);
+        assert_eq!(
+            query_rows(&table_latest).await.unwrap(),
+            &[2, 3]
+        );
+
+        // Show that the time travel one provides a sensible error.
+        let res = query_rows(&table_time_travel).await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().to_string(), "Checked out version no longer exists.");
     }
 }
