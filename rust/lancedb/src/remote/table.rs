@@ -425,10 +425,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(())
     }
     async fn restore(&self) -> Result<()> {
-        self.check_mutable().await?;
-        Err(Error::NotSupported {
-            message: "restore is not supported on LanceDB cloud.".into(),
-        })
+        let mut request = self
+            .client
+            .post(&format!("/v1/table/{}/restore/", self.name));
+        let version = self.current_version().await;
+        let body = serde_json::json!({ "version": version });
+        request = request.json(&body);
+
+        let (request_id, response) = self.client.send(request, true).await?;
+        self.check_table_response(&request_id, response).await?;
+        Ok(())
     }
 
     async fn list_versions(&self) -> Result<Vec<Version>> {
