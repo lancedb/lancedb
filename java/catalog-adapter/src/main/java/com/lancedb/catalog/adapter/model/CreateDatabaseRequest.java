@@ -1,39 +1,46 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.lancedb.catalog.adapter.model;
 
-import java.net.URI;
-import java.util.Objects;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonValue;
-import java.util.HashMap;
-import java.util.Map;
-import org.springframework.lang.Nullable;
-import java.time.OffsetDateTime;
-import javax.validation.Valid;
-import javax.validation.constraints.*;
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import javax.annotation.Generated;
+import javax.validation.Valid;
+import javax.validation.constraints.*;
 
 import java.util.*;
-import javax.annotation.Generated;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
 
-/**
- * CreateDatabaseRequest
- */
-
-@Generated(value = "org.openapitools.codegen.languages.SpringCodegen", comments = "Generator version: 7.12.0")
+/** CreateDatabaseRequest */
+@Generated(
+    value = "org.openapitools.codegen.languages.SpringCodegen",
+    comments = "Generator version: 7.12.0")
 public class CreateDatabaseRequest {
 
   private String name;
 
-  /**
-   * Gets or Sets mode
-   */
+  /** Gets or Sets mode */
   public enum ModeEnum {
     CREATE("Create"),
-    
+
     EXIST_OK("ExistOk"),
-    
+
     OVERWRITE("Overwrite");
 
     private String value;
@@ -65,16 +72,13 @@ public class CreateDatabaseRequest {
 
   private ModeEnum mode;
 
-  @Valid
-  private Map<String, String> options = new HashMap<>();
+  @Valid private Map<String, String> options = new HashMap<>();
 
   public CreateDatabaseRequest() {
     super();
   }
 
-  /**
-   * Constructor with only required parameters
-   */
+  /** Constructor with only required parameters */
   public CreateDatabaseRequest(String name, ModeEnum mode) {
     this.name = name;
     this.mode = mode;
@@ -87,9 +91,10 @@ public class CreateDatabaseRequest {
 
   /**
    * Get name
+   *
    * @return name
    */
-  @NotNull 
+  @NotNull
   @Schema(name = "name", requiredMode = Schema.RequiredMode.REQUIRED)
   @JsonProperty("name")
   public String getName() {
@@ -107,9 +112,10 @@ public class CreateDatabaseRequest {
 
   /**
    * Get mode
+   *
    * @return mode
    */
-  @NotNull 
+  @NotNull
   @Schema(name = "mode", requiredMode = Schema.RequiredMode.REQUIRED)
   @JsonProperty("mode")
   public ModeEnum getMode() {
@@ -135,9 +141,9 @@ public class CreateDatabaseRequest {
 
   /**
    * Get options
+   *
    * @return options
    */
-  
   @Schema(name = "options", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
   @JsonProperty("options")
   public Map<String, String> getOptions() {
@@ -157,9 +163,9 @@ public class CreateDatabaseRequest {
       return false;
     }
     CreateDatabaseRequest createDatabaseRequest = (CreateDatabaseRequest) o;
-    return Objects.equals(this.name, createDatabaseRequest.name) &&
-        Objects.equals(this.mode, createDatabaseRequest.mode) &&
-        Objects.equals(this.options, createDatabaseRequest.options);
+    return Objects.equals(this.name, createDatabaseRequest.name)
+        && Objects.equals(this.mode, createDatabaseRequest.mode)
+        && Objects.equals(this.options, createDatabaseRequest.options);
   }
 
   @Override
@@ -179,8 +185,7 @@ public class CreateDatabaseRequest {
   }
 
   /**
-   * Convert the given object to string with each line indented by 4 spaces
-   * (except the first line).
+   * Convert the given object to string with each line indented by 4 spaces (except the first line).
    */
   private String toIndentedString(Object o) {
     if (o == null) {
@@ -189,4 +194,3 @@ public class CreateDatabaseRequest {
     return o.toString().replace("\n", "\n    ");
   }
 }
-

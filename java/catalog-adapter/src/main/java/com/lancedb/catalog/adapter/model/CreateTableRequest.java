@@ -1,40 +1,46 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.lancedb.catalog.adapter.model;
 
-import java.net.URI;
-import java.util.Objects;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonValue;
-import com.lancedb.catalog.adapter.model.TableDefinition;
-import org.springframework.lang.Nullable;
-import java.time.OffsetDateTime;
-import javax.validation.Valid;
-import javax.validation.constraints.*;
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import javax.annotation.Generated;
+import javax.validation.Valid;
+import javax.validation.constraints.*;
 
 import java.util.*;
-import javax.annotation.Generated;
+import java.util.Objects;
 
-/**
- * CreateTableRequest
- */
-
-@Generated(value = "org.openapitools.codegen.languages.SpringCodegen", comments = "Generator version: 7.12.0")
+/** CreateTableRequest */
+@Generated(
+    value = "org.openapitools.codegen.languages.SpringCodegen",
+    comments = "Generator version: 7.12.0")
 public class CreateTableRequest {
 
   private String name;
 
   private TableDefinition definition;
 
-  /**
-   * Gets or Sets mode
-   */
+  /** Gets or Sets mode */
   public enum ModeEnum {
     CREATE("Create"),
-    
+
     EXIST_OK("ExistOk"),
-    
+
     OVERWRITE("Overwrite");
 
     private String value;
@@ -70,9 +76,7 @@ public class CreateTableRequest {
     super();
   }
 
-  /**
-   * Constructor with only required parameters
-   */
+  /** Constructor with only required parameters */
   public CreateTableRequest(String name, TableDefinition definition) {
     this.name = name;
     this.definition = definition;
@@ -85,9 +89,10 @@ public class CreateTableRequest {
 
   /**
    * Get name
+   *
    * @return name
    */
-  @NotNull 
+  @NotNull
   @Schema(name = "name", requiredMode = Schema.RequiredMode.REQUIRED)
   @JsonProperty("name")
   public String getName() {
@@ -105,9 +110,11 @@ public class CreateTableRequest {
 
   /**
    * Get definition
+   *
    * @return definition
    */
-  @NotNull @Valid 
+  @NotNull
+  @Valid
   @Schema(name = "definition", requiredMode = Schema.RequiredMode.REQUIRED)
   @JsonProperty("definition")
   public TableDefinition getDefinition() {
@@ -125,9 +132,9 @@ public class CreateTableRequest {
 
   /**
    * Get mode
+   *
    * @return mode
    */
-  
   @Schema(name = "mode", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
   @JsonProperty("mode")
   public ModeEnum getMode() {
@@ -147,9 +154,9 @@ public class CreateTableRequest {
       return false;
     }
     CreateTableRequest createTableRequest = (CreateTableRequest) o;
-    return Objects.equals(this.name, createTableRequest.name) &&
-        Objects.equals(this.definition, createTableRequest.definition) &&
-        Objects.equals(this.mode, createTableRequest.mode);
+    return Objects.equals(this.name, createTableRequest.name)
+        && Objects.equals(this.definition, createTableRequest.definition)
+        && Objects.equals(this.mode, createTableRequest.mode);
   }
 
   @Override
@@ -169,8 +176,7 @@ public class CreateTableRequest {
   }
 
   /**
-   * Convert the given object to string with each line indented by 4 spaces
-   * (except the first line).
+   * Convert the given object to string with each line indented by 4 spaces (except the first line).
    */
   private String toIndentedString(Object o) {
     if (o == null) {
@@ -179,4 +185,3 @@ public class CreateTableRequest {
     return o.toString().replace("\n", "\n    ");
   }
 }
-

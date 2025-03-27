@@ -1,24 +1,31 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.lancedb.catalog.adapter.model;
 
-import java.net.URI;
-import java.util.Objects;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.annotation.JsonCreator;
-import org.springframework.lang.Nullable;
-import java.time.OffsetDateTime;
-import javax.validation.Valid;
-import javax.validation.constraints.*;
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import javax.annotation.Generated;
+import javax.validation.constraints.*;
 
 import java.util.*;
-import javax.annotation.Generated;
+import java.util.Objects;
 
-/**
- * TableMetadata
- */
-
-@Generated(value = "org.openapitools.codegen.languages.SpringCodegen", comments = "Generator version: 7.12.0")
+/** TableMetadata */
+@Generated(
+    value = "org.openapitools.codegen.languages.SpringCodegen",
+    comments = "Generator version: 7.12.0")
 public class TableMetadata {
 
   private Object schema;
@@ -34,9 +41,9 @@ public class TableMetadata {
 
   /**
    * Get schema
+   *
    * @return schema
    */
-  
   @Schema(name = "schema", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
   @JsonProperty("schema")
   public Object getSchema() {
@@ -54,9 +61,9 @@ public class TableMetadata {
 
   /**
    * Get version
+   *
    * @return version
    */
-  
   @Schema(name = "version", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
   @JsonProperty("version")
   public Integer getVersion() {
@@ -74,9 +81,9 @@ public class TableMetadata {
 
   /**
    * Get location
+   *
    * @return location
    */
-  
   @Schema(name = "location", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
   @JsonProperty("location")
   public String getLocation() {
@@ -96,9 +103,9 @@ public class TableMetadata {
       return false;
     }
     TableMetadata tableMetadata = (TableMetadata) o;
-    return Objects.equals(this.schema, tableMetadata.schema) &&
-        Objects.equals(this.version, tableMetadata.version) &&
-        Objects.equals(this.location, tableMetadata.location);
+    return Objects.equals(this.schema, tableMetadata.schema)
+        && Objects.equals(this.version, tableMetadata.version)
+        && Objects.equals(this.location, tableMetadata.location);
   }
 
   @Override
@@ -118,8 +125,7 @@ public class TableMetadata {
   }
 
   /**
-   * Convert the given object to string with each line indented by 4 spaces
-   * (except the first line).
+   * Convert the given object to string with each line indented by 4 spaces (except the first line).
    */
   private String toIndentedString(Object o) {
     if (o == null) {
@@ -128,4 +134,3 @@ public class TableMetadata {
     return o.toString().replace("\n", "\n    ");
   }
 }
-

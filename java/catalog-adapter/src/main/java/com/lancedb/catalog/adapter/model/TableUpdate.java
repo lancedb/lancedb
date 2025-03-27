@@ -1,31 +1,37 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.lancedb.catalog.adapter.model;
 
-import java.net.URI;
-import java.util.Objects;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.annotation.JsonCreator;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import org.springframework.lang.Nullable;
-import java.time.OffsetDateTime;
-import javax.validation.Valid;
-import javax.validation.constraints.*;
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import javax.annotation.Generated;
+import javax.validation.Valid;
+import javax.validation.constraints.*;
 
 import java.util.*;
-import javax.annotation.Generated;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
 
-/**
- * TableUpdate
- */
-
-@Generated(value = "org.openapitools.codegen.languages.SpringCodegen", comments = "Generator version: 7.12.0")
+/** TableUpdate */
+@Generated(
+    value = "org.openapitools.codegen.languages.SpringCodegen",
+    comments = "Generator version: 7.12.0")
 public class TableUpdate {
 
-  @Valid
-  private List<Object> data = new ArrayList<>();
+  @Valid private List<Object> data = new ArrayList<>();
 
   private Object options;
 
@@ -44,9 +50,9 @@ public class TableUpdate {
 
   /**
    * Get data
+   *
    * @return data
    */
-  
   @Schema(name = "data", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
   @JsonProperty("data")
   public List<Object> getData() {
@@ -64,9 +70,9 @@ public class TableUpdate {
 
   /**
    * Get options
+   *
    * @return options
    */
-  
   @Schema(name = "options", requiredMode = Schema.RequiredMode.NOT_REQUIRED)
   @JsonProperty("options")
   public Object getOptions() {
@@ -86,8 +92,8 @@ public class TableUpdate {
       return false;
     }
     TableUpdate tableUpdate = (TableUpdate) o;
-    return Objects.equals(this.data, tableUpdate.data) &&
-        Objects.equals(this.options, tableUpdate.options);
+    return Objects.equals(this.data, tableUpdate.data)
+        && Objects.equals(this.options, tableUpdate.options);
   }
 
   @Override
@@ -106,8 +112,7 @@ public class TableUpdate {
   }
 
   /**
-   * Convert the given object to string with each line indented by 4 spaces
-   * (except the first line).
+   * Convert the given object to string with each line indented by 4 spaces (except the first line).
    */
   private String toIndentedString(Object o) {
     if (o == null) {
@@ -116,4 +121,3 @@ public class TableUpdate {
     return o.toString().replace("\n", "\n    ");
   }
 }
-

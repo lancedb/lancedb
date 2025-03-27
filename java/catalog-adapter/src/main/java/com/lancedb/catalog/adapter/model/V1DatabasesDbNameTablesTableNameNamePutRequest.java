@@ -1,26 +1,33 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.lancedb.catalog.adapter.model;
 
-import java.net.URI;
-import java.util.Objects;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonTypeName;
-import org.springframework.lang.Nullable;
-import java.time.OffsetDateTime;
-import javax.validation.Valid;
-import javax.validation.constraints.*;
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import javax.annotation.Generated;
+import javax.validation.constraints.*;
 
 import java.util.*;
-import javax.annotation.Generated;
+import java.util.Objects;
 
-/**
- * V1DatabasesDbNameTablesTableNameNamePutRequest
- */
-
+/** V1DatabasesDbNameTablesTableNameNamePutRequest */
 @JsonTypeName("_v1_databases__dbName__tables__tableName__name_put_request")
-@Generated(value = "org.openapitools.codegen.languages.SpringCodegen", comments = "Generator version: 7.12.0")
+@Generated(
+    value = "org.openapitools.codegen.languages.SpringCodegen",
+    comments = "Generator version: 7.12.0")
 public class V1DatabasesDbNameTablesTableNameNamePutRequest {
 
   private String newName;
@@ -29,9 +36,7 @@ public class V1DatabasesDbNameTablesTableNameNamePutRequest {
     super();
   }
 
-  /**
-   * Constructor with only required parameters
-   */
+  /** Constructor with only required parameters */
   public V1DatabasesDbNameTablesTableNameNamePutRequest(String newName) {
     this.newName = newName;
   }
@@ -43,9 +48,10 @@ public class V1DatabasesDbNameTablesTableNameNamePutRequest {
 
   /**
    * Get newName
+   *
    * @return newName
    */
-  @NotNull 
+  @NotNull
   @Schema(name = "newName", requiredMode = Schema.RequiredMode.REQUIRED)
   @JsonProperty("newName")
   public String getNewName() {
@@ -64,7 +70,8 @@ public class V1DatabasesDbNameTablesTableNameNamePutRequest {
     if (o == null || getClass() != o.getClass()) {
       return false;
     }
-    V1DatabasesDbNameTablesTableNameNamePutRequest v1DatabasesDbNameTablesTableNameNamePutRequest = (V1DatabasesDbNameTablesTableNameNamePutRequest) o;
+    V1DatabasesDbNameTablesTableNameNamePutRequest v1DatabasesDbNameTablesTableNameNamePutRequest =
+        (V1DatabasesDbNameTablesTableNameNamePutRequest) o;
     return Objects.equals(this.newName, v1DatabasesDbNameTablesTableNameNamePutRequest.newName);
   }
 
@@ -83,8 +90,7 @@ public class V1DatabasesDbNameTablesTableNameNamePutRequest {
   }
 
   /**
-   * Convert the given object to string with each line indented by 4 spaces
-   * (except the first line).
+   * Convert the given object to string with each line indented by 4 spaces (except the first line).
    */
   private String toIndentedString(Object o) {
     if (o == null) {
@@ -93,4 +99,3 @@ public class V1DatabasesDbNameTablesTableNameNamePutRequest {
     return o.toString().replace("\n", "\n    ");
   }
 }
-
