@@ -227,7 +227,6 @@ impl Default for OptimizeAction {
 }
 
 /// Statistics about the optimization.
-#[derive(Debug, Clone)]
 pub struct OptimizeStats {
     /// Stats of the file compaction.
     pub compaction: Option<CompactionMetrics>,

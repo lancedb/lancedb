@@ -23,6 +23,13 @@ pub enum Error {
     IndexNotFound { name: String },
     #[snafu(display("Embedding function '{name}' was not found. : {reason}"))]
     EmbeddingFunctionNotFound { name: String, reason: String },
+    #[snafu(display(
+        "Data file not found: {source}. This could mean that the table was \
+         dropped or the table version has been cleaned up by optimize. \
+         Use checkout_latest to get the latest version of the table and retry
+         the operation."
+    ))]
+    DataFileNotFound { source: lance::Error },
 
     #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },
@@ -96,7 +103,15 @@ impl From<lance::Error> for Error {
     fn from(source: lance::Error) -> Self {
         // TODO: Once Lance is changed to preserve ObjectStore, DataFusion, and Arrow errors, we can
         // pass those variants through here as well.
-        Self::Lance { source }
+        match source {
+            lance::Error::IO {
+                source: ref inner_source,
+                ..
+            } if inner_source.to_string().contains("Not found") => {
+                Self::DataFileNotFound { source }
+            }
+            _ => Self::Lance { source },
+        }
     }
 }
 

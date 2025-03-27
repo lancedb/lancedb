@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::{
-    future::Future,
     ops::{Deref, DerefMut},
     sync::Arc,
     time::{self, Duration, Instant},
@@ -11,8 +10,7 @@ use std::{
 use lance::Dataset;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::{error::Result, Error};
-use lance::Error as LanceError;
+use crate::error::Result;
 
 /// A wrapper around a [Dataset] that provides lazy-loading and consistency checks.
 ///
@@ -161,57 +159,6 @@ impl DatasetConsistencyWrapper {
         Ok(DatasetWriteGuard {
             guard: self.0.write().await,
         })
-    }
-
-    /// Run a function on the dataset.
-    ///
-    /// This is robust to cleanup and recreation of the dataset.
-    pub async fn run_safe<T, F>(&self, f: impl Fn(&Dataset) -> F) -> Result<T>
-    where
-        F: Future<Output = Result<T>>,
-    {
-        let dataset = self.get().await?;
-        match f(&*dataset).await {
-            Ok(value) => Ok(value),
-            // This likely means we are reading a version that doesn't exist anymore.
-            Err(Error::Lance {
-                source: LanceError::IO { source, .. },
-            }) if source.to_string().contains("Not found") => {
-                if dataset.guard.is_latest() {
-                    self.reload().await?;
-                    f(&*dataset).await
-                } else {
-                    Err(Error::InvalidInput {
-                        message: "Checked out version no longer exists. This could be because it was deleted by Optimize or the table was dropped.".to_string(),
-                    })
-                }
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    pub async fn run_safe_mut<T, F>(&self, f: impl Fn(&mut Dataset) -> F) -> Result<T>
-    where
-        F: Future<Output = Result<T>>,
-    {
-        let mut dataset = self.get_mut().await?;
-        match f(&mut *dataset).await {
-            Ok(value) => Ok(value),
-            // This likely means we are reading a version that doesn't exist anymore.
-            Err(Error::Lance {
-                source: LanceError::IO { source, .. },
-            }) if source.to_string().contains("Not found") => {
-                if dataset.guard.is_latest() {
-                    self.reload().await?;
-                    f(&mut *dataset).await
-                } else {
-                    Err(Error::InvalidInput {
-                        message: "Checked out version no longer exists. This could be because it was deleted by Optimize or the table was dropped.".to_string(),
-                    })
-                }
-            }
-            Err(err) => Err(err),
-        }
     }
 
     /// Convert into a wrapper in latest version mode
@@ -421,7 +368,7 @@ mod tests {
         assert_eq!(query_rows(&table_new).await.unwrap(), vec![2, 3]);
 
         // In new handle, optimize aggressively, to delete old version
-        let stats = table_new
+        table_new
             .optimize(OptimizeAction::Prune {
                 older_than: Some(TimeDelta::zero()),
                 delete_unverified: Some(true),
@@ -429,18 +376,25 @@ mod tests {
             })
             .await
             .unwrap();
-        dbg!(stats);
 
-        // Show that latest one moves on to new version
+        // When we try to query, we get data file not found error
+        let res = query_rows(&table_latest).await;
+        assert!(
+            matches!(&res, Err(Error::DataFileNotFound { .. })),
+            "Got: {:?}",
+            res
+        );
+        // Can use checkout latest to make it query-able again
+        table_latest.checkout_latest().await.unwrap();
         assert_eq!(query_rows(&table_latest).await.unwrap(), vec![2, 3]);
         assert_eq!(table_latest.version().await.unwrap(), 2);
 
         // Show that the time travel one provides a sensible error.
-        let res = query_rows(&table_latest).await;
-        assert!(res.is_err());
-        assert_eq!(
-            res.unwrap_err().to_string(),
-            "Checked out version no longer exists."
+        let res = query_rows(&table_time_travel).await;
+        assert!(
+            matches!(&res, Err(Error::DataFileNotFound { .. })),
+            "Got: {:?}",
+            res
         );
     }
 
@@ -467,16 +421,24 @@ mod tests {
             .await
             .unwrap();
 
-        // Show that latest one moves on to new version
+        // When we try to query, we get data file not found error
         assert_eq!(table_latest.version().await.unwrap(), 1);
+        let res = query_rows(&table_latest).await;
+        assert!(
+            matches!(&res, Err(Error::DataFileNotFound { .. })),
+            "Got: {:?}",
+            res
+        );
+        // Can use checkout latest to make it query-able again
+        table_latest.checkout_latest().await.unwrap();
         assert_eq!(query_rows(&table_latest).await.unwrap(), &[2, 3]);
 
         // Show that the time travel one provides a sensible error.
         let res = query_rows(&table_time_travel).await;
-        assert!(res.is_err());
-        assert_eq!(
-            res.unwrap_err().to_string(),
-            "Checked out version no longer exists."
+        assert!(
+            matches!(&res, Err(Error::DataFileNotFound { .. })),
+            "Got: {:?}",
+            res
         );
     }
 }
