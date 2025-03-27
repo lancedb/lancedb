@@ -44,7 +44,7 @@ for testing purposes.
 ### readConsistencyInterval?
 
 ```ts
-optional readConsistencyInterval: number;
+optional readConsistencyInterval: null | number;
 ```
 
 (For LanceDB OSS only): The interval, in seconds, at which to check for
