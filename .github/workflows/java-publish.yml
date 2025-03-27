@@ -97,7 +97,7 @@ jobs:
       - name: Dry run
         if: github.event_name == 'pull_request'
         run: |
-          mvn --batch-mode -DskipTests package
+          mvn --batch-mode -DskipTests -Drust.release.build=true package
       - name: Set github
         run: |
           git config --global user.email "LanceDB Github Runner"
@@ -108,7 +108,7 @@ jobs:
           echo "use-agent" >> ~/.gnupg/gpg.conf
           echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
           export GPG_TTY=$(tty)
-          mvn --batch-mode -DskipTests -DpushChanges=false -Dgpg.passphrase=${{ secrets.GPG_PASSPHRASE }} deploy -P deploy-to-ossrh
+          mvn --batch-mode -DskipTests -Drust.release.build=true -DpushChanges=false -Dgpg.passphrase=${{ secrets.GPG_PASSPHRASE }} deploy -P deploy-to-ossrh
         env:
           SONATYPE_USER: ${{ secrets.SONATYPE_USER }}
           SONATYPE_TOKEN: ${{ secrets.SONATYPE_TOKEN }}
