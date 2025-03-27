@@ -1343,6 +1343,21 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def restore(self, version: Optional[int] = None):
+        """Restore a version of the table. This is an in-place operation.
+
+        This creates a new version where the data is equivalent to the
+        specified previous version. Data is not copied (as of python-v0.2.1).
+
+        Parameters
+        ----------
+        version : int, default None
+            The version to restore. If unspecified then restores the currently
+            checked out version. If the currently checked out version is the
+            latest version then this is a no-op.
+        """
+
+    @abstractmethod
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
 
@@ -3613,7 +3628,7 @@ class AsyncTable:
         """
         await self._inner.checkout_latest()
 
-    async def restore(self):
+    async def restore(self, version: Optional[int] = None):
         """
         Restore the table to the currently checked out version
 
@@ -3626,7 +3641,7 @@ class AsyncTable:
         Once the operation concludes the table will no longer be in a checked
         out state and the read_consistency_interval, if any, will apply.
         """
-        await self._inner.restore()
+        await self._inner.restore(version)
 
     async def optimize(
         self,
