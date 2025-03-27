@@ -1389,15 +1389,28 @@ async def test_add_columns_with_schema(mem_db_async: AsyncConnection):
     data = pa.table({"id": [0, 1]})
     table = await mem_db_async.create_table("my_table", data=data)
     await table.add_columns(
-        [pa.field("x", pa.int64(), pa.field("vector", pa.list_(pa.float32(), 8)))]
+        [pa.field("x", pa.int64()), pa.field("vector", pa.list_(pa.float32(), 8))]
     )
 
-    data = await table.to_arrow()
-    assert table.schema == pa.schema(
+    assert await table.schema() == pa.schema(
         [
             pa.field("id", pa.int64()),
             pa.field("x", pa.int64()),
             pa.field("vector", pa.list_(pa.float32(), 8)),
+        ]
+    )
+
+    table = await mem_db_async.create_table("table2", data=data)
+    await table.add_columns(
+        pa.schema(
+            [pa.field("y", pa.int64()), pa.field("emb", pa.list_(pa.float32(), 8))]
+        )
+    )
+    assert await table.schema() == pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("y", pa.int64()),
+            pa.field("emb", pa.list_(pa.float32(), 8)),
         ]
     )
 

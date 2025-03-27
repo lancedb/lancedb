@@ -3526,7 +3526,7 @@ class AsyncTable:
             Alternatively, you can pass a pyarrow field or schema to add
             new columns with NULLs.
         """
-        if isinstance(transforms, pa.field):
+        if isinstance(transforms, pa.Field):
             transforms = [transforms]
         if isinstance(transforms, list) and all(
             {isinstance(f, pa.Field) for f in transforms}
