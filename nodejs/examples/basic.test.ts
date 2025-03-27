@@ -202,11 +202,12 @@ test("basic table examples", async () => {
       // --8<-- [end:create_f16_table]
       await db.dropTable("f16_tbl");
     }
-    let uri = databaseDir;
+    const uri = databaseDir;
+    await db.createTable("my_table", [{ id: 1 }, { id: 2 }]);
     {
       // --8<-- [start:table_strong_consistency]
       const db = await lancedb.connect({ uri, readConsistencyInterval: 0 });
-      const tbl = await db.openTable("my_table", );
+      const tbl = await db.openTable("my_table");
       // --8<-- [end:table_strong_consistency]
     }
     {
@@ -223,7 +224,7 @@ test("basic table examples", async () => {
     }
     {
       // --8<-- [start:table_checkout_latest]
-      const tbl = await db.openTable("test_table_async");
+      const tbl = await db.openTable("my_table");
 
       // (Other writes happen to test_table_async from another process)
 
