@@ -119,7 +119,6 @@ async def test_analyze_plan(table: AsyncTable):
     res = await (
         table.query().nearest_to_text("dog").nearest_to([0.1, 0.1]).analyze_plan()
     )
-    print(res)
 
     assert "AnalyzeExec" in res
     assert "metrics=" in res

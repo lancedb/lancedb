@@ -36,23 +36,39 @@ protected inner: Query | Promise<Query>;
 analyzePlan(): Promise<string>
 ```
 
-Executes the query and returns the runtime metrics.
+Executes the query and returns the physical query plan annotated with runtime metrics.
+
+This is useful for debugging and performance analysis, as it shows how the query was executed
+and includes metrics such as elapsed time, rows processed, and I/O statistics.
 
 #### Returns
 
 `Promise`&lt;`string`&gt;
 
-execution plan with runtime metrics
+A query execution plan with runtime metrics for each step.
 
 #### Example
 
 ```ts
 import * as lancedb from "@lancedb/lancedb"
+
 const db = await lancedb.connect("./.lancedb");
 const table = await db.createTable("my_table", [
   { vector: [1.1, 0.9], id: "1" },
 ]);
+
 const plan = await table.query().nearestTo([0.5, 0.2]).analyzePlan();
+
+Example output (with runtime metrics inlined):
+AnalyzeExec verbose=true, metrics=[]
+ ProjectionExec: expr=[id@3 as id, vector@0 as vector, _distance@2 as _distance], metrics=[output_rows=1, elapsed_compute=3.292µs]
+  Take: columns="vector, _rowid, _distance, (id)", metrics=[output_rows=1, elapsed_compute=66.001µs, batches_processed=1, bytes_read=8, iops=1, requests=1]
+   CoalesceBatchesExec: target_batch_size=1024, metrics=[output_rows=1, elapsed_compute=3.333µs]
+    GlobalLimitExec: skip=0, fetch=10, metrics=[output_rows=1, elapsed_compute=167ns]
+     FilterExec: _distance@2 IS NOT NULL, metrics=[output_rows=1, elapsed_compute=8.542µs]
+      SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], metrics=[output_rows=1, elapsed_compute=63.25µs, row_replacements=1]
+       KNNVectorDistance: metric=l2, metrics=[output_rows=1, elapsed_compute=114.333µs, output_batches=1]
+        LanceScan: uri=/path/to/data, projection=[vector], row_id=true, row_addr=false, ordered=false, metrics=[output_rows=1, elapsed_compute=103.626µs, bytes_read=549, iops=2, requests=2]
 ```
 
 #### Inherited from

@@ -1370,7 +1370,7 @@ describe("when calling analyzePlan", () => {
   beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
     const con = await connect(tmpDir.name);
-    table = await con.createTable("vectors", [{ id: 1, vector: [0.1, 0.2] }]);
+    table = await con.createTable("vectors", [{ id: 1, vector: [1.1, 0.9] }]);
   });
 
   afterEach(() => {
@@ -1382,7 +1382,7 @@ describe("when calling analyzePlan", () => {
       .fill(1)
       .map(() => Math.random());
     const plan = await table.query().nearestTo(queryVec).analyzePlan();
-
+    console.log("Query Plan:\n", plan); // <--- Print the plan
     expect(plan).toMatch("AnalyzeExec");
   });
 });
