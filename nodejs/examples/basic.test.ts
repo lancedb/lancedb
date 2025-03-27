@@ -202,5 +202,34 @@ test("basic table examples", async () => {
       // --8<-- [end:create_f16_table]
       await db.dropTable("f16_tbl");
     }
+    let uri = databaseDir;
+    {
+      // --8<-- [start:table_strong_consistency]
+      const db = await lancedb.connect({ uri, readConsistencyInterval: 0 });
+      const tbl = await db.openTable("my_table", );
+      // --8<-- [end:table_strong_consistency]
+    }
+    {
+      // --8<-- [start:table_eventual_consistency]
+      const db = await lancedb.connect({ uri, readConsistencyInterval: 5 });
+      const tbl = await db.openTable("my_table");
+      // --8<-- [end:table_eventual_consistency]
+    }
+    {
+      // --8<-- [start:table_no_consistency]
+      const db = await lancedb.connect({ uri, readConsistencyInterval: null });
+      const tbl = await db.openTable("my_table");
+      // --8<-- [end:table_no_consistency]
+    }
+    {
+      // --8<-- [start:table_checkout_latest]
+      const tbl = await db.openTable("test_table_async");
+
+      // (Other writes happen to test_table_async from another process)
+
+      // Check for updates
+      tbl.checkoutLatest();
+      // --8<-- [end:table_checkout_latest]
+    }
   });
 });
