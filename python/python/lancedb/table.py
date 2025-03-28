@@ -1011,6 +1011,9 @@ class Table(ABC):
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str: ...
 
     @abstractmethod
+    def _analyze_plan(self, query: Query) -> str: ...
+
+    @abstractmethod
     def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
@@ -2318,6 +2321,9 @@ class LanceTable(Table):
     def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str:
         return LOOP.run(self._table._explain_plan(query, verbose))
 
+    def _analyze_plan(self, query: Query) -> str:
+        return LOOP.run(self._table._analyze_plan(query))
+
     def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
@@ -3387,6 +3393,11 @@ class AsyncTable:
         # This method is used by the sync table
         async_query = self._sync_query_to_async(query)
         return await async_query.explain_plan(verbose)
+
+    async def _analyze_plan(self, query: Query) -> str:
+        # This method is used by the sync table
+        async_query = self._sync_query_to_async(query)
+        return await async_query.analyze_plan()
 
     async def _do_merge(
         self,

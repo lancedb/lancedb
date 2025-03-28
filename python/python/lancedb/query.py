@@ -659,6 +659,44 @@ class LanceQueryBuilder(ABC):
         """  # noqa: E501
         return self._table._explain_plan(self.to_query_object(), verbose=verbose)
 
+    def analyze_plan(self) -> str:
+        """
+        Run the query and return its execution plan with runtime metrics.
+
+        This returns detailed metrics for each step, such as elapsed time,
+        rows processed, bytes read, and I/O stats. It is useful for debugging
+        and performance tuning.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", [{"vector": [99.0, 99]}])
+        >>> query = [100, 100]
+        >>> plan = table.search(query).analyze_plan()
+        >>> print(plan)  # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+        AnalyzeExec verbose=true, metrics=[]
+          ProjectionExec: expr=[...], metrics=[...]
+            GlobalLimitExec: skip=0, fetch=10, metrics=[...]
+              FilterExec: _distance@2 IS NOT NULL,
+              metrics=[output_rows=..., elapsed_compute=...]
+                SortExec: TopK(fetch=10), expr=[...],
+                preserve_partitioning=[...],
+                metrics=[output_rows=..., elapsed_compute=..., row_replacements=...]
+                  KNNVectorDistance: metric=l2,
+                  metrics=[output_rows=..., elapsed_compute=..., output_batches=...]
+                    LanceScan: uri=..., projection=[vector], row_id=true,
+                    row_addr=false, ordered=false,
+                    metrics=[output_rows=..., elapsed_compute=...,
+                    bytes_read=..., iops=..., requests=...]
+
+        Returns
+        -------
+        plan : str
+            The physical query execution plan with runtime metrics.
+        """
+        return self._table._analyze_plan(self.to_query_object())
+
     def vector(self, vector: Union[np.ndarray, list]) -> Self:
         """Set the vector to search for.
 
@@ -1941,6 +1979,15 @@ class AsyncQueryBase(object):
         """  # noqa: E501
         return await self._inner.explain_plan(verbose)
 
+    async def analyze_plan(self):
+        """Execute the query and display with runtime metrics.
+
+        Returns
+        -------
+        plan : str
+        """
+        return await self._inner.analyze_plan()
+
 
 class AsyncQuery(AsyncQueryBase):
     def __init__(self, inner: LanceQuery):
@@ -2510,12 +2557,32 @@ class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
 
         Returns
         -------
-        plan
+        plan : str
         """  # noqa: E501
 
         results = ["Vector Search Plan:"]
         results.append(await self._inner.to_vector_query().explain_plan(verbose))
         results.append("FTS Search Plan:")
         results.append(await self._inner.to_fts_query().explain_plan(verbose))
+
+        return "\n".join(results)
+
+    async def analyze_plan(self):
+        """
+        Execute the query and return the physical execution plan with runtime metrics.
+
+        This runs both the vector and FTS (full-text search) queries and returns
+        detailed metrics for each step of execution—such as rows processed,
+        elapsed time, I/O stats, and more. It’s useful for debugging and
+        performance analysis.
+
+        Returns
+        -------
+        plan : str
+        """
+        results = ["Vector Search Query:"]
+        results.append(await self._inner.to_vector_query().analyze_plan())
+        results.append("FTS Search Query:")
+        results.append(await self._inner.to_fts_query().analyze_plan())
 
         return "\n".join(results)

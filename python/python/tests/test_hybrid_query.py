@@ -114,6 +114,16 @@ async def test_explain_plan(table: AsyncTable):
     assert "LanceScan" in plan
 
 
+@pytest.mark.asyncio
+async def test_analyze_plan(table: AsyncTable):
+    res = await (
+        table.query().nearest_to_text("dog").nearest_to([0.1, 0.1]).analyze_plan()
+    )
+
+    assert "AnalyzeExec" in res
+    assert "metrics=" in res
+
+
 def test_normalize_scores():
     cases = [
         (pa.array([0.1, 0.4]), pa.array([0.0, 1.0])),

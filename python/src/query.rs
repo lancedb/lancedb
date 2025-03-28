@@ -281,6 +281,16 @@ impl Query {
         })
     }
 
+    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .analyze_plan()
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        })
+    }
+
     pub fn to_query_request(&self) -> PyQueryRequest {
         PyQueryRequest::from(AnyQuery::Query(self.inner.clone().into_request()))
     }
@@ -360,6 +370,16 @@ impl FTSQuery {
         future_into_py(self_.py(), async move {
             inner
                 .explain_plan(verbose)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        })
+    }
+
+    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .analyze_plan()
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
@@ -475,6 +495,16 @@ impl VectorQuery {
         future_into_py(self_.py(), async move {
             inner
                 .explain_plan(verbose)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        })
+    }
+
+    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .analyze_plan()
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })

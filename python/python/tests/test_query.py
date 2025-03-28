@@ -702,6 +702,20 @@ async def test_fast_search_async(tmp_path):
     assert "LanceScan" not in plan
 
 
+def test_analyze_plan(table):
+    q = LanceVectorQueryBuilder(table, [0, 0], "vector")
+    res = q.analyze_plan()
+    assert "AnalyzeExec" in res
+    assert "metrics=" in res
+
+
+@pytest.mark.asyncio
+async def test_analyze_plan_async(table_async: AsyncTable):
+    res = await table_async.query().nearest_to(pa.array([1, 2])).analyze_plan()
+    assert "AnalyzeExec" in res
+    assert "metrics=" in res
+
+
 def test_explain_plan(table):
     q = LanceVectorQueryBuilder(table, [0, 0], "vector")
     plan = q.explain_plan(verbose=True)

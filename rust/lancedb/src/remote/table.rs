@@ -614,6 +614,48 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(final_plan)
     }
 
+    async fn analyze_plan(
+        &self,
+        query: &AnyQuery,
+        _options: QueryExecutionOptions,
+    ) -> Result<String> {
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/analyze_plan/", self.name));
+
+        let query_bodies = self.prepare_query_bodies(query).await?;
+        let requests: Vec<reqwest::RequestBuilder> = query_bodies
+            .into_iter()
+            .map(|body| request.try_clone().unwrap().json(&body))
+            .collect();
+
+        let futures = requests.into_iter().map(|req| async move {
+            let (request_id, response) = self.client.send(req, true).await?;
+            let response = self.check_table_response(&request_id, response).await?;
+            let body = response.text().await.err_to_http(request_id.clone())?;
+
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to execute analyze plan: {}", e).into(),
+                request_id,
+                status_code: None,
+            })
+        });
+
+        let analyze_result_texts = futures::future::try_join_all(futures).await?;
+        let final_analyze = if analyze_result_texts.len() > 1 {
+            analyze_result_texts
+                .into_iter()
+                .enumerate()
+                .map(|(i, plan)| format!("--- Query #{} ---\n{}", i + 1, plan))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        } else {
+            analyze_result_texts.into_iter().next().unwrap_or_default()
+        };
+
+        Ok(final_analyze)
+    }
+
     async fn update(&self, update: UpdateBuilder) -> Result<u64> {
         self.check_mutable().await?;
         let request = self
