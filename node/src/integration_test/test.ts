@@ -110,7 +110,7 @@ describe('LanceDB Mirrored Store Integration test', function () {
 
       fs.readdir(path.join(mirroredPath, 'data'), { withFileTypes: true }, (err, files) => {
         if (err != null) throw err
-        assert.equal(files.length, 1)
+        assert.equal(files.length, 1, `Found files: ${files.map(f => f.name)}`)
         assert.isTrue(files[0].name.endsWith('.lance'))
       })
 

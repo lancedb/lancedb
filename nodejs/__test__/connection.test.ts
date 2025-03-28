@@ -17,7 +17,7 @@ describe("when connecting", () => {
   it("should connect", async () => {
     const db = await connect(tmpDir.name);
     expect(db.display()).toBe(
-      `ListingDatabase(uri=${tmpDir.name}, read_consistency_interval=None)`,
+      `ListingDatabase(uri=${tmpDir.name}, read_consistency_interval=5s)`,
     );
   });
 
