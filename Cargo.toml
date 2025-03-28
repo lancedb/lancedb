@@ -2,6 +2,7 @@
 members = [
     "rust/ffi/node",
     "rust/lancedb",
+    "rust/lancedb-remote-catalog-client",
     "nodejs",
     "python",
     "java/core/lancedb-jni",
