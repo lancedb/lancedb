@@ -1384,6 +1384,37 @@ async def test_add_columns_async(mem_db_async: AsyncConnection):
     assert data["new_col"].to_pylist() == [2, 3]
 
 
+@pytest.mark.asyncio
+async def test_add_columns_with_schema(mem_db_async: AsyncConnection):
+    data = pa.table({"id": [0, 1]})
+    table = await mem_db_async.create_table("my_table", data=data)
+    await table.add_columns(
+        [pa.field("x", pa.int64()), pa.field("vector", pa.list_(pa.float32(), 8))]
+    )
+
+    assert await table.schema() == pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("x", pa.int64()),
+            pa.field("vector", pa.list_(pa.float32(), 8)),
+        ]
+    )
+
+    table = await mem_db_async.create_table("table2", data=data)
+    await table.add_columns(
+        pa.schema(
+            [pa.field("y", pa.int64()), pa.field("emb", pa.list_(pa.float32(), 8))]
+        )
+    )
+    assert await table.schema() == pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("y", pa.int64()),
+            pa.field("emb", pa.list_(pa.float32(), 8)),
+        ]
+    )
+
+
 def test_alter_columns(mem_db: DBConnection):
     data = pa.table({"id": [0, 1]})
     table = mem_db.create_table("my_table", data=data)
