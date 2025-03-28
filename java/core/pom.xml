@@ -8,13 +8,16 @@
     <parent>
         <groupId>com.lancedb</groupId>
         <artifactId>lancedb-parent</artifactId>
-        <version>0.18.2-beta.0</version>
+        <version>0.18.3-beta.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <artifactId>lancedb-core</artifactId>
     <name>LanceDB Core</name>
     <packaging>jar</packaging>
+    <properties>
+        <rust.release.build>false</rust.release.build>
+    </properties>
 
     <dependencies>
         <dependency>
@@ -68,7 +71,7 @@
                                 </goals>
                                 <configuration>
                                     <path>lancedb-jni</path>
-                                    <release>true</release>
+                                    <release>${rust.release.build}</release>
                                     <!-- Copy native libraries to target/classes for runtime access -->
                                     <copyTo>${project.build.directory}/classes/nativelib</copyTo>
                                     <copyWithPlatformDir>true</copyWithPlatformDir>

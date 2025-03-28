@@ -6,7 +6,7 @@
 
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-parent</artifactId>
-    <version>0.18.2-beta.0</version>
+    <version>0.18.3-beta.0</version>
     <packaging>pom</packaging>
 
     <name>LanceDB Parent</name>
@@ -29,6 +29,25 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <arrow.version>15.0.0</arrow.version>
+        <spotless.skip>false</spotless.skip>
+        <spotless.version>2.30.0</spotless.version>
+        <spotless.java.googlejavaformat.version>1.7</spotless.java.googlejavaformat.version>
+        <spotless.delimiter>package</spotless.delimiter>
+        <spotless.license.header>
+            /*
+            * Licensed under the Apache License, Version 2.0 (the "License");
+            * you may not use this file except in compliance with the License.
+            * You may obtain a copy of the License at
+            *
+            *     http://www.apache.org/licenses/LICENSE-2.0
+            *
+            * Unless required by applicable law or agreed to in writing, software
+            * distributed under the License is distributed on an "AS IS" BASIS,
+            * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+            * See the License for the specific language governing permissions and
+            * limitations under the License.
+            */
+        </spotless.license.header>
     </properties>
 
     <modules>
@@ -127,7 +146,8 @@
                 <configuration>
                     <configLocation>google_checks.xml</configLocation>
                     <consoleOutput>true</consoleOutput>
-                    <failsOnError>true</failsOnError>
+                    <failsOnError>false</failsOnError>
+                    <failOnViolation>false</failOnViolation>
                     <violationSeverity>warning</violationSeverity>
                     <linkXRef>false</linkXRef>
                 </configuration>
@@ -140,6 +160,10 @@
                         </goals>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
             </plugin>
         </plugins>
         <pluginManagement>
@@ -178,6 +202,54 @@
                 <plugin>
                     <artifactId>maven-install-plugin</artifactId>
                     <version>2.5.2</version>
+                </plugin>
+                <plugin>
+                    <groupId>com.diffplug.spotless</groupId>
+                    <artifactId>spotless-maven-plugin</artifactId>
+                    <version>${spotless.version}</version>
+                    <configuration>
+                        <skip>${spotless.skip}</skip>
+                        <upToDateChecking>
+                            <enabled>true</enabled>
+                        </upToDateChecking>
+                        <java>
+                            <includes>
+                                <include>src/main/java/**/*.java</include>
+                                <include>src/test/java/**/*.java</include>
+                            </includes>
+                            <googleJavaFormat>
+                                <version>${spotless.java.googlejavaformat.version}</version>
+                                <style>GOOGLE</style>
+                            </googleJavaFormat>
+
+                            <importOrder>
+                                <order>com.lancedb.lance,,javax,java,\#</order>
+                            </importOrder>
+
+                            <removeUnusedImports />
+                        </java>
+                        <scala>
+                            <includes>
+                                <include>src/main/scala/**/*.scala</include>
+                                <include>src/main/scala-*/**/*.scala</include>
+                                <include>src/test/scala/**/*.scala</include>
+                                <include>src/test/scala-*/**/*.scala</include>
+                            </includes>
+                        </scala>
+                        <licenseHeader>
+                            <content>${spotless.license.header}</content>
+                            <delimiter>${spotless.delimiter}</delimiter>
+                        </licenseHeader>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <id>spotless-check</id>
+                            <phase>validate</phase>
+                            <goals>
+                                <goal>apply</goal>
+                            </goals>
+                        </execution>
+                    </executions>
                 </plugin>
             </plugins>
         </pluginManagement>

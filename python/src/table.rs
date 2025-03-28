@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
+use std::{collections::HashMap, sync::Arc};
+
 use arrow::{
-    datatypes::DataType,
+    datatypes::{DataType, Schema},
     ffi_stream::ArrowArrayStreamReader,
-    pyarrow::{FromPyArrow, ToPyArrow},
+    pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions,
@@ -16,7 +18,6 @@ use pyo3::{
     Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
-use std::collections::HashMap;
 
 use crate::{
     error::PythonErrorExt,
@@ -303,12 +304,16 @@ impl Table {
         })
     }
 
-    pub fn restore(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (version=None))]
+    pub fn restore(self_: PyRef<'_, Self>, version: Option<u64>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        future_into_py(
-            self_.py(),
-            async move { inner.restore().await.infer_error() },
-        )
+
+        future_into_py(self_.py(), async move {
+            if let Some(version) = version {
+                inner.checkout(version).await.infer_error()?;
+            }
+            inner.restore().await.infer_error()
+        })
     }
 
     pub fn query(&self) -> Query {
@@ -436,6 +441,20 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.add_columns(definitions, None).await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn add_columns_with_schema(
+        self_: PyRef<'_, Self>,
+        schema: PyArrowType<Schema>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let arrow_schema = &schema.0;
+        let transform = NewColumnTransform::AllNulls(Arc::new(arrow_schema.clone()));
+
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.add_columns(transform, None).await.infer_error()?;
             Ok(())
         })
     }

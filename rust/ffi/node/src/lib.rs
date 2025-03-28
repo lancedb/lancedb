@@ -60,7 +60,7 @@ fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let mut conn_builder = connect(&path).storage_options(storage_options);
 
     if let Some(interval) = read_consistency_interval {
-        conn_builder = conn_builder.read_consistency_interval(interval);
+        conn_builder = conn_builder.read_consistency_interval(Some(interval));
     }
     rt.spawn(async move {
         let database = conn_builder.execute().await;

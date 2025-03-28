@@ -1,27 +1,35 @@
-// SPDX-License-Identifier: Apache-2.0
-// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.lancedb.lancedb;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
-import java.nio.file.Path;
-import java.util.List;
-import java.net.URL;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.net.URL;
+import java.nio.file.Path;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 public class ConnectionTest {
   private static final String[] TABLE_NAMES = {
-      "dataset_version",
-      "new_empty_dataset",
-      "test",
-      "write_stream"
+    "dataset_version", "new_empty_dataset", "test", "write_stream"
   };
 
-  @TempDir
-  static Path tempDir; // Temporary directory for the tests
+  @TempDir static Path tempDir; // Temporary directory for the tests
   private static URL lanceDbURL;
 
   @BeforeAll
@@ -53,18 +61,21 @@ public class ConnectionTest {
   @Test
   void tableNamesStartAfter() {
     try (Connection conn = Connection.connect(lanceDbURL.toString())) {
-      assertTableNamesStartAfter(conn, TABLE_NAMES[0], 3, TABLE_NAMES[1], TABLE_NAMES[2], TABLE_NAMES[3]);
+      assertTableNamesStartAfter(
+          conn, TABLE_NAMES[0], 3, TABLE_NAMES[1], TABLE_NAMES[2], TABLE_NAMES[3]);
       assertTableNamesStartAfter(conn, TABLE_NAMES[1], 2, TABLE_NAMES[2], TABLE_NAMES[3]);
       assertTableNamesStartAfter(conn, TABLE_NAMES[2], 1, TABLE_NAMES[3]);
       assertTableNamesStartAfter(conn, TABLE_NAMES[3], 0);
-      assertTableNamesStartAfter(conn, "a_dataset", 4, TABLE_NAMES[0], TABLE_NAMES[1], TABLE_NAMES[2], TABLE_NAMES[3]);
+      assertTableNamesStartAfter(
+          conn, "a_dataset", 4, TABLE_NAMES[0], TABLE_NAMES[1], TABLE_NAMES[2], TABLE_NAMES[3]);
       assertTableNamesStartAfter(conn, "o_dataset", 2, TABLE_NAMES[2], TABLE_NAMES[3]);
       assertTableNamesStartAfter(conn, "v_dataset", 1, TABLE_NAMES[3]);
       assertTableNamesStartAfter(conn, "z_dataset", 0);
     }
   }
 
-  private void assertTableNamesStartAfter(Connection conn, String startAfter, int expectedSize, String... expectedNames) {
+  private void assertTableNamesStartAfter(
+      Connection conn, String startAfter, int expectedSize, String... expectedNames) {
     List<String> tableNames = conn.tableNames(startAfter);
     assertEquals(expectedSize, tableNames.size());
     for (int i = 0; i < expectedNames.length; i++) {
@@ -74,7 +85,7 @@ public class ConnectionTest {
 
   @Test
   void tableNamesLimit() {
-      try (Connection conn = Connection.connect(lanceDbURL.toString())) {
+    try (Connection conn = Connection.connect(lanceDbURL.toString())) {
       for (int i = 0; i <= TABLE_NAMES.length; i++) {
         List<String> tableNames = conn.tableNames(i);
         assertEquals(i, tableNames.size());

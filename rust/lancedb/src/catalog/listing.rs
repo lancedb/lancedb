@@ -12,7 +12,7 @@ use super::{
     Catalog, CatalogOptions, CreateDatabaseMode, CreateDatabaseRequest, DatabaseNamesRequest,
     OpenDatabaseRequest,
 };
-use crate::connection::ConnectRequest;
+use crate::connection::{ConnectRequest, DEFAULT_READ_CONSISTENCY_INTERVAL};
 use crate::database::listing::{ListingDatabase, ListingDatabaseOptions};
 use crate::database::{Database, DatabaseOptions};
 use crate::error::{CreateDirSnafu, Error, Result};
@@ -214,7 +214,7 @@ impl Catalog for ListingCatalog {
             uri: db_uri,
             #[cfg(feature = "remote")]
             client_config: Default::default(),
-            read_consistency_interval: None,
+            read_consistency_interval: DEFAULT_READ_CONSISTENCY_INTERVAL,
             options: Default::default(),
         };
 
@@ -241,7 +241,7 @@ impl Catalog for ListingCatalog {
             uri: db_path.to_string(),
             #[cfg(feature = "remote")]
             client_config: Default::default(),
-            read_consistency_interval: None,
+            read_consistency_interval: DEFAULT_READ_CONSISTENCY_INTERVAL,
             options: Default::default(),
         };
 
@@ -311,7 +311,7 @@ mod tests {
             #[cfg(feature = "remote")]
             client_config: Default::default(),
             options: Default::default(),
-            read_consistency_interval: None,
+            read_consistency_interval: DEFAULT_READ_CONSISTENCY_INTERVAL,
         };
 
         let catalog = ListingCatalog::connect(&request).await.unwrap();
