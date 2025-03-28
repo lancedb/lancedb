@@ -681,7 +681,8 @@ class LanceQueryBuilder(ABC):
               FilterExec: _distance@2 IS NOT NULL,
               metrics=[output_rows=..., elapsed_compute=...]
                 SortExec: TopK(fetch=10), expr=[...],
-                preserve_partitioning=[...], metrics=[...]
+                preserve_partitioning=[...],
+                metrics=[output_rows=..., elapsed_compute=..., row_replacements=...]
                   KNNVectorDistance: metric=l2,
                   metrics=[output_rows=..., elapsed_compute=..., output_batches=...]
                     LanceScan: uri=..., projection=[vector], row_id=true,
