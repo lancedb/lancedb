@@ -675,19 +675,19 @@ class LanceQueryBuilder(ABC):
         >>> query = [100, 100]
         >>> plan = table.search(query).analyze_plan()
         >>> print(plan)  # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
-        ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance],
-            metrics=[output_rows=1, elapsed_compute=3.292µs]
-        GlobalLimitExec: skip=0, fetch=10,
-            metrics=[output_rows=1, elapsed_compute=167ns]
-          FilterExec: _distance@2 IS NOT NULL,
-              metrics=[output_rows=1, elapsed_compute=8.542µs]
-            SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST],
-                metrics=[output_rows=1, elapsed_compute=63.25µs]
-              KNNVectorDistance: metric=l2,
-                  metrics=[elapsed_compute=114.333µs]
-                LanceScan: uri=..., projection=[vector], row_id=true,
+        AnalyzeExec verbose=true, metrics=[]
+          ProjectionExec: expr=[...], metrics=[...]
+            GlobalLimitExec: skip=0, fetch=10, metrics=[...]
+              FilterExec: _distance@2 IS NOT NULL,
+              metrics=[output_rows=..., elapsed_compute=...]
+                SortExec: TopK(fetch=10), expr=[...],
+                preserve_partitioning=[...], metrics=[...]
+                  KNNVectorDistance: metric=l2,
+                  metrics=[output_rows=..., elapsed_compute=..., output_batches=...]
+                    LanceScan: uri=..., projection=[vector], row_id=true,
                     row_addr=false, ordered=false,
-                    metrics=[bytes_read=549, iops=2, output_rows=1]
+                    metrics=[output_rows=..., elapsed_compute=...,
+                    bytes_read=..., iops=..., requests=...]
 
         Returns
         -------
