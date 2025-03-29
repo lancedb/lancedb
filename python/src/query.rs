@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow::array::make_array;
 use arrow::array::Array;
@@ -255,16 +256,20 @@ impl Query {
         })
     }
 
-    #[pyo3(signature = (max_batch_length=None))]
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
         max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let mut opts = QueryExecutionOptions::default();
             if let Some(max_batch_length) = max_batch_length {
                 opts.max_batch_length = max_batch_length;
+            }
+            if let Some(timeout) = timeout {
+                opts.timeout = Some(timeout);
             }
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
@@ -327,10 +332,11 @@ impl FTSQuery {
         self.inner = self.inner.clone().postfilter();
     }
 
-    #[pyo3(signature = (max_batch_length=None))]
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
         max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_
             .inner
@@ -341,6 +347,9 @@ impl FTSQuery {
             let mut opts = QueryExecutionOptions::default();
             if let Some(max_batch_length) = max_batch_length {
                 opts.max_batch_length = max_batch_length;
+            }
+            if let Some(timeout) = timeout {
+                opts.timeout = Some(timeout);
             }
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
@@ -454,16 +463,20 @@ impl VectorQuery {
         self.inner = self.inner.clone().bypass_vector_index()
     }
 
-    #[pyo3(signature = (max_batch_length=None))]
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
         max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let mut opts = QueryExecutionOptions::default();
             if let Some(max_batch_length) = max_batch_length {
                 opts.max_batch_length = max_batch_length;
+            }
+            if let Some(timeout) = timeout {
+                opts.timeout = Some(timeout);
             }
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
