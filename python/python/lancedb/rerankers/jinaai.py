@@ -104,24 +104,18 @@ class JinaReranker(Reranker):
             )
         return combined_results
 
-    def rerank_vector(
-        self,
-        query: str,
-        vector_results: pa.Table,
-    ):
-        result_set = self._rerank(vector_results, query)
+    def rerank_vector(self, query: str, vector_results: pa.Table):
+        vector_results = self._handle_empty_results(vector_results)
+        if len(vector_results) > 0:
+            vector_results = self._rerank(vector_results, query)
         if self.score == "relevance":
-            result_set = result_set.drop_columns(["_distance"])
-
-        return result_set
-
-    def rerank_fts(
-        self,
-        query: str,
-        fts_results: pa.Table,
-    ):
-        result_set = self._rerank(fts_results, query)
+            vector_results = vector_results.drop_columns(["_distance"])
+        return vector_results
+    
+    def rerank_fts(self, query: str, fts_results: pa.Table):
+        fts_results = self._handle_empty_results(fts_results)
+        if len(fts_results) > 0:
+            fts_results = self._rerank(fts_results, query)
         if self.score == "relevance":
-            result_set = result_set.drop_columns(["_score"])
-
-        return result_set
+            fts_results = fts_results.drop_columns(["_score"])
+        return fts_results

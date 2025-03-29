@@ -65,6 +65,16 @@ class Reranker(ABC):
             f"{self.__class__.__name__} does not implement rerank_vector"
         )
 
+    def _handle_empty_results(self, results: pa.Table):
+        """
+        Helper method to handle empty FTS results consistently
+        """
+        if len(results) > 0:
+            return results        
+        return results.append_column(
+            "_relevance_score", pa.array([], type=pa.float32())
+        )
+
     def rerank_fts(
         self,
         query: str,
@@ -229,3 +239,4 @@ class Reranker(ABC):
             if "_distance" in combined_results.column_names:
                 combined_results = combined_results.drop_columns(["_distance"])
         return combined_results
+    
