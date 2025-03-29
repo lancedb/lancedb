@@ -13,7 +13,7 @@ use reqwest::{
 use crate::error::{Error, Result};
 use crate::remote::db::RemoteOptions;
 
-const REQUEST_ID_HEADER: &str = "x-request-id";
+const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
 /// Configuration for the LanceDB Cloud HTTP client.
 #[derive(Clone, Debug)]
@@ -299,7 +299,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(
-            "x-api-key",
+            HeaderName::from_static("x-api-key"),
             HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
                 message: "non-ascii api key provided".to_string(),
             })?,
@@ -307,7 +307,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         if region == "local" {
             let host = format!("{}.local.api.lancedb.com", db_name);
             headers.insert(
-                "Host",
+                http::header::HOST,
                 HeaderValue::from_str(&host).map_err(|_| Error::InvalidInput {
                     message: format!("non-ascii database name '{}' provided", db_name),
                 })?,
@@ -315,7 +315,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
         if has_host_override {
             headers.insert(
-                "x-lancedb-database",
+                HeaderName::from_static("x-lancedb-database"),
                 HeaderValue::from_str(db_name).map_err(|_| Error::InvalidInput {
                     message: format!("non-ascii database name '{}' provided", db_name),
                 })?,
@@ -323,7 +323,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
         if db_prefix.is_some() {
             headers.insert(
-                "x-lancedb-database-prefix",
+                HeaderName::from_static("x-lancedb-database-prefix"),
                 HeaderValue::from_str(db_prefix.unwrap()).map_err(|_| Error::InvalidInput {
                     message: format!(
                         "non-ascii database prefix '{}' provided",
@@ -335,7 +335,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
 
         if let Some(v) = options.0.get("account_name") {
             headers.insert(
-                "x-azure-storage-account-name",
+                HeaderName::from_static("x-azure-storage-account-name"),
                 HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
                     message: format!("non-ascii storage account name '{}' provided", db_name),
                 })?,
@@ -343,7 +343,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
         if let Some(v) = options.0.get("azure_storage_account_name") {
             headers.insert(
-                "x-azure-storage-account-name",
+                HeaderName::from_static("x-azure-storage-account-name"),
                 HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
                     message: format!("non-ascii storage account name '{}' provided", db_name),
                 })?,
