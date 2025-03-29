@@ -3,14 +3,26 @@
 
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Schema};
+use arrow_array::RecordBatch;
+use arrow_schema::{DataType, Field};
+use arrow_schema::{DataType, Schema, SchemaRef};
+use datafusion_common::Result as DataFusionResult;
+use datafusion_execution::RecordBatchStream;
+use futures::Stream;
 use lance::arrow::json::JsonDataType;
 use lance::dataset::{ReadParams, WriteParams};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lazy_static::lazy_static;
+use std::pin::Pin;
+use tokio::time::{self, Instant};
 
+use crate::arrow::SendableRecordBatchStream;
 use crate::error::{Error, Result};
+use arrow_array::{Int32Array, RecordBatch};
+use arrow_schema::{Field, Schema};
+use futures::stream;
+use tokio::time::sleep;
 
 lazy_static! {
     static ref TABLE_NAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap();
@@ -178,11 +190,75 @@ pub fn string_to_datatype(s: &str) -> Option<DataType> {
     (&json_type).try_into().ok()
 }
 
+enum TimeoutState {
+    NotStarted { timeout: std::time::Duration },
+    Started { deadline: tokio::time::Sleep },
+    Completed,
+}
+
+/// A `Stream` wrapper that implements a timeout.
+///
+/// The timeout starts when the first `poll_next` is called. As soon as the timeout
+/// duration has passed, the stream will return an `Err` indicating a timeout error
+/// for the next poll.
+struct TimeoutStream {
+    inner: SendableRecordBatchStream,
+    state: TimeoutState,
+}
+
+impl TimeoutStream {
+    pub fn new(inner: SendableRecordBatchStream, timeout: std::time::Duration) -> Self {
+        TimeoutStream {
+            inner,
+            state: TimeoutState::NotStarted { timeout },
+        }
+    }
+}
+
+impl RecordBatchStream for TimeoutStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
+impl Stream for TimeoutStream {
+    type Item = DataFusionResult<RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        match &mut self.state {
+            TimeoutState::NotStarted { timeout } => {
+                let deadline = time::sleep(*timeout);
+                self.state = TimeoutState::Started { deadline };
+                self.poll_next(cx)
+            }
+            TimeoutState::Started { deadline } => {
+                let deadline = Pin::new(deadline);
+                match deadline.poll(cx) {
+                    std::task::Poll::Ready(_) => {
+                        self.state = TimeoutState::Completed;
+                        std::task::Poll::Ready(Some(Err(
+                            datafusion_common::DataFusionError::Execution(
+                                "Stream timeout".to_string(),
+                            ),
+                        )))
+                    }
+                    std::task::Poll::Pending => {
+                        let inner = Pin::new(&mut self.inner);
+                        inner.poll_next(cx)
+                    }
+                }
+            }
+            TimeoutState::Completed => std::task::Poll::Ready(None),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use arrow_schema::{DataType, Field};
 
     #[test]
     fn test_guess_default_column() {
@@ -248,5 +324,39 @@ mod tests {
         let string = "int32";
         let expected = DataType::Int32;
         assert_eq!(string_to_datatype(string), Some(expected));
+    }
+
+    #[tokio::test]
+    async fn test_timeout_stream_first_batch_then_timeout() {
+        // Create a mock stream of record batches
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "col1",
+            DataType::Int32,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let mock_stream = stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]);
+
+        // Wrap the mock stream in a TimeoutStream with a short timeout
+        let sendable_stream: SendableRecordBatchStream = Box::pin(mock_stream);
+        let timeout_duration = std::time::Duration::from_millis(50);
+        let mut timeout_stream = TimeoutStream::new(sendable_stream, timeout_duration);
+
+        // Poll the stream to get the first batch
+        let first_result = timeout_stream.next().await;
+        assert!(first_result.is_some());
+        assert!(first_result.unwrap().is_ok());
+
+        // Sleep for the timeout duration
+        sleep(timeout_duration).await;
+
+        // Poll the stream again and ensure it returns a timeout error
+        let second_result = timeout_stream.next().await;
+        assert!(second_result.is_some());
+        assert!(second_result.unwrap().is_err());
     }
 }

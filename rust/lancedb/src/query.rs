@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::future::Future;
 use std::sync::Arc;
+use std::{future::Future, time::Duration};
 
 use arrow::compute::concat_batches;
 use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
@@ -525,12 +525,15 @@ pub struct QueryExecutionOptions {
     ///
     /// By default, this is 1024
     pub max_batch_length: u32,
+    /// Max duration to wait for the query to execute before timing out.
+    pub timeout: Option<Duration>,
 }
 
 impl Default for QueryExecutionOptions {
     fn default() -> Self {
         Self {
             max_batch_length: 1024,
+            timeout: None,
         }
     }
 }

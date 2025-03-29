@@ -1775,11 +1775,8 @@ impl NativeTable {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        let plan = self.create_plan(query, options).await?;
-        Ok(DatasetRecordBatchStream::new(execute_plan(
-            plan,
-            Default::default(),
-        )?))
+        let plan = self.create_plan(query, options.clone()).await?;
+        Ok(DatasetRecordBatchStream::new(execute_plan(plan, options)?))
     }
 
     /// Check whether the table uses V2 manifest paths.

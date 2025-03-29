@@ -131,10 +131,14 @@ impl Query {
     pub async fn execute(
         &self,
         max_batch_length: Option<u32>,
+        timeout_ms: Option<u32>,
     ) -> napi::Result<RecordBatchIterator> {
         let mut execution_opts = QueryExecutionOptions::default();
         if let Some(max_batch_length) = max_batch_length {
             execution_opts.max_batch_length = max_batch_length;
+        }
+        if let Some(timeout_ms) = timeout_ms {
+            execution_opts.timeout = Some(std::time::Duration::from_millis(timeout_ms as u64))
         }
         let inner_stream = self
             .inner
