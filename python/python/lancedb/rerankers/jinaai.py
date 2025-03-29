@@ -95,7 +95,9 @@ class JinaReranker(Reranker):
         fts_results: pa.Table,
     ):
         combined_results = self.merge_results(vector_results, fts_results)
-        combined_results = self._rerank(combined_results, query)
+        combined_results = self._handle_empty_results(combined_results)
+        if len(combined_results) > 0:
+            combined_results = self._rerank(combined_results, query)
         if self.score == "relevance":
             combined_results = self._keep_relevance_score(combined_results)
         elif self.score == "all":
