@@ -223,7 +223,8 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         Parameters
         ----------
         inputs : Union[TEXT, IMAGES]
-            The inputs to embed. The input can be either str, bytes, Path (to an image), PIL.Image or list of these.
+            The inputs to embed. The input can be either str, bytes, Path (to an image),
+            PIL.Image or list of these.
 
         Returns
         -------
