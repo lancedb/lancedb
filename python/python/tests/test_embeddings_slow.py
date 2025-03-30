@@ -12,6 +12,7 @@ import pyarrow as pa
 import pytest
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
+import requests
 
 # These are integration tests for embedding functions.
 # They are slow because they require downloading models
@@ -505,6 +506,56 @@ def test_ollama_embedding(tmp_path):
 )
 def test_voyageai_embedding_function():
     voyageai = get_registry().get("voyageai").create(name="voyage-3", max_retries=0)
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_multimodal_embedding_function():
+    voyageai = get_registry().get("voyageai").create(name="voyage-multimodal-3", max_retries=0)
+
+    class Images(LanceModel):
+        label: str
+        image_uri: str = voyageai.SourceField()  # image uri as the source
+        image_bytes: bytes = voyageai.SourceField()  # image bytes as the source
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()  # vector column
+        vec_from_bytes: Vector(voyageai.ndims()) = voyageai.VectorField()  # Another vector column
+
+    table = lancedb.create_table("images", schema=Images)
+    labels = ["cat", "cat", "dog", "dog", "horse", "horse"]
+    uris = [
+        "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
+        "http://farm1.staticflickr.com/134/332220238_da527d8140_z.jpg",
+        "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",
+        "http://farm5.staticflickr.com/4092/5017326486_1f46057f5f_z.jpg",
+        "http://farm9.staticflickr.com/8216/8434969557_d37882c42d_z.jpg",
+        "http://farm6.staticflickr.com/5142/5835678453_4f3a4edb45_z.jpg",
+    ]
+    # get each uri as bytes
+    image_bytes = [requests.get(uri).content for uri in uris]
+    table.add(
+        pd.DataFrame({"label": labels, "image_uri": uris, "image_bytes": image_bytes})
+    )
+    assert len(table.to_pandas()["vector"][0]) == voyageai.ndims()
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_embedding_function():
+    voyageai = get_registry().get("voyageai").create(name="voyage-multimodal-3", max_retries=0)
 
     class TextModel(LanceModel):
         text: str = voyageai.SourceField()

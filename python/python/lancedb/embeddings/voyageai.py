@@ -28,23 +28,23 @@ def is_valid_url(text):
         return False
 
 
-def transform_input(input: Union[str, bytes, Path]):
+def transform_input(input_data: Union[str, bytes, Path]):
     PIL = attempt_import_or_raise("PIL", "pillow")
-    if isinstance(input, str):
-        if is_valid_url(input):
-            content = {"type": "image_url", "image_url": input}
+    if isinstance(input_data, str):
+        if is_valid_url(input_data):
+            content = {"type": "image_url", "image_url": input_data}
         else:
-            content = {"type": "text", "text": input}
-    elif isinstance(input, PIL.Image.Image):
+            content = {"type": "text", "text": input_data}
+    elif isinstance(input_data, PIL.Image.Image):
         buffered = BytesIO()
-        input.save(buffered, format="JPEG")
+        input_data.save(buffered, format="JPEG")
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
         content = {
             "type": "image_base64",
             "image_base64": "data:image/jpeg;base64," + img_str,
         }
-    elif isinstance(input, bytes):
-        img = PIL.Image.open(BytesIO(input))
+    elif isinstance(input_data, bytes):
+        img = PIL.Image.open(BytesIO(input_data))
         buffered = BytesIO()
         img.save(buffered, format="JPEG")
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
@@ -52,8 +52,8 @@ def transform_input(input: Union[str, bytes, Path]):
             "type": "image_base64",
             "image_base64": "data:image/jpeg;base64," + img_str,
         }
-    elif isinstance(input, Path):
-        img = PIL.Image.open(input)
+    elif isinstance(input_data, Path):
+        img = PIL.Image.open(input_data)
         buffered = BytesIO()
         img.save(buffered, format="JPEG")
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
@@ -67,7 +67,7 @@ def transform_input(input: Union[str, bytes, Path]):
     return {"content": [content]}
 
 
-def sanitize_multmodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
+def sanitize_multimodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
     """
     Sanitize the input to the embedding function.
     """
@@ -89,7 +89,7 @@ def sanitize_multmodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
     return [transform_input(i) for i in inputs]
 
 
-def sanitize_text_input(inputs: TEXT) -> List[Any]:
+def sanitize_text_input(inputs: TEXT) -> List[str]:
     """
     Sanitize the input to the embedding function.
     """
@@ -167,7 +167,7 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
 
     def _is_multimodal_model(self, model_name: str):
         return (
-            model_name in self.multimodal_embedding_models or "multmodal" in model_name
+            model_name in self.multimodal_embedding_models or "multimodal" in model_name
         )
 
     def ndims(self):
@@ -197,6 +197,10 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         ----------
         query : Union[str, PIL.Image.Image]
             The query to embed. A query can be either text or an image.
+
+        Returns
+        -------
+            List[np.array]: the list of embeddings
         """
         client = VoyageAIEmbeddingFunction._get_client()
         if self._is_multimodal_model(self.name):
@@ -214,16 +218,20 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         self, inputs: Union[TEXT, IMAGES], *args, **kwargs
     ) -> List[np.array]:
         """
-        Compute the embeddings for a given user query
+        Compute the embeddings for the inputs
 
         Parameters
         ----------
         inputs : Union[TEXT, IMAGES]
-            The inputs to embed. The input can be either a str or list[str] or .
+            The inputs to embed. The input can be either str, bytes, Path (to an image), PIL.Image or list of these.
+
+        Returns
+        -------
+            List[np.array]: the list of embeddings
         """
         client = VoyageAIEmbeddingFunction._get_client()
         if self._is_multimodal_model(self.name):
-            inputs = sanitize_multmodal_input(inputs)
+            inputs = sanitize_multimodal_input(inputs)
             result = client.multimodal_embed(
                 inputs=inputs, model=self.name, input_type="document", **kwargs
             )
