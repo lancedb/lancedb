@@ -434,6 +434,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let (request_id, response) = self.client.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
+        self.checkout_latest().await?;
         Ok(())
     }
 
