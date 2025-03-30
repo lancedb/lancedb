@@ -518,21 +518,27 @@ def test_voyageai_embedding_function():
     tbl.add(df)
     assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
 
+
 @pytest.mark.slow
 @pytest.mark.skipif(
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
 def test_voyageai_multimodal_embedding_function():
-    voyageai = get_registry().get("voyageai").create(name="voyage-multimodal-3", max_retries=0)
+    voyageai = (
+        get_registry().get("voyageai").create(name="voyage-multimodal-3", max_retries=0)
+    )
 
     class Images(LanceModel):
         label: str
         image_uri: str = voyageai.SourceField()  # image uri as the source
         image_bytes: bytes = voyageai.SourceField()  # image bytes as the source
         vector: Vector(voyageai.ndims()) = voyageai.VectorField()  # vector column
-        vec_from_bytes: Vector(voyageai.ndims()) = voyageai.VectorField()  # Another vector column
+        vec_from_bytes: Vector(voyageai.ndims()) = (
+            voyageai.VectorField()
+        )  # Another vector column
 
-    table = lancedb.create_table("images", schema=Images)
+    db = lancedb.connect("~/lancedb")
+    table = db.create_table("test", schema=Images, mode="overwrite")
     labels = ["cat", "cat", "dog", "dog", "horse", "horse"]
     uris = [
         "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
@@ -554,8 +560,10 @@ def test_voyageai_multimodal_embedding_function():
 @pytest.mark.skipif(
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
-def test_voyageai_embedding_function():
-    voyageai = get_registry().get("voyageai").create(name="voyage-multimodal-3", max_retries=0)
+def test_voyageai_multimodal_embedding_text_function():
+    voyageai = (
+        get_registry().get("voyageai").create(name="voyage-multimodal-3", max_retries=0)
+    )
 
     class TextModel(LanceModel):
         text: str = voyageai.SourceField()
