@@ -53,6 +53,7 @@
     <modules>
         <module>core</module>
         <module>catalog-adapter</module>
+        <module>catalog-adapter-hms</module>
     </modules>
 
     <scm>
