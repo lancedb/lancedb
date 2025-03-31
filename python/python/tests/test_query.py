@@ -511,8 +511,8 @@ def test_query_builder_with_different_vector_column():
             columns=["b"],
             vector_column="foo_vector",
         ),
-        None,
-        None,
+        batch_size=None,
+        timeout=None,
     )
 
 
