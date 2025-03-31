@@ -235,6 +235,11 @@ impl Stream for TimeoutStream {
     ) -> std::task::Poll<Option<Self::Item>> {
         match &mut self.state {
             TimeoutState::NotStarted { timeout } => {
+                if timeout.is_zero() {
+                    return std::task::Poll::Ready(Some(Err(
+                        datafusion_common::DataFusionError::Execution("Query timeout".to_string()),
+                    )));
+                }
                 let deadline = Box::pin(tokio::time::sleep(*timeout));
                 self.state = TimeoutState::Started { deadline };
                 self.poll_next(cx)

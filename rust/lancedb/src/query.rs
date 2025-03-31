@@ -1011,7 +1011,10 @@ impl VectorQuery {
         self
     }
 
-    pub async fn execute_hybrid(&self) -> Result<SendableRecordBatchStream> {
+    pub async fn execute_hybrid(
+        &self,
+        options: QueryExecutionOptions,
+    ) -> Result<SendableRecordBatchStream> {
         // clone query and specify we want to include row IDs, which can be needed for reranking
         let mut fts_query = Query::new(self.parent.clone());
         fts_query.request = self.request.base.clone();
@@ -1020,7 +1023,10 @@ impl VectorQuery {
         let mut vector_query = self.clone().with_row_id();
 
         vector_query.request.base.full_text_search = None;
-        let (fts_results, vec_results) = try_join!(fts_query.execute(), vector_query.execute())?;
+        let (fts_results, vec_results) = try_join!(
+            fts_query.execute_with_options(options.clone()),
+            vector_query.inner_execute_with_options(options)
+        )?;
 
         let (fts_results, vec_results) = try_join!(
             fts_results.try_collect::<Vec<_>>(),
@@ -1078,6 +1084,20 @@ impl VectorQuery {
             RecordBatchStreamAdapter::new(results.schema(), stream::iter([Ok(results)])),
         ))
     }
+
+    async fn inner_execute_with_options(
+        &self,
+        options: QueryExecutionOptions,
+    ) -> Result<SendableRecordBatchStream> {
+        let plan = self.create_plan(options.clone()).await?;
+        let inner = execute_plan(plan, Default::default())?;
+        let inner = if let Some(timeout) = options.timeout {
+            TimeoutStream::new_boxed(inner, timeout)
+        } else {
+            inner
+        };
+        Ok(DatasetRecordBatchStream::new(inner).into())
+    }
 }
 
 impl ExecutableQuery for VectorQuery {
@@ -1091,18 +1111,13 @@ impl ExecutableQuery for VectorQuery {
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
         if self.request.base.full_text_search.is_some() {
-            let hybrid_result = async move { self.execute_hybrid().await }.boxed().await?;
+            let hybrid_result = async move { self.execute_hybrid(options).await }
+                .boxed()
+                .await?;
             return Ok(hybrid_result);
         }
 
-        let plan = self.create_plan(options.clone()).await?;
-        let inner = execute_plan(plan, Default::default())?;
-        let inner = if let Some(timeout) = options.timeout {
-            TimeoutStream::new_boxed(inner, timeout)
-        } else {
-            inner
-        };
-        Ok(DatasetRecordBatchStream::new(inner).into())
+        self.inner_execute_with_options(options).await
     }
 
     async fn explain_plan(&self, verbose: bool) -> Result<String> {
