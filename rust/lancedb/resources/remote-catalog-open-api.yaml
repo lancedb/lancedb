@@ -96,7 +96,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TableList'
+                type: array
+                items:
+                  type: string
+                description: List of table names in the database
 
     post:
       tags: [Table]
@@ -242,14 +245,6 @@ components:
       required: [newName]
       properties:
         newName: {type: string}
-
-    TableList:
-      type: object
-      properties:
-        tables:
-          type: array
-          items: {type: string}
-        nextToken: {type: string}
 
     CreateTableRequest:
       type: object

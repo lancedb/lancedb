@@ -10,8 +10,6 @@ pub mod rename_request;
 pub use self::rename_request::RenameRequest;
 pub mod table_definition;
 pub use self::table_definition::TableDefinition;
-pub mod table_list;
-pub use self::table_list::TableList;
 pub mod table_metadata;
 pub use self::table_metadata::TableMetadata;
 pub mod table_update;

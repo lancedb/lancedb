@@ -49,7 +49,6 @@ Class | Method | HTTP request | Description
  - [DatabaseMetadata](docs/DatabaseMetadata.md)
  - [RenameRequest](docs/RenameRequest.md)
  - [TableDefinition](docs/TableDefinition.md)
- - [TableList](docs/TableList.md)
  - [TableMetadata](docs/TableMetadata.md)
  - [TableUpdate](docs/TableUpdate.md)
  - [V1DatabasesDbNameTablesTableNameNamePutRequest](docs/V1DatabasesDbNameTablesTableNameNamePutRequest.md)

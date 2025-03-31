@@ -90,7 +90,7 @@ pub async fn v1_databases_db_name_tables_delete(configuration: &configuration::C
     }
 }
 
-pub async fn v1_databases_db_name_tables_get(configuration: &configuration::Configuration, db_name: &str, start_after: Option<&str>, limit: Option<i32>) -> Result<models::TableList, Error<V1DatabasesDbNameTablesGetError>> {
+pub async fn v1_databases_db_name_tables_get(configuration: &configuration::Configuration, db_name: &str, start_after: Option<&str>, limit: Option<i32>) -> Result<Vec<String>, Error<V1DatabasesDbNameTablesGetError>> {
     // add a prefix to parameters to efficiently prevent name collisions
     let p_db_name = db_name;
     let p_start_after = start_after;
@@ -124,8 +124,8 @@ pub async fn v1_databases_db_name_tables_get(configuration: &configuration::Conf
         let content = resp.text().await?;
         match content_type {
             ContentType::Json => serde_json::from_str(&content).map_err(Error::from),
-            ContentType::Text => return Err(Error::from(serde_json::Error::custom("Received `text/plain` content type response that cannot be converted to `models::TableList`"))),
-            ContentType::Unsupported(unknown_type) => return Err(Error::from(serde_json::Error::custom(format!("Received `{unknown_type}` content type response that cannot be converted to `models::TableList`")))),
+            ContentType::Text => return Err(Error::from(serde_json::Error::custom("Received `text/plain` content type response that cannot be converted to `Vec&lt;String&gt;`"))),
+            ContentType::Unsupported(unknown_type) => return Err(Error::from(serde_json::Error::custom(format!("Received `{unknown_type}` content type response that cannot be converted to `Vec&lt;String&gt;`")))),
         }
     } else {
         let content = resp.text().await?;

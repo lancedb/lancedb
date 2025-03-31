@@ -10,7 +10,6 @@ docs/DatabaseMetadata.md
 docs/RenameRequest.md
 docs/TableApi.md
 docs/TableDefinition.md
-docs/TableList.md
 docs/TableMetadata.md
 docs/TableUpdate.md
 docs/V1DatabasesDbNameTablesTableNameNamePutRequest.md
@@ -28,6 +27,5 @@ src/models/database_metadata.rs
 src/models/mod.rs
 src/models/rename_request.rs
 src/models/table_definition.rs
-src/models/table_list.rs
 src/models/table_metadata.rs
 src/models/table_update.rs
