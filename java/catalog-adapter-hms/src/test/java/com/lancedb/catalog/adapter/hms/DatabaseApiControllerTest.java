@@ -19,8 +19,12 @@ import org.junit.jupiter.api.Test;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.context.request.NativeWebRequest;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -73,5 +77,24 @@ class DatabaseApiControllerTest {
         "${openapi.lanceDBRESTCatalog.base-path:}",
         annotation.value()[0],
         "RequestMapping value should match expected");
+  }
+
+  @Test
+  void testV1DatabasesGet_Success() {
+    DatabaseApiController testController =
+        new DatabaseApiController(mockRequest) {
+          @Override
+          public ResponseEntity<List<String>> v1DatabasesGet(
+              Optional<String> startAfter, Optional<Integer> limit) {
+            List<String> databases = Arrays.asList("db1", "db2", "db3");
+            return new ResponseEntity<>(databases, HttpStatus.OK);
+          }
+        };
+
+    ResponseEntity<List<String>> response =
+        testController.v1DatabasesGet(Optional.empty(), Optional.empty());
+
+    assertEquals(HttpStatus.OK, response.getStatusCode());
+    assertEquals(Arrays.asList("db1", "db2", "db3"), response.getBody());
   }
 }
