@@ -5,11 +5,9 @@ src/main/java/com/lancedb/catalog/adapter/api/DatabaseApi.java
 src/main/java/com/lancedb/catalog/adapter/api/TableApi.java
 src/main/java/com/lancedb/catalog/adapter/model/CreateDatabaseRequest.java
 src/main/java/com/lancedb/catalog/adapter/model/CreateTableRequest.java
-src/main/java/com/lancedb/catalog/adapter/model/DatabaseList.java
 src/main/java/com/lancedb/catalog/adapter/model/DatabaseMetadata.java
 src/main/java/com/lancedb/catalog/adapter/model/RenameRequest.java
 src/main/java/com/lancedb/catalog/adapter/model/TableDefinition.java
-src/main/java/com/lancedb/catalog/adapter/model/TableList.java
 src/main/java/com/lancedb/catalog/adapter/model/TableMetadata.java
 src/main/java/com/lancedb/catalog/adapter/model/TableUpdate.java
 src/main/java/com/lancedb/catalog/adapter/model/V1DatabasesDbNameTablesTableNameNamePutRequest.java

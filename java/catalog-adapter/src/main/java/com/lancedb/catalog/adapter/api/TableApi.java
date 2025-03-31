@@ -14,13 +14,13 @@
 package com.lancedb.catalog.adapter.api;
 
 import com.lancedb.catalog.adapter.model.CreateTableRequest;
-import com.lancedb.catalog.adapter.model.TableList;
 import com.lancedb.catalog.adapter.model.TableMetadata;
 import com.lancedb.catalog.adapter.model.TableUpdate;
 import com.lancedb.catalog.adapter.model.V1DatabasesDbNameTablesTableNameNamePutRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.enums.ParameterIn;
+import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -36,6 +36,7 @@ import javax.annotation.Generated;
 import javax.validation.Valid;
 import javax.validation.constraints.*;
 
+import java.util.List;
 import java.util.Optional;
 
 @Generated(
@@ -87,14 +88,14 @@ public interface TableApi {
             content = {
               @Content(
                   mediaType = "application/json",
-                  schema = @Schema(implementation = TableList.class))
+                  array = @ArraySchema(schema = @Schema(implementation = String.class)))
             })
       })
   @RequestMapping(
       method = RequestMethod.GET,
       value = "/v1/databases/{dbName}/tables",
       produces = {"application/json"})
-  default ResponseEntity<TableList> v1DatabasesDbNameTablesGet(
+  default ResponseEntity<List<String>> v1DatabasesDbNameTablesGet(
       @Parameter(name = "dbName", description = "", required = true, in = ParameterIn.PATH)
           @PathVariable("dbName")
           String dbName,
@@ -111,8 +112,7 @@ public interface TableApi {
             request -> {
               for (MediaType mediaType : MediaType.parseMediaTypes(request.getHeader("Accept"))) {
                 if (mediaType.isCompatibleWith(MediaType.valueOf("application/json"))) {
-                  String exampleString =
-                      "{ \"tables\" : [ \"tables\", \"tables\" ], \"nextToken\" : \"nextToken\" }";
+                  String exampleString = "[ \"\", \"\" ]";
                   ApiUtil.setExampleResponse(request, "application/json", exampleString);
                   break;
                 }

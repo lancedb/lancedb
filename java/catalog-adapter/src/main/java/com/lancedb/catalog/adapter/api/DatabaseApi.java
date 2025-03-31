@@ -14,12 +14,12 @@
 package com.lancedb.catalog.adapter.api;
 
 import com.lancedb.catalog.adapter.model.CreateDatabaseRequest;
-import com.lancedb.catalog.adapter.model.DatabaseList;
 import com.lancedb.catalog.adapter.model.DatabaseMetadata;
 import com.lancedb.catalog.adapter.model.RenameRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.enums.ParameterIn;
+import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -35,6 +35,7 @@ import javax.annotation.Generated;
 import javax.validation.Valid;
 import javax.validation.constraints.*;
 
+import java.util.List;
 import java.util.Optional;
 
 @Generated(
@@ -168,14 +169,14 @@ public interface DatabaseApi {
             content = {
               @Content(
                   mediaType = "application/json",
-                  schema = @Schema(implementation = DatabaseList.class))
+                  array = @ArraySchema(schema = @Schema(implementation = String.class)))
             })
       })
   @RequestMapping(
       method = RequestMethod.GET,
       value = "/v1/databases",
       produces = {"application/json"})
-  default ResponseEntity<DatabaseList> v1DatabasesGet(
+  default ResponseEntity<List<String>> v1DatabasesGet(
       @Parameter(name = "startAfter", description = "", in = ParameterIn.QUERY)
           @Valid
           @RequestParam(value = "startAfter", required = false)
@@ -189,8 +190,7 @@ public interface DatabaseApi {
             request -> {
               for (MediaType mediaType : MediaType.parseMediaTypes(request.getHeader("Accept"))) {
                 if (mediaType.isCompatibleWith(MediaType.valueOf("application/json"))) {
-                  String exampleString =
-                      "{ \"databases\" : [ \"databases\", \"databases\" ], \"nextToken\" : \"nextToken\" }";
+                  String exampleString = "[ \"\", \"\" ]";
                   ApiUtil.setExampleResponse(request, "application/json", exampleString);
                   break;
                 }
