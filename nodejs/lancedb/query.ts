@@ -288,7 +288,9 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     options?: Partial<QueryExecutionOptions>,
   ): Promise<NativeBatchIterator> {
     if (this.inner instanceof Promise) {
-      return this.inner.then((inner) => inner.execute(options?.maxBatchLength, options?.timeoutMs));
+      return this.inner.then((inner) =>
+        inner.execute(options?.maxBatchLength, options?.timeoutMs),
+      );
     } else {
       return this.inner.execute(options?.maxBatchLength, options?.timeoutMs);
     }

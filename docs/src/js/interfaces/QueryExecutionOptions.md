@@ -20,3 +20,13 @@ The maximum number of rows to return in a single batch
 
 Batches may have fewer rows if the underlying data is stored
 in smaller chunks.
+
+***
+
+### timeoutMs?
+
+```ts
+optional timeoutMs: number;
+```
+
+Timeout for query execution in milliseconds

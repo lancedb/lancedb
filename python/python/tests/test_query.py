@@ -1124,18 +1124,20 @@ async def test_query_timeout_async(tmp_path):
     await table.create_index("text", config=FTS())
 
     with pytest.raises(Exception, match="Query timeout"):
-        await table.query().where("text = 'a'").to_list(timeout=timedelta(0))
+        await table.query().where("text != 'a'").to_list(timeout=timedelta(0))
 
     with pytest.raises(Exception, match="Query timeout"):
-        await table.query([0.0, 0.0]).to_arrow(timeout=timedelta(0))
+        await table.vector_search([0.0, 0.0]).to_arrow(timeout=timedelta(0))
 
     with pytest.raises(Exception, match="Query timeout"):
-        await table.query("a", query_type="fts").to_pandas(timeout=timedelta(0))
+        await (await table.search("a", query_type="fts")).to_pandas(
+            timeout=timedelta(0)
+        )
 
     with pytest.raises(Exception, match="Query timeout"):
-        async for batch in (
-            table.query("a", query_type="hybrid")
-            .vector([0.0, 0.0])
+        await (
+            table.query()
+            .nearest_to_text("a")
+            .nearest_to([0.0, 0.0])
             .to_list(timeout=timedelta(0))
-        ):
-            pass
+        )

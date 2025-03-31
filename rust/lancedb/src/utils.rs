@@ -206,7 +206,7 @@ pub struct TimeoutStream {
 
 impl TimeoutStream {
     pub fn new(inner: SendableRecordBatchStream, timeout: std::time::Duration) -> Self {
-        TimeoutStream {
+        Self {
             inner,
             state: TimeoutState::NotStarted { timeout },
         }
@@ -216,7 +216,7 @@ impl TimeoutStream {
         inner: SendableRecordBatchStream,
         timeout: std::time::Duration,
     ) -> SendableRecordBatchStream {
-        Box::pin(TimeoutStream::new(inner, timeout))
+        Box::pin(Self::new(inner, timeout))
     }
 }
 
