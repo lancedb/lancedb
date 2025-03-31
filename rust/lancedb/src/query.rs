@@ -25,6 +25,7 @@ use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{check_reranker_result, NormalizeMethod, Reranker};
 use crate::table::BaseTable;
+use crate::utils::TimeoutStream;
 use crate::DistanceType;
 use crate::{arrow::SendableRecordBatchStream, table::AnyQuery};
 
@@ -1094,12 +1095,14 @@ impl ExecutableQuery for VectorQuery {
             return Ok(hybrid_result);
         }
 
-        Ok(SendableRecordBatchStream::from(
-            DatasetRecordBatchStream::new(execute_plan(
-                self.create_plan(options).await?,
-                Default::default(),
-            )?),
-        ))
+        let plan = self.create_plan(options.clone()).await?;
+        let inner = execute_plan(plan, Default::default())?;
+        let inner = if let Some(timeout) = options.timeout {
+            TimeoutStream::new_boxed(inner, timeout)
+        } else {
+            inner
+        };
+        Ok(DatasetRecordBatchStream::new(inner).into())
     }
 
     async fn explain_plan(&self, verbose: bool) -> Result<String> {

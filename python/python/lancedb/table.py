@@ -1007,7 +1007,11 @@ class Table(ABC):
 
     @abstractmethod
     def _execute_query(
-        self, query: Query, batch_size: Optional[int] = None
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader: ...
 
     @abstractmethod
@@ -2312,9 +2316,15 @@ class LanceTable(Table):
         LOOP.run(self._table.update(values, where=where, updates_sql=values_sql))
 
     def _execute_query(
-        self, query: Query, batch_size: Optional[int] = None
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
-        async_iter = LOOP.run(self._table._execute_query(query, batch_size))
+        async_iter = LOOP.run(
+            self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
+        )
 
         def iter_sync():
             try:
@@ -3390,7 +3400,11 @@ class AsyncTable:
         return async_query
 
     async def _execute_query(
-        self, query: Query, batch_size: Optional[int] = None
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
         # The sync table calls into this method, so we need to map the
         # query to the async version of the query and run that here. This is only
@@ -3398,7 +3412,9 @@ class AsyncTable:
 
         async_query = self._sync_query_to_async(query)
 
-        return await async_query.to_batches(max_batch_length=batch_size)
+        return await async_query.to_batches(
+            max_batch_length=batch_size, timeout=timeout
+        )
 
     async def _explain_plan(self, query: Query, verbose: Optional[bool]) -> str:
         # This method is used by the sync table
