@@ -2,8 +2,6 @@ pub mod create_database_request;
 pub use self::create_database_request::CreateDatabaseRequest;
 pub mod create_table_request;
 pub use self::create_table_request::CreateTableRequest;
-pub mod database_list;
-pub use self::database_list::DatabaseList;
 pub mod database_metadata;
 pub use self::database_metadata::DatabaseMetadata;
 pub mod rename_request;

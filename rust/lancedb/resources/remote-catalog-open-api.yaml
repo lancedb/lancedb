@@ -18,7 +18,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DatabaseList'
+                type: array
+                items:
+                  type: string
+                description: List of database names in the catalog
 
     post:
       tags: [Database]
@@ -214,14 +217,6 @@ components:
       schema: {type: integer}
 
   schemas:
-    DatabaseList:
-      type: object
-      properties:
-        databases:
-          type: array
-          items: {type: string}
-        nextToken: {type: string}
-
     CreateDatabaseRequest:
       type: object
       required: [name, mode]

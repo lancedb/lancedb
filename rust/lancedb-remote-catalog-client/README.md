@@ -45,7 +45,6 @@ Class | Method | HTTP request | Description
 
  - [CreateDatabaseRequest](docs/CreateDatabaseRequest.md)
  - [CreateTableRequest](docs/CreateTableRequest.md)
- - [DatabaseList](docs/DatabaseList.md)
  - [DatabaseMetadata](docs/DatabaseMetadata.md)
  - [RenameRequest](docs/RenameRequest.md)
  - [TableDefinition](docs/TableDefinition.md)

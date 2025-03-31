@@ -5,7 +5,6 @@ README.md
 docs/CreateDatabaseRequest.md
 docs/CreateTableRequest.md
 docs/DatabaseApi.md
-docs/DatabaseList.md
 docs/DatabaseMetadata.md
 docs/RenameRequest.md
 docs/TableApi.md
@@ -22,7 +21,6 @@ src/lib.rs
 src/models/_v1_databases__db_name__tables__table_name__name_put_request.rs
 src/models/create_database_request.rs
 src/models/create_table_request.rs
-src/models/database_list.rs
 src/models/database_metadata.rs
 src/models/mod.rs
 src/models/rename_request.rs

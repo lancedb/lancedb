@@ -169,7 +169,7 @@ pub async fn v1_databases_delete(configuration: &configuration::Configuration, )
     }
 }
 
-pub async fn v1_databases_get(configuration: &configuration::Configuration, start_after: Option<&str>, limit: Option<i32>) -> Result<models::DatabaseList, Error<V1DatabasesGetError>> {
+pub async fn v1_databases_get(configuration: &configuration::Configuration, start_after: Option<&str>, limit: Option<i32>) -> Result<Vec<String>, Error<V1DatabasesGetError>> {
     // add a prefix to parameters to efficiently prevent name collisions
     let p_start_after = start_after;
     let p_limit = limit;
@@ -202,8 +202,8 @@ pub async fn v1_databases_get(configuration: &configuration::Configuration, star
         let content = resp.text().await?;
         match content_type {
             ContentType::Json => serde_json::from_str(&content).map_err(Error::from),
-            ContentType::Text => return Err(Error::from(serde_json::Error::custom("Received `text/plain` content type response that cannot be converted to `models::DatabaseList`"))),
-            ContentType::Unsupported(unknown_type) => return Err(Error::from(serde_json::Error::custom(format!("Received `{unknown_type}` content type response that cannot be converted to `models::DatabaseList`")))),
+            ContentType::Text => return Err(Error::from(serde_json::Error::custom("Received `text/plain` content type response that cannot be converted to `Vec&lt;String&gt;`"))),
+            ContentType::Unsupported(unknown_type) => return Err(Error::from(serde_json::Error::custom(format!("Received `{unknown_type}` content type response that cannot be converted to `Vec&lt;String&gt;`")))),
         }
     } else {
         let content = resp.text().await?;
