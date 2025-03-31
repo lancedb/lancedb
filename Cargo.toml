@@ -21,16 +21,16 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.25.1", "features" = [
+lance = { "version" = "=0.25.2", "features" = [
     "dynamodb",
-], tag = "v0.25.1-beta.3", git = "https://github.com/lancedb/lance.git" }
-lance-io = { version = "=0.25.1", tag = "v0.25.1-beta.3", git = "https://github.com/lancedb/lance.git" }
-lance-index = { version = "=0.25.1", tag = "v0.25.1-beta.3", git = "https://github.com/lancedb/lance.git" }
-lance-linalg = { version = "=0.25.1", tag = "v0.25.1-beta.3", git = "https://github.com/lancedb/lance.git" }
-lance-table = { version = "=0.25.1", tag = "v0.25.1-beta.3", git = "https://github.com/lancedb/lance.git" }
-lance-testing = { version = "=0.25.1", tag = "v0.25.1-beta.3", git = "https://github.com/lancedb/lance.git" }
-lance-datafusion = { version = "=0.25.1", tag = "v0.25.1-beta.3", git = "https://github.com/lancedb/lance.git" }
-lance-encoding = { version = "=0.25.1", tag = "v0.25.1-beta.3", git = "https://github.com/lancedb/lance.git" }
+]}
+lance-io = { version = "=0.25.2" }
+lance-index = { version = "=0.25.2" }
+lance-linalg = { version = "=0.25.2" }
+lance-table = { version = "=0.25.2" }
+lance-testing = { version = "=0.25.2" }
+lance-datafusion = { version = "=0.25.2" }
+lance-encoding = { version = "=0.25.2" }
 # Note that this one does not include pyarrow
 arrow = { version = "54.1", optional = false }
 arrow-array = "54.1"
@@ -41,12 +41,12 @@ arrow-schema = "54.1"
 arrow-arith = "54.1"
 arrow-cast = "54.1"
 async-trait = "0"
-datafusion = { version = "45.0", default-features = false }
-datafusion-catalog = "45.0"
-datafusion-common = { version = "45.0", default-features = false }
-datafusion-execution = "45.0"
-datafusion-expr = "45.0"
-datafusion-physical-plan = "45.0"
+datafusion = { version = "46.0", default-features = false }
+datafusion-catalog = "46.0"
+datafusion-common = { version = "46.0", default-features = false }
+datafusion-execution = "46.0"
+datafusion-expr = "46.0"
+datafusion-physical-plan = "46.0"
 env_logger = "0.11"
 half = { "version" = "=2.4.1", default-features = false, features = [
     "num-traits",
