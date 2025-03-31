@@ -535,6 +535,10 @@ jobs:
           for filename in *.tgz; do
             npm publish $PUBLISH_ARGS $filename
           done
+      - name: Deprecate
+        # We need to deprecate the old package to avoid confusion.
+        # Each time we publish a new version, it gets undeprecated.
+        run: npm deprecate vectordb "Use @lancedb/lancedb instead."
       - name: Notify Slack Action
         uses: ravsamhq/notify-slack-action@2.3.0
         if: ${{ always() }}
