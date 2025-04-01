@@ -153,7 +153,6 @@ impl Reranker for RRFReranker {
 pub mod test {
     use super::*;
     use arrow_array::StringArray;
-    use lance_index::scalar::inverted::query::MatchQuery;
 
     #[tokio::test]
     async fn test_rrf_reranker() {
