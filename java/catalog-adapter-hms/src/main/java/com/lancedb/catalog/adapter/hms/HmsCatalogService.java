@@ -13,15 +13,36 @@
  */
 package com.lancedb.catalog.adapter.hms;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.IMetaStoreClient;
+import org.apache.thrift.TException;
+
 import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class HmsCatalogService {
 
-  //  private ClientPool<IMetaStoreClient, TException> clients;
+  private final ClientPool<IMetaStoreClient, TException> clients;
+  private final Configuration conf;
 
-  public List<String> getDatabases() {
-    // Implementation to get all databases from the catalog
+  public HmsCatalogService() {
+    this(new HiveConf());
+  }
+
+  public Configuration getConf() {
+    return conf;
+  }
+
+  public HmsCatalogService(Configuration conf) {
+    this.conf = conf;
+    this.clients = new HiveClientPool(1, this.conf);
+  }
+
+  public List<String> getDatabases() throws TException, InterruptedException {
+
+    clients.run(IMetaStoreClient::getAllDatabases).stream().collect(Collectors.toList());
     return Collections.singletonList("db1");
   }
 }

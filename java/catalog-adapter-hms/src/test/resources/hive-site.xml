@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<configuration>
+  <!-- Hive Metastore properties -->
+  <property>
+    <name>hive.metastore.uris</name>
+    <value>thrift://localhost:9083</value>
+    <description>URI for client to connect to Hive metastore server</description>
+  </property>
+
+  <property>
+    <name>hive.metastore.warehouse.dir</name>
+    <value>/tmp/hive/warehouse</value>
+    <description>Location for the Hive Warehouse directory</description>
+  </property>
+
+  <property>
+    <name>javax.jdo.option.ConnectionURL</name>
+    <value>jdbc:derby:memory:metastore_db;create=true</value>
+    <description>JDBC connect string for metastore database</description>
+  </property>
+
+  <property>
+    <name>javax.jdo.option.ConnectionDriverName</name>
+    <value>org.apache.derby.jdbc.EmbeddedDriver</value>
+    <description>Driver class name for metastore database</description>
+  </property>
+
+  <property>
+    <name>javax.jdo.option.ConnectionUserName</name>
+    <value>APP</value>
+    <description>Username for metastore database</description>
+  </property>
+
+  <property>
+    <name>javax.jdo.option.ConnectionPassword</name>
+    <value>mine</value>
+    <description>Password for metastore database</description>
+  </property>
+
+  <property>
+    <name>hive.metastore.schema.verification</name>
+    <value>false</value>
+    <description>Disable schema verification for testing</description>
+  </property>
+
+  <property>
+    <name>datanucleus.schema.autoCreateAll</name>
+    <value>true</value>
+    <description>Auto create metastore schema for testing</description>
+  </property>
+
+  <property>
+    <name>hive.metastore.client.connect.retry.delay</name>
+    <value>1s</value>
+    <description>Retry delay for metastore client connection</description>
+  </property>
+
+  <!-- S3 storage option testing properties -->
+  <property>
+    <name>fs.s3a.access.key</name>
+    <value>test-access-key</value>
+  </property>
+
+  <property>
+    <name>fs.s3a.secret.key</name>
+    <value>test-secret-key</value>
+  </property>
+
+  <property>
+    <name>fs.s3a.endpoint</name>
+    <value>http://localhost:9000</value>
+  </property>
+
+  <property>
+    <name>customized.key</name>
+    <value>customized.value</value>
+  </property>
+</configuration>
