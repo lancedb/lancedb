@@ -31,6 +31,7 @@ async def some_table(db_async):
         {
             "id": list(range(NROWS)),
             "vector": sample_fixed_size_list_array(NROWS, DIM),
+            "fsb": pa.array([bytes([i]) for i in range(NROWS)], pa.binary(1)),
             "tags": [
                 [f"tag{random.randint(0, 8)}" for _ in range(2)] for _ in range(NROWS)
             ],
@@ -83,6 +84,16 @@ async def test_create_scalar_index(some_table: AsyncTable):
     await some_table.drop_index("id_idx")
     indices = await some_table.list_indices()
     assert len(indices) == 0
+
+
+@pytest.mark.asyncio
+async def test_create_fixed_size_binary_index(some_table: AsyncTable):
+    await some_table.create_index("fsb", config=BTree())
+    indices = await some_table.list_indices()
+    assert str(indices) == '[Index(BTree, columns=["fsb"], name="fsb_idx")]'
+    assert len(indices) == 1
+    assert indices[0].index_type == "BTree"
+    assert indices[0].columns == ["fsb"]
 
 
 @pytest.mark.asyncio

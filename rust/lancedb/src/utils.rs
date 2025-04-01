@@ -135,6 +135,7 @@ pub fn supported_btree_data_type(dtype: &DataType) -> bool {
                 | DataType::Date32
                 | DataType::Date64
                 | DataType::Timestamp(_, _)
+                | DataType::FixedSizeBinary(_)
         )
 }
 
