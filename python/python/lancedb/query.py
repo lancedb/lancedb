@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import abc
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Dict,
@@ -83,6 +85,196 @@ def ensure_vector_query(
         return val
 
 
+class FullTextQueryType(Enum):
+    MATCH = "match"
+    MATCH_PHRASE = "match_phrase"
+    BOOST = "boost"
+    MULTI_MATCH = "multi_match"
+
+
+class FullTextQuery(abc.ABC, pydantic.BaseModel):
+    @abc.abstractmethod
+    def query_type(self) -> FullTextQueryType:
+        """
+        Get the query type of the query.
+
+        Returns
+        -------
+        str
+            The type of the query.
+        """
+
+    @abc.abstractmethod
+    def to_dict(self) -> dict:
+        """
+        Convert the query to a dictionary.
+
+        Returns
+        -------
+        dict
+            The query as a dictionary.
+        """
+
+
+class MatchQuery(FullTextQuery):
+    def __init__(
+        self,
+        query: str,
+        column: str,
+        *,
+        boost: float = 1.0,
+        fuzziness: int = 0,
+        max_expansions: int = 50,
+    ):
+        """
+        Match query for full-text search.
+
+        Parameters
+        ----------
+        query : str
+            The query string to match against.
+        column : str
+            The name of the column to match against.
+        boost : float, default 1.0
+            The boost factor for the query.
+            The score of each matching document is multiplied by this value.
+        fuzziness : int, optional
+            The maximum edit distance for each term in the match query.
+            Defaults to 0 (exact match).
+            If None, fuzziness is applied automatically by the rules:
+                - 0 for terms with length <= 2
+                - 1 for terms with length <= 5
+                - 2 for terms with length > 5
+        max_expansions : int, optional
+            The maximum number of terms to consider for fuzzy matching.
+            Defaults to 50.
+        """
+        self.column = column
+        self.query = query
+        self.boost = boost
+        self.fuzziness = fuzziness
+        self.max_expansions = max_expansions
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.MATCH
+
+    def to_dict(self) -> dict:
+        return {
+            "match": {
+                self.column: {
+                    "query": self.query,
+                    "boost": self.boost,
+                    "fuzziness": self.fuzziness,
+                    "max_expansions": self.max_expansions,
+                }
+            }
+        }
+
+
+class PhraseQuery(FullTextQuery):
+    def __init__(self, query: str, column: str):
+        """
+        Phrase query for full-text search.
+
+        Parameters
+        ----------
+        query : str
+            The query string to match against.
+        column : str
+            The name of the column to match against.
+        """
+        self.column = column
+        self.query = query
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.MATCH_PHRASE
+
+    def to_dict(self) -> dict:
+        return {
+            "match_phrase": {
+                self.column: self.query,
+            }
+        }
+
+
+class BoostQuery(FullTextQuery):
+    def __init__(
+        self,
+        positive: FullTextQuery,
+        negative: FullTextQuery,
+        negative_boost: float,
+    ):
+        """
+        Boost query for full-text search.
+
+        Parameters
+        ----------
+        positive : dict
+            The positive query object.
+        negative : dict
+            The negative query object.
+        negative_boost : float
+            The boost factor for the negative query.
+        """
+        self.positive = positive
+        self.negative = negative
+        self.negative_boost = negative_boost
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.BOOST
+
+    def to_dict(self) -> dict:
+        return {
+            "boost": {
+                "positive": self.positive.to_dict(),
+                "negative": self.negative.to_dict(),
+                "negative_boost": self.negative_boost,
+            }
+        }
+
+
+class MultiMatchQuery(FullTextQuery):
+    def __init__(
+        self,
+        query: str,
+        columns: list[str],
+        *,
+        boosts: Optional[list[float]] = None,
+    ):
+        """
+        Multi-match query for full-text search.
+
+        Parameters
+        ----------
+        query : str | list[Query]
+            If a string, the query string to match against.
+
+        columns : list[str]
+            The list of columns to match against.
+
+        boosts : list[float], optional
+            The list of boost factors for each column. If not provided,
+            all columns will have the same boost factor.
+        """
+        self.query = query
+        self.columns = columns
+        if boosts is None:
+            boosts = [1.0] * len(columns)
+        self.boosts = boosts
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.MULTI_MATCH
+
+    def to_dict(self) -> dict:
+        return {
+            "multi_match": {
+                "query": self.query,
+                "columns": self.columns,
+                "boost": self.boosts,
+            }
+        }
+
+
 class FullTextSearchQuery(pydantic.BaseModel):
     """A LanceDB Full Text Search Query
 
@@ -92,18 +284,13 @@ class FullTextSearchQuery(pydantic.BaseModel):
         The columns to search
 
         If None, then the table should select the column automatically.
-    query: str
-        The query to search for
-    limit: Optional[int] = None
-        The limit on the number of results to return
-    wand_factor: Optional[float] = None
-        The wand factor to use for the search
+    query: str | FullTextQuery
+        If a string, it is treated as a MatchQuery.
+        If a FullTextQuery object, it is used directly.
     """
 
     columns: Optional[List[str]] = None
-    query: str
-    limit: Optional[int] = None
-    wand_factor: Optional[float] = None
+    query: Union[str, FullTextQuery]
 
 
 class Query(pydantic.BaseModel):
@@ -712,13 +899,14 @@ class LanceQueryBuilder(ABC):
         """
         raise NotImplementedError
 
-    def text(self, text: str) -> Self:
+    def text(self, text: str | FullTextQuery) -> Self:
         """Set the text to search for.
 
         Parameters
         ----------
-        text: str
-            The text to search for.
+        text: str | FullTextQuery
+            If a string, it is treated as a MatchQuery.
+            If a FullTextQuery object, it is used directly.
 
         Returns
         -------
@@ -1084,7 +1272,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
     def __init__(
         self,
         table: "Table",
-        query: str,
+        query: str | FullTextQuery,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
     ):
@@ -1691,7 +1879,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._vector = vector
         return self
 
-    def text(self, text: str) -> LanceHybridQueryBuilder:
+    def text(self, text: str | FullTextQuery) -> LanceHybridQueryBuilder:
         self._text = text
         return self
 
@@ -2088,7 +2276,7 @@ class AsyncQuery(AsyncQueryBase):
             )
 
     def nearest_to_text(
-        self, query: str, columns: Union[str, List[str], None] = None
+        self, query: str | FullTextQuery, columns: Union[str, List[str], None] = None
     ) -> AsyncFTSQuery:
         """
         Find the documents that are most relevant to the given text query.
@@ -2114,9 +2302,13 @@ class AsyncQuery(AsyncQueryBase):
             columns = [columns]
         if columns is None:
             columns = []
-        return AsyncFTSQuery(
-            self._inner.nearest_to_text({"query": query, "columns": columns})
-        )
+
+        if isinstance(query, str):
+            return AsyncFTSQuery(
+                self._inner.nearest_to_text({"query": query, "columns": columns})
+            )
+        # FullTextQuery object
+        return AsyncFTSQuery(self._inner.nearest_to_text(query.to_dict()))
 
 
 class AsyncFTSQuery(AsyncQueryBase):
@@ -2399,7 +2591,7 @@ class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
         return self
 
     def nearest_to_text(
-        self, query: str, columns: Union[str, List[str], None] = None
+        self, query: str | FullTextQuery, columns: Union[str, List[str], None] = None
     ) -> AsyncHybridQuery:
         """
         Find the documents that are most relevant to the given text query,
@@ -2429,9 +2621,13 @@ class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
             columns = [columns]
         if columns is None:
             columns = []
-        return AsyncHybridQuery(
-            self._inner.nearest_to_text({"query": query, "columns": columns})
-        )
+
+        if isinstance(query, str):
+            return AsyncHybridQuery(
+                self._inner.nearest_to_text({"query": query, "columns": columns})
+            )
+        # FullTextQuery object
+        return AsyncHybridQuery(self._inner.nearest_to_text(query.to_dict()))
 
     async def to_batches(
         self, *, max_batch_length: Optional[int] = None

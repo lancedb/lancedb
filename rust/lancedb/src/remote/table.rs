@@ -155,7 +155,11 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
-    fn apply_query_params(body: &mut serde_json::Value, params: &QueryRequest) -> Result<()> {
+    fn apply_query_params(
+        &self,
+        body: &mut serde_json::Value,
+        params: &QueryRequest,
+    ) -> Result<()> {
         body["prefilter"] = params.prefilter.into();
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
@@ -209,10 +213,17 @@ impl<S: HttpSend> RemoteTable<S> {
                     message: "Wand factor is not yet supported in LanceDB Cloud".into(),
                 });
             }
-            body["full_text_query"] = serde_json::json!({
-                "columns": full_text_search.columns,
-                "query": full_text_search.query,
-            })
+
+            if self.server_version.support_structural_fts() {
+                body["full_text_query"] = serde_json::json!({
+                    "query": full_text_search.query.clone(),
+                });
+            } else {
+                body["full_text_query"] = serde_json::json!({
+                    "columns": full_text_search.columns().into_iter().collect::<Vec<_>>(),
+                    "query": full_text_search.query.query(),
+                })
+            }
         }
 
         Ok(())
@@ -223,7 +234,7 @@ impl<S: HttpSend> RemoteTable<S> {
         mut body: serde_json::Value,
         query: &VectorQueryRequest,
     ) -> Result<Vec<serde_json::Value>> {
-        Self::apply_query_params(&mut body, &query.base)?;
+        self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
@@ -346,7 +357,7 @@ impl<S: HttpSend> RemoteTable<S> {
         match query {
             AnyQuery::Query(query) => {
                 let mut body = base_body.clone();
-                Self::apply_query_params(&mut body, query)?;
+                self.apply_query_params(&mut body, query)?;
                 // Empty vector can be passed if no vector search is performed.
                 body["vector"] = serde_json::Value::Array(Vec::new());
                 Ok(vec![body])
@@ -1683,7 +1694,18 @@ mod tests {
                 "prefilter": true,
                 "version": null
             });
-            assert_eq!(body, expected_body);
+            let expected_body_2 = serde_json::json!({
+                "full_text_query": {
+                    "columns": ["b","a"],
+                    "query": "hello world",
+                },
+                "k": 10,
+                "vector": [],
+                "with_row_id": true,
+                "prefilter": true,
+                "version": null
+            });
+            assert!(body == expected_body || body == expected_body_2);
 
             let data = RecordBatch::try_new(
                 Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
@@ -1702,7 +1724,8 @@ mod tests {
             .query()
             .full_text_search(
                 FullTextSearchQuery::new("hello world".into())
-                    .columns(Some(vec!["a".into(), "b".into()])),
+                    .with_columns(&["a".into(), "b".into()])
+                    .unwrap(),
             )
             .with_row_id()
             .limit(10)
