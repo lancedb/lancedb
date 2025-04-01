@@ -13,10 +13,32 @@
  */
 package com.lancedb.catalog.adapter.hms;
 
+import org.apache.thrift.TException;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestHmsCatalogService extends HmsCatalogTestBase {
 
+  @AfterEach
+  public void cleanDatasetsAndMetas() throws TException, InterruptedException {
+    // drop dataset
+    catalogService.dropTable(DB_NAME, TABLE_NAME);
+
+    // drop namespace
+    catalogService.dropDatabase(DB_NAME);
+  }
+
   @Test
-  public void testGetDatabases() {}
+  public void testGetDatabases() throws TException, InterruptedException {
+    List<String> databases = catalogService.getDatabases();
+
+    assertThat(databases).isNotNull();
+
+    assertTrue(databases.contains(DB_NAME));
+  }
 }

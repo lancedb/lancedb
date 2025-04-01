@@ -40,7 +40,7 @@ public class HmsCatalogTestBase {
 
   private static String warehouseLocation;
 
-  protected static HmsCatalogService catalog = new HmsCatalogService();
+  protected static HmsCatalogService catalogService;
 
   @RegisterExtension
   protected static final HmsExtension HIVE_METASTORE_EXTENSION =
@@ -49,6 +49,7 @@ public class HmsCatalogTestBase {
   @BeforeAll
   protected static void init() {
     System.out.println("===============init=======");
+    catalogService = new HmsCatalogService();
     warehouseLocation = tempFolder.toAbsolutePath().toString();
   }
 }

@@ -20,12 +20,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
-public class TestHmsCatalogConfiguration {
+public class TestHmsCatalogConfiguration extends HmsCatalogTestBase {
 
   @Test
   public void testGetConf() {
-    HmsCatalogService catalog = new HmsCatalogService();
-    Configuration conf = catalog.getConf();
+    //    HmsCatalogService catalog = new HmsCatalogService();
+    Configuration conf = catalogService.getConf();
 
     assertThat(conf).isNotNull();
 
