@@ -444,6 +444,16 @@ def test_query_sync_fts():
             "prefilter": True,
             "with_row_id": True,
             "version": None,
+        } or body == {
+            "full_text_query": {
+                "query": "puppy",
+                "columns": ["description", "name"],
+            },
+            "k": 42,
+            "vector": [],
+            "prefilter": True,
+            "with_row_id": True,
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
