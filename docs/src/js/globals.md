@@ -9,12 +9,20 @@
 - [embedding](namespaces/embedding/README.md)
 - [rerankers](namespaces/rerankers/README.md)
 
+## Enumerations
+
+- [FullTextQueryType](enumerations/FullTextQueryType.md)
+
 ## Classes
 
+- [BoostQuery](classes/BoostQuery.md)
 - [Connection](classes/Connection.md)
 - [Index](classes/Index.md)
 - [MakeArrowTableOptions](classes/MakeArrowTableOptions.md)
+- [MatchQuery](classes/MatchQuery.md)
 - [MergeInsertBuilder](classes/MergeInsertBuilder.md)
+- [MultiMatchQuery](classes/MultiMatchQuery.md)
+- [PhraseQuery](classes/PhraseQuery.md)
 - [Query](classes/Query.md)
 - [QueryBase](classes/QueryBase.md)
 - [RecordBatchIterator](classes/RecordBatchIterator.md)
@@ -33,6 +41,7 @@
 - [CreateTableOptions](interfaces/CreateTableOptions.md)
 - [ExecutableQuery](interfaces/ExecutableQuery.md)
 - [FtsOptions](interfaces/FtsOptions.md)
+- [FullTextQuery](interfaces/FullTextQuery.md)
 - [FullTextSearchOptions](interfaces/FullTextSearchOptions.md)
 - [HnswPqOptions](interfaces/HnswPqOptions.md)
 - [HnswSqOptions](interfaces/HnswSqOptions.md)
