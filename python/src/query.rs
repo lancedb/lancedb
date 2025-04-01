@@ -243,7 +243,7 @@ impl Query {
             ))?;
 
         let query = if let Ok(query_text) = fts_query.downcast::<PyString>() {
-            let query_text = query_text.to_string();
+            let mut query_text = query_text.to_string();
             let columns = query
                 .get_item("columns")?
                 .map(|columns| columns.extract::<Vec<String>>())
@@ -252,6 +252,11 @@ impl Query {
             let is_phrase =
                 query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
             let is_multi_match = columns.as_ref().map(|cols| cols.len() > 1).unwrap_or(false);
+
+            if is_phrase {
+                // Remove the surrounding quotes for phrase queries
+                query_text = query_text[1..query_text.len() - 1].to_string();
+            }
 
             let query: FtsQuery = match (is_phrase, is_multi_match) {
                 (false, _) => MatchQuery::new(query_text).into(),

@@ -41,12 +41,17 @@ impl Query {
     pub fn full_text_search(&mut self, query: napi::JsUnknown) -> napi::Result<()> {
         let query = unsafe { query.cast::<napi::JsObject>() };
         let query = if let Some(query_text) = query.get::<_, String>("query").transpose() {
-            let query_text = query_text?;
+            let mut query_text = query_text?;
             let columns = query.get::<_, Option<Vec<String>>>("columns")?.flatten();
 
             let is_phrase =
                 query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
             let is_multi_match = columns.as_ref().map(|cols| cols.len() > 1).unwrap_or(false);
+
+            if is_phrase {
+                // Remove the surrounding quotes for phrase queries
+                query_text = query_text[1..query_text.len() - 1].to_string();
+            }
 
             let query: FtsQuery = match (is_phrase, is_multi_match) {
                 (false, _) => MatchQuery::new(query_text).into(),
@@ -235,12 +240,17 @@ impl VectorQuery {
     pub fn full_text_search(&mut self, query: napi::JsUnknown) -> napi::Result<()> {
         let query = unsafe { query.cast::<napi::JsObject>() };
         let query = if let Some(query_text) = query.get::<_, String>("query").transpose() {
-            let query_text = query_text?;
+            let mut query_text = query_text?;
             let columns = query.get::<_, Option<Vec<String>>>("columns")?.flatten();
 
             let is_phrase =
                 query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
             let is_multi_match = columns.as_ref().map(|cols| cols.len() > 1).unwrap_or(false);
+
+            if is_phrase {
+                // Remove the surrounding quotes for phrase queries
+                query_text = query_text[1..query_text.len() - 1].to_string();
+            }
 
             let query: FtsQuery = match (is_phrase, is_multi_match) {
                 (false, _) => MatchQuery::new(query_text).into(),
