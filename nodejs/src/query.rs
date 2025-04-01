@@ -38,9 +38,19 @@ impl Query {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: String, columns: Option<Vec<String>>) {
-        let query = FullTextSearchQuery::new(query).columns(columns);
+    pub fn full_text_search(
+        &mut self,
+        query: String,
+        columns: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let mut query = FullTextSearchQuery::new(query);
+        if let Some(cols) = columns {
+            query = query.with_columns(&cols).map_err(|e| {
+                napi::Error::from_reason(format!("Failed to set full text search columns: {}", e,))
+            })?;
+        }
         self.inner = self.inner.clone().full_text_search(query);
+        Ok(())
     }
 
     #[napi]
@@ -195,9 +205,19 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: String, columns: Option<Vec<String>>) {
-        let query = FullTextSearchQuery::new(query).columns(columns);
+    pub fn full_text_search(
+        &mut self,
+        query: String,
+        columns: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let mut query = FullTextSearchQuery::new(query);
+        if let Some(cols) = columns {
+            query = query.with_columns(&cols).map_err(|e| {
+                napi::Error::from_reason(format!("Failed to set full text search columns: {}", e,))
+            })?;
+        }
         self.inner = self.inner.clone().full_text_search(query);
+        Ok(())
     }
 
     #[napi]

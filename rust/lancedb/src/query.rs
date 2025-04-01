@@ -1056,7 +1056,7 @@ impl VectorQuery {
             })?;
 
         let mut results = reranker
-            .rerank_hybrid(&fts_query.query, vec_results, fts_results)
+            .rerank_hybrid(&fts_query.query.query(), vec_results, fts_results)
             .await?;
 
         check_reranker_result(&results)?;

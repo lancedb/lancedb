@@ -210,7 +210,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 });
             }
             body["full_text_query"] = serde_json::json!({
-                "columns": full_text_search.columns,
+                "columns": full_text_search.columns().into_iter().collect::<Vec<_>>(),
                 "query": full_text_search.query,
             })
         }
@@ -1702,7 +1702,8 @@ mod tests {
             .query()
             .full_text_search(
                 FullTextSearchQuery::new("hello world".into())
-                    .columns(Some(vec!["a".into(), "b".into()])),
+                    .with_columns(&["a".into(), "b".into()])
+                    .unwrap(),
             )
             .with_row_id()
             .limit(10)

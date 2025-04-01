@@ -2719,9 +2719,8 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41ae13b24fbc5339a09fcc1cf3cba542e0b76edb98b8eb6ee94e08d0604e57b4"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "rand 0.8.5",
 ]
@@ -3708,9 +3707,8 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92697ffdafe668ecbb5ce72274eeca4a4356a8e399b9409fc5be48c003fd3fde"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3769,9 +3767,8 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cb899fda0cb024ba46e09589ecbad8fd5d9feff599775ab81f5b12edf86fda8"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3788,9 +3785,8 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c56b2b5c31cbece8afe5a26cb6cbe14c482280d775980d7cfc901f6ff8008b86"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3826,9 +3822,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "329d901e619ca09f3002658ad0a9e967dd80be96c7d5d8a98b954a322564421b"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3855,9 +3850,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9381625d8bb9898c61a39793a8e7ad734f33bd7a66af0d1a69cdfb70c53aa394"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3872,9 +3866,8 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39afd2a602a5262f4a554e51fddd5696e2d681e88fbaa21444e517835b9c8863"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrayref",
  "arrow",
@@ -3897,6 +3890,7 @@ dependencies = [
  "lance-core",
  "lazy_static",
  "log",
+ "lz4",
  "num-traits",
  "paste",
  "prost",
@@ -3912,9 +3906,8 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9fb19211d0dc518a2df017556b430bb2c6e65414100ba4d838da76cc94ad4b1"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -3948,9 +3941,8 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c827c04fffac0b580b88637388cffdb2a0896dd6b503c123b7672f186187a23"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4003,9 +3995,8 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c3ada1bb33f2b3897ad1e26bda43860af3392e5e3781e883b13e73e6248f033"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4043,9 +4034,8 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5f611c9d6e2fddd24fc8e73b4e224c03e57a7e1854d87fb07bae33eac95c581"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrow-array",
  "arrow-ord",
@@ -4068,9 +4058,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65612090fc32fcfb24f7d81d8da4c3b73b97648a169ab0adaeccaae9657bec4d"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4109,9 +4098,8 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6789eb385827bcb34e343e4d8286173fb4db9096c7c1b3d07a155f982d10669d"
+version = "0.25.3"
+source = "git+https://github.com/BubbleCal/lance?branch=ser_fts_query#3004091df8bd712be6b67be5f47b30d6f6060f86"
 dependencies = [
  "arrow-array",
  "arrow-schema",

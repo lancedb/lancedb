@@ -8,19 +8,19 @@ use arrow::array::Array;
 use arrow::array::ArrayData;
 use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
-use lancedb::index::scalar::FullTextSearchQuery;
+use lancedb::index::scalar::{FtsQuery, FullTextSearchQuery, MatchQuery, PhraseQuery};
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::QueryFilter;
 use lancedb::query::{
     ExecutableQuery, Query as LanceDbQuery, QueryBase, Select, VectorQuery as LanceDbVectorQuery,
 };
 use lancedb::table::AnyQuery;
-use pyo3::exceptions::PyNotImplementedError;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyNotImplementedError, PyValueError};
 use pyo3::prelude::{PyAnyMethods, PyDictMethods};
 use pyo3::pymethods;
-use pyo3::types::PyDict;
 use pyo3::types::PyList;
+use pyo3::types::{PyDict, PyString};
 use pyo3::Bound;
 use pyo3::IntoPyObject;
 use pyo3::PyAny;
@@ -31,7 +31,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::arrow::RecordBatchStream;
 use crate::error::PythonErrorExt;
-use crate::util::parse_distance_type;
+use crate::util::{parse_distance_type, parse_fts_query};
 
 // Python representation of full text search parameters
 #[derive(Clone)]
@@ -46,8 +46,8 @@ pub struct PyFullTextSearchQuery {
 impl From<FullTextSearchQuery> for PyFullTextSearchQuery {
     fn from(query: FullTextSearchQuery) -> Self {
         PyFullTextSearchQuery {
-            columns: query.columns,
-            query: query.query,
+            columns: query.columns().into_iter().collect(),
+            query: query.query.query().to_owned(),
             limit: query.limit,
             wand_factor: query.wand_factor,
         }
@@ -236,22 +236,51 @@ impl Query {
     }
 
     pub fn nearest_to_text(&mut self, query: Bound<'_, PyDict>) -> PyResult<FTSQuery> {
-        let query_text = query
+        let fts_query = query
             .get_item("query")?
             .ok_or(PyErr::new::<PyRuntimeError, _>(
                 "Query text is required for nearest_to_text",
-            ))?
-            .extract::<String>()?;
-        let columns = query
-            .get_item("columns")?
-            .map(|columns| columns.extract::<Vec<String>>())
-            .transpose()?;
+            ))?;
 
-        let fts_query = FullTextSearchQuery::new(query_text).columns(columns);
+        let query = if let Ok(query_text) = fts_query.downcast::<PyString>() {
+            let query_text = query_text.to_string();
+            let columns = query
+                .get_item("columns")?
+                .map(|columns| columns.extract::<Vec<String>>())
+                .transpose()?;
+
+            let is_phrase =
+                query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
+            let is_multi_match = columns.as_ref().map(|cols| cols.len() > 1).unwrap_or(false);
+
+            let query: FtsQuery = match (is_phrase, is_multi_match) {
+                (false, _) => MatchQuery::new(query_text).into(),
+                (true, false) => PhraseQuery::new(query_text).into(),
+                (true, true) => {
+                    return Err(PyValueError::new_err(
+                        "Phrase queries cannot be used with multiple columns.",
+                    ));
+                }
+            };
+            let mut query = FullTextSearchQuery::new_query(query);
+            if let Some(cols) = columns {
+                query = query.with_columns(&cols).map_err(|e| {
+                    PyValueError::new_err(format!("Failed to set full text search columns: {}", e))
+                })?;
+            }
+            query
+        } else if let Ok(query) = query.downcast::<PyDict>() {
+            let query = parse_fts_query(query)?;
+            FullTextSearchQuery::new_query(query)
+        } else {
+            return Err(PyValueError::new_err(
+                "query must be a string or a Query object",
+            ));
+        };
 
         Ok(FTSQuery {
-            fts_query,
             inner: self.inner.clone(),
+            fts_query: query,
         })
     }
 
@@ -386,7 +415,7 @@ impl FTSQuery {
     }
 
     pub fn get_query(&self) -> String {
-        self.fts_query.query.clone()
+        self.fts_query.query.query().to_owned()
     }
 
     pub fn to_query_request(&self) -> PyQueryRequest {
