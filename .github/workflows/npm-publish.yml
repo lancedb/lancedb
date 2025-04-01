@@ -148,7 +148,7 @@ jobs:
               ln -s /usr/lib/libgcc_s.so /usr/lib/libgcc.so &&
               CC=gcc &&
               CXX=g++ &&
-              CARGO_BUILD_TARGET=x86_64-unknown-linux-musl
+              export CARGO_BUILD_TARGET=x86_64-unknown-linux-musl
 
           # - target: aarch64-unknown-linux-gnu
           #   host: ubuntu-2404-8x-x64
@@ -175,7 +175,7 @@ jobs:
               rustup target add aarch64-unknown-linux-musl &&
               export CC=aarch64-linux-musl-gcc &&
               export CXX=aarch64-linux-musl-g++ &&
-              CARGO_BUILD_TARGET=aarch64-unknown-linux-musl
+              export CARGO_BUILD_TARGET=aarch64-unknown-linux-musl
     name: build - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
     defaults:
