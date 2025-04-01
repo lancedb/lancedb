@@ -269,9 +269,14 @@ impl Query {
             };
             let mut query = FullTextSearchQuery::new_query(query);
             if let Some(cols) = columns {
-                query = query.with_columns(&cols).map_err(|e| {
-                    PyValueError::new_err(format!("Failed to set full text search columns: {}", e))
-                })?;
+                if !cols.is_empty() {
+                    query = query.with_columns(&cols).map_err(|e| {
+                        PyValueError::new_err(format!(
+                            "Failed to set full text search columns: {}",
+                            e
+                        ))
+                    })?;
+                }
             }
             query
         } else if let Ok(query) = query.downcast::<PyDict>() {

@@ -64,12 +64,14 @@ impl Query {
             };
             let mut query = FullTextSearchQuery::new_query(query);
             if let Some(cols) = columns {
-                query = query.with_columns(&cols).map_err(|e| {
-                    napi::Error::from_reason(format!(
-                        "Failed to set full text search columns: {}",
-                        e
-                    ))
-                })?;
+                if !cols.is_empty() {
+                    query = query.with_columns(&cols).map_err(|e| {
+                        napi::Error::from_reason(format!(
+                            "Failed to set full text search columns: {}",
+                            e
+                        ))
+                    })?;
+                }
             }
             query
         } else if let Some(query) = query.get::<_, napi::JsObject>("query")? {
@@ -263,12 +265,14 @@ impl VectorQuery {
             };
             let mut query = FullTextSearchQuery::new_query(query);
             if let Some(cols) = columns {
-                query = query.with_columns(&cols).map_err(|e| {
-                    napi::Error::from_reason(format!(
-                        "Failed to set full text search columns: {}",
-                        e
-                    ))
-                })?;
+                if !cols.is_empty() {
+                    query = query.with_columns(&cols).map_err(|e| {
+                        napi::Error::from_reason(format!(
+                            "Failed to set full text search columns: {}",
+                            e
+                        ))
+                    })?;
+                }
             }
             query
         } else if let Some(query) = query.get::<_, napi::JsObject>("query")? {
