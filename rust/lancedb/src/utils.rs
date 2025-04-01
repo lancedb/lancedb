@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema, SchemaRef};
-use datafusion_common::Result as DataFusionResult;
+use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_execution::RecordBatchStream;
 use futures::{FutureExt, Stream};
 use lance::arrow::json::JsonDataType;
@@ -190,6 +190,7 @@ enum TimeoutState {
     },
     Started {
         deadline: Pin<Box<tokio::time::Sleep>>,
+        timeout: std::time::Duration,
     },
     Completed,
 }
@@ -218,6 +219,10 @@ impl TimeoutStream {
     ) -> SendableRecordBatchStream {
         Box::pin(Self::new(inner, timeout))
     }
+
+    fn timeout_error(timeout: &std::time::Duration) -> DataFusionError {
+        DataFusionError::Execution(format!("Query timeout after {} ms", timeout.as_millis()))
+    }
 }
 
 impl RecordBatchStream for TimeoutStream {
@@ -236,20 +241,20 @@ impl Stream for TimeoutStream {
         match &mut self.state {
             TimeoutState::NotStarted { timeout } => {
                 if timeout.is_zero() {
-                    return std::task::Poll::Ready(Some(Err(
-                        datafusion_common::DataFusionError::Execution("Query timeout".to_string()),
-                    )));
+                    return std::task::Poll::Ready(Some(Err(Self::timeout_error(timeout))));
                 }
                 let deadline = Box::pin(tokio::time::sleep(*timeout));
-                self.state = TimeoutState::Started { deadline };
+                self.state = TimeoutState::Started {
+                    deadline,
+                    timeout: *timeout,
+                };
                 self.poll_next(cx)
             }
-            TimeoutState::Started { deadline } => match deadline.poll_unpin(cx) {
+            TimeoutState::Started { deadline, timeout } => match deadline.poll_unpin(cx) {
                 std::task::Poll::Ready(_) => {
+                    let err = Self::timeout_error(timeout);
                     self.state = TimeoutState::Completed;
-                    std::task::Poll::Ready(Some(Err(
-                        datafusion_common::DataFusionError::Execution("Query timeout".to_string()),
-                    )))
+                    std::task::Poll::Ready(Some(Err(err)))
                 }
                 std::task::Poll::Pending => {
                     let inner = Pin::new(&mut self.inner);
@@ -337,8 +342,7 @@ mod tests {
         assert_eq!(string_to_datatype(string), Some(expected));
     }
 
-    #[tokio::test]
-    async fn test_timeout_stream() {
+    fn sample_batch() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "col1",
             DataType::Int32,
@@ -349,6 +353,13 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
+        batch
+    }
+
+    #[tokio::test]
+    async fn test_timeout_stream() {
+        let batch = sample_batch();
+        let schema = batch.schema();
         let mock_stream = stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]);
 
         let sendable_stream: SendableRecordBatchStream =
@@ -371,5 +382,45 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Query timeout"));
+    }
+
+    #[tokio::test]
+    async fn test_timeout_stream_zero_duration() {
+        let batch = sample_batch();
+        let schema = batch.schema();
+        let mock_stream = stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]);
+
+        let sendable_stream: SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), mock_stream));
+
+        // Setup similar to test_timeout_stream
+        let timeout_duration = std::time::Duration::from_secs(0);
+        let mut timeout_stream = TimeoutStream::new(sendable_stream, timeout_duration);
+
+        // First poll should immediately return a timeout error
+        let result = timeout_stream.next().await.unwrap();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Query timeout"));
+    }
+
+    #[tokio::test]
+    async fn test_timeout_stream_completes_normally() {
+        let batch = sample_batch();
+        let schema = batch.schema();
+        let mock_stream = stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]);
+
+        let sendable_stream: SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), mock_stream));
+
+        // Setup a stream with 2 batches
+        // Use a longer timeout that won't trigger
+        let timeout_duration = std::time::Duration::from_secs(1);
+        let mut timeout_stream = TimeoutStream::new(sendable_stream, timeout_duration);
+
+        // Both polls should return data normally
+        assert!(timeout_stream.next().await.unwrap().is_ok());
+        assert!(timeout_stream.next().await.unwrap().is_ok());
+        // Stream should be empty now
+        assert!(timeout_stream.next().await.is_none());
     }
 }
