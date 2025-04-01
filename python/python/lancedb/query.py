@@ -2601,7 +2601,7 @@ class FullTextQueryType(Enum):
     MULTI_MATCH = "multi_match"
 
 
-class FullTextQuery(abc.ABC):
+class FullTextQuery(abc.ABC, pydantic.BaseModel):
     @abc.abstractmethod
     def query_type(self) -> FullTextQueryType:
         """

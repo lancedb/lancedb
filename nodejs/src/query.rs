@@ -40,12 +40,9 @@ impl Query {
     #[napi]
     pub fn full_text_search(&mut self, query: napi::JsUnknown) -> napi::Result<()> {
         let query = unsafe { query.cast::<napi::JsObject>() };
-        let query = if let Some(query_text) = query.get::<_, String>("query".to_owned()).transpose()
-        {
+        let query = if let Some(query_text) = query.get::<_, String>("query").transpose() {
             let query_text = query_text?;
-            let columns = query
-                .get::<_, Option<Vec<String>>>("columns".to_owned())?
-                .flatten();
+            let columns = query.get::<_, Option<Vec<String>>>("columns")?.flatten();
 
             let is_phrase =
                 query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
@@ -237,12 +234,9 @@ impl VectorQuery {
     #[napi]
     pub fn full_text_search(&mut self, query: napi::JsUnknown) -> napi::Result<()> {
         let query = unsafe { query.cast::<napi::JsObject>() };
-        let query = if let Some(query_text) = query.get::<_, String>("query".to_owned()).transpose()
-        {
+        let query = if let Some(query_text) = query.get::<_, String>("query").transpose() {
             let query_text = query_text?;
-            let columns = query
-                .get::<_, Option<Vec<String>>>("columns".to_owned())?
-                .flatten();
+            let columns = query.get::<_, Option<Vec<String>>>("columns")?.flatten();
 
             let is_phrase =
                 query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
