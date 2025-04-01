@@ -220,7 +220,7 @@ jobs:
           run: |
             set -e
             ${{ matrix.settings.pre_build }}
-            npx napi build --platform  --release --no-const-enum \
+            CARGO_LOG=debug npx napi build --platform  --release --no-const-enum \
               --features ${{ matrix.settings.features }} \
               --target ${{ matrix.settings.target }} \
               --dts ../lancedb/native.d.ts \
