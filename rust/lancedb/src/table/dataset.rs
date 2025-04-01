@@ -372,3 +372,155 @@ impl DerefMut for DatasetWriteGuard<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
+    use arrow_schema::{DataType, Field, Schema};
+    use chrono::TimeDelta;
+    use futures::StreamExt;
+    use tempfile::tempdir;
+
+    use crate::{
+        connection::ConnectBuilder,
+        query::ExecutableQuery,
+        table::{AddDataMode, OptimizeAction},
+        Error, Table,
+    };
+
+    use super::*;
+
+    fn batch_from_vec(data: Vec<i64>) -> RecordBatch {
+        let schema = Schema::new(vec![Field::new("a", DataType::Int64, false)]);
+        let columns = vec![Arc::new(Int64Array::from(data)) as ArrayRef];
+        RecordBatch::try_new(Arc::new(schema), columns).unwrap()
+    }
+
+    fn reader_from_batch(batch: RecordBatch) -> Box<dyn RecordBatchReader + Send + 'static> {
+        let schema = batch.schema();
+        Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+    }
+
+    async fn query_rows(table: &Table) -> Result<Vec<i64>> {
+        let mut stream = table.query().execute().await?;
+        let mut values = vec![];
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            let a = batch["a"]
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .values();
+            values.extend_from_slice(a);
+        }
+        Ok(values)
+    }
+
+    #[tokio::test]
+    async fn test_aggressive_cleanup() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        // TODO: if we change the consistency interval, make this none
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", reader_from_batch(batch_from_vec(vec![1])))
+            .execute()
+            .await
+            .unwrap();
+
+        // Checkout one handle as time travel, one as latest
+        let table_latest = table;
+        let table_time_travel = conn.open_table("my_table").execute().await.unwrap();
+        table_time_travel.checkout(1).await.unwrap();
+
+        // In another handle, create a new version
+        let table_new = conn.open_table("my_table").execute().await.unwrap();
+        table_new
+            .add(reader_from_batch(batch_from_vec(vec![2, 3])))
+            .mode(AddDataMode::Overwrite)
+            .execute()
+            .await
+            .unwrap();
+
+        // Check original handles are unchanged.
+        assert_eq!(table_latest.version().await.unwrap(), 1);
+        assert_eq!(table_time_travel.version().await.unwrap(), 1);
+        assert_eq!(query_rows(&table_latest).await.unwrap(), vec![1]);
+        assert_eq!(query_rows(&table_time_travel).await.unwrap(), vec![1]);
+        assert_eq!(query_rows(&table_new).await.unwrap(), vec![2, 3]);
+
+        // In new handle, optimize aggressively, to delete old version
+        table_new
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(TimeDelta::zero()),
+                delete_unverified: Some(true),
+                error_if_tagged_old_versions: None,
+            })
+            .await
+            .unwrap();
+
+        // When we try to query, we get data file not found error
+        let res = query_rows(&table_latest).await;
+        assert!(
+            matches!(&res, Err(Error::DataFileNotFound { .. })),
+            "Got: {:?}",
+            res
+        );
+        // Can use checkout latest to make it query-able again
+        table_latest.checkout_latest().await.unwrap();
+        assert_eq!(query_rows(&table_latest).await.unwrap(), vec![2, 3]);
+        assert_eq!(table_latest.version().await.unwrap(), 2);
+
+        // Show that the time travel one provides a sensible error.
+        let res = query_rows(&table_time_travel).await;
+        assert!(
+            matches!(&res, Err(Error::DataFileNotFound { .. })),
+            "Got: {:?}",
+            res
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recreate_table() {
+        // Create a table
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", reader_from_batch(batch_from_vec(vec![1])))
+            .execute()
+            .await
+            .unwrap();
+
+        // Checkout one handle as time travel, one as latest
+        let table_latest = table;
+        let table_time_travel = conn.open_table("my_table").execute().await.unwrap();
+
+        // In new handle, recreate the table
+        conn.drop_table("my_table").await.unwrap();
+        conn.create_table("my_table", reader_from_batch(batch_from_vec(vec![2, 3])))
+            .execute()
+            .await
+            .unwrap();
+
+        // When we try to query, we get data file not found error
+        assert_eq!(table_latest.version().await.unwrap(), 1);
+        let res = query_rows(&table_latest).await;
+        assert!(
+            matches!(&res, Err(Error::DataFileNotFound { .. })),
+            "Got: {:?}",
+            res
+        );
+        // Can use checkout latest to make it query-able again
+        table_latest.checkout_latest().await.unwrap();
+        assert_eq!(query_rows(&table_latest).await.unwrap(), &[2, 3]);
+
+        // Show that the time travel one provides a sensible error.
+        let res = query_rows(&table_time_travel).await;
+        assert!(
+            matches!(&res, Err(Error::DataFileNotFound { .. })),
+            "Got: {:?}",
+            res
+        );
+    }
+}
