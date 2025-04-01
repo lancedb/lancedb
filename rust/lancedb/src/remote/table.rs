@@ -155,7 +155,11 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
-    fn apply_query_params(body: &mut serde_json::Value, params: &QueryRequest) -> Result<()> {
+    fn apply_query_params(
+        &self,
+        body: &mut serde_json::Value,
+        params: &QueryRequest,
+    ) -> Result<()> {
         body["prefilter"] = params.prefilter.into();
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
@@ -223,7 +227,7 @@ impl<S: HttpSend> RemoteTable<S> {
         mut body: serde_json::Value,
         query: &VectorQueryRequest,
     ) -> Result<Vec<serde_json::Value>> {
-        Self::apply_query_params(&mut body, &query.base)?;
+        self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
@@ -346,7 +350,7 @@ impl<S: HttpSend> RemoteTable<S> {
         match query {
             AnyQuery::Query(query) => {
                 let mut body = base_body.clone();
-                Self::apply_query_params(&mut body, query)?;
+                self.apply_query_params(&mut body, query)?;
                 // Empty vector can be passed if no vector search is performed.
                 body["vector"] = serde_json::Value::Array(Vec::new());
                 Ok(vec![body])

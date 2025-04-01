@@ -17,6 +17,7 @@ import {
   VectorQuery as NativeVectorQuery,
 } from "./native";
 import { Reranker } from "./rerankers";
+
 export class RecordBatchIterator implements AsyncIterator<RecordBatch> {
   private promisedInner?: Promise<NativeBatchIterator>;
   private inner?: NativeBatchIterator;
@@ -152,7 +153,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
   }
 
   fullTextSearch(
-    query: string,
+    query: string | FullTextQuery,
     options?: Partial<FullTextSearchOptions>,
   ): this {
     let columns: string[] | null = null;
@@ -164,9 +165,18 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
       }
     }
 
-    this.doCall((inner: NativeQueryType) =>
-      inner.fullTextSearch(query, columns),
-    );
+    this.doCall((inner: NativeQueryType) => {
+      if (typeof query === "string") {
+        inner.fullTextSearch({
+          query: query,
+          columns: columns,
+        });
+      } else {
+        // If query is a FullTextQuery object, convert it to a dict
+        const queryObj = query.toDict();
+        inner.fullTextSearch(queryObj);
+      }
+    });
     return this;
   }
 
@@ -718,8 +728,122 @@ export class Query extends QueryBase<NativeQuery> {
     }
   }
 
-  nearestToText(query: string, columns?: string[]): Query {
-    this.doCall((inner) => inner.fullTextSearch(query, columns));
+  nearestToText(query: string | FullTextQuery, columns?: string[]): Query {
+    this.doCall((inner) => {
+      if (typeof query === "string") {
+        inner.fullTextSearch({
+          query: query,
+          columns: columns,
+        });
+      } else {
+        const queryObj = query.toDict();
+        inner.fullTextSearch(queryObj);
+      }
+    });
     return this;
+  }
+}
+
+export enum FullTextQueryType {
+  Match = "match",
+  MatchPhrase = "match_phrase",
+  Boost = "boost",
+  MultiMatch = "multi_match",
+}
+
+export interface FullTextQuery {
+  queryType(): FullTextQueryType;
+  toDict(): Record<string, unknown>;
+}
+
+export class MatchQuery implements FullTextQuery {
+  constructor(
+    private query: string,
+    private column: string,
+    private boost: number = 1.0,
+    private fuzziness: number = 0,
+    private maxExpansions: number = 50,
+  ) {}
+
+  queryType(): FullTextQueryType {
+    return FullTextQueryType.Match;
+  }
+
+  toDict(): Record<string, unknown> {
+    return {
+      [this.queryType()]: {
+        [this.column]: {
+          query: this.query,
+          boost: this.boost,
+          fuzziness: this.fuzziness,
+          // biome-ignore lint/style/useNamingConvention: use underscore for consistency with the other APIs
+          max_expansions: this.maxExpansions,
+        },
+      },
+    };
+  }
+}
+
+export class PhraseQuery implements FullTextQuery {
+  constructor(
+    private query: string,
+    private column: string,
+  ) {}
+
+  queryType(): FullTextQueryType {
+    return FullTextQueryType.MatchPhrase;
+  }
+
+  toDict(): Record<string, unknown> {
+    return {
+      [this.queryType()]: {
+        [this.column]: this.query,
+      },
+    };
+  }
+}
+
+export class BoostQuery implements FullTextQuery {
+  constructor(
+    private positive: FullTextQuery,
+    private negative: FullTextQuery,
+    private negativeBoost: number,
+  ) {}
+
+  queryType(): FullTextQueryType {
+    return FullTextQueryType.Boost;
+  }
+
+  toDict(): Record<string, unknown> {
+    return {
+      [this.queryType()]: {
+        positive: this.positive.toDict(),
+        negative: this.negative.toDict(),
+        // biome-ignore lint/style/useNamingConvention: use underscore for consistency with the other APIs
+        negative_boost: this.negativeBoost,
+      },
+    };
+  }
+}
+
+export class MultiMatchQuery implements FullTextQuery {
+  constructor(
+    private query: string,
+    private columns: string[],
+    private boosts: number[] = columns.map(() => 1.0),
+  ) {}
+
+  queryType(): FullTextQueryType {
+    return FullTextQueryType.MultiMatch;
+  }
+
+  toDict(): Record<string, unknown> {
+    return {
+      [this.queryType()]: {
+        query: this.query,
+        columns: this.columns,
+        boost: this.boosts,
+      },
+    };
   }
 }
