@@ -96,51 +96,46 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          # - target: x86_64-apple-darwin
-          #   host: macos-latest
-          #   features: ","
-          #   pre_build: |-
-          #       brew install protobuf
-          #       rustup target add x86_64-apple-darwin
-          # - target: aarch64-apple-darwin
-          #   host: macos-latest
-          #   features: fp16kernels
-          #   pre_build: brew install protobuf
-          # - target: x86_64-pc-windows-msvc
-          #   host: windows-latest
-          #   features: ","
-          #   pre_build: |-
-          #     choco install --no-progress protoc ninja nasm
-          #     tail -n 1000 /c/ProgramData/chocolatey/logs/chocolatey.log
-          #     # There is an issue where choco doesn't add nasm to the path
-          #     export PATH="$PATH:/c/Program Files/NASM"
-          #     nasm -v
-          # - target: aarch64-pc-windows-msvc
-          #   host: windows-latest
-          #   features: ","
-          #   pre_build: |-
-          #       choco install --no-progress protoc
-          #       rustup target add aarch64-pc-windows-msvc
-          # - target: x86_64-unknown-linux-gnu
-          #   host: ubuntu-latest
-          #   features: fp16kernels
-          #   # https://github.com/napi-rs/napi-rs/blob/main/debian.Dockerfile
-          #   docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
-          #   pre_build: |-
-          #     set -e &&
-          #     apt-get update &&
-          #     apt-get install -y protobuf-compiler pkg-config
-
-          # TODO: re-enable x64 musl builds. I could not figure out why, but it
-          # consistently made GHA runners non-responsive at the end of build. Example:
-          # https://github.com/lancedb/lancedb/actions/runs/13980431071/job/39144319470?pr=2250
-
+          - target: x86_64-apple-darwin
+            host: macos-latest
+            features: ","
+            pre_build: |-
+                brew install protobuf
+                rustup target add x86_64-apple-darwin
+          - target: aarch64-apple-darwin
+            host: macos-latest
+            features: fp16kernels
+            pre_build: brew install protobuf
+          - target: x86_64-pc-windows-msvc
+            host: windows-latest
+            features: ","
+            pre_build: |-
+              choco install --no-progress protoc ninja nasm
+              tail -n 1000 /c/ProgramData/chocolatey/logs/chocolatey.log
+              # There is an issue where choco doesn't add nasm to the path
+              export PATH="$PATH:/c/Program Files/NASM"
+              nasm -v
+          - target: aarch64-pc-windows-msvc
+            host: windows-latest
+            features: ","
+            pre_build: |-
+                choco install --no-progress protoc
+                rustup target add aarch64-pc-windows-msvc
+          - target: x86_64-unknown-linux-gnu
+            host: ubuntu-latest
+            features: fp16kernels
+            # https://github.com/napi-rs/napi-rs/blob/main/debian.Dockerfile
+            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
+            pre_build: |-
+              set -e &&
+              apt-get update &&
+              apt-get install -y protobuf-compiler pkg-config
           - target: x86_64-unknown-linux-musl
             # This one seems to need some extra memory
             host: ubuntu-2404-8x-x64
             # https://github.com/napi-rs/napi-rs/blob/main/alpine.Dockerfile
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
-            features: ","
+            features: fp16kernels
             pre_build: |-
               set -e &&
               apk add protobuf-dev curl &&
@@ -148,21 +143,19 @@ jobs:
               ln -s /usr/lib/libgcc_s.so /usr/lib/libgcc.so &&
               CC=gcc &&
               CXX=g++
-
-          # - target: aarch64-unknown-linux-gnu
-          #   host: ubuntu-2404-8x-x64
-          #   # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
-          #   docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
-          #   # TODO: enable fp16kernels after https://github.com/lancedb/lance/pull/3559
-          #   features: ","
-          #   pre_build: |-
-          #     set -e &&
-          #     apt-get update &&
-          #     apt-get install -y protobuf-compiler pkg-config &&
-          #     # https://github.com/aws/aws-lc-rs/issues/737#issuecomment-2725918627
-          #     ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
-          #     ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
-          #     rustup target add aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            host: ubuntu-2404-8x-x64
+            # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
+            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
+            features: "fp16kernels"
+            pre_build: |-
+              set -e &&
+              apt-get update &&
+              apt-get install -y protobuf-compiler pkg-config &&
+              # https://github.com/aws/aws-lc-rs/issues/737#issuecomment-2725918627
+              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
+              ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
+              rustup target add aarch64-unknown-linux-gnu
           - target: aarch64-unknown-linux-musl
             host: ubuntu-2404-8x-x64
             # https://github.com/napi-rs/napi-rs/blob/main/alpine.Dockerfile
