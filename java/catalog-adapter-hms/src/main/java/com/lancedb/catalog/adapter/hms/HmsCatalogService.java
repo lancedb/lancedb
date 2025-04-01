@@ -13,16 +13,15 @@
  */
 package com.lancedb.catalog.adapter.hms;
 
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.annotation.ComponentScan;
+import java.util.Collections;
+import java.util.List;
 
-@SpringBootApplication
-@ComponentScan(
-    basePackages = {"com.lancedb.catalog.adapter.hms", "com.lancedb.catalog.adapter.api"})
-public class CatalogAdapterHmsApplication {
+public class HmsCatalogService {
 
-  public static void main(String[] args) {
-    SpringApplication.run(CatalogAdapterHmsApplication.class, args);
+  //  private ClientPool<IMetaStoreClient, TException> clients;
+
+  public List<String> getDatabases() {
+    // Implementation to get all databases from the catalog
+    return Collections.singletonList("db1");
   }
 }
