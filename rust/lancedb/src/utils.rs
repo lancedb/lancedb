@@ -348,12 +348,11 @@ mod tests {
             DataType::Int32,
             false,
         )]));
-        let batch = RecordBatch::try_new(
+        RecordBatch::try_new(
             schema.clone(),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
-        .unwrap();
-        batch
+        .unwrap()
     }
 
     #[tokio::test]
