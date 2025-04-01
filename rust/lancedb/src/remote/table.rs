@@ -1694,7 +1694,18 @@ mod tests {
                 "prefilter": true,
                 "version": null
             });
-            assert_eq!(body, expected_body);
+            let expected_body_2 = serde_json::json!({
+                "full_text_query": {
+                    "columns": ["b","a"],
+                    "query": "hello world",
+                },
+                "k": 10,
+                "vector": [],
+                "with_row_id": true,
+                "prefilter": true,
+                "version": null
+            });
+            assert!(body == expected_body || body == expected_body_2);
 
             let data = RecordBatch::try_new(
                 Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
