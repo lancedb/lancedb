@@ -18,6 +18,7 @@ on:
     # This should trigger a dry run (we skip the final publish step)
     paths:
       - .github/workflows/npm-publish.yml
+      - Cargo.toml # Change in dependency frequently breaks builds
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
