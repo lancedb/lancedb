@@ -213,10 +213,17 @@ impl<S: HttpSend> RemoteTable<S> {
                     message: "Wand factor is not yet supported in LanceDB Cloud".into(),
                 });
             }
-            body["full_text_query"] = serde_json::json!({
-                "columns": full_text_search.columns().into_iter().collect::<Vec<_>>(),
-                "query": full_text_search.query,
-            })
+
+            if self.server_version.support_structural_fts() {
+                body["full_text_query"] = serde_json::json!({
+                    "query": full_text_search.query.clone(),
+                });
+            } else {
+                body["full_text_query"] = serde_json::json!({
+                    "columns": full_text_search.columns().into_iter().collect::<Vec<_>>(),
+                    "query": full_text_search.query.query(),
+                })
+            }
         }
 
         Ok(())
