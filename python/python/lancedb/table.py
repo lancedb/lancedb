@@ -52,6 +52,7 @@ from .query import (
     AsyncHybridQuery,
     AsyncQuery,
     AsyncVectorQuery,
+    FullTextQuery,
     LanceEmptyQueryBuilder,
     LanceFtsQueryBuilder,
     LanceHybridQueryBuilder,
@@ -919,7 +920,9 @@ class Table(ABC):
     @abstractmethod
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
@@ -2039,7 +2042,9 @@ class LanceTable(Table):
     @overload
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
@@ -2058,7 +2063,9 @@ class LanceTable(Table):
 
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,

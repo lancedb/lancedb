@@ -20,6 +20,7 @@ from unittest import mock
 import lancedb as ldb
 from lancedb.db import DBConnection
 from lancedb.index import FTS
+from lancedb.query import MatchQuery
 import numpy as np
 import pandas as pd
 import pytest
@@ -177,6 +178,16 @@ def test_search_fts(table, use_tantivy):
     # Default limit of 10
     results = table.search("puppy").select(["id", "text"]).to_list()
     assert len(results) == 10
+
+    if not use_tantivy:
+        # Test with a query
+        results = (
+            table.search(MatchQuery("puppy", "text"))
+            .select(["id", "text"])
+            .limit(5)
+            .to_list()
+        )
+        assert len(results) == 5
 
 
 @pytest.mark.asyncio

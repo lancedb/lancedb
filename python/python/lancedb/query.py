@@ -117,6 +117,12 @@ class FullTextQuery(abc.ABC, pydantic.BaseModel):
 
 
 class MatchQuery(FullTextQuery):
+    query: str
+    column: str
+    boost: float = 1.0
+    fuzziness: int = 0
+    max_expansions: int = 50
+
     def __init__(
         self,
         query: str,
@@ -149,11 +155,13 @@ class MatchQuery(FullTextQuery):
             The maximum number of terms to consider for fuzzy matching.
             Defaults to 50.
         """
-        self.column = column
-        self.query = query
-        self.boost = boost
-        self.fuzziness = fuzziness
-        self.max_expansions = max_expansions
+        super().__init__(
+            query=query,
+            column=column,
+            boost=boost,
+            fuzziness=fuzziness,
+            max_expansions=max_expansions,
+        )
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH
@@ -172,6 +180,9 @@ class MatchQuery(FullTextQuery):
 
 
 class PhraseQuery(FullTextQuery):
+    query: str
+    column: str
+
     def __init__(self, query: str, column: str):
         """
         Phrase query for full-text search.
@@ -183,8 +194,8 @@ class PhraseQuery(FullTextQuery):
         column : str
             The name of the column to match against.
         """
-        self.column = column
         self.query = query
+        self.column = column
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH_PHRASE
@@ -198,6 +209,10 @@ class PhraseQuery(FullTextQuery):
 
 
 class BoostQuery(FullTextQuery):
+    positive: FullTextQuery
+    negative: FullTextQuery
+    negative_boost: float
+
     def __init__(
         self,
         positive: FullTextQuery,
@@ -234,6 +249,10 @@ class BoostQuery(FullTextQuery):
 
 
 class MultiMatchQuery(FullTextQuery):
+    query: str
+    columns: list[str]
+    boosts: list[float]
+
     def __init__(
         self,
         query: str,
@@ -544,7 +563,7 @@ class LanceQueryBuilder(ABC):
                 table, query, vector_column_name, fts_columns=fts_columns
             )
 
-        if isinstance(query, str):
+        if isinstance(query, (str, FullTextQuery)):
             # fts
             return LanceFtsQueryBuilder(
                 table,
@@ -569,8 +588,10 @@ class LanceQueryBuilder(ABC):
         # If query_type is fts, then query must be a string.
         # otherwise raise TypeError
         if query_type == "fts":
-            if not isinstance(query, str):
-                raise TypeError(f"'fts' queries must be a string: {type(query)}")
+            if not isinstance(query, (str, FullTextQuery)):
+                raise TypeError(
+                    f"'fts' query must be a string or FullTextQuery: {type(query)}"
+                )
             return query, query_type
         elif query_type == "vector":
             query = cls._query_to_vector(table, query, vector_column_name)
@@ -1486,7 +1507,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def __init__(
         self,
         table: "Table",
-        query: Optional[str] = None,
+        query: Optional[Union[str, FullTextQuery]] = None,
         vector_column: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
     ):
@@ -1516,8 +1537,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         text_query = text or query
         if text_query is None:
             raise ValueError("Text query must be provided for hybrid search.")
-        if not isinstance(text_query, str):
-            raise ValueError("Text query must be a string")
+        if not isinstance(text_query, (str, FullTextQuery)):
+            raise ValueError("Text query must be a string or FullTextQuery")
 
         return vector_query, text_query
 
@@ -2308,7 +2329,7 @@ class AsyncQuery(AsyncQueryBase):
                 self._inner.nearest_to_text({"query": query, "columns": columns})
             )
         # FullTextQuery object
-        return AsyncFTSQuery(self._inner.nearest_to_text(query.to_dict()))
+        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query.to_dict()}))
 
 
 class AsyncFTSQuery(AsyncQueryBase):
@@ -2627,7 +2648,7 @@ class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
                 self._inner.nearest_to_text({"query": query, "columns": columns})
             )
         # FullTextQuery object
-        return AsyncHybridQuery(self._inner.nearest_to_text(query.to_dict()))
+        return AsyncHybridQuery(self._inner.nearest_to_text({"query": query.to_dict()}))
 
     async def to_batches(
         self, *, max_batch_length: Optional[int] = None
