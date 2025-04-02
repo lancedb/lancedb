@@ -1048,6 +1048,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
+    use lance_index::scalar::inverted::query::MatchQuery;
     use lance_index::scalar::FullTextSearchQuery;
     use reqwest::Body;
     use rstest::rstest;
@@ -1727,6 +1728,66 @@ mod tests {
                     .with_columns(&["a".into(), "b".into()])
                     .unwrap(),
             )
+            .with_row_id()
+            .limit(10)
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_query_structured_fts() {
+        let table =
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 3, 0), |request| {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    JSON_CONTENT_TYPE
+                );
+
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                let expected_body = serde_json::json!({
+                    "full_text_query": {
+                        "query": {
+                            "match": {
+                                "terms": "hello world",
+                                "column": "a",
+                                "boost": 1.0,
+                                "fuzziness": 0,
+                                "max_expansions": 50,
+                            },
+                        }
+                    },
+                    "k": 10,
+                    "vector": [],
+                    "with_row_id": true,
+                    "prefilter": true,
+                    "version": null
+                });
+                assert_eq!(body, expected_body);
+
+                let data = RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                    vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+                )
+                .unwrap();
+                let response_body = write_ipc_file(&data);
+                http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                    .body(response_body)
+                    .unwrap()
+            });
+
+        let _ = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new_query(
+                MatchQuery::new("hello world".to_owned())
+                    .with_column(Some("a".to_owned()))
+                    .into(),
+            ))
             .with_row_id()
             .limit(10)
             .execute()

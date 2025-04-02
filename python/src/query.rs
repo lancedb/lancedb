@@ -279,7 +279,7 @@ impl Query {
                 }
             }
             query
-        } else if let Ok(query) = query.downcast::<PyDict>() {
+        } else if let Ok(query) = fts_query.downcast::<PyDict>() {
             let query = parse_fts_query(query)?;
             FullTextSearchQuery::new_query(query)
         } else {

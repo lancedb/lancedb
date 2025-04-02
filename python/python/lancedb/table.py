@@ -52,6 +52,7 @@ from .query import (
     AsyncHybridQuery,
     AsyncQuery,
     AsyncVectorQuery,
+    FullTextQuery,
     LanceEmptyQueryBuilder,
     LanceFtsQueryBuilder,
     LanceHybridQueryBuilder,
@@ -919,7 +920,9 @@ class Table(ABC):
     @abstractmethod
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
@@ -2039,7 +2042,9 @@ class LanceTable(Table):
     @overload
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
@@ -2058,7 +2063,9 @@ class LanceTable(Table):
 
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
@@ -3134,7 +3141,9 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["vector"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -3143,7 +3152,9 @@ class AsyncTable:
 
     async def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
@@ -3253,6 +3264,8 @@ class AsyncTable:
             if is_embedding(query):
                 vector_query = query
                 query_type = "vector"
+            elif isinstance(query, FullTextQuery):
+                query_type = "fts"
             elif isinstance(query, str):
                 try:
                     (
