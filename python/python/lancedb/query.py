@@ -194,8 +194,7 @@ class PhraseQuery(FullTextQuery):
         column : str
             The name of the column to match against.
         """
-        self.query = query
-        self.column = column
+        super().__init__(query=query, column=column)
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH_PHRASE
@@ -231,9 +230,9 @@ class BoostQuery(FullTextQuery):
         negative_boost : float
             The boost factor for the negative query.
         """
-        self.positive = positive
-        self.negative = negative
-        self.negative_boost = negative_boost
+        super().__init__(
+            positive=positive, negative=negative, negative_boost=negative_boost
+        )
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.BOOST
@@ -275,11 +274,9 @@ class MultiMatchQuery(FullTextQuery):
             The list of boost factors for each column. If not provided,
             all columns will have the same boost factor.
         """
-        self.query = query
-        self.columns = columns
         if boosts is None:
             boosts = [1.0] * len(columns)
-        self.boosts = boosts
+        super().__init__(query=query, columns=columns, boosts=boosts)
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MULTI_MATCH
