@@ -210,13 +210,14 @@ class PhraseQuery(FullTextQuery):
 class BoostQuery(FullTextQuery):
     positive: FullTextQuery
     negative: FullTextQuery
-    negative_boost: float
+    negative_boost: float = 0.5
 
     def __init__(
         self,
         positive: FullTextQuery,
         negative: FullTextQuery,
-        negative_boost: float,
+        *,
+        negative_boost: float = 0.5,
     ):
         """
         Boost query for full-text search.

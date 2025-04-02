@@ -20,7 +20,7 @@ from unittest import mock
 import lancedb as ldb
 from lancedb.db import DBConnection
 from lancedb.index import FTS
-from lancedb.query import MatchQuery
+from lancedb.query import BoostQuery, MatchQuery, MultiMatchQuery, PhraseQuery
 import numpy as np
 import pandas as pd
 import pytest
@@ -189,14 +189,88 @@ def test_search_fts(table, use_tantivy):
         )
         assert len(results) == 5
 
+        # Test boost query
+        results = (
+            table.search(
+                BoostQuery(
+                    MatchQuery("puppy", "text"),
+                    MatchQuery("runs", "text"),
+                )
+            )
+            .select(["id", "text"])
+            .limit(5)
+            .to_list()
+        )
+        assert len(results) == 5
+
+        # Test multi match query
+        table.create_fts_index("text2", use_tantivy=use_tantivy)
+        results = (
+            table.search(MultiMatchQuery("puppy", ["text", "text2"]))
+            .select(["id", "text"])
+            .limit(5)
+            .to_list()
+        )
+        assert len(results) == 5
+        assert len(results[0]) == 3  # id, text, _score
+
 
 @pytest.mark.asyncio
 async def test_fts_select_async(async_table):
     tbl = await async_table
     await tbl.create_index("text", config=FTS())
+    await tbl.create_index("text2", config=FTS())
     results = (
         await tbl.query()
         .nearest_to_text("puppy")
+        .select(["id", "text"])
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+    assert len(results[0]) == 3  # id, text, _score
+
+    # Test with FullTextQuery
+    results = (
+        await tbl.query()
+        .nearest_to_text(MatchQuery("puppy", "text"))
+        .select(["id", "text"])
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+    assert len(results[0]) == 3  # id, text, _score
+
+    # Test with BoostQuery
+    results = (
+        await tbl.query()
+        .nearest_to_text(
+            BoostQuery(
+                MatchQuery("puppy", "text"),
+                MatchQuery("runs", "text"),
+            )
+        )
+        .select(["id", "text"])
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+    assert len(results[0]) == 3  # id, text, _score
+
+    # Test with MultiMatchQuery
+    results = (
+        await tbl.query()
+        .nearest_to_text(MultiMatchQuery("puppy", ["text", "text2"]))
+        .select(["id", "text"])
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+    assert len(results[0]) == 3  # id, text, _score
+
+    # Test with search() API
+    results = (
+        await (await tbl.search(MatchQuery("puppy", "text")))
         .select(["id", "text"])
         .limit(5)
         .to_list()
@@ -218,6 +292,13 @@ def test_search_fts_phrase_query(table):
     assert len(results) > len(phrase_results)
     assert len(phrase_results) > 0
 
+    # Test with a query
+    phrase_results = (
+        table.search(PhraseQuery("puppy runs", "text")).limit(100).to_list()
+    )
+    assert len(results) > len(phrase_results)
+    assert len(phrase_results) > 0
+
 
 @pytest.mark.asyncio
 async def test_search_fts_phrase_query_async(async_table):
@@ -234,6 +315,16 @@ async def test_search_fts_phrase_query_async(async_table):
     results = await async_table.query().nearest_to_text("puppy").limit(100).to_list()
     phrase_results = (
         await async_table.query().nearest_to_text('"puppy runs"').limit(100).to_list()
+    )
+    assert len(results) > len(phrase_results)
+    assert len(phrase_results) > 0
+
+    # Test with a query
+    phrase_results = (
+        await async_table.query()
+        .nearest_to_text(PhraseQuery("puppy runs", "text"))
+        .limit(100)
+        .to_list()
     )
     assert len(results) > len(phrase_results)
     assert len(phrase_results) > 0
