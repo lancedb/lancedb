@@ -13,6 +13,7 @@
  */
 package com.lancedb.catalog.adapter.hms;
 
+import com.google.common.collect.Maps;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -22,7 +23,6 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.UUID;
 
 public class HmsCatalogTestBase {
 
@@ -36,9 +36,7 @@ public class HmsCatalogTestBase {
               Field.nullable("id", new ArrowType.Int(32, true)),
               Field.nullable("name", new ArrowType.Utf8())),
           null);
-  protected static String TABLE_LOCATION = tempFolder + "/" + UUID.randomUUID();
-
-  private static String warehouseLocation;
+  protected static String TABLE_LOCATION;
 
   protected static HmsCatalogService catalogService;
 
@@ -48,8 +46,8 @@ public class HmsCatalogTestBase {
 
   @BeforeAll
   protected static void init() {
-    System.out.println("===============init=======");
     catalogService = new HmsCatalogService();
-    warehouseLocation = tempFolder.toAbsolutePath().toString();
+    TABLE_LOCATION = tempFolder.toAbsolutePath().toString();
+    catalogService.createTable(DB_NAME, TABLE_NAME, SCHEMA, TABLE_LOCATION, Maps.newHashMap());
   }
 }

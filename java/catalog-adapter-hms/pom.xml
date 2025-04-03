@@ -20,6 +20,12 @@
     <dependencies>
         <dependency>
             <groupId>com.lancedb</groupId>
+            <artifactId>lance-core</artifactId>
+            <version>0.25.0-SNAPSHOT</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.lancedb</groupId>
             <artifactId>lancedb-catalog-adapter</artifactId>
             <version>0.18.2-beta.0</version>
         </dependency>
