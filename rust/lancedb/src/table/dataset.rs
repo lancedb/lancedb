@@ -415,4 +415,48 @@ mod tests {
         let stats = io_stats.incremental_stats();
         assert_eq!(stats.read_iops, 1);
     }
+
+    #[tokio::test]
+    async fn test_iops_concurrent_refresh() {
+        // We can't use the base file implementation, because it we bypass some
+        // wrapper methods in it, so the IOPS tracker would miss some calls.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let tmp_path = tmp_dir.path().to_str().unwrap();
+        let uri = format!("file-object-store://{tmp_path}");
+        let db = connect(&uri)
+            .read_consistency_interval(Some(Duration::ZERO))
+            .execute()
+            .await
+            .expect("Failed to connect to database");
+        let io_stats = IoStatsHolder::default();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let table = db
+            .create_empty_table("test", schema)
+            .write_options(WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    store_params: Some(ObjectStoreParams {
+                        object_store_wrapper: Some(Arc::new(io_stats.clone())),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        io_stats.incremental_stats();
+
+        // Concurrently load the schema 3 times. We should only need to check for
+        // the latest version once.
+        let res = futures::future::join3(table.schema(), table.schema(), table.schema()).await;
+        res.0.unwrap();
+        res.1.unwrap();
+        res.2.unwrap();
+
+        let stats = io_stats.incremental_stats();
+        assert_eq!(stats.read_iops, 1);
+    }
 }
