@@ -355,9 +355,15 @@ class RemoteTable(Table):
         )
 
     def _execute_query(
-        self, query: Query, batch_size: Optional[int] = None
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
-        async_iter = LOOP.run(self._table._execute_query(query, batch_size=batch_size))
+        async_iter = LOOP.run(
+            self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
+        )
 
         def iter_sync():
             try:

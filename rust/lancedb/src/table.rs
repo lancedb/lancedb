@@ -68,7 +68,7 @@ use crate::query::{
 use crate::utils::{
     default_vector_column, supported_bitmap_data_type, supported_btree_data_type,
     supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
-    PatchReadParam, PatchWriteParam,
+    PatchReadParam, PatchWriteParam, TimeoutStream,
 };
 
 use self::dataset::DatasetConsistencyWrapper;
@@ -1775,11 +1775,14 @@ impl NativeTable {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        let plan = self.create_plan(query, options).await?;
-        Ok(DatasetRecordBatchStream::new(execute_plan(
-            plan,
-            Default::default(),
-        )?))
+        let plan = self.create_plan(query, options.clone()).await?;
+        let inner = execute_plan(plan, Default::default())?;
+        let inner = if let Some(timeout) = options.timeout {
+            TimeoutStream::new_boxed(inner, timeout)
+        } else {
+            inner
+        };
+        Ok(DatasetRecordBatchStream::new(inner))
     }
 
     /// Check whether the table uses V2 manifest paths.

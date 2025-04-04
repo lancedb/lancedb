@@ -63,7 +63,7 @@ class RecordBatchIterable<
   // biome-ignore lint/suspicious/noExplicitAny: skip
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
     return new RecordBatchIterator(
-      this.inner.execute(this.options?.maxBatchLength),
+      this.inner.execute(this.options?.maxBatchLength, this.options?.timeoutMs),
     );
   }
 }
@@ -79,6 +79,11 @@ export interface QueryExecutionOptions {
    * in smaller chunks.
    */
   maxBatchLength?: number;
+
+  /**
+   * Timeout for query execution in milliseconds
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -283,9 +288,11 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     options?: Partial<QueryExecutionOptions>,
   ): Promise<NativeBatchIterator> {
     if (this.inner instanceof Promise) {
-      return this.inner.then((inner) => inner.execute(options?.maxBatchLength));
+      return this.inner.then((inner) =>
+        inner.execute(options?.maxBatchLength, options?.timeoutMs),
+      );
     } else {
-      return this.inner.execute(options?.maxBatchLength);
+      return this.inner.execute(options?.maxBatchLength, options?.timeoutMs);
     }
   }
 
