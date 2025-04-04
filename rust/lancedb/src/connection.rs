@@ -142,12 +142,6 @@ impl CreateTableBuilder<true> {
         }
     }
 
-    /// Apply the given write options when writing the initial data
-    pub fn write_options(mut self, write_options: WriteOptions) -> Self {
-        self.request.write_options = write_options;
-        self
-    }
-
     /// Execute the create table operation
     pub async fn execute(self) -> Result<Table> {
         let embedding_registry = self.embedding_registry.clone();
@@ -226,6 +220,12 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// This controls what happens if a table with the given name already exists
     pub fn mode(mut self, mode: CreateTableMode) -> Self {
         self.request.mode = mode;
+        self
+    }
+
+    /// Apply the given write options when writing the initial data
+    pub fn write_options(mut self, write_options: WriteOptions) -> Self {
+        self.request.write_options = write_options;
         self
     }
 
