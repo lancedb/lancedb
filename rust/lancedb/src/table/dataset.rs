@@ -48,7 +48,6 @@ impl DatasetRef {
                 refresh_task,
                 ..
             } => {
-                dataset.checkout_latest().await?;
                 // Replace the refresh task
                 if let Some(refresh_task) = refresh_task {
                     refresh_task.abort();
