@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.19.0-beta.4"
+current_version = "0.19.0-beta.5"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
