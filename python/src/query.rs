@@ -46,7 +46,7 @@ pub struct PyFullTextSearchQuery {
 
 impl From<FullTextSearchQuery> for PyFullTextSearchQuery {
     fn from(query: FullTextSearchQuery) -> Self {
-        PyFullTextSearchQuery {
+        Self {
             columns: query.columns().into_iter().collect(),
             query: query.query.query().to_owned(),
             limit: query.limit,
@@ -100,7 +100,7 @@ pub struct PyQueryRequest {
 impl From<AnyQuery> for PyQueryRequest {
     fn from(query: AnyQuery) -> Self {
         match query {
-            AnyQuery::Query(query_request) => PyQueryRequest {
+            AnyQuery::Query(query_request) => Self {
                 limit: query_request.limit,
                 offset: query_request.offset,
                 filter: query_request.filter.map(PyQueryFilter),
@@ -122,7 +122,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 postfilter: None,
                 norm: None,
             },
-            AnyQuery::VectorQuery(vector_query) => PyQueryRequest {
+            AnyQuery::VectorQuery(vector_query) => Self {
                 limit: vector_query.base.limit,
                 offset: vector_query.base.offset,
                 filter: vector_query.base.filter.map(PyQueryFilter),
