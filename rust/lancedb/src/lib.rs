@@ -31,7 +31,7 @@
 //! are not yet ready to be released.
 //!
 //! - `remote` - Enable remote client to connect to LanceDB cloud.  This is not yet fully implemented
-//!              and should not be enabled.
+//!   and should not be enabled.
 //!
 //! ### Quick Start
 //!
