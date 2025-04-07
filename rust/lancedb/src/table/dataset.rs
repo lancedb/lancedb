@@ -169,9 +169,10 @@ impl DatasetConsistencyWrapper {
         self.ds.write().await.set_latest(dataset);
     }
 
-    pub async fn reload(&self) -> Result<()> {
+    pub async fn reload_latest(&self) -> Result<()> {
         self.refresh.initiate(self.ds.clone(), None, None);
-        self.refresh.wait().await
+        self.refresh.wait().await?;
+        Ok(())
     }
 
     /// Returns the version, if in time travel mode, or None otherwise
@@ -191,7 +192,7 @@ impl DatasetConsistencyWrapper {
     }
 
     /// Returns true if we should wait for the refresh task to finish.
-    async fn check_status(&self) -> Result<bool> {
+    async fn maybe_init_refresh(&self) -> Result<bool> {
         let dataset_ref = self.ds.read().await;
         match &*dataset_ref {
             DatasetRef::Latest {
@@ -202,8 +203,11 @@ impl DatasetConsistencyWrapper {
                 (None, _) => Ok(false), // No task scheduled
                 (Some(read_consistency_interval), last_consistency_check) => {
                     if !self.refresh.is_scheduled() {
+                        // We subtract 30 ms to account for the time it takes to
+                        // perform the refresh.
                         let next_refresh = last_consistency_check.unwrap_or_else(Instant::now)
-                            + *read_consistency_interval;
+                            + *read_consistency_interval
+                            - Duration::from_millis(30);
                         self.refresh
                             .initiate(self.ds.clone(), Some(next_refresh), None);
                     }
@@ -228,7 +232,7 @@ impl DatasetConsistencyWrapper {
     /// Ensures that the dataset is loaded and up-to-date with consistency and
     /// version parameters.
     async fn ensure_up_to_date(&self) -> Result<()> {
-        let should_wait = self.check_status().await?;
+        let should_wait = self.maybe_init_refresh().await?;
         if should_wait {
             self.refresh.wait().await?;
         }
@@ -275,12 +279,16 @@ impl DerefMut for DatasetWriteGuard<'_> {
     }
 }
 
+/// Handler for initializing and waiting for refresh tasks.
 #[derive(Clone, Debug, Default)]
+// We use a std::sync::Mutex here because we never need to hold the lock
+// across an await point.
 struct RefreshTaskWrapper(Arc<std::sync::Mutex<Option<RefreshTask>>>);
 
 impl RefreshTaskWrapper {
-    /// Initiate a refresh task. This will start a background task that will
-    /// refresh the dataset. If a task is already running, this will do nothing.
+    /// Schedule a refresh task to run after the given instant. This will start
+    /// a background task that will refresh the dataset. If a task is already
+    /// running, this will do nothing.
     ///
     /// If duration is None, the task will be scheduled immediately. If there is
     /// a task already scheduled, but it hasn't started yet, then it will be
@@ -297,11 +305,23 @@ impl RefreshTaskWrapper {
         version: Option<u64>,
     ) {
         // If we already have one started, we don't need to start another one.
-        let mut task_slot = self.0.lock().unwrap();
+        let mut task_slot = match self.0.lock() {
+            Ok(task) => task,
+            Err(err) => {
+                // If the lock is poisoned, we can just clear the task and continue
+                let mut guard = err.into_inner();
+                guard.take();
+                guard
+            }
+        };
 
         match &mut *task_slot {
-            Some(task) if task.start_time > Instant::now() => {
-                // The task is scheduled to start in the future, we can cancel it
+            Some(task)
+                if task.start_time > Instant::now()
+                    && task.start_time > start_time.unwrap_or(task.start_time) =>
+            {
+                // There is a schedule task, but it's not yet running and not starting
+                // as soon as requested. We can cancel it and start a new one.
                 if let Some(task) = task_slot.take() {
                     task.handle.abort();
                 }
