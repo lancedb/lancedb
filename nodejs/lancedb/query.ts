@@ -773,6 +773,7 @@ export interface FullTextQuery {
   /**
    * Returns the inner query object.
    * This is the underlying query object used by the database engine.
+   * @ignore
    */
   inner: JsFullTextQuery;
 
@@ -788,6 +789,7 @@ export function instanceOfFullTextQuery(obj: any): obj is FullTextQuery {
 }
 
 export class MatchQuery implements FullTextQuery {
+  /** @ignore */
   public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of MatchQuery.
@@ -824,13 +826,10 @@ export class MatchQuery implements FullTextQuery {
   queryType(): FullTextQueryType {
     return FullTextQueryType.Match;
   }
-
-  nativeInner(): JsFullTextQuery {
-    return this.inner;
-  }
 }
 
 export class PhraseQuery implements FullTextQuery {
+  /** @ignore */
   public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of `PhraseQuery`.
@@ -845,13 +844,10 @@ export class PhraseQuery implements FullTextQuery {
   queryType(): FullTextQueryType {
     return FullTextQueryType.MatchPhrase;
   }
-
-  nativeInner(): JsFullTextQuery {
-    return this.inner;
-  }
 }
 
 export class BoostQuery implements FullTextQuery {
+  /** @ignore */
   public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of BoostQuery.
@@ -878,13 +874,10 @@ export class BoostQuery implements FullTextQuery {
   queryType(): FullTextQueryType {
     return FullTextQueryType.Boost;
   }
-
-  nativeInner(): JsFullTextQuery {
-    return this.inner;
-  }
 }
 
 export class MultiMatchQuery implements FullTextQuery {
+  /** @ignore */
   public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of MultiMatchQuery.
@@ -910,9 +903,5 @@ export class MultiMatchQuery implements FullTextQuery {
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.MultiMatch;
-  }
-
-  nativeInner(): JsFullTextQuery {
-    return this.inner;
   }
 }

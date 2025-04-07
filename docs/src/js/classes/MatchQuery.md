@@ -22,9 +22,7 @@ including methods to retrieve the query type and convert the query to a dictiona
 new MatchQuery(
    query,
    column,
-   boost,
-   fuzziness,
-   maxExpansions): MatchQuery
+   options?): MatchQuery
 ```
 
 Creates an instance of MatchQuery.
@@ -37,14 +35,17 @@ Creates an instance of MatchQuery.
 * **column**: `string`
     The name of the column to search within.
 
-* **boost**: `number` = `1.0`
-    (Optional) The boost factor to influence the relevance score of this query. Default is `1.0`.
+* **options?**
+    Optional parameters for the match query.
+    - `boost`: The boost factor for the query (default is 1.0).
+    - `fuzziness`: The fuzziness level for the query (default is 0).
+    - `maxExpansions`: The maximum number of terms to consider for fuzzy matching (default is 50).
 
-* **fuzziness**: `number` = `0`
-    (Optional) The allowed edit distance for fuzzy matching. Default is `0`.
+* **options.boost?**: `number`
 
-* **maxExpansions**: `number` = `50`
-    (Optional) The maximum number of terms to consider for fuzzy matching. Default is `50`.
+* **options.fuzziness?**: `number`
+
+* **options.maxExpansions?**: `number`
 
 #### Returns
 
@@ -58,6 +59,8 @@ Creates an instance of MatchQuery.
 queryType(): FullTextQueryType
 ```
 
+The type of the full-text query.
+
 #### Returns
 
 [`FullTextQueryType`](../enumerations/FullTextQueryType.md)
@@ -65,19 +68,3 @@ queryType(): FullTextQueryType
 #### Implementation of
 
 [`FullTextQuery`](../interfaces/FullTextQuery.md).[`queryType`](../interfaces/FullTextQuery.md#querytype)
-
-***
-
-### toDict()
-
-```ts
-toDict(): Record<string, unknown>
-```
-
-#### Returns
-
-`Record`&lt;`string`, `unknown`&gt;
-
-#### Implementation of
-
-[`FullTextQuery`](../interfaces/FullTextQuery.md).[`toDict`](../interfaces/FullTextQuery.md#todict)
