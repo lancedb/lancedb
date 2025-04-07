@@ -1304,6 +1304,27 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results[0].text).toBe(data[0].text);
     });
 
+    test("full text index on list", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: ["lance database", "the", "search"], vector: [0.1, 0.2, 0.3] },
+        { text: ["lance database"], vector: [0.4, 0.5, 0.6] },
+        { text: ["lance", "search"], vector: [0.7, 0.8, 0.9] },
+        { text: ["database", "search"], vector: [1.0, 1.1, 1.2] },
+        { text: ["unrelated", "doc"], vector: [1.3, 1.4, 1.5] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts(),
+      });
+
+      const results = await table.search("lance").toArray();
+      expect(results.length).toBe(3);
+
+      const results2 = await table.search('"lance database"').toArray();
+      expect(results2.length).toBe(2);
+    });
+
     test("full text search without positions", async () => {
       const db = await connect(tmpDir.name);
       const data = [
