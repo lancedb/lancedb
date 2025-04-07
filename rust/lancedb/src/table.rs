@@ -1886,7 +1886,7 @@ impl BaseTable for NativeTable {
         self.dataset
             .as_latest(self.read_consistency_interval)
             .await?;
-        self.dataset.reload().await
+        self.dataset.reload_latest().await
     }
 
     async fn list_versions(&self) -> Result<Vec<Version>> {
@@ -3482,6 +3482,8 @@ mod tests {
             if let Some(interval) = interval {
                 conn2 = conn2
                     .read_consistency_interval(Some(std::time::Duration::from_millis(interval)));
+            } else {
+                conn2 = conn2.read_consistency_interval(None);
             }
             let conn2 = conn2.execute().await.unwrap();
             let table2 = conn2.open_table("my_table").execute().await.unwrap();
