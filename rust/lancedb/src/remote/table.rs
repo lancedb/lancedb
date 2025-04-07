@@ -20,7 +20,7 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
 use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
-use http::StatusCode;
+use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
@@ -43,6 +43,8 @@ use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
 use super::ARROW_STREAM_CONTENT_TYPE;
+
+const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 
 #[derive(Debug)]
 pub struct RemoteTable<S: HttpSend = Sender> {
@@ -332,9 +334,19 @@ impl<S: HttpSend> RemoteTable<S> {
     async fn execute_query(
         &self,
         query: &AnyQuery,
-        _options: QueryExecutionOptions,
+        options: &QueryExecutionOptions,
     ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
-        let request = self.client.post(&format!("/v1/table/{}/query/", self.name));
+        let mut request = self.client.post(&format!("/v1/table/{}/query/", self.name));
+
+        if let Some(timeout) = options.timeout {
+            // Client side timeout
+            request = request.timeout(timeout);
+            // Also send to server, so it can abort the query if it takes too long.
+            // (If it doesn't fit into u64, it's not worth sending anyways.)
+            if let Ok(timeout_ms) = u64::try_from(timeout.as_millis()) {
+                request = request.header(REQUEST_TIMEOUT_HEADER, timeout_ms);
+            }
+        }
 
         let query_bodies = self.prepare_query_bodies(query).await?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
@@ -543,7 +555,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let streams = self.execute_query(query, options).await?;
+        let streams = self.execute_query(query, &options).await?;
         if streams.len() == 1 {
             let stream = streams.into_iter().next().unwrap();
             Ok(Arc::new(OneShotExec::new(stream)))
@@ -559,9 +571,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn query(
         &self,
         query: &AnyQuery,
-        _options: QueryExecutionOptions,
+        options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        let streams = self.execute_query(query, _options).await?;
+        let streams = self.execute_query(query, &options).await?;
 
         if streams.len() == 1 {
             Ok(DatasetRecordBatchStream::new(

@@ -511,7 +511,8 @@ def test_query_builder_with_different_vector_column():
             columns=["b"],
             vector_column="foo_vector",
         ),
-        None,
+        batch_size=None,
+        timeout=None,
     )
 
 
@@ -1076,3 +1077,67 @@ async def test_query_serialization_async(table_async: AsyncTable):
         full_text_query=FullTextSearchQuery(columns=[], query="foo"),
         with_row_id=False,
     )
+
+
+def test_query_timeout(tmp_path):
+    # Use local directory instead of memory:// to add a bit of latency to
+    # operations so a timeout of zero will trigger exceptions.
+    db = lancedb.connect(tmp_path)
+    data = pa.table(
+        {
+            "text": ["a", "b"],
+            "vector": pa.FixedSizeListArray.from_arrays(
+                pc.random(4).cast(pa.float32()), 2
+            ),
+        }
+    )
+    table = db.create_table("test", data)
+    table.create_fts_index("text", use_tantivy=False)
+
+    with pytest.raises(Exception, match="Query timeout"):
+        table.search().where("text = 'a'").to_list(timeout=timedelta(0))
+
+    with pytest.raises(Exception, match="Query timeout"):
+        table.search([0.0, 0.0]).to_arrow(timeout=timedelta(0))
+
+    with pytest.raises(Exception, match="Query timeout"):
+        table.search("a", query_type="fts").to_pandas(timeout=timedelta(0))
+
+    with pytest.raises(Exception, match="Query timeout"):
+        table.search(query_type="hybrid").vector([0.0, 0.0]).text("a").to_arrow(
+            timeout=timedelta(0)
+        )
+
+
+@pytest.mark.asyncio
+async def test_query_timeout_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    data = pa.table(
+        {
+            "text": ["a", "b"],
+            "vector": pa.FixedSizeListArray.from_arrays(
+                pc.random(4).cast(pa.float32()), 2
+            ),
+        }
+    )
+    table = await db.create_table("test", data)
+    await table.create_index("text", config=FTS())
+
+    with pytest.raises(Exception, match="Query timeout"):
+        await table.query().where("text != 'a'").to_list(timeout=timedelta(0))
+
+    with pytest.raises(Exception, match="Query timeout"):
+        await table.vector_search([0.0, 0.0]).to_arrow(timeout=timedelta(0))
+
+    with pytest.raises(Exception, match="Query timeout"):
+        await (await table.search("a", query_type="fts")).to_pandas(
+            timeout=timedelta(0)
+        )
+
+    with pytest.raises(Exception, match="Query timeout"):
+        await (
+            table.query()
+            .nearest_to_text("a")
+            .nearest_to([0.0, 0.0])
+            .to_list(timeout=timedelta(0))
+        )

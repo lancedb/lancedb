@@ -868,6 +868,44 @@ describe("When creating an index", () => {
   });
 });
 
+describe("When querying a table", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("should throw an error when timeout is reached", async () => {
+    const db = await connect(tmpDir.name);
+    const data = makeArrowTable([
+      { text: "a", vector: [0.1, 0.2] },
+      { text: "b", vector: [0.3, 0.4] },
+    ]);
+    const table = await db.createTable("test", data);
+    await table.createIndex("text", { config: Index.fts() });
+
+    await expect(
+      table.query().where("text != 'a'").toArray({ timeoutMs: 0 }),
+    ).rejects.toThrow("Query timeout");
+
+    await expect(
+      table.query().nearestTo([0.0, 0.0]).toArrow({ timeoutMs: 0 }),
+    ).rejects.toThrow("Query timeout");
+
+    await expect(
+      table.search("a", "fts").toArray({ timeoutMs: 0 }),
+    ).rejects.toThrow("Query timeout");
+
+    await expect(
+      table
+        .query()
+        .nearestToText("a")
+        .nearestTo([0.0, 0.0])
+        .toArrow({ timeoutMs: 0 }),
+    ).rejects.toThrow("Query timeout");
+  });
+});
+
 describe("Read consistency interval", () => {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {

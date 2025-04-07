@@ -18,6 +18,7 @@ on:
     # This should trigger a dry run (we skip the final publish step)
     paths:
       - .github/workflows/npm-publish.yml
+      - Cargo.toml # Change in dependency frequently breaks builds
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -531,6 +532,8 @@ jobs:
             npm publish $PUBLISH_ARGS $filename
           done
       - name: Deprecate
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
         # We need to deprecate the old package to avoid confusion.
         # Each time we publish a new version, it gets undeprecated.
         run: npm deprecate vectordb "Use @lancedb/lancedb instead."
