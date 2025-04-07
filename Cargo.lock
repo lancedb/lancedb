@@ -4110,11 +4110,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb"
-<<<<<<< HEAD
-version = "0.19.0-beta.3"
-=======
 version = "0.19.0-beta.4"
->>>>>>> 6c6966600c7ea2161c8678fc435617a45d8393a1
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4226,11 +4222,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-nodejs"
-<<<<<<< HEAD
-version = "0.19.0-beta.3"
-=======
 version = "0.19.0-beta.4"
->>>>>>> 6c6966600c7ea2161c8678fc435617a45d8393a1
 dependencies = [
  "arrow-array",
  "arrow-ipc",
