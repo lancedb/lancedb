@@ -158,7 +158,17 @@ pub fn supported_label_list_data_type(dtype: &DataType) -> bool {
 }
 
 pub fn supported_fts_data_type(dtype: &DataType) -> bool {
-    matches!(dtype, DataType::Utf8 | DataType::LargeUtf8)
+    supported_fts_data_type_impl(dtype, false)
+}
+
+fn supported_fts_data_type_impl(dtype: &DataType, in_list: bool) -> bool {
+    match (dtype, in_list) {
+        (DataType::Utf8 | DataType::LargeUtf8, _) => true,
+        (DataType::List(field) | DataType::LargeList(field), false) => {
+            supported_fts_data_type_impl(field.data_type(), true)
+        }
+        _ => false,
+    }
 }
 
 pub fn supported_vector_data_type(dtype: &DataType) -> bool {
