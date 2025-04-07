@@ -206,7 +206,7 @@ fullTextSearch(query, options?): this
 
 #### Parameters
 
-* **query**: `string`
+* **query**: `string` \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
 
 * **options?**: `Partial`&lt;[`FullTextSearchOptions`](../interfaces/FullTextSearchOptions.md)&gt;
 
@@ -309,7 +309,7 @@ nearestToText(query, columns?): Query
 
 #### Parameters
 
-* **query**: `string`
+* **query**: `string` \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
 
 * **columns?**: `string`[]
 

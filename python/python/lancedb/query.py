@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import abc
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
+from datetime import timedelta
 from typing import (
     TYPE_CHECKING,
     Dict,
@@ -83,6 +86,213 @@ def ensure_vector_query(
         return val
 
 
+class FullTextQueryType(Enum):
+    MATCH = "match"
+    MATCH_PHRASE = "match_phrase"
+    BOOST = "boost"
+    MULTI_MATCH = "multi_match"
+
+
+class FullTextQuery(abc.ABC, pydantic.BaseModel):
+    @abc.abstractmethod
+    def query_type(self) -> FullTextQueryType:
+        """
+        Get the query type of the query.
+
+        Returns
+        -------
+        str
+            The type of the query.
+        """
+
+    @abc.abstractmethod
+    def to_dict(self) -> dict:
+        """
+        Convert the query to a dictionary.
+
+        Returns
+        -------
+        dict
+            The query as a dictionary.
+        """
+
+
+class MatchQuery(FullTextQuery):
+    query: str
+    column: str
+    boost: float = 1.0
+    fuzziness: int = 0
+    max_expansions: int = 50
+
+    def __init__(
+        self,
+        query: str,
+        column: str,
+        *,
+        boost: float = 1.0,
+        fuzziness: int = 0,
+        max_expansions: int = 50,
+    ):
+        """
+        Match query for full-text search.
+
+        Parameters
+        ----------
+        query : str
+            The query string to match against.
+        column : str
+            The name of the column to match against.
+        boost : float, default 1.0
+            The boost factor for the query.
+            The score of each matching document is multiplied by this value.
+        fuzziness : int, optional
+            The maximum edit distance for each term in the match query.
+            Defaults to 0 (exact match).
+            If None, fuzziness is applied automatically by the rules:
+                - 0 for terms with length <= 2
+                - 1 for terms with length <= 5
+                - 2 for terms with length > 5
+        max_expansions : int, optional
+            The maximum number of terms to consider for fuzzy matching.
+            Defaults to 50.
+        """
+        super().__init__(
+            query=query,
+            column=column,
+            boost=boost,
+            fuzziness=fuzziness,
+            max_expansions=max_expansions,
+        )
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.MATCH
+
+    def to_dict(self) -> dict:
+        return {
+            "match": {
+                self.column: {
+                    "query": self.query,
+                    "boost": self.boost,
+                    "fuzziness": self.fuzziness,
+                    "max_expansions": self.max_expansions,
+                }
+            }
+        }
+
+
+class PhraseQuery(FullTextQuery):
+    query: str
+    column: str
+
+    def __init__(self, query: str, column: str):
+        """
+        Phrase query for full-text search.
+
+        Parameters
+        ----------
+        query : str
+            The query string to match against.
+        column : str
+            The name of the column to match against.
+        """
+        super().__init__(query=query, column=column)
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.MATCH_PHRASE
+
+    def to_dict(self) -> dict:
+        return {
+            "match_phrase": {
+                self.column: self.query,
+            }
+        }
+
+
+class BoostQuery(FullTextQuery):
+    positive: FullTextQuery
+    negative: FullTextQuery
+    negative_boost: float = 0.5
+
+    def __init__(
+        self,
+        positive: FullTextQuery,
+        negative: FullTextQuery,
+        *,
+        negative_boost: float = 0.5,
+    ):
+        """
+        Boost query for full-text search.
+
+        Parameters
+        ----------
+        positive : dict
+            The positive query object.
+        negative : dict
+            The negative query object.
+        negative_boost : float
+            The boost factor for the negative query.
+        """
+        super().__init__(
+            positive=positive, negative=negative, negative_boost=negative_boost
+        )
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.BOOST
+
+    def to_dict(self) -> dict:
+        return {
+            "boost": {
+                "positive": self.positive.to_dict(),
+                "negative": self.negative.to_dict(),
+                "negative_boost": self.negative_boost,
+            }
+        }
+
+
+class MultiMatchQuery(FullTextQuery):
+    query: str
+    columns: list[str]
+    boosts: list[float]
+
+    def __init__(
+        self,
+        query: str,
+        columns: list[str],
+        *,
+        boosts: Optional[list[float]] = None,
+    ):
+        """
+        Multi-match query for full-text search.
+
+        Parameters
+        ----------
+        query : str | list[Query]
+            If a string, the query string to match against.
+
+        columns : list[str]
+            The list of columns to match against.
+
+        boosts : list[float], optional
+            The list of boost factors for each column. If not provided,
+            all columns will have the same boost factor.
+        """
+        if boosts is None:
+            boosts = [1.0] * len(columns)
+        super().__init__(query=query, columns=columns, boosts=boosts)
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.MULTI_MATCH
+
+    def to_dict(self) -> dict:
+        return {
+            "multi_match": {
+                "query": self.query,
+                "columns": self.columns,
+                "boost": self.boosts,
+            }
+        }
+
+
 class FullTextSearchQuery(pydantic.BaseModel):
     """A LanceDB Full Text Search Query
 
@@ -92,18 +302,13 @@ class FullTextSearchQuery(pydantic.BaseModel):
         The columns to search
 
         If None, then the table should select the column automatically.
-    query: str
-        The query to search for
-    limit: Optional[int] = None
-        The limit on the number of results to return
-    wand_factor: Optional[float] = None
-        The wand factor to use for the search
+    query: str | FullTextQuery
+        If a string, it is treated as a MatchQuery.
+        If a FullTextQuery object, it is used directly.
     """
 
     columns: Optional[List[str]] = None
-    query: str
-    limit: Optional[int] = None
-    wand_factor: Optional[float] = None
+    query: Union[str, FullTextQuery]
 
 
 class Query(pydantic.BaseModel):
@@ -357,7 +562,7 @@ class LanceQueryBuilder(ABC):
                 table, query, vector_column_name, fts_columns=fts_columns
             )
 
-        if isinstance(query, str):
+        if isinstance(query, (str, FullTextQuery)):
             # fts
             return LanceFtsQueryBuilder(
                 table,
@@ -382,8 +587,10 @@ class LanceQueryBuilder(ABC):
         # If query_type is fts, then query must be a string.
         # otherwise raise TypeError
         if query_type == "fts":
-            if not isinstance(query, str):
-                raise TypeError(f"'fts' queries must be a string: {type(query)}")
+            if not isinstance(query, (str, FullTextQuery)):
+                raise TypeError(
+                    f"'fts' query must be a string or FullTextQuery: {type(query)}"
+                )
             return query, query_type
         elif query_type == "vector":
             query = cls._query_to_vector(table, query, vector_column_name)
@@ -444,7 +651,12 @@ class LanceQueryBuilder(ABC):
         """
         return self.to_pandas()
 
-    def to_pandas(self, flatten: Optional[Union[int, bool]] = None) -> "pd.DataFrame":
+    def to_pandas(
+        self,
+        flatten: Optional[Union[int, bool]] = None,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> "pd.DataFrame":
         """
         Execute the query and return the results as a pandas DataFrame.
         In addition to the selected columns, LanceDB also returns a vector
@@ -458,12 +670,15 @@ class LanceQueryBuilder(ABC):
             If flatten is an integer, flatten the nested columns up to the
             specified depth.
             If unspecified, do not flatten the nested columns.
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
         """
-        tbl = flatten_columns(self.to_arrow(), flatten)
+        tbl = flatten_columns(self.to_arrow(timeout=timeout), flatten)
         return tbl.to_pandas()
 
     @abstractmethod
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         """
         Execute the query and return the results as an
         [Apache Arrow Table](https://arrow.apache.org/docs/python/generated/pyarrow.Table.html#pyarrow.Table).
@@ -471,34 +686,65 @@ class LanceQueryBuilder(ABC):
         In addition to the selected columns, LanceDB also returns a vector
         and also the "_distance" column which is the distance between the query
         vector and the returned vectors.
+
+        Parameters
+        ----------
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.RecordBatchReader:
+    def to_batches(
+        self,
+        /,
+        batch_size: Optional[int] = None,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.RecordBatchReader:
         """
         Execute the query and return the results as a pyarrow
         [RecordBatchReader](https://arrow.apache.org/docs/python/generated/pyarrow.RecordBatchReader.html)
+
+        Parameters
+        ----------
+        batch_size: int
+            The maximum number of selected records in a RecordBatch object.
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
         """
         raise NotImplementedError
 
-    def to_list(self) -> List[dict]:
+    def to_list(self, *, timeout: Optional[timedelta] = None) -> List[dict]:
         """
         Execute the query and return the results as a list of dictionaries.
 
         Each list entry is a dictionary with the selected column names as keys,
         or all table columns if `select` is not called. The vector and the "_distance"
         fields are returned whether or not they're explicitly selected.
-        """
-        return self.to_arrow().to_pylist()
 
-    def to_pydantic(self, model: Type[LanceModel]) -> List[LanceModel]:
+        Parameters
+        ----------
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
+        """
+        return self.to_arrow(timeout=timeout).to_pylist()
+
+    def to_pydantic(
+        self, model: Type[LanceModel], *, timeout: Optional[timedelta] = None
+    ) -> List[LanceModel]:
         """Return the table as a list of pydantic models.
 
         Parameters
         ----------
         model: Type[LanceModel]
             The pydantic model to use.
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
 
         Returns
         -------
@@ -506,19 +752,25 @@ class LanceQueryBuilder(ABC):
         """
         return [
             model(**{k: v for k, v in row.items() if k in model.field_names()})
-            for row in self.to_arrow().to_pylist()
+            for row in self.to_arrow(timeout=timeout).to_pylist()
         ]
 
-    def to_polars(self) -> "pl.DataFrame":
+    def to_polars(self, *, timeout: Optional[timedelta] = None) -> "pl.DataFrame":
         """
         Execute the query and return the results as a Polars DataFrame.
         In addition to the selected columns, LanceDB also returns a vector
         and also the "_distance" column which is the distance between the query
         vector and the returned vector.
+
+        Parameters
+        ----------
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
         """
         import polars as pl
 
-        return pl.from_arrow(self.to_arrow())
+        return pl.from_arrow(self.to_arrow(timeout=timeout))
 
     def limit(self, limit: Union[int, None]) -> Self:
         """Set the maximum number of results to return.
@@ -712,13 +964,14 @@ class LanceQueryBuilder(ABC):
         """
         raise NotImplementedError
 
-    def text(self, text: str) -> Self:
+    def text(self, text: str | FullTextQuery) -> Self:
         """Set the text to search for.
 
         Parameters
         ----------
-        text: str
-            The text to search for.
+        text: str | FullTextQuery
+            If a string, it is treated as a MatchQuery.
+            If a FullTextQuery object, it is used directly.
 
         Returns
         -------
@@ -932,7 +1185,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._refine_factor = refine_factor
         return self
 
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         """
         Execute the query and return the results as an
         [Apache Arrow Table](https://arrow.apache.org/docs/python/generated/pyarrow.Table.html#pyarrow.Table).
@@ -940,8 +1193,14 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         In addition to the selected columns, LanceDB also returns a vector
         and also the "_distance" column which is the distance between the query
         vector and the returned vectors.
+
+        Parameters
+        ----------
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
         """
-        return self.to_batches().read_all()
+        return self.to_batches(timeout=timeout).read_all()
 
     def to_query_object(self) -> Query:
         """
@@ -971,7 +1230,13 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             bypass_vector_index=self._bypass_vector_index,
         )
 
-    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.RecordBatchReader:
+    def to_batches(
+        self,
+        /,
+        batch_size: Optional[int] = None,
+        *,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.RecordBatchReader:
         """
         Execute the query and return the result as a RecordBatchReader object.
 
@@ -979,6 +1244,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         ----------
         batch_size: int
             The maximum number of selected records in a RecordBatch object.
+        timeout: timedelta, default None
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
 
         Returns
         -------
@@ -988,7 +1256,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         if isinstance(vector[0], np.ndarray):
             vector = [v.tolist() for v in vector]
         query = self.to_query_object()
-        result_set = self._table._execute_query(query, batch_size)
+        result_set = self._table._execute_query(
+            query, batch_size=batch_size, timeout=timeout
+        )
         if self._reranker is not None:
             rs_table = result_set.read_all()
             result_set = self._reranker.rerank_vector(self._str_query, rs_table)
@@ -1084,7 +1354,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
     def __init__(
         self,
         table: "Table",
-        query: str,
+        query: str | FullTextQuery,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
     ):
@@ -1127,7 +1397,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             offset=self._offset,
         )
 
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         path, fs, exist = self._table._get_fts_index_path()
         if exist:
             return self.tantivy_to_arrow()
@@ -1139,14 +1409,16 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 "Use tantivy-based index instead for now."
             )
         query = self.to_query_object()
-        results = self._table._execute_query(query)
+        results = self._table._execute_query(query, timeout=timeout)
         results = results.read_all()
         if self._reranker is not None:
             results = self._reranker.rerank_fts(self._query, results)
             check_reranker_result(results)
         return results
 
-    def to_batches(self, /, batch_size: Optional[int] = None):
+    def to_batches(
+        self, /, batch_size: Optional[int] = None, timeout: Optional[timedelta] = None
+    ):
         raise NotImplementedError("to_batches on an FTS query")
 
     def tantivy_to_arrow(self) -> pa.Table:
@@ -1251,8 +1523,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
-    def to_arrow(self) -> pa.Table:
-        return self.to_batches().read_all()
+    def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
+        return self.to_batches(timeout=timeout).read_all()
 
     def to_query_object(self) -> Query:
         return Query(
@@ -1263,9 +1535,11 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             offset=self._offset,
         )
 
-    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.RecordBatchReader:
+    def to_batches(
+        self, /, batch_size: Optional[int] = None, timeout: Optional[timedelta] = None
+    ) -> pa.RecordBatchReader:
         query = self.to_query_object()
-        return self._table._execute_query(query, batch_size)
+        return self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
 
     def rerank(self, reranker: Reranker) -> LanceEmptyQueryBuilder:
         """Rerank the results using the specified reranker.
@@ -1298,7 +1572,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def __init__(
         self,
         table: "Table",
-        query: Optional[str] = None,
+        query: Optional[Union[str, FullTextQuery]] = None,
         vector_column: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
     ):
@@ -1328,8 +1602,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         text_query = text or query
         if text_query is None:
             raise ValueError("Text query must be provided for hybrid search.")
-        if not isinstance(text_query, str):
-            raise ValueError("Text query must be a string")
+        if not isinstance(text_query, (str, FullTextQuery)):
+            raise ValueError("Text query must be a string or FullTextQuery")
 
         return vector_query, text_query
 
@@ -1353,7 +1627,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def to_query_object(self) -> Query:
         raise NotImplementedError("to_query_object not yet supported on a hybrid query")
 
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         vector_query, fts_query = self._validate_query(
             self._query, self._vector, self._text
         )
@@ -1396,9 +1670,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._reranker = RRFReranker()
 
         with ThreadPoolExecutor() as executor:
-            fts_future = executor.submit(self._fts_query.with_row_id(True).to_arrow)
+            fts_future = executor.submit(
+                self._fts_query.with_row_id(True).to_arrow, timeout=timeout
+            )
             vector_future = executor.submit(
-                self._vector_query.with_row_id(True).to_arrow
+                self._vector_query.with_row_id(True).to_arrow, timeout=timeout
             )
             fts_results = fts_future.result()
             vector_results = vector_future.result()
@@ -1485,7 +1761,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         return results
 
-    def to_batches(self):
+    def to_batches(
+        self, /, batch_size: Optional[int] = None, timeout: Optional[timedelta] = None
+    ):
         raise NotImplementedError("to_batches not yet supported on a hybrid query")
 
     @staticmethod
@@ -1691,7 +1969,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._vector = vector
         return self
 
-    def text(self, text: str) -> LanceHybridQueryBuilder:
+    def text(self, text: str | FullTextQuery) -> LanceHybridQueryBuilder:
         self._text = text
         return self
 
@@ -1849,7 +2127,10 @@ class AsyncQueryBase(object):
         return self
 
     async def to_batches(
-        self, *, max_batch_length: Optional[int] = None
+        self,
+        *,
+        max_batch_length: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
     ) -> AsyncRecordBatchReader:
         """
         Execute the query and return the results as an Apache Arrow RecordBatchReader.
@@ -1862,34 +2143,56 @@ class AsyncQueryBase(object):
             If not specified, a default batch length is used.
             It is possible for batches to be smaller than the provided length if the
             underlying data is stored in smaller chunks.
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If not specified, no timeout is applied. If the query does not
+            complete within the specified time, an error will be raised.
         """
-        return AsyncRecordBatchReader(await self._inner.execute(max_batch_length))
+        return AsyncRecordBatchReader(
+            await self._inner.execute(max_batch_length, timeout)
+        )
 
-    async def to_arrow(self) -> pa.Table:
+    async def to_arrow(self, timeout: Optional[timedelta] = None) -> pa.Table:
         """
         Execute the query and collect the results into an Apache Arrow Table.
 
         This method will collect all results into memory before returning.  If
         you expect a large number of results, you may want to use
         [to_batches][lancedb.query.AsyncQueryBase.to_batches]
+
+        Parameters
+        ----------
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If not specified, no timeout is applied. If the query does not
+            complete within the specified time, an error will be raised.
         """
-        batch_iter = await self.to_batches()
+        batch_iter = await self.to_batches(timeout=timeout)
         return pa.Table.from_batches(
             await batch_iter.read_all(), schema=batch_iter.schema
         )
 
-    async def to_list(self) -> List[dict]:
+    async def to_list(self, timeout: Optional[timedelta] = None) -> List[dict]:
         """
         Execute the query and return the results as a list of dictionaries.
 
         Each list entry is a dictionary with the selected column names as keys,
         or all table columns if `select` is not called. The vector and the "_distance"
         fields are returned whether or not they're explicitly selected.
+
+        Parameters
+        ----------
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If not specified, no timeout is applied. If the query does not
+            complete within the specified time, an error will be raised.
         """
-        return (await self.to_arrow()).to_pylist()
+        return (await self.to_arrow(timeout=timeout)).to_pylist()
 
     async def to_pandas(
-        self, flatten: Optional[Union[int, bool]] = None
+        self,
+        flatten: Optional[Union[int, bool]] = None,
+        timeout: Optional[timedelta] = None,
     ) -> "pd.DataFrame":
         """
         Execute the query and collect the results into a pandas DataFrame.
@@ -1918,10 +2221,19 @@ class AsyncQueryBase(object):
             If flatten is an integer, flatten the nested columns up to the
             specified depth.
             If unspecified, do not flatten the nested columns.
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If not specified, no timeout is applied. If the query does not
+            complete within the specified time, an error will be raised.
         """
-        return (flatten_columns(await self.to_arrow(), flatten)).to_pandas()
+        return (
+            flatten_columns(await self.to_arrow(timeout=timeout), flatten)
+        ).to_pandas()
 
-    async def to_polars(self) -> "pl.DataFrame":
+    async def to_polars(
+        self,
+        timeout: Optional[timedelta] = None,
+    ) -> "pl.DataFrame":
         """
         Execute the query and collect the results into a Polars DataFrame.
 
@@ -1929,6 +2241,13 @@ class AsyncQueryBase(object):
         expect a large number of results, you may want to use
         [to_batches][lancedb.query.AsyncQueryBase.to_batches] and convert each batch to
         polars separately.
+
+        Parameters
+        ----------
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If not specified, no timeout is applied. If the query does not
+            complete within the specified time, an error will be raised.
 
         Examples
         --------
@@ -1945,7 +2264,7 @@ class AsyncQueryBase(object):
         """
         import polars as pl
 
-        return pl.from_arrow(await self.to_arrow())
+        return pl.from_arrow(await self.to_arrow(timeout=timeout))
 
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
@@ -2088,7 +2407,7 @@ class AsyncQuery(AsyncQueryBase):
             )
 
     def nearest_to_text(
-        self, query: str, columns: Union[str, List[str], None] = None
+        self, query: str | FullTextQuery, columns: Union[str, List[str], None] = None
     ) -> AsyncFTSQuery:
         """
         Find the documents that are most relevant to the given text query.
@@ -2114,9 +2433,13 @@ class AsyncQuery(AsyncQueryBase):
             columns = [columns]
         if columns is None:
             columns = []
-        return AsyncFTSQuery(
-            self._inner.nearest_to_text({"query": query, "columns": columns})
-        )
+
+        if isinstance(query, str):
+            return AsyncFTSQuery(
+                self._inner.nearest_to_text({"query": query, "columns": columns})
+            )
+        # FullTextQuery object
+        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query.to_dict()}))
 
 
 class AsyncFTSQuery(AsyncQueryBase):
@@ -2212,9 +2535,12 @@ class AsyncFTSQuery(AsyncQueryBase):
             )
 
     async def to_batches(
-        self, *, max_batch_length: Optional[int] = None
+        self,
+        *,
+        max_batch_length: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
     ) -> AsyncRecordBatchReader:
-        reader = await super().to_batches()
+        reader = await super().to_batches(timeout=timeout)
         results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
             results = self._reranker.rerank_fts(self.get_query(), results)
@@ -2399,7 +2725,7 @@ class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
         return self
 
     def nearest_to_text(
-        self, query: str, columns: Union[str, List[str], None] = None
+        self, query: str | FullTextQuery, columns: Union[str, List[str], None] = None
     ) -> AsyncHybridQuery:
         """
         Find the documents that are most relevant to the given text query,
@@ -2429,14 +2755,21 @@ class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
             columns = [columns]
         if columns is None:
             columns = []
-        return AsyncHybridQuery(
-            self._inner.nearest_to_text({"query": query, "columns": columns})
-        )
+
+        if isinstance(query, str):
+            return AsyncHybridQuery(
+                self._inner.nearest_to_text({"query": query, "columns": columns})
+            )
+        # FullTextQuery object
+        return AsyncHybridQuery(self._inner.nearest_to_text({"query": query.to_dict()}))
 
     async def to_batches(
-        self, *, max_batch_length: Optional[int] = None
+        self,
+        *,
+        max_batch_length: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
     ) -> AsyncRecordBatchReader:
-        reader = await super().to_batches()
+        reader = await super().to_batches(timeout=timeout)
         results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
             results = self._reranker.rerank_vector(self._query_string, results)
@@ -2492,7 +2825,10 @@ class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
         return self
 
     async def to_batches(
-        self, *, max_batch_length: Optional[int] = None
+        self,
+        *,
+        max_batch_length: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
     ) -> AsyncRecordBatchReader:
         fts_query = AsyncFTSQuery(self._inner.to_fts_query())
         vec_query = AsyncVectorQuery(self._inner.to_vector_query())
@@ -2504,8 +2840,8 @@ class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
         vec_query.with_row_id()
 
         fts_results, vector_results = await asyncio.gather(
-            fts_query.to_arrow(),
-            vec_query.to_arrow(),
+            fts_query.to_arrow(timeout=timeout),
+            vec_query.to_arrow(timeout=timeout),
         )
 
         result = LanceHybridQueryBuilder._combine_hybrid_results(

@@ -17,6 +17,7 @@ import {
   VectorQuery as NativeVectorQuery,
 } from "./native";
 import { Reranker } from "./rerankers";
+
 export class RecordBatchIterator implements AsyncIterator<RecordBatch> {
   private promisedInner?: Promise<NativeBatchIterator>;
   private inner?: NativeBatchIterator;
@@ -62,7 +63,7 @@ class RecordBatchIterable<
   // biome-ignore lint/suspicious/noExplicitAny: skip
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
     return new RecordBatchIterator(
-      this.inner.execute(this.options?.maxBatchLength),
+      this.inner.execute(this.options?.maxBatchLength, this.options?.timeoutMs),
     );
   }
 }
@@ -78,6 +79,11 @@ export interface QueryExecutionOptions {
    * in smaller chunks.
    */
   maxBatchLength?: number;
+
+  /**
+   * Timeout for query execution in milliseconds
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -152,7 +158,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
   }
 
   fullTextSearch(
-    query: string,
+    query: string | FullTextQuery,
     options?: Partial<FullTextSearchOptions>,
   ): this {
     let columns: string[] | null = null;
@@ -164,9 +170,18 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
       }
     }
 
-    this.doCall((inner: NativeQueryType) =>
-      inner.fullTextSearch(query, columns),
-    );
+    this.doCall((inner: NativeQueryType) => {
+      if (typeof query === "string") {
+        inner.fullTextSearch({
+          query: query,
+          columns: columns,
+        });
+      } else {
+        // If query is a FullTextQuery object, convert it to a dict
+        const queryObj = query.toDict();
+        inner.fullTextSearch(queryObj);
+      }
+    });
     return this;
   }
 
@@ -273,9 +288,11 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     options?: Partial<QueryExecutionOptions>,
   ): Promise<NativeBatchIterator> {
     if (this.inner instanceof Promise) {
-      return this.inner.then((inner) => inner.execute(options?.maxBatchLength));
+      return this.inner.then((inner) =>
+        inner.execute(options?.maxBatchLength, options?.timeoutMs),
+      );
     } else {
-      return this.inner.execute(options?.maxBatchLength);
+      return this.inner.execute(options?.maxBatchLength, options?.timeoutMs);
     }
   }
 
@@ -718,8 +735,167 @@ export class Query extends QueryBase<NativeQuery> {
     }
   }
 
-  nearestToText(query: string, columns?: string[]): Query {
-    this.doCall((inner) => inner.fullTextSearch(query, columns));
+  nearestToText(query: string | FullTextQuery, columns?: string[]): Query {
+    this.doCall((inner) => {
+      if (typeof query === "string") {
+        inner.fullTextSearch({
+          query: query,
+          columns: columns,
+        });
+      } else {
+        const queryObj = query.toDict();
+        inner.fullTextSearch(queryObj);
+      }
+    });
     return this;
+  }
+}
+
+/**
+ * Enum representing the types of full-text queries supported.
+ *
+ * - `Match`: Performs a full-text search for terms in the query string.
+ * - `MatchPhrase`: Searches for an exact phrase match in the text.
+ * - `Boost`: Boosts the relevance score of specific terms in the query.
+ * - `MultiMatch`: Searches across multiple fields for the query terms.
+ */
+export enum FullTextQueryType {
+  Match = "match",
+  MatchPhrase = "match_phrase",
+  Boost = "boost",
+  MultiMatch = "multi_match",
+}
+
+/**
+ * Represents a full-text query interface.
+ * This interface defines the structure and behavior for full-text queries,
+ * including methods to retrieve the query type and convert the query to a dictionary format.
+ */
+export interface FullTextQuery {
+  queryType(): FullTextQueryType;
+  toDict(): Record<string, unknown>;
+}
+
+export class MatchQuery implements FullTextQuery {
+  /**
+   * Creates an instance of MatchQuery.
+   *
+   * @param query - The text query to search for.
+   * @param column - The name of the column to search within.
+   * @param boost - (Optional) The boost factor to influence the relevance score of this query. Default is `1.0`.
+   * @param fuzziness - (Optional) The allowed edit distance for fuzzy matching. Default is `0`.
+   * @param maxExpansions - (Optional) The maximum number of terms to consider for fuzzy matching. Default is `50`.
+   */
+  constructor(
+    private query: string,
+    private column: string,
+    private boost: number = 1.0,
+    private fuzziness: number = 0,
+    private maxExpansions: number = 50,
+  ) {}
+
+  queryType(): FullTextQueryType {
+    return FullTextQueryType.Match;
+  }
+
+  toDict(): Record<string, unknown> {
+    return {
+      [this.queryType()]: {
+        [this.column]: {
+          query: this.query,
+          boost: this.boost,
+          fuzziness: this.fuzziness,
+          // biome-ignore lint/style/useNamingConvention: use underscore for consistency with the other APIs
+          max_expansions: this.maxExpansions,
+        },
+      },
+    };
+  }
+}
+
+export class PhraseQuery implements FullTextQuery {
+  /**
+   * Creates an instance of `PhraseQuery`.
+   *
+   * @param query - The phrase to search for in the specified column.
+   * @param column - The name of the column to search within.
+   */
+  constructor(
+    private query: string,
+    private column: string,
+  ) {}
+
+  queryType(): FullTextQueryType {
+    return FullTextQueryType.MatchPhrase;
+  }
+
+  toDict(): Record<string, unknown> {
+    return {
+      [this.queryType()]: {
+        [this.column]: this.query,
+      },
+    };
+  }
+}
+
+export class BoostQuery implements FullTextQuery {
+  /**
+   * Creates an instance of BoostQuery.
+   *
+   * @param positive - The positive query that boosts the relevance score.
+   * @param negative - The negative query that reduces the relevance score.
+   * @param negativeBoost - The factor by which the negative query reduces the score.
+   */
+  constructor(
+    private positive: FullTextQuery,
+    private negative: FullTextQuery,
+    private negativeBoost: number,
+  ) {}
+
+  queryType(): FullTextQueryType {
+    return FullTextQueryType.Boost;
+  }
+
+  toDict(): Record<string, unknown> {
+    return {
+      [this.queryType()]: {
+        positive: this.positive.toDict(),
+        negative: this.negative.toDict(),
+        // biome-ignore lint/style/useNamingConvention: use underscore for consistency with the other APIs
+        negative_boost: this.negativeBoost,
+      },
+    };
+  }
+}
+
+export class MultiMatchQuery implements FullTextQuery {
+  /**
+   * Creates an instance of MultiMatchQuery.
+   *
+   * @param query - The text query to search for across multiple columns.
+   * @param columns - An array of column names to search within.
+   * @param boosts - (Optional) An array of boost factors corresponding to each column. Default is an array of 1.0 for each column.
+   *
+   * The `boosts` array should have the same length as `columns`. If not provided, all columns will have a default boost of 1.0.
+   * If the length of `boosts` is less than `columns`, it will be padded with 1.0s.
+   */
+  constructor(
+    private query: string,
+    private columns: string[],
+    private boosts: number[] = columns.map(() => 1.0),
+  ) {}
+
+  queryType(): FullTextQueryType {
+    return FullTextQueryType.MultiMatch;
+  }
+
+  toDict(): Record<string, unknown> {
+    return {
+      [this.queryType()]: {
+        query: this.query,
+        columns: this.columns,
+        boost: this.boosts,
+      },
+    };
   }
 }

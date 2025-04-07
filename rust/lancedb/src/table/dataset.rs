@@ -48,7 +48,6 @@ impl DatasetRef {
                 refresh_task,
                 ..
             } => {
-                dataset.checkout_latest().await?;
                 // Replace the refresh task
                 if let Some(refresh_task) = refresh_task {
                     refresh_task.abort();
@@ -370,5 +369,50 @@ impl DerefMut for DatasetWriteGuard<'_> {
             DatasetRef::Latest { dataset, .. } => dataset,
             DatasetRef::TimeTravel { dataset, .. } => dataset,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_schema::{DataType, Field, Schema};
+    use lance::{dataset::WriteParams, io::ObjectStoreParams};
+
+    use super::*;
+
+    use crate::{connect, io::object_store::io_tracking::IoStatsHolder, table::WriteOptions};
+
+    #[tokio::test]
+    async fn test_iops_open_strong_consistency() {
+        let db = connect("memory://")
+            .read_consistency_interval(Some(Duration::ZERO))
+            .execute()
+            .await
+            .expect("Failed to connect to database");
+        let io_stats = IoStatsHolder::default();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let table = db
+            .create_empty_table("test", schema)
+            .write_options(WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    store_params: Some(ObjectStoreParams {
+                        object_store_wrapper: Some(Arc::new(io_stats.clone())),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        io_stats.incremental_stats();
+
+        // We should only need 1 read IOP to check the schema: looking for the
+        // latest version.
+        table.schema().await.unwrap();
+        let stats = io_stats.incremental_stats();
+        assert_eq!(stats.read_iops, 1);
     }
 }

@@ -20,7 +20,7 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
 use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
-use http::StatusCode;
+use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
@@ -43,6 +43,8 @@ use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
 use super::ARROW_STREAM_CONTENT_TYPE;
+
+const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 
 #[derive(Debug)]
 pub struct RemoteTable<S: HttpSend = Sender> {
@@ -155,7 +157,11 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
-    fn apply_query_params(body: &mut serde_json::Value, params: &QueryRequest) -> Result<()> {
+    fn apply_query_params(
+        &self,
+        body: &mut serde_json::Value,
+        params: &QueryRequest,
+    ) -> Result<()> {
         body["prefilter"] = params.prefilter.into();
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
@@ -209,10 +215,17 @@ impl<S: HttpSend> RemoteTable<S> {
                     message: "Wand factor is not yet supported in LanceDB Cloud".into(),
                 });
             }
-            body["full_text_query"] = serde_json::json!({
-                "columns": full_text_search.columns,
-                "query": full_text_search.query,
-            })
+
+            if self.server_version.support_structural_fts() {
+                body["full_text_query"] = serde_json::json!({
+                    "query": full_text_search.query.clone(),
+                });
+            } else {
+                body["full_text_query"] = serde_json::json!({
+                    "columns": full_text_search.columns().into_iter().collect::<Vec<_>>(),
+                    "query": full_text_search.query.query(),
+                })
+            }
         }
 
         Ok(())
@@ -223,7 +236,7 @@ impl<S: HttpSend> RemoteTable<S> {
         mut body: serde_json::Value,
         query: &VectorQueryRequest,
     ) -> Result<Vec<serde_json::Value>> {
-        Self::apply_query_params(&mut body, &query.base)?;
+        self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
@@ -321,9 +334,19 @@ impl<S: HttpSend> RemoteTable<S> {
     async fn execute_query(
         &self,
         query: &AnyQuery,
-        _options: QueryExecutionOptions,
+        options: &QueryExecutionOptions,
     ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
-        let request = self.client.post(&format!("/v1/table/{}/query/", self.name));
+        let mut request = self.client.post(&format!("/v1/table/{}/query/", self.name));
+
+        if let Some(timeout) = options.timeout {
+            // Client side timeout
+            request = request.timeout(timeout);
+            // Also send to server, so it can abort the query if it takes too long.
+            // (If it doesn't fit into u64, it's not worth sending anyways.)
+            if let Ok(timeout_ms) = u64::try_from(timeout.as_millis()) {
+                request = request.header(REQUEST_TIMEOUT_HEADER, timeout_ms);
+            }
+        }
 
         let query_bodies = self.prepare_query_bodies(query).await?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
@@ -346,7 +369,7 @@ impl<S: HttpSend> RemoteTable<S> {
         match query {
             AnyQuery::Query(query) => {
                 let mut body = base_body.clone();
-                Self::apply_query_params(&mut body, query)?;
+                self.apply_query_params(&mut body, query)?;
                 // Empty vector can be passed if no vector search is performed.
                 body["vector"] = serde_json::Value::Array(Vec::new());
                 Ok(vec![body])
@@ -434,6 +457,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let (request_id, response) = self.client.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
+        self.checkout_latest().await?;
         Ok(())
     }
 
@@ -531,7 +555,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let streams = self.execute_query(query, options).await?;
+        let streams = self.execute_query(query, &options).await?;
         if streams.len() == 1 {
             let stream = streams.into_iter().next().unwrap();
             Ok(Arc::new(OneShotExec::new(stream)))
@@ -547,9 +571,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn query(
         &self,
         query: &AnyQuery,
-        _options: QueryExecutionOptions,
+        options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        let streams = self.execute_query(query, _options).await?;
+        let streams = self.execute_query(query, &options).await?;
 
         if streams.len() == 1 {
             Ok(DatasetRecordBatchStream::new(
@@ -1036,6 +1060,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
+    use lance_index::scalar::inverted::query::MatchQuery;
     use lance_index::scalar::FullTextSearchQuery;
     use reqwest::Body;
     use rstest::rstest;
@@ -1682,7 +1707,18 @@ mod tests {
                 "prefilter": true,
                 "version": null
             });
-            assert_eq!(body, expected_body);
+            let expected_body_2 = serde_json::json!({
+                "full_text_query": {
+                    "columns": ["b","a"],
+                    "query": "hello world",
+                },
+                "k": 10,
+                "vector": [],
+                "with_row_id": true,
+                "prefilter": true,
+                "version": null
+            });
+            assert!(body == expected_body || body == expected_body_2);
 
             let data = RecordBatch::try_new(
                 Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
@@ -1701,8 +1737,69 @@ mod tests {
             .query()
             .full_text_search(
                 FullTextSearchQuery::new("hello world".into())
-                    .columns(Some(vec!["a".into(), "b".into()])),
+                    .with_columns(&["a".into(), "b".into()])
+                    .unwrap(),
             )
+            .with_row_id()
+            .limit(10)
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_query_structured_fts() {
+        let table =
+            Table::new_with_handler_version("my_table", semver::Version::new(0, 3, 0), |request| {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    JSON_CONTENT_TYPE
+                );
+
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                let expected_body = serde_json::json!({
+                    "full_text_query": {
+                        "query": {
+                            "match": {
+                                "terms": "hello world",
+                                "column": "a",
+                                "boost": 1.0,
+                                "fuzziness": 0,
+                                "max_expansions": 50,
+                            },
+                        }
+                    },
+                    "k": 10,
+                    "vector": [],
+                    "with_row_id": true,
+                    "prefilter": true,
+                    "version": null
+                });
+                assert_eq!(body, expected_body);
+
+                let data = RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                    vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+                )
+                .unwrap();
+                let response_body = write_ipc_file(&data);
+                http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                    .body(response_body)
+                    .unwrap()
+            });
+
+        let _ = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new_query(
+                MatchQuery::new("hello world".to_owned())
+                    .with_column(Some("a".to_owned()))
+                    .into(),
+            ))
             .with_row_id()
             .limit(10)
             .execute()

@@ -47,6 +47,12 @@ export {
   QueryExecutionOptions,
   FullTextSearchOptions,
   RecordBatchIterator,
+  FullTextQuery,
+  MatchQuery,
+  PhraseQuery,
+  BoostQuery,
+  MultiMatchQuery,
+  FullTextQueryType,
 } from "./query";
 
 export {

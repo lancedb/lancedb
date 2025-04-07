@@ -52,6 +52,7 @@ from .query import (
     AsyncHybridQuery,
     AsyncQuery,
     AsyncVectorQuery,
+    FullTextQuery,
     LanceEmptyQueryBuilder,
     LanceFtsQueryBuilder,
     LanceHybridQueryBuilder,
@@ -919,7 +920,9 @@ class Table(ABC):
     @abstractmethod
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
@@ -1004,7 +1007,11 @@ class Table(ABC):
 
     @abstractmethod
     def _execute_query(
-        self, query: Query, batch_size: Optional[int] = None
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader: ...
 
     @abstractmethod
@@ -2039,7 +2046,9 @@ class LanceTable(Table):
     @overload
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
@@ -2058,7 +2067,9 @@ class LanceTable(Table):
 
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
@@ -2305,9 +2316,15 @@ class LanceTable(Table):
         LOOP.run(self._table.update(values, where=where, updates_sql=values_sql))
 
     def _execute_query(
-        self, query: Query, batch_size: Optional[int] = None
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
-        async_iter = LOOP.run(self._table._execute_query(query, batch_size))
+        async_iter = LOOP.run(
+            self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
+        )
 
         def iter_sync():
             try:
@@ -3134,7 +3151,9 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: Literal["vector"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -3143,7 +3162,9 @@ class AsyncTable:
 
     async def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        query: Optional[
+            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
+        ] = None,
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
@@ -3253,6 +3274,8 @@ class AsyncTable:
             if is_embedding(query):
                 vector_query = query
                 query_type = "vector"
+            elif isinstance(query, FullTextQuery):
+                query_type = "fts"
             elif isinstance(query, str):
                 try:
                     (
@@ -3373,13 +3396,15 @@ class AsyncTable:
             async_query = async_query.nearest_to_text(
                 query.full_text_query.query, query.full_text_query.columns
             )
-            if query.full_text_query.limit is not None:
-                async_query = async_query.limit(query.full_text_query.limit)
 
         return async_query
 
     async def _execute_query(
-        self, query: Query, batch_size: Optional[int] = None
+        self,
+        query: Query,
+        *,
+        batch_size: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
         # The sync table calls into this method, so we need to map the
         # query to the async version of the query and run that here. This is only
@@ -3387,7 +3412,9 @@ class AsyncTable:
 
         async_query = self._sync_query_to_async(query)
 
-        return await async_query.to_batches(max_batch_length=batch_size)
+        return await async_query.to_batches(
+            max_batch_length=batch_size, timeout=timeout
+        )
 
     async def _explain_plan(self, query: Query, verbose: Optional[bool]) -> str:
         # This method is used by the sync table
