@@ -178,7 +178,6 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
           columns: columns,
         });
       } else {
-        // If query is a FullTextQuery object, convert it to a dict
         inner.fullTextSearch({ query: query.inner });
       }
     });
@@ -771,7 +770,15 @@ export enum FullTextQueryType {
  * including methods to retrieve the query type and convert the query to a dictionary format.
  */
 export interface FullTextQuery {
+  /**
+   * Returns the inner query object.
+   * This is the underlying query object used by the database engine.
+   */
   inner: JsFullTextQuery;
+
+  /**
+   * The type of the full-text query.
+   */
   queryType(): FullTextQueryType;
 }
 
@@ -787,9 +794,10 @@ export class MatchQuery implements FullTextQuery {
    *
    * @param query - The text query to search for.
    * @param column - The name of the column to search within.
-   * @param boost - (Optional) The boost factor to influence the relevance score of this query. Default is `1.0`.
-   * @param fuzziness - (Optional) The allowed edit distance for fuzzy matching. Default is `0`.
-   * @param maxExpansions - (Optional) The maximum number of terms to consider for fuzzy matching. Default is `50`.
+   * @param options - Optional parameters for the match query.
+   *   - `boost`: The boost factor for the query (default is 1.0).
+   *   - `fuzziness`: The fuzziness level for the query (default is 0).
+   *   - `maxExpansions`: The maximum number of terms to consider for fuzzy matching (default is 50).
    */
   constructor(
     query: string,
@@ -816,6 +824,10 @@ export class MatchQuery implements FullTextQuery {
   queryType(): FullTextQueryType {
     return FullTextQueryType.Match;
   }
+
+  nativeInner(): JsFullTextQuery {
+    return this.inner;
+  }
 }
 
 export class PhraseQuery implements FullTextQuery {
@@ -826,15 +838,16 @@ export class PhraseQuery implements FullTextQuery {
    * @param query - The phrase to search for in the specified column.
    * @param column - The name of the column to search within.
    */
-  constructor(
-    private query: string,
-    private column: string,
-  ) {
+  constructor(query: string, column: string) {
     this.inner = JsFullTextQuery.phraseQuery(query, column);
   }
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.MatchPhrase;
+  }
+
+  nativeInner(): JsFullTextQuery {
+    return this.inner;
   }
 }
 
@@ -845,11 +858,12 @@ export class BoostQuery implements FullTextQuery {
    *
    * @param positive - The positive query that boosts the relevance score.
    * @param negative - The negative query that reduces the relevance score.
-   * @param negativeBoost - The factor by which the negative query reduces the score, 0.5 by default.
+   * @param options - Optional parameters for the boost query.
+   *  - `negativeBoost`: The boost factor for the negative query (default is 0.0).
    */
   constructor(
-    private positive: FullTextQuery,
-    private negative: FullTextQuery,
+    positive: FullTextQuery,
+    negative: FullTextQuery,
     options?: {
       negativeBoost?: number;
     },
@@ -864,6 +878,10 @@ export class BoostQuery implements FullTextQuery {
   queryType(): FullTextQueryType {
     return FullTextQueryType.Boost;
   }
+
+  nativeInner(): JsFullTextQuery {
+    return this.inner;
+  }
 }
 
 export class MultiMatchQuery implements FullTextQuery {
@@ -873,26 +891,28 @@ export class MultiMatchQuery implements FullTextQuery {
    *
    * @param query - The text query to search for across multiple columns.
    * @param columns - An array of column names to search within.
-   * @param boosts - (Optional) An array of boost factors corresponding to each column. Default is an array of 1.0 for each column.
-   *
-   * The `boosts` array should have the same length as `columns`. If not provided, all columns will have a default boost of 1.0.
-   * If the length of `boosts` is less than `columns`, it will be padded with 1.0s.
+   * @param options - Optional parameters for the multi-match query.
+   *  - `boosts`: An array of boost factors for each column (default is 1.0 for all).
    */
   constructor(
-    private query: string,
-    private columns: string[],
+    query: string,
+    columns: string[],
     options?: {
       boosts?: number[];
     },
   ) {
     this.inner = JsFullTextQuery.multiMatchQuery(
       query,
-      this.columns,
+      columns,
       options?.boosts,
     );
   }
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.MultiMatch;
+  }
+
+  nativeInner(): JsFullTextQuery {
+    return this.inner;
   }
 }
