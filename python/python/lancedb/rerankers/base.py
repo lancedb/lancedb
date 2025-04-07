@@ -70,7 +70,7 @@ class Reranker(ABC):
         Helper method to handle empty FTS results consistently
         """
         if len(results) > 0:
-            return results        
+            return results
         return results.append_column(
             "_relevance_score", pa.array([], type=pa.float32())
         )
@@ -239,4 +239,3 @@ class Reranker(ABC):
             if "_distance" in combined_results.column_names:
                 combined_results = combined_results.drop_columns(["_distance"])
         return combined_results
-    

@@ -458,38 +458,44 @@ def test_voyageai_reranker(tmp_path, use_tantivy):
     table, schema = get_test_table(tmp_path, use_tantivy)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
+
 def test_empty_result_reranker():
     pytest.importorskip("sentence_transformers")
     db = lancedb.connect("memory://")
 
     # Define schema
-    schema = pa.schema([
-        ('id', pa.int64()),
-        ('text', pa.string()),
-        ('vector', pa.list_(pa.float32(), 128))  # 128-dimensional vector
-    ])
+    schema = pa.schema(
+        [
+            ("id", pa.int64()),
+            ("text", pa.string()),
+            ("vector", pa.list_(pa.float32(), 128)),  # 128-dimensional vector
+        ]
+    )
 
     # Create empty table with schema
-    empty_table = db.create_table(
-        "empty_table",
-        schema=schema,
-        mode="overwrite"
-    )
+    empty_table = db.create_table("empty_table", schema=schema, mode="overwrite")
     empty_table.create_fts_index("text", use_tantivy=False, replace=True)
     for reranker in [
         CrossEncoderReranker(),
-        #ColbertReranker(),
-        #AnswerdotaiRerankers(),
-        #OpenaiReranker(),
-        #JinaReranker(),
-        #VoyageAIReranker(model_name="rerank-2"),
+        # ColbertReranker(),
+        # AnswerdotaiRerankers(),
+        # OpenaiReranker(),
+        # JinaReranker(),
+        # VoyageAIReranker(model_name="rerank-2"),
     ]:
-        results = empty_table.search(list(range(128))).limit(3).rerank(
-            reranker, 
-            "query").to_arrow()
+        results = (
+            empty_table.search(list(range(128)))
+            .limit(3)
+            .rerank(reranker, "query")
+            .to_arrow()
+        )
         # check if empty set contains _relevance_score column
         assert "_relevance_score" in results.column_names
         assert len(results) == 0
 
-        results = empty_table.search("query", query_type="fts").limit(3).rerank(
-            reranker).to_arrow()
+        results = (
+            empty_table.search("query", query_type="fts")
+            .limit(3)
+            .rerank(reranker)
+            .to_arrow()
+        )

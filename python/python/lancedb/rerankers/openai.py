@@ -110,7 +110,7 @@ class OpenaiReranker(Reranker):
             vector_results = vector_results.drop_columns(["_distance"])
         vector_results = vector_results.sort_by([("_relevance_score", "descending")])
         return vector_results
-    
+
     def rerank_fts(self, query: str, fts_results: pa.Table):
         fts_results = self._handle_empty_results(fts_results)
         if len(fts_results) > 0:

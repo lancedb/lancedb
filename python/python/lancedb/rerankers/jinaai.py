@@ -113,7 +113,7 @@ class JinaReranker(Reranker):
         if self.score == "relevance":
             vector_results = vector_results.drop_columns(["_distance"])
         return vector_results
-    
+
     def rerank_fts(self, query: str, fts_results: pa.Table):
         fts_results = self._handle_empty_results(fts_results)
         if len(fts_results) > 0:
