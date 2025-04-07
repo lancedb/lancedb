@@ -265,8 +265,8 @@ class MultiMatchQuery(FullTextQuery):
 
         Parameters
         ----------
-        query : str | list[Query]
-            If a string, the query string to match against.
+        query : str
+            The query string to match against.
 
         columns : list[str]
             The list of columns to match against.

@@ -6,7 +6,9 @@ import lancedb
 
 # --8<-- [end:import-lancedb]
 # --8<-- [start:import-numpy]
+from lancedb.query import MatchQuery
 import numpy as np
+import pyarrow as pa
 
 # --8<-- [end:import-numpy]
 # --8<-- [start:import-datetime]
@@ -152,6 +154,41 @@ async def test_vector_search_async():
     # --8<-- [start:search_result_async_as_list]
     await (await async_tbl.search(np.random.randn(1536))).to_list()
     # --8<-- [end:search_result_async_as_list]
+
+
+def test_fts_fuzzy_query():
+    uri = "data/fuzzy-example"
+    db = lancedb.connect(uri)
+
+    table = db.create_table(
+        "my_table_fts_fuzzy",
+        data=pa.table(
+            {
+                "text": [
+                    "fa",
+                    "fo",  # spellchecker:disable-line
+                    "fob",
+                    "focus",
+                    "foo",
+                    "food",
+                    "foul",
+                ]
+            }
+        ),
+        mode="overwrite",
+    )
+    table.create_fts_index("text", use_tantivy=False, replace=True)
+
+    results = table.search(
+        MatchQuery("foo", "text", fuzziness=1), query_type="fts"
+    ).to_pandas()
+    assert len(results) == 4
+    assert set(results["text"].to_list()) == {
+        "foo",
+        "fo",  # 1 deletion # spellchecker:disable-line
+        "fob",  # 1 substitution
+        "food",  # 1 insertion
+    }
 
 
 def test_fts_native():

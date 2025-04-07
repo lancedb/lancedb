@@ -11,6 +11,7 @@ import {
 } from "./arrow";
 import { type IvfPqOptions } from "./indices";
 import {
+  JsFullTextQuery,
   RecordBatchIterator as NativeBatchIterator,
   Query as NativeQuery,
   Table as NativeTable,
@@ -173,8 +174,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
         });
       } else {
         // If query is a FullTextQuery object, convert it to a dict
-        const queryObj = query.toDict();
-        inner.fullTextSearch(queryObj);
+        inner.fullTextSearch({ query: query.inner });
       }
     });
     return this;
@@ -736,8 +736,7 @@ export class Query extends QueryBase<NativeQuery> {
           columns: columns,
         });
       } else {
-        const queryObj = query.toDict();
-        inner.fullTextSearch(queryObj);
+        inner.fullTextSearch({ query: query.inner });
       }
     });
     return this;
@@ -765,11 +764,17 @@ export enum FullTextQueryType {
  * including methods to retrieve the query type and convert the query to a dictionary format.
  */
 export interface FullTextQuery {
+  inner: JsFullTextQuery;
   queryType(): FullTextQueryType;
-  toDict(): Record<string, unknown>;
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: we want any here
+export function instanceOfFullTextQuery(obj: any): obj is FullTextQuery {
+  return obj != null && obj.inner instanceof JsFullTextQuery;
 }
 
 export class MatchQuery implements FullTextQuery {
+  public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of MatchQuery.
    *
@@ -780,33 +785,34 @@ export class MatchQuery implements FullTextQuery {
    * @param maxExpansions - (Optional) The maximum number of terms to consider for fuzzy matching. Default is `50`.
    */
   constructor(
-    private query: string,
-    private column: string,
-    private boost: number = 1.0,
-    private fuzziness: number = 0,
-    private maxExpansions: number = 50,
-  ) {}
+    query: string,
+    column: string,
+    options?: {
+      boost?: number;
+      fuzziness?: number;
+      maxExpansions?: number;
+    },
+  ) {
+    let fuzziness = options?.fuzziness;
+    if (fuzziness === undefined) {
+      fuzziness = 0;
+    }
+    this.inner = JsFullTextQuery.matchQuery(
+      query,
+      column,
+      options?.boost ?? 1.0,
+      fuzziness,
+      options?.maxExpansions ?? 50,
+    );
+  }
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.Match;
   }
-
-  toDict(): Record<string, unknown> {
-    return {
-      [this.queryType()]: {
-        [this.column]: {
-          query: this.query,
-          boost: this.boost,
-          fuzziness: this.fuzziness,
-          // biome-ignore lint/style/useNamingConvention: use underscore for consistency with the other APIs
-          max_expansions: this.maxExpansions,
-        },
-      },
-    };
-  }
 }
 
 export class PhraseQuery implements FullTextQuery {
+  public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of `PhraseQuery`.
    *
@@ -816,52 +822,45 @@ export class PhraseQuery implements FullTextQuery {
   constructor(
     private query: string,
     private column: string,
-  ) {}
+  ) {
+    this.inner = JsFullTextQuery.phraseQuery(query, column);
+  }
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.MatchPhrase;
   }
-
-  toDict(): Record<string, unknown> {
-    return {
-      [this.queryType()]: {
-        [this.column]: this.query,
-      },
-    };
-  }
 }
 
 export class BoostQuery implements FullTextQuery {
+  public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of BoostQuery.
    *
    * @param positive - The positive query that boosts the relevance score.
    * @param negative - The negative query that reduces the relevance score.
-   * @param negativeBoost - The factor by which the negative query reduces the score.
+   * @param negativeBoost - The factor by which the negative query reduces the score, 0.5 by default.
    */
   constructor(
     private positive: FullTextQuery,
     private negative: FullTextQuery,
-    private negativeBoost: number,
-  ) {}
+    options?: {
+      negativeBoost?: number;
+    },
+  ) {
+    this.inner = JsFullTextQuery.boostQuery(
+      positive.inner,
+      negative.inner,
+      options?.negativeBoost,
+    );
+  }
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.Boost;
   }
-
-  toDict(): Record<string, unknown> {
-    return {
-      [this.queryType()]: {
-        positive: this.positive.toDict(),
-        negative: this.negative.toDict(),
-        // biome-ignore lint/style/useNamingConvention: use underscore for consistency with the other APIs
-        negative_boost: this.negativeBoost,
-      },
-    };
-  }
 }
 
 export class MultiMatchQuery implements FullTextQuery {
+  public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of MultiMatchQuery.
    *
@@ -875,20 +874,18 @@ export class MultiMatchQuery implements FullTextQuery {
   constructor(
     private query: string,
     private columns: string[],
-    private boosts: number[] = columns.map(() => 1.0),
-  ) {}
+    options?: {
+      boosts?: number[];
+    },
+  ) {
+    this.inner = JsFullTextQuery.multiMatchQuery(
+      query,
+      this.columns,
+      options?.boosts,
+    );
+  }
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.MultiMatch;
-  }
-
-  toDict(): Record<string, unknown> {
-    return {
-      [this.queryType()]: {
-        query: this.query,
-        columns: this.columns,
-        boost: this.boosts,
-      },
-    };
   }
 }
