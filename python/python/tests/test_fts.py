@@ -22,6 +22,7 @@ from lancedb.db import DBConnection
 from lancedb.index import FTS
 from lancedb.query import BoostQuery, MatchQuery, MultiMatchQuery, PhraseQuery
 import numpy as np
+import pyarrow as pa
 import pandas as pd
 import pytest
 from utils import exception_output
@@ -626,3 +627,32 @@ def test_language(mem_db: DBConnection):
     # Stop words -> no results
     results = table.search("la", query_type="fts").limit(5).to_list()
     assert len(results) == 0
+
+
+def test_fts_on_list(mem_db: DBConnection):
+    data = pa.table(
+        {
+            "text": [
+                ["lance database", "the", "search"],
+                ["lance database"],
+                ["lance", "search"],
+                ["database", "search"],
+                ["unrelated", "doc"],
+            ],
+            "vector": [
+                [1.0, 2.0, 3.0],
+                [4.0, 5.0, 6.0],
+                [7.0, 8.0, 9.0],
+                [10.0, 11.0, 12.0],
+                [13.0, 14.0, 15.0],
+            ],
+        }
+    )
+    table = mem_db.create_table("test", data=data)
+    table.create_fts_index("text", use_tantivy=False)
+
+    res = table.search("lance").limit(5).to_list()
+    assert len(res) == 3
+
+    res = table.search(PhraseQuery("lance database", "text")).limit(5).to_list()
+    assert len(res) == 2
