@@ -17,6 +17,7 @@ import org.apache.thrift.TException;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -34,7 +35,7 @@ public class TestHmsCatalogService extends HmsCatalogTestBase {
 
   @Test
   public void testGetDatabases() throws TException, InterruptedException {
-    List<String> databases = catalogService.getDatabases();
+    List<String> databases = catalogService.getDatabases(Optional.empty(), Optional.empty());
 
     assertThat(databases).isNotNull();
 

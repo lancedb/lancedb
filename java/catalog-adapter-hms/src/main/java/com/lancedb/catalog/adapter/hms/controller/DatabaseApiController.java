@@ -14,13 +14,19 @@
 package com.lancedb.catalog.adapter.hms.controller;
 
 import com.lancedb.catalog.adapter.api.DatabaseApi;
+import com.lancedb.catalog.adapter.hms.service.HmsCatalogService;
+import org.apache.thrift.TException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.context.request.NativeWebRequest;
 
 import javax.annotation.Generated;
 
+import java.util.List;
 import java.util.Optional;
 
 @Generated(
@@ -30,7 +36,11 @@ import java.util.Optional;
 @RequestMapping("${openapi.lanceDBRESTCatalog.base-path:}")
 public class DatabaseApiController implements DatabaseApi {
 
+  private static final Logger LOGGER = LoggerFactory.getLogger(DatabaseApiController.class);
+
   private final NativeWebRequest request;
+
+  private final HmsCatalogService hmsCatalogService = new HmsCatalogService();
 
   @Autowired
   public DatabaseApiController(NativeWebRequest request) {
@@ -40,5 +50,26 @@ public class DatabaseApiController implements DatabaseApi {
   @Override
   public Optional<NativeWebRequest> getRequest() {
     return Optional.ofNullable(request);
+  }
+
+  @Override
+  public ResponseEntity<List<String>> v1DatabasesGet(
+      Optional<String> startAfter, Optional<Integer> limit) {
+    try {
+      List<String> databases = hmsCatalogService.getDatabases(startAfter, limit);
+      return ResponseEntity.ok(databases);
+    } catch (TException e) {
+      LOGGER.error(e.getMessage(), e);
+      return ResponseEntity.status(500)
+          .body(List.of("Get database list failed: " + e.getMessage()));
+    } catch (InterruptedException e) {
+      LOGGER.error(e.getMessage(), e);
+      Thread.currentThread().interrupt();
+      return ResponseEntity.status(503)
+          .body(List.of("Operation was interrupted: " + e.getMessage()));
+    } catch (Exception e) {
+      LOGGER.error(e.getMessage(), e);
+      return ResponseEntity.status(500).body(List.of("Server inner error: " + e.getMessage()));
+    }
   }
 }

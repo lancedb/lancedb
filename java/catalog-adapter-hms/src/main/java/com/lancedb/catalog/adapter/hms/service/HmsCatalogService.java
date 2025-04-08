@@ -39,7 +39,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.Optional;
 
 import static com.lancedb.catalog.adapter.hms.service.client.Constants.LANCE_DATASET_SUFFIX;
 import static com.lancedb.catalog.adapter.hms.service.client.Constants.LANCE_TYPE;
@@ -78,8 +78,29 @@ public class HmsCatalogService {
    * @throws TException
    * @throws InterruptedException
    */
-  public List<String> getDatabases() throws TException, InterruptedException {
-    return clients.run(IMetaStoreClient::getAllDatabases).stream().collect(Collectors.toList());
+  public List<String> getDatabases(Optional<String> startAfter, Optional<Integer> limit)
+      throws TException, InterruptedException {
+    List<String> allDatabases = clients.run(IMetaStoreClient::getAllDatabases);
+
+    int startIndex = 0;
+    if (startAfter.isPresent()) {
+      String afterDb = startAfter.get();
+      int afterIndex = allDatabases.indexOf(afterDb);
+      if (afterIndex >= 0) {
+        startIndex = afterIndex + 1;
+      }
+    }
+
+    if (startIndex >= allDatabases.size()) {
+      return Collections.emptyList();
+    }
+
+    int endIndex = allDatabases.size();
+    if (limit.isPresent()) {
+      endIndex = Math.min(startIndex + limit.get(), endIndex);
+    }
+
+    return allDatabases.subList(startIndex, endIndex);
   }
 
   public void dropDatabase(String dbName) throws TException, InterruptedException {
