@@ -11,7 +11,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.lancedb.catalog.adapter.hms;
+package com.lancedb.catalog.adapter.hms.service;
 
 import com.lancedb.lance.Dataset;
 import com.lancedb.lance.ReadOptions;
@@ -20,6 +20,9 @@ import com.lancedb.lance.WriteParams;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.lancedb.catalog.adapter.hms.service.client.ClientPool;
+import com.lancedb.catalog.adapter.hms.service.client.HiveClientPool;
+import com.lancedb.catalog.adapter.hms.service.client.Utils;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.commons.lang3.StringUtils;
@@ -38,8 +41,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import static com.lancedb.catalog.adapter.hms.Constants.LANCE_DATASET_SUFFIX;
-import static com.lancedb.catalog.adapter.hms.Constants.LANCE_TYPE;
+import static com.lancedb.catalog.adapter.hms.service.client.Constants.LANCE_DATASET_SUFFIX;
+import static com.lancedb.catalog.adapter.hms.service.client.Constants.LANCE_TYPE;
 
 public class HmsCatalogService {
 

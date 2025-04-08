@@ -14,6 +14,7 @@
 package com.lancedb.catalog.adapter.hms;
 
 import com.lancedb.catalog.adapter.api.TableApi;
+import com.lancedb.catalog.adapter.hms.controller.TableApiController;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InjectMocks;

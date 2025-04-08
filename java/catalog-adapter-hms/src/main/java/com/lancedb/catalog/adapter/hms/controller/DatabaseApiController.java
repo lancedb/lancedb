@@ -11,16 +11,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.lancedb.catalog.adapter.hms;
+package com.lancedb.catalog.adapter.hms.controller;
 
-import com.lancedb.catalog.adapter.api.TableApi;
+import com.lancedb.catalog.adapter.api.DatabaseApi;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.context.request.NativeWebRequest;
 
 import javax.annotation.Generated;
-import javax.validation.constraints.*;
 
 import java.util.Optional;
 
@@ -29,12 +28,12 @@ import java.util.Optional;
     comments = "Generator version: 7.12.0")
 @Controller
 @RequestMapping("${openapi.lanceDBRESTCatalog.base-path:}")
-public class TableApiController implements TableApi {
+public class DatabaseApiController implements DatabaseApi {
 
   private final NativeWebRequest request;
 
   @Autowired
-  public TableApiController(NativeWebRequest request) {
+  public DatabaseApiController(NativeWebRequest request) {
     this.request = request;
   }
 

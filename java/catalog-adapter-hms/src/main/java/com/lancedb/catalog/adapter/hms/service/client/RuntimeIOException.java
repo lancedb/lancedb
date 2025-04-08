@@ -11,21 +11,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.lancedb.catalog.adapter.hms;
+package com.lancedb.catalog.adapter.hms.service.client;
 
-import org.apache.hadoop.hive.metastore.api.MetaException;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 
-/** Exception used to wrap {@link MetaException} as a {@link RuntimeException} and add context. */
-public class RuntimeMetaException extends RuntimeException {
-  public RuntimeMetaException(MetaException cause) {
+/** Exception used to wrap {@link IOException} as a {@link RuntimeException} and add context. */
+public class RuntimeIOException extends UncheckedIOException {
+
+  public RuntimeIOException(IOException cause) {
     super(cause);
   }
 
-  public RuntimeMetaException(MetaException cause, String message, Object... args) {
+  public RuntimeIOException(IOException cause, String message, Object... args) {
     super(String.format(message, args), cause);
   }
 
-  public RuntimeMetaException(Throwable throwable, String message, Object... args) {
-    super(String.format(message, args), throwable);
+  public RuntimeIOException(String message, Object... args) {
+    super(new IOException(String.format(message, args)));
   }
 }

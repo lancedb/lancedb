@@ -13,6 +13,10 @@
  */
 package com.lancedb.catalog.adapter.hms;
 
+import com.lancedb.catalog.adapter.hms.service.client.DynConstructors;
+import com.lancedb.catalog.adapter.hms.service.client.DynMethods;
+import com.lancedb.catalog.adapter.hms.service.client.HiveClientPool;
+import com.lancedb.catalog.adapter.hms.service.client.RuntimeIOException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;

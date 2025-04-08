@@ -14,6 +14,7 @@
 package com.lancedb.catalog.adapter.hms;
 
 import com.google.common.collect.Maps;
+import com.lancedb.catalog.adapter.hms.service.HmsCatalogService;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;

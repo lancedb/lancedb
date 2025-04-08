@@ -11,7 +11,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.lancedb.catalog.adapter.hms;
+package com.lancedb.catalog.adapter.hms.service.client;
 
 public class Constants {
 

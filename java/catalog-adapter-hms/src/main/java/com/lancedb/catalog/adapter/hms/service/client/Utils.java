@@ -11,14 +11,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.lancedb.catalog.adapter.hms;
+package com.lancedb.catalog.adapter.hms.service.client;
 
-public interface ClientPool<C, E extends Exception> {
-  interface Action<R, C, E extends Exception> {
-    R run(C client) throws E;
+public class Utils {
+
+  public static String renameScheme(String location) {
+    if (location == null || location.length() == 0) {
+      return location;
+    }
+
+    location = location.replaceFirst("file:", "");
+
+    return location.replaceFirst("tos://", "s3://");
   }
 
-  <R> R run(Action<R, C, E> action) throws E, InterruptedException;
-
-  <R> R run(Action<R, C, E> action, boolean retry) throws E, InterruptedException;
+  public static boolean isClassLoadable(String className) {
+    try {
+      Class.forName(className);
+      return true;
+    } catch (ClassNotFoundException e) {
+      return false;
+    }
+  }
 }
