@@ -47,6 +47,9 @@ class AnswerdotaiRerankers(Reranker):
         )
 
     def _rerank(self, result_set: pa.Table, query: str):
+        result_set = self._handle_empty_results(result_set)
+        if len(result_set) == 0:
+            return result_set
         docs = result_set[self.column].to_pylist()
         doc_ids = list(range(len(docs)))
         result = self.reranker.rank(query, docs, doc_ids=doc_ids)
@@ -83,7 +86,6 @@ class AnswerdotaiRerankers(Reranker):
         vector_results = self._rerank(vector_results, query)
         if self.score == "relevance":
             vector_results = vector_results.drop_columns(["_distance"])
-
         vector_results = vector_results.sort_by([("_relevance_score", "descending")])
         return vector_results
 
@@ -91,7 +93,5 @@ class AnswerdotaiRerankers(Reranker):
         fts_results = self._rerank(fts_results, query)
         if self.score == "relevance":
             fts_results = fts_results.drop_columns(["_score"])
-
         fts_results = fts_results.sort_by([("_relevance_score", "descending")])
-
         return fts_results
