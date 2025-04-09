@@ -294,7 +294,7 @@ nav:
           - Choosing right query type: guides/tuning_retrievers/1_query_types.md
           - Reranking: guides/tuning_retrievers/2_reranking.md
           - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
-      - - Build MCP with LanceDB: guides/mcp.md
+      - Build MCP with LanceDB: guides/mcp.md
   - Managing Embeddings:
       - Understand Embeddings: embeddings/understanding_embeddings.md
       - Get Started: embeddings/index.md

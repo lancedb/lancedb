@@ -105,6 +105,19 @@ Batches: 100%|██████████████████████
 
 Now simply fire up claude desktop and you can start using it.
 
+1. If installed correctly, you'll `lancedb` in the MCP apps list
+![Screenshot 2025-04-08 at 8 07 39 AM](https://github.com/user-attachments/assets/6dede8ae-7e39-4931-ae60-b57ce620b328)
+
+2. You can now use the `ingest_data` tool to add data to the table. To do that, you can simply ask claude using natural language
+![Screenshot 2025-04-08 at 8 10 37 AM](https://github.com/user-attachments/assets/0cd4df4e-98bb-4bf1-8566-1671eb310a1d)
+
+3. Now you can start asking questions using the `retrieve_data` tool. It'll automatically search the table for relevant data. You should see something like this
+![Screenshot 2025-04-08 at 8 11 49 AM](https://github.com/user-attachments/assets/71b5b232-601c-4864-9d52-9b84f16adad9)
+
+4. Claude tries to set the params for tool calling on its own but you can also specify the details.
+![Screenshot 2025-04-08 at 8 12 30 AM](https://github.com/user-attachments/assets/5f362bd1-b2fc-4145-8f1e-968d453bf615)
+
+
 ## Community examples
 
 - Find a minimal LanceDB mcp server similar to this [here](https://github.com/kyryl-opens-ml/mcp-server-lancedb/blob/main/src/mcp_lance_db/server.py)
