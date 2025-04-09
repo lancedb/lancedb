@@ -28,6 +28,8 @@ import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 import pydantic
 
+from lancedb.pydantic import PYDANTIC_VERSION
+
 from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .dependencies import pandas as pd
@@ -498,10 +500,14 @@ class Query(pydantic.BaseModel):
             )
         return query
 
-    class Config:
-        # This tells pydantic to allow custom types (needed for the `vector` query since
-        # pa.Array wouln't be allowed otherwise)
-        arbitrary_types_allowed = True
+    # This tells pydantic to allow custom types (needed for the `vector` query since
+    # pa.Array wouln't be allowed otherwise)
+    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
+
+        class Config:
+            arbitrary_types_allowed = True
+    else:
+        model_config = {"arbitrary_types_allowed": True}
 
 
 class LanceQueryBuilder(ABC):
