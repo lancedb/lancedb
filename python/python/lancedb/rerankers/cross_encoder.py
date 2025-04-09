@@ -63,6 +63,9 @@ class CrossEncoderReranker(Reranker):
         return cross_encoder
 
     def _rerank(self, result_set: pa.Table, query: str):
+        result_set = self._handle_empty_results(result_set)
+        if len(result_set) == 0:
+            return result_set
         passages = result_set[self.column].to_pylist()
         cross_inp = [[query, passage] for passage in passages]
         cross_scores = self.model.predict(cross_inp)
@@ -79,9 +82,7 @@ class CrossEncoderReranker(Reranker):
         fts_results: pa.Table,
     ):
         combined_results = self.merge_results(vector_results, fts_results)
-        combined_results = self._handle_empty_results(combined_results)
-        if len(combined_results) > 0:
-            combined_results = self._rerank(combined_results, query)
+        combined_results = self._rerank(combined_results, query)
         # sort the results by _score
         if self.score == "relevance":
             combined_results = self._keep_relevance_score(combined_results)
@@ -96,9 +97,7 @@ class CrossEncoderReranker(Reranker):
         return combined_results
 
     def rerank_vector(self, query: str, vector_results: pa.Table):
-        vector_results = self._handle_empty_results(vector_results)
-        if len(vector_results) > 0:
-            vector_results = self._rerank(vector_results, query)
+        vector_results = self._rerank(vector_results, query)
         if self.score == "relevance":
             vector_results = vector_results.drop_columns(["_distance"])
 
@@ -106,9 +105,7 @@ class CrossEncoderReranker(Reranker):
         return vector_results
 
     def rerank_fts(self, query: str, fts_results: pa.Table):
-        fts_results = self._handle_empty_results(fts_results)
-        if len(fts_results) > 0:
-            fts_results = self._rerank(fts_results, query)
+        fts_results = self._rerank(fts_results, query)
         if self.score == "relevance":
             fts_results = fts_results.drop_columns(["_score"])
 
