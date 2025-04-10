@@ -15,6 +15,7 @@ package com.lancedb.catalog.adapter.hms.controller;
 
 import com.lancedb.catalog.adapter.api.DatabaseApi;
 import com.lancedb.catalog.adapter.hms.service.HmsCatalogService;
+import com.lancedb.catalog.adapter.model.CreateDatabaseRequest;
 import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +27,7 @@ import org.springframework.web.context.request.NativeWebRequest;
 
 import javax.annotation.Generated;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -61,15 +63,21 @@ public class DatabaseApiController implements DatabaseApi {
     } catch (TException e) {
       LOGGER.error(e.getMessage(), e);
       return ResponseEntity.status(500)
-          .body(List.of("Get database list failed: " + e.getMessage()));
+          .body(Collections.singletonList("Get database list failed: " + e.getMessage()));
     } catch (InterruptedException e) {
       LOGGER.error(e.getMessage(), e);
       Thread.currentThread().interrupt();
       return ResponseEntity.status(503)
-          .body(List.of("Operation was interrupted: " + e.getMessage()));
+          .body(Collections.singletonList("Operation was interrupted: " + e.getMessage()));
     } catch (Exception e) {
       LOGGER.error(e.getMessage(), e);
-      return ResponseEntity.status(500).body(List.of("Server inner error: " + e.getMessage()));
+      return ResponseEntity.status(500)
+          .body(Collections.singletonList("Server inner error: " + e.getMessage()));
     }
+  }
+
+  @Override
+  public ResponseEntity<Void> createDatabase(CreateDatabaseRequest createDatabaseRequest) {
+    return DatabaseApi.super.createDatabase(createDatabaseRequest);
   }
 }

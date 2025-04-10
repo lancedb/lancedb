@@ -116,6 +116,8 @@ public class HmsCatalogService {
     }
   }
 
+  public void createDatabase(String dbName) throws TException, InterruptedException {}
+
   // ----------------------------------
   //        Table APIs
   // ----------------------------------

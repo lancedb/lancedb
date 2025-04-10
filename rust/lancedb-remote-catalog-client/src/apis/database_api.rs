@@ -15,6 +15,13 @@ use crate::{apis::ResponseContent, models};
 use super::{Error, configuration, ContentType};
 
 
+/// struct for typed errors of method [`create_database`]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CreateDatabaseError {
+    UnknownValue(serde_json::Value),
+}
+
 /// struct for typed errors of method [`v1_databases_db_name_delete`]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -50,13 +57,32 @@ pub enum V1DatabasesGetError {
     UnknownValue(serde_json::Value),
 }
 
-/// struct for typed errors of method [`v1_databases_post`]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum V1DatabasesPostError {
-    UnknownValue(serde_json::Value),
-}
 
+pub async fn create_database(configuration: &configuration::Configuration, create_database_request: models::CreateDatabaseRequest) -> Result<(), Error<CreateDatabaseError>> {
+    // add a prefix to parameters to efficiently prevent name collisions
+    let p_create_database_request = create_database_request;
+
+    let uri_str = format!("{}/v1/databases", configuration.base_path);
+    let mut req_builder = configuration.client.request(reqwest::Method::POST, &uri_str);
+
+    if let Some(ref user_agent) = configuration.user_agent {
+        req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
+    }
+    req_builder = req_builder.json(&p_create_database_request);
+
+    let req = req_builder.build()?;
+    let resp = configuration.client.execute(req).await?;
+
+    let status = resp.status();
+
+    if !status.is_client_error() && !status.is_server_error() {
+        Ok(())
+    } else {
+        let content = resp.text().await?;
+        let entity: Option<CreateDatabaseError> = serde_json::from_str(&content).ok();
+        Err(Error::ResponseError(ResponseContent { status, content, entity }))
+    }
+}
 
 pub async fn v1_databases_db_name_delete(configuration: &configuration::Configuration, db_name: &str) -> Result<(), Error<V1DatabasesDbNameDeleteError>> {
     // add a prefix to parameters to efficiently prevent name collisions
@@ -208,32 +234,6 @@ pub async fn v1_databases_get(configuration: &configuration::Configuration, star
     } else {
         let content = resp.text().await?;
         let entity: Option<V1DatabasesGetError> = serde_json::from_str(&content).ok();
-        Err(Error::ResponseError(ResponseContent { status, content, entity }))
-    }
-}
-
-pub async fn v1_databases_post(configuration: &configuration::Configuration, create_database_request: models::CreateDatabaseRequest) -> Result<(), Error<V1DatabasesPostError>> {
-    // add a prefix to parameters to efficiently prevent name collisions
-    let p_create_database_request = create_database_request;
-
-    let uri_str = format!("{}/v1/databases", configuration.base_path);
-    let mut req_builder = configuration.client.request(reqwest::Method::POST, &uri_str);
-
-    if let Some(ref user_agent) = configuration.user_agent {
-        req_builder = req_builder.header(reqwest::header::USER_AGENT, user_agent.clone());
-    }
-    req_builder = req_builder.json(&p_create_database_request);
-
-    let req = req_builder.build()?;
-    let resp = configuration.client.execute(req).await?;
-
-    let status = resp.status();
-
-    if !status.is_client_error() && !status.is_server_error() {
-        Ok(())
-    } else {
-        let content = resp.text().await?;
-        let entity: Option<V1DatabasesPostError> = serde_json::from_str(&content).ok();
         Err(Error::ResponseError(ResponseContent { status, content, entity }))
     }
 }

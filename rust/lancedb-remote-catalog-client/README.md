@@ -26,12 +26,12 @@ All URIs are relative to *http://localhost*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+*DatabaseApi* | [**create_database**](docs/DatabaseApi.md#create_database) | **POST** /v1/databases | Create new database
 *DatabaseApi* | [**v1_databases_db_name_delete**](docs/DatabaseApi.md#v1_databases_db_name_delete) | **DELETE** /v1/databases/{dbName} | Delete database
 *DatabaseApi* | [**v1_databases_db_name_get**](docs/DatabaseApi.md#v1_databases_db_name_get) | **GET** /v1/databases/{dbName} | Get database metadata
 *DatabaseApi* | [**v1_databases_db_name_put**](docs/DatabaseApi.md#v1_databases_db_name_put) | **PUT** /v1/databases/{dbName} | Rename database
 *DatabaseApi* | [**v1_databases_delete**](docs/DatabaseApi.md#v1_databases_delete) | **DELETE** /v1/databases | Delete all databases
 *DatabaseApi* | [**v1_databases_get**](docs/DatabaseApi.md#v1_databases_get) | **GET** /v1/databases | List databases
-*DatabaseApi* | [**v1_databases_post**](docs/DatabaseApi.md#v1_databases_post) | **POST** /v1/databases | Create new database
 *TableApi* | [**v1_databases_db_name_tables_delete**](docs/TableApi.md#v1_databases_db_name_tables_delete) | **DELETE** /v1/databases/{dbName}/tables | Delete all tables
 *TableApi* | [**v1_databases_db_name_tables_get**](docs/TableApi.md#v1_databases_db_name_tables_get) | **GET** /v1/databases/{dbName}/tables | List tables in database
 *TableApi* | [**v1_databases_db_name_tables_post**](docs/TableApi.md#v1_databases_db_name_tables_post) | **POST** /v1/databases/{dbName}/tables | Create new table

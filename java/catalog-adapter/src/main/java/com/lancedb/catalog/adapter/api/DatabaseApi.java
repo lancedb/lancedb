@@ -50,6 +50,29 @@ public interface DatabaseApi {
   }
 
   /**
+   * POST /v1/databases : Create new database
+   *
+   * @param createDatabaseRequest (required)
+   * @return Database created (status code 201)
+   */
+  @Operation(
+      operationId = "createDatabase",
+      summary = "Create new database",
+      tags = {"Database"},
+      responses = {@ApiResponse(responseCode = "201", description = "Database created")})
+  @RequestMapping(
+      method = RequestMethod.POST,
+      value = "/v1/databases",
+      consumes = {"application/json"})
+  default ResponseEntity<Void> createDatabase(
+      @Parameter(name = "CreateDatabaseRequest", description = "", required = true)
+          @Valid
+          @RequestBody
+          CreateDatabaseRequest createDatabaseRequest) {
+    return new ResponseEntity<>(HttpStatus.NOT_IMPLEMENTED);
+  }
+
+  /**
    * DELETE /v1/databases/{dbName} : Delete database
    *
    * @param dbName (required)
@@ -196,29 +219,6 @@ public interface DatabaseApi {
                 }
               }
             });
-    return new ResponseEntity<>(HttpStatus.NOT_IMPLEMENTED);
-  }
-
-  /**
-   * POST /v1/databases : Create new database
-   *
-   * @param createDatabaseRequest (required)
-   * @return Database created (status code 201)
-   */
-  @Operation(
-      operationId = "v1DatabasesPost",
-      summary = "Create new database",
-      tags = {"Database"},
-      responses = {@ApiResponse(responseCode = "201", description = "Database created")})
-  @RequestMapping(
-      method = RequestMethod.POST,
-      value = "/v1/databases",
-      consumes = {"application/json"})
-  default ResponseEntity<Void> v1DatabasesPost(
-      @Parameter(name = "CreateDatabaseRequest", description = "", required = true)
-          @Valid
-          @RequestBody
-          CreateDatabaseRequest createDatabaseRequest) {
     return new ResponseEntity<>(HttpStatus.NOT_IMPLEMENTED);
   }
 }

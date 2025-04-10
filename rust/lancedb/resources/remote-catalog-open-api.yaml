@@ -26,6 +26,7 @@ paths:
     post:
       tags: [Database]
       summary: Create new database
+      operationId: CreateDatabase
       requestBody:
         required: true
         content:
