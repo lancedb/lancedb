@@ -794,8 +794,8 @@ impl Table {
     /// # Arguments
     ///
     /// * `on` One or more columns to join on.  This is how records from the
-    ///    source table and target table are matched.  Typically this is some
-    ///    kind of key or id column.
+    ///   source table and target table are matched.  Typically this is some
+    ///   kind of key or id column.
     ///
     /// # Examples
     ///
