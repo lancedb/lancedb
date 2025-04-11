@@ -18,18 +18,8 @@ including methods to retrieve the query type and convert the query to a dictiona
 queryType(): FullTextQueryType
 ```
 
+The type of the full-text query.
+
 #### Returns
 
 [`FullTextQueryType`](../enumerations/FullTextQueryType.md)
-
-***
-
-### toDict()
-
-```ts
-toDict(): Record<string, unknown>
-```
-
-#### Returns
-
-`Record`&lt;`string`, `unknown`&gt;

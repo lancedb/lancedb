@@ -22,7 +22,12 @@ import {
   OptimizeStats,
   Table as _NativeTable,
 } from "./native";
-import { Query, VectorQuery } from "./query";
+import {
+  FullTextQuery,
+  Query,
+  VectorQuery,
+  instanceOfFullTextQuery,
+} from "./query";
 import { sanitizeType } from "./sanitize";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
@@ -294,7 +299,7 @@ export abstract class Table {
    * if the query is a string and no embedding function is defined, it will be treated as a full text search query
    */
   abstract search(
-    query: string | IntoVector,
+    query: string | IntoVector | FullTextQuery,
     queryType?: string,
     ftsColumns?: string | string[],
   ): VectorQuery | Query;
@@ -565,11 +570,11 @@ export class LocalTable extends Table {
   }
 
   search(
-    query: string | IntoVector,
+    query: string | IntoVector | FullTextQuery,
     queryType: string = "auto",
     ftsColumns?: string | string[],
   ): VectorQuery | Query {
-    if (typeof query !== "string") {
+    if (typeof query !== "string" && !instanceOfFullTextQuery(query)) {
       if (queryType === "fts") {
         throw new Error("Cannot perform full text search on a vector query");
       }
@@ -585,7 +590,10 @@ export class LocalTable extends Table {
 
     // The query type is auto or vector
     // fall back to full text search if no embedding functions are defined and the query is a string
-    if (queryType === "auto" && getRegistry().length() === 0) {
+    if (
+      queryType === "auto" &&
+      (getRegistry().length() === 0 || instanceOfFullTextQuery(query))
+    ) {
       return this.query().fullTextSearch(query, {
         columns: ftsColumns,
       });

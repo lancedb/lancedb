@@ -22,7 +22,7 @@ including methods to retrieve the query type and convert the query to a dictiona
 new MultiMatchQuery(
    query,
    columns,
-   boosts): MultiMatchQuery
+   options?): MultiMatchQuery
 ```
 
 Creates an instance of MultiMatchQuery.
@@ -35,10 +35,11 @@ Creates an instance of MultiMatchQuery.
 * **columns**: `string`[]
     An array of column names to search within.
 
-* **boosts**: `number`[] = `...`
-    (Optional) An array of boost factors corresponding to each column. Default is an array of 1.0 for each column.
-    The `boosts` array should have the same length as `columns`. If not provided, all columns will have a default boost of 1.0.
-    If the length of `boosts` is less than `columns`, it will be padded with 1.0s.
+* **options?**
+    Optional parameters for the multi-match query.
+    - `boosts`: An array of boost factors for each column (default is 1.0 for all).
+
+* **options.boosts?**: `number`[]
 
 #### Returns
 
@@ -52,6 +53,8 @@ Creates an instance of MultiMatchQuery.
 queryType(): FullTextQueryType
 ```
 
+The type of the full-text query.
+
 #### Returns
 
 [`FullTextQueryType`](../enumerations/FullTextQueryType.md)
@@ -59,19 +62,3 @@ queryType(): FullTextQueryType
 #### Implementation of
 
 [`FullTextQuery`](../interfaces/FullTextQuery.md).[`queryType`](../interfaces/FullTextQuery.md#querytype)
-
-***
-
-### toDict()
-
-```ts
-toDict(): Record<string, unknown>
-```
-
-#### Returns
-
-`Record`&lt;`string`, `unknown`&gt;
-
-#### Implementation of
-
-[`FullTextQuery`](../interfaces/FullTextQuery.md).[`toDict`](../interfaces/FullTextQuery.md#todict)

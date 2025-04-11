@@ -575,7 +575,7 @@ of the given query
 
 #### Parameters
 
-* **query**: `string` \| [`IntoVector`](../type-aliases/IntoVector.md)
+* **query**: `string` \| [`IntoVector`](../type-aliases/IntoVector.md) \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
     the query, a vector or string
 
 * **queryType?**: `string`

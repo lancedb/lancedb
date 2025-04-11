@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use lancedb::index::scalar::{FtsQuery, FullTextSearchQuery, MatchQuery, PhraseQuery};
+use lancedb::index::scalar::{
+    BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, PhraseQuery,
+};
 use lancedb::query::ExecutableQuery;
 use lancedb::query::Query as LanceDbQuery;
 use lancedb::query::QueryBase;
@@ -18,7 +20,7 @@ use crate::error::NapiErrorExt;
 use crate::iterator::RecordBatchIterator;
 use crate::rerankers::Reranker;
 use crate::rerankers::RerankerCallbacks;
-use crate::util::{parse_distance_type, parse_fts_query};
+use crate::util::parse_distance_type;
 
 #[napi]
 pub struct Query {
@@ -38,51 +40,8 @@ impl Query {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: napi::JsUnknown) -> napi::Result<()> {
-        let query = unsafe { query.cast::<napi::JsObject>() };
-        let query = if let Some(query_text) = query.get::<_, String>("query").transpose() {
-            let mut query_text = query_text?;
-            let columns = query.get::<_, Option<Vec<String>>>("columns")?.flatten();
-
-            let is_phrase =
-                query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
-            let is_multi_match = columns.as_ref().map(|cols| cols.len() > 1).unwrap_or(false);
-
-            if is_phrase {
-                // Remove the surrounding quotes for phrase queries
-                query_text = query_text[1..query_text.len() - 1].to_string();
-            }
-
-            let query: FtsQuery = match (is_phrase, is_multi_match) {
-                (false, _) => MatchQuery::new(query_text).into(),
-                (true, false) => PhraseQuery::new(query_text).into(),
-                (true, true) => {
-                    return Err(napi::Error::from_reason(
-                        "Phrase queries cannot be used with multiple columns.",
-                    ));
-                }
-            };
-            let mut query = FullTextSearchQuery::new_query(query);
-            if let Some(cols) = columns {
-                if !cols.is_empty() {
-                    query = query.with_columns(&cols).map_err(|e| {
-                        napi::Error::from_reason(format!(
-                            "Failed to set full text search columns: {}",
-                            e
-                        ))
-                    })?;
-                }
-            }
-            query
-        } else if let Some(query) = query.get::<_, napi::JsObject>("query")? {
-            let query = parse_fts_query(&query)?;
-            FullTextSearchQuery::new_query(query)
-        } else {
-            return Err(napi::Error::from_reason(
-                "Invalid full text search query object".to_string(),
-            ));
-        };
-
+    pub fn full_text_search(&mut self, query: napi::JsObject) -> napi::Result<()> {
+        let query = parse_fts_query(query)?;
         self.inner = self.inner.clone().full_text_search(query);
         Ok(())
     }
@@ -243,51 +202,8 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: napi::JsUnknown) -> napi::Result<()> {
-        let query = unsafe { query.cast::<napi::JsObject>() };
-        let query = if let Some(query_text) = query.get::<_, String>("query").transpose() {
-            let mut query_text = query_text?;
-            let columns = query.get::<_, Option<Vec<String>>>("columns")?.flatten();
-
-            let is_phrase =
-                query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
-            let is_multi_match = columns.as_ref().map(|cols| cols.len() > 1).unwrap_or(false);
-
-            if is_phrase {
-                // Remove the surrounding quotes for phrase queries
-                query_text = query_text[1..query_text.len() - 1].to_string();
-            }
-
-            let query: FtsQuery = match (is_phrase, is_multi_match) {
-                (false, _) => MatchQuery::new(query_text).into(),
-                (true, false) => PhraseQuery::new(query_text).into(),
-                (true, true) => {
-                    return Err(napi::Error::from_reason(
-                        "Phrase queries cannot be used with multiple columns.",
-                    ));
-                }
-            };
-            let mut query = FullTextSearchQuery::new_query(query);
-            if let Some(cols) = columns {
-                if !cols.is_empty() {
-                    query = query.with_columns(&cols).map_err(|e| {
-                        napi::Error::from_reason(format!(
-                            "Failed to set full text search columns: {}",
-                            e
-                        ))
-                    })?;
-                }
-            }
-            query
-        } else if let Some(query) = query.get::<_, napi::JsObject>("query")? {
-            let query = parse_fts_query(&query)?;
-            FullTextSearchQuery::new_query(query)
-        } else {
-            return Err(napi::Error::from_reason(
-                "Invalid full text search query object".to_string(),
-            ));
-        };
-
+    pub fn full_text_search(&mut self, query: napi::JsObject) -> napi::Result<()> {
+        let query = parse_fts_query(query)?;
         self.inner = self.inner.clone().full_text_search(query);
         Ok(())
     }
@@ -374,5 +290,120 @@ impl VectorQuery {
                 convert_error(&e)
             ))
         })
+    }
+}
+
+#[napi]
+#[derive(Debug, Clone)]
+pub struct JsFullTextQuery {
+    pub(crate) inner: FtsQuery,
+}
+
+#[napi]
+impl JsFullTextQuery {
+    #[napi(factory)]
+    pub fn match_query(
+        query: String,
+        column: String,
+        boost: f64,
+        fuzziness: Option<u32>,
+        max_expansions: u32,
+    ) -> napi::Result<Self> {
+        Ok(Self {
+            inner: MatchQuery::new(query)
+                .with_column(Some(column))
+                .with_boost(boost as f32)
+                .with_fuzziness(fuzziness)
+                .with_max_expansions(max_expansions as usize)
+                .into(),
+        })
+    }
+
+    #[napi(factory)]
+    pub fn phrase_query(query: String, column: String) -> napi::Result<Self> {
+        Ok(Self {
+            inner: PhraseQuery::new(query).with_column(Some(column)).into(),
+        })
+    }
+
+    #[napi(factory)]
+    pub fn boost_query(
+        positive: &JsFullTextQuery,
+        negative: &JsFullTextQuery,
+        negative_boost: Option<f64>,
+    ) -> napi::Result<Self> {
+        Ok(Self {
+            inner: BoostQuery::new(
+                positive.inner.clone(),
+                negative.inner.clone(),
+                negative_boost.map(|v| v as f32),
+            )
+            .into(),
+        })
+    }
+
+    #[napi(factory)]
+    pub fn multi_match_query(
+        query: String,
+        columns: Vec<String>,
+        boosts: Option<Vec<f64>>,
+    ) -> napi::Result<Self> {
+        let q = match boosts {
+            Some(boosts) => MultiMatchQuery::try_new_with_boosts(
+                query,
+                columns,
+                boosts.into_iter().map(|v| v as f32).collect(),
+            ),
+            None => MultiMatchQuery::try_new(query, columns),
+        }
+        .map_err(|e| {
+            napi::Error::from_reason(format!("Failed to create multi match query: {}", e))
+        })?;
+
+        Ok(Self { inner: q.into() })
+    }
+}
+
+fn parse_fts_query(query: napi::JsObject) -> napi::Result<FullTextSearchQuery> {
+    if let Ok(Some(query)) = query.get::<_, &JsFullTextQuery>("query") {
+        Ok(FullTextSearchQuery::new_query(query.inner.clone()))
+    } else if let Ok(Some(query_text)) = query.get::<_, String>("query") {
+        let mut query_text = query_text;
+        let columns = query.get::<_, Option<Vec<String>>>("columns")?.flatten();
+
+        let is_phrase =
+            query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
+        let is_multi_match = columns.as_ref().map(|cols| cols.len() > 1).unwrap_or(false);
+
+        if is_phrase {
+            // Remove the surrounding quotes for phrase queries
+            query_text = query_text[1..query_text.len() - 1].to_string();
+        }
+
+        let query: FtsQuery = match (is_phrase, is_multi_match) {
+            (false, _) => MatchQuery::new(query_text).into(),
+            (true, false) => PhraseQuery::new(query_text).into(),
+            (true, true) => {
+                return Err(napi::Error::from_reason(
+                    "Phrase queries cannot be used with multiple columns.",
+                ));
+            }
+        };
+        let mut query = FullTextSearchQuery::new_query(query);
+        if let Some(cols) = columns {
+            if !cols.is_empty() {
+                query = query.with_columns(&cols).map_err(|e| {
+                    napi::Error::from_reason(format!(
+                        "Failed to set full text search columns: {}",
+                        e
+                    ))
+                })?;
+            }
+        }
+        Ok(query)
+    } else {
+        Err(napi::Error::from_reason(
+            "Invalid full text search query object".to_string(),
+        ))
     }
 }
