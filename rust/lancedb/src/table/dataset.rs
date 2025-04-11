@@ -303,7 +303,7 @@ mod tests {
     #[tokio::test]
     async fn test_iops_open_strong_consistency() {
         let db = connect("memory://")
-            .read_consistency_interval(Some(Duration::ZERO))
+            .read_consistency_interval(Duration::ZERO)
             .execute()
             .await
             .expect("Failed to connect to database");
