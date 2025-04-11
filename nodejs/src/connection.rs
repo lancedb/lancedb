@@ -48,16 +48,8 @@ impl Connection {
     pub async fn new(uri: String, options: ConnectionOptions) -> napi::Result<Self> {
         let mut builder = ConnectBuilder::new(&uri);
         if let Some(interval) = options.read_consistency_interval {
-            match interval {
-                Either::A(seconds) => {
-                    builder = builder.read_consistency_interval(Some(
-                        std::time::Duration::from_secs_f64(seconds),
-                    ));
-                }
-                Either::B(_) => {
-                    builder = builder.read_consistency_interval(None);
-                }
-            }
+            builder =
+                builder.read_consistency_interval(std::time::Duration::from_secs_f64(interval));
         }
         if let Some(storage_options) = options.storage_options {
             for (key, value) in storage_options {

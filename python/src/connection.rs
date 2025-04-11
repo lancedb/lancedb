@@ -204,9 +204,7 @@ pub fn connect(
         }
         if let Some(read_consistency_interval) = read_consistency_interval {
             let read_consistency_interval = Duration::from_secs_f64(read_consistency_interval);
-            builder = builder.read_consistency_interval(Some(read_consistency_interval));
-        } else {
-            builder = builder.read_consistency_interval(None);
+            builder = builder.read_consistency_interval(read_consistency_interval);
         }
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);

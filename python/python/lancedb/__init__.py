@@ -26,7 +26,7 @@ def connect(
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
-    read_consistency_interval: Optional[timedelta] = timedelta(seconds=5),
+    read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
     storage_options: Optional[Dict[str, str]] = None,
@@ -49,8 +49,9 @@ def connect(
     read_consistency_interval: timedelta, default None
         (For LanceDB OSS only)
         The interval at which to check for updates to the table from other
-        processes. If None, then consistency is not checked. For strong consistency,
-        set this to zero seconds. Then every read will check for updates from other
+        processes. If None, then consistency is not checked. For performance
+        reasons, this is the default. For strong consistency, set this to
+        zero seconds. Then every read will check for updates from other
         processes. As a compromise, you can set this to a non-zero timedelta
         for eventual consistency. If more than that interval has passed since
         the last check, then the table will be checked for updates. Note: this
@@ -121,7 +122,7 @@ async def connect_async(
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
-    read_consistency_interval: Optional[timedelta] = timedelta(seconds=5),
+    read_consistency_interval: Optional[timedelta] = None,
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]] = None,
     storage_options: Optional[Dict[str, str]] = None,
 ) -> AsyncConnection:
@@ -142,8 +143,9 @@ async def connect_async(
     read_consistency_interval: timedelta, default None
         (For LanceDB OSS only)
         The interval at which to check for updates to the table from other
-        processes. If None, then consistency is not checked. For strong consistency,
-        set this to zero seconds. Then every read will check for updates from other
+        processes. If None, then consistency is not checked. For performance
+        reasons, this is the default. For strong consistency, set this to
+        zero seconds. Then every read will check for updates from other
         processes. As a compromise, you can set this to a non-zero timedelta
         for eventual consistency. If more than that interval has passed since
         the last check, then the table will be checked for updates. Note: this

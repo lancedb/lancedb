@@ -3,6 +3,7 @@
 
 
 import re
+from datetime import timedelta
 import os
 
 import lancedb
@@ -298,10 +299,12 @@ def test_create_exist_ok(tmp_db: lancedb.DBConnection):
 @pytest.mark.asyncio
 async def test_connect(tmp_path):
     db = await lancedb.connect_async(tmp_path)
-    assert str(db) == f"ListingDatabase(uri={tmp_path}, read_consistency_interval=5s)"
-
-    db = await lancedb.connect_async(tmp_path, read_consistency_interval=None)
     assert str(db) == f"ListingDatabase(uri={tmp_path}, read_consistency_interval=None)"
+
+    db = await lancedb.connect_async(
+        tmp_path, read_consistency_interval=timedelta(seconds=5)
+    )
+    assert str(db) == f"ListingDatabase(uri={tmp_path}, read_consistency_interval=5s)"
 
 
 @pytest.mark.asyncio
@@ -450,7 +453,7 @@ async def test_open_table(tmp_path):
     assert tbl.name == "test"
     assert (
         re.search(
-            r"NativeTable\(test, uri=.*test\.lance, read_consistency_interval=5s\)",
+            r"NativeTable\(test, uri=.*test\.lance, read_consistency_interval=None\)",
             str(tbl),
         )
         is not None

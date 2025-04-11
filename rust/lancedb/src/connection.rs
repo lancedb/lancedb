@@ -36,9 +36,6 @@ pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
 
-pub(crate) const DEFAULT_READ_CONSISTENCY_INTERVAL: Option<std::time::Duration> =
-    Some(std::time::Duration::from_secs(5));
-
 /// A builder for configuring a [`Connection::table_names`] operation
 pub struct TableNamesBuilder {
     parent: Arc<dyn Database>,
@@ -621,15 +618,14 @@ pub struct ConnectRequest {
 
     /// The interval at which to check for updates from other processes.
     ///
-    /// If None, then consistency is not checked. For strong consistency, set this to
+    /// If None, then consistency is not checked. For performance
+    /// reasons, this is the default. For strong consistency, set this to
     /// zero seconds. Then every read will check for updates from other
     /// processes. As a compromise, you can set this to a non-zero timedelta
     /// for eventual consistency. If more than that interval has passed since
     /// the last check, then the table will be checked for updates. Note: this
     /// consistency only applies to read operations. Write operations are
     /// always consistent.
-    ///
-    /// The default is 5 seconds.
     pub read_consistency_interval: Option<std::time::Duration>,
 }
 
@@ -647,7 +643,7 @@ impl ConnectBuilder {
                 uri: uri.to_string(),
                 #[cfg(feature = "remote")]
                 client_config: Default::default(),
-                read_consistency_interval: DEFAULT_READ_CONSISTENCY_INTERVAL,
+                read_consistency_interval: None,
                 options: HashMap::new(),
             },
             embedding_registry: None,
@@ -786,7 +782,8 @@ impl ConnectBuilder {
     /// The interval at which to check for updates from other processes. This
     /// only affects LanceDB OSS.
     ///
-    /// If left unset, consistency is not checked. For strong consistency, set this to
+    /// If left unset, consistency is not checked. For maximum read
+    /// performance, this is the default. For strong consistency, set this to
     /// zero seconds. Then every read will check for updates from other processes.
     /// As a compromise, set this to a non-zero duration for eventual consistency.
     /// If more than that duration has passed since the last read, the read will
@@ -795,15 +792,13 @@ impl ConnectBuilder {
     /// This only affects read operations. Write operations are always
     /// consistent.
     ///
-    /// The default is 5 seconds.
-    ///
     /// LanceDB Cloud uses eventual consistency under the hood, and is not
     /// currently configurable.
     pub fn read_consistency_interval(
         mut self,
-        read_consistency_interval: Option<std::time::Duration>,
+        read_consistency_interval: std::time::Duration,
     ) -> Self {
-        self.request.read_consistency_interval = read_consistency_interval;
+        self.request.read_consistency_interval = Some(read_consistency_interval);
         self
     }
 
@@ -887,7 +882,7 @@ impl CatalogConnectBuilder {
                 uri: uri.to_string(),
                 #[cfg(feature = "remote")]
                 client_config: Default::default(),
-                read_consistency_interval: DEFAULT_READ_CONSISTENCY_INTERVAL,
+                read_consistency_interval: None,
                 options: HashMap::new(),
             },
         }
