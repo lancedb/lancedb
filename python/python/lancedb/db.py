@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from pathlib import Path
-from datetime import timedelta
 from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
 
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
@@ -33,6 +32,7 @@ import deprecation
 if TYPE_CHECKING:
     import pyarrow as pa
     from .pydantic import LanceModel
+    from datetime import timedelta
 
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
@@ -318,8 +318,9 @@ class LanceDBConnection(DBConnection):
         The root uri of the database.
     read_consistency_interval: timedelta, default None
         The interval at which to check for updates to the table from other
-        processes. If None, then consistency is not checked. For strong consistency,
-        set this to zero seconds. Then every read will check for updates from other
+        processes. If None, then consistency is not checked. For performance
+        reasons, this is the default. For strong consistency, set this to
+        zero seconds. Then every read will check for updates from other
         processes. As a compromise, you can set this to a non-zero timedelta
         for eventual consistency. If more than that interval has passed since
         the last check, then the table will be checked for updates. Note: this
@@ -351,7 +352,7 @@ class LanceDBConnection(DBConnection):
         self,
         uri: URI,
         *,
-        read_consistency_interval: Optional[timedelta] = timedelta(seconds=5),
+        read_consistency_interval: Optional[timedelta] = None,
         storage_options: Optional[Dict[str, str]] = None,
     ):
         if not isinstance(uri, Path):

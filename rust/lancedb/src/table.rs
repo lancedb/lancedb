@@ -2629,7 +2629,7 @@ mod tests {
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = dataset_path.to_str().unwrap();
         let conn = connect(uri)
-            .read_consistency_interval(Some(Duration::from_secs(0)))
+            .read_consistency_interval(Duration::from_secs(0))
             .execute()
             .await
             .unwrap();
@@ -2712,7 +2712,7 @@ mod tests {
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = dataset_path.to_str().unwrap();
         let conn = connect(uri)
-            .read_consistency_interval(Some(Duration::from_secs(0)))
+            .read_consistency_interval(Duration::from_secs(0))
             .execute()
             .await
             .unwrap();
@@ -2909,7 +2909,7 @@ mod tests {
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = dataset_path.to_str().unwrap();
         let conn = connect(uri)
-            .read_consistency_interval(Some(Duration::from_secs(0)))
+            .read_consistency_interval(Duration::from_secs(0))
             .execute()
             .await
             .unwrap();
@@ -3480,8 +3480,7 @@ mod tests {
 
             let mut conn2 = ConnectBuilder::new(uri);
             if let Some(interval) = interval {
-                conn2 = conn2
-                    .read_consistency_interval(Some(std::time::Duration::from_millis(interval)));
+                conn2 = conn2.read_consistency_interval(std::time::Duration::from_millis(interval));
             }
             let conn2 = conn2.execute().await.unwrap();
             let table2 = conn2.open_table("my_table").execute().await.unwrap();
@@ -3517,7 +3516,7 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         let conn = ConnectBuilder::new(uri)
-            .read_consistency_interval(Some(Duration::from_secs(0)))
+            .read_consistency_interval(Duration::from_secs(0))
             .execute()
             .await
             .unwrap();
@@ -3538,7 +3537,7 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         let conn = ConnectBuilder::new(uri)
-            .read_consistency_interval(Some(Duration::from_secs(0)))
+            .read_consistency_interval(Duration::from_secs(0))
             .execute()
             .await
             .unwrap();
@@ -3613,7 +3612,7 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         let conn = ConnectBuilder::new(uri)
-            .read_consistency_interval(Some(Duration::from_secs(0)))
+            .read_consistency_interval(Duration::from_secs(0))
             .execute()
             .await
             .unwrap();
@@ -3675,7 +3674,7 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         let conn = ConnectBuilder::new(uri)
-            .read_consistency_interval(Some(Duration::from_secs(0)))
+            .read_consistency_interval(Duration::from_secs(0))
             .execute()
             .await
             .unwrap();
