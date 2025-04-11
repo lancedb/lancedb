@@ -6,7 +6,7 @@ import lancedb
 
 # --8<-- [end:import-lancedb]
 # --8<-- [start:import-numpy]
-from lancedb.query import MatchQuery
+from lancedb.query import BoostQuery, MatchQuery
 import numpy as np
 import pyarrow as pa
 
@@ -189,6 +189,52 @@ def test_fts_fuzzy_query():
         "fob",  # 1 substitution
         "food",  # 1 insertion
     }
+
+
+def test_fts_boost_query():
+    uri = "data/boost-example"
+    db = lancedb.connect(uri)
+
+    table = db.create_table(
+        "my_table_fts_boost",
+        data=pa.table(
+            {
+                "title": [
+                    "The Hidden Gems of Travel",
+                    "Exploring Nature's Wonders",
+                    "Cultural Treasures Unveiled",
+                    "The Nightlife Chronicles",
+                    "Scenic Escapes and Challenges",
+                ],
+                "desc": [
+                    "A vibrant city with occasional traffic jams.",
+                    "Beautiful landscapes but overpriced tourist spots.",
+                    "Rich cultural heritage but humid summers.",
+                    "Bustling nightlife but noisy streets.",
+                    "Scenic views but limited public transport options.",
+                ],
+            }
+        ),
+        mode="overwrite",
+    )
+    table.create_fts_index("desc", use_tantivy=False, replace=True)
+
+    results = table.search(
+        BoostQuery(
+            MatchQuery("beautiful, cultural, nightlife", "desc"),
+            MatchQuery("bad traffic jams, overpriced", "desc"),
+        ),
+        query_type="fts",
+    ).to_pandas()
+
+    # we will hit 3 results because the positive query has 3 hits
+    assert len(results) == 3
+    # the one containing "overpriced" will be negatively boosted,
+    # so it will be the last one
+    assert (
+        results["desc"].to_list()[2]
+        == "Beautiful landscapes but overpriced tourist spots."
+    )
 
 
 def test_fts_native():
