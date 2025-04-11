@@ -562,7 +562,7 @@ async def test_table_async():
     async_db = await lancedb.connect_async(uri, read_consistency_interval=timedelta(0))
     async_tbl = await async_db.open_table("test_table_async")
     # --8<-- [end:table_async_strong_consistency]
-    # --8<-- [start:table_async_ventual_consistency]
+    # --8<-- [start:table_async_eventual_consistency]
     uri = "data/sample-lancedb"
     async_db = await lancedb.connect_async(
         uri, read_consistency_interval=timedelta(seconds=5)
