@@ -868,7 +868,7 @@ impl ConnectBuilder {
 /// # Arguments
 ///
 /// * `uri` - URI where the database is located, can be a local directory, supported remote cloud storage,
-///           or a LanceDB Cloud database.  See [ConnectOptions::uri] for a list of accepted formats
+///   or a LanceDB Cloud database.  See [ConnectOptions::uri] for a list of accepted formats
 pub fn connect(uri: &str) -> ConnectBuilder {
     ConnectBuilder::new(uri)
 }
