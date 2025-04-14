@@ -11,7 +11,6 @@ likely that someone who knows the answer will see your question.
 ## Common issues
 
 * Multiprocessing with `fork` is not supported. You should use `spawn` instead.
-* Data returned by queries may not reflect the most recent writes, depending on configuration. LanceDB uses eventual consistency by default. See [consistency](/docs/src/guides/tables.md#consistency) for more information.
 
 ## Enabling logging
 
