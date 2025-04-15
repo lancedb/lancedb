@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
-use std::time::Duration;
 use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
+use std::sync::Arc;
+use std::time::Duration;
 use vector::IvfFlatIndexBuilder;
 
 use crate::{table::BaseTable, DistanceType, Error, Result};

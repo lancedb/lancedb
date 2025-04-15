@@ -1,14 +1,16 @@
-use std::time::{Duration, Instant};
-use log::debug;
-use tokio::time::sleep;
-use crate::Error;
+use crate::error::Result;
 use crate::table::BaseTable;
-use crate::{
-    error::Result,
-};
+use crate::Error;
+use log::debug;
+use std::time::{Duration, Instant};
+use tokio::time::sleep;
 /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
 /// are not fully indexed within the timeout.
-pub async fn wait_for_index(table: &dyn BaseTable, index_names: &[&str], timeout: Duration) -> Result<()>{
+pub async fn wait_for_index(
+    table: &dyn BaseTable,
+    index_names: &[&str],
+    timeout: Duration,
+) -> Result<()> {
     let start = Instant::now();
     let mut remaining = index_names.to_vec();
 
@@ -18,7 +20,7 @@ pub async fn wait_for_index(table: &dyn BaseTable, index_names: &[&str], timeout
         let indices = table.list_indices().await?;
 
         for idx in index_names {
-            if let None = indices.iter().find(|i| i.name == *idx) {
+            if !indices.iter().any(|i| i.name == *idx) {
                 debug!("still waiting for new index '{}'", idx);
                 continue;
             }
@@ -28,13 +30,19 @@ pub async fn wait_for_index(table: &dyn BaseTable, index_names: &[&str], timeout
                 None => {
                     debug!("still waiting for new index '{}'", idx);
                     continue;
-                },
+                }
                 Some(s) => {
                     if s.num_unindexed_rows == 0 {
                         completed.push(idx);
-                        debug!("fully indexed '{}'. indexed rows: {}", idx, s.num_indexed_rows);
+                        debug!(
+                            "fully indexed '{}'. indexed rows: {}",
+                            idx, s.num_indexed_rows
+                        );
                     } else {
-                        debug!("still waiting for index '{}'. unindexed rows: {}", idx, s.num_unindexed_rows);
+                        debug!(
+                            "still waiting for index '{}'. unindexed rows: {}",
+                            idx, s.num_unindexed_rows
+                        );
                     }
                 }
             }
@@ -46,6 +54,10 @@ pub async fn wait_for_index(table: &dyn BaseTable, index_names: &[&str], timeout
         sleep(Duration::from_millis(1000)).await;
     }
     Err(Error::Timeout {
-        message: format!("timed out waiting for indices: {:?} after {:?}", remaining, timeout).to_string()
+        message: format!(
+            "timed out waiting for indices: {:?} after {:?}",
+            remaining, timeout
+        )
+        .to_string(),
     })
 }

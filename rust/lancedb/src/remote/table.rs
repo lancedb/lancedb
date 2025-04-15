@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::io::Cursor;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration};
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
@@ -26,8 +22,17 @@ use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
 use serde::{Deserialize, Serialize};
+use std::io::Cursor;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::RwLock;
 
+use super::client::RequestResultExt;
+use super::client::{HttpSend, RestfulLanceDbClient, Sender};
+use super::db::ServerVersion;
+use super::ARROW_STREAM_CONTENT_TYPE;
+use crate::index::waiter::wait_for_index;
 use crate::{
     connection::NoData,
     error::Result,
@@ -38,11 +43,6 @@ use crate::{
         TableDefinition, UpdateBuilder,
     },
 };
-use crate::index::waiter::wait_for_index;
-use super::client::RequestResultExt;
-use super::client::{HttpSend, RestfulLanceDbClient, Sender};
-use super::db::ServerVersion;
-use super::ARROW_STREAM_CONTENT_TYPE;
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 
@@ -810,7 +810,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
     /// are not fully indexed within the timeout.
-    async fn wait_for_index(&self, index_names: &[&str], timeout: Duration) -> Result<()>{
+    async fn wait_for_index(&self, index_names: &[&str], timeout: Duration) -> Result<()> {
         wait_for_index(self, index_names, timeout).await
     }
 
@@ -2424,21 +2424,36 @@ mod tests {
     #[tokio::test]
     async fn test_wait_for_index() {
         let table = _make_table_with_indices(0);
-        table.wait_for_index(&["vector_idx", "my_idx"], Duration::from_secs(1)).await.unwrap();
+        table
+            .wait_for_index(&["vector_idx", "my_idx"], Duration::from_secs(1))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     async fn test_wait_for_index_timeout() {
         let table = _make_table_with_indices(100);
-        let e = table.wait_for_index(&["vector_idx", "my_idx"], Duration::from_secs(1)).await.unwrap_err();
-        assert_eq!(e.to_string(), "Timeout error: timed out waiting for indices: [\"vector_idx\", \"my_idx\"] after 1s");
+        let e = table
+            .wait_for_index(&["vector_idx", "my_idx"], Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "Timeout error: timed out waiting for indices: [\"vector_idx\", \"my_idx\"] after 1s"
+        );
     }
 
     #[tokio::test]
     async fn test_wait_for_index_timeout_never_created() {
         let table = _make_table_with_indices(0);
-        let e = table.wait_for_index(&["doesnt_exist_idx"], Duration::from_secs(1)).await.unwrap_err();
-        assert_eq!(e.to_string(), "Timeout error: timed out waiting for indices: [\"doesnt_exist_idx\"] after 1s");
+        let e = table
+            .wait_for_index(&["doesnt_exist_idx"], Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "Timeout error: timed out waiting for indices: [\"doesnt_exist_idx\"] after 1s"
+        );
     }
 
     fn _make_table_with_indices(unindexed_rows: usize) -> Table {
