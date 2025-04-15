@@ -97,7 +97,7 @@ impl IndexBuilder {
     /// Duration of time to wait for asynchronous indexing to complete. If not set,
     /// `create_index()` will not wait.
     ///
-    /// This is ignored for `NativeTable` since indexing is synchronous.
+    /// This is not supported for `NativeTable` since indexing is synchronous.
     pub fn wait_timeout(mut self, d: Duration) -> Self {
         self.wait_timeout = Some(d);
         self

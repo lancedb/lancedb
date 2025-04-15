@@ -7,8 +7,8 @@ use crate::Error;
 use log::debug;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
-/// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
-/// are not fully indexed within the timeout.
+/// Poll the table using list_indices() and index_stats() until all of the indices have 0 un-indexed rows.
+/// Will return Error::Timeout if the columns are not fully indexed within the timeout.
 pub async fn wait_for_index(
     table: &dyn BaseTable,
     index_names: &[&str],
