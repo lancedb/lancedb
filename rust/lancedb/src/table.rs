@@ -4,9 +4,9 @@
 //! LanceDB Table APIs
 
 use std::collections::HashMap;
+use std::format;
 use std::path::Path;
 use std::sync::Arc;
-
 use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
@@ -82,6 +82,7 @@ pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
+use crate::index::waiter::wait_for_index;
 
 /// Defines the type of column
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -489,6 +490,9 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn table_definition(&self) -> Result<TableDefinition>;
     /// Get the table URI
     fn dataset_uri(&self) -> &str;
+    /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
+    /// are not fully indexed within the timeout.
+    async fn wait_for_index(&self, index_names: &[&str], timeout: std::time::Duration) -> Result<()>;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -1085,6 +1089,13 @@ impl Table {
     pub async fn drop_index(&self, name: &str) -> Result<()> {
         self.inner.drop_index(name).await
     }
+
+    /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
+    /// are not fully indexed within the timeout.
+    pub async fn wait_for_index(&self, index_names: &[&str], timeout: std::time::Duration) -> Result<()>{
+        self.inner.wait_for_index(index_names, timeout).await
+    }
+
 
     // Take many execution plans and map them into a single plan that adds
     // a query_index column and unions them.
@@ -2407,6 +2418,12 @@ impl BaseTable for NativeTable {
             loss,
         }))
     }
+
+    /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
+    /// are not fully indexed within the timeout.
+    async fn wait_for_index(&self, index_names: &[&str], timeout: std::time::Duration) -> Result<()>{
+        wait_for_index(self, index_names, timeout).await
+    }
 }
 
 #[cfg(test)]
@@ -3190,7 +3207,7 @@ mod tests {
             .execute()
             .await
             .unwrap();
-
+        table.wait_for_index(&["embeddings_idx"], Duration::from_millis(10)).await.unwrap();
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
@@ -3258,7 +3275,7 @@ mod tests {
             .execute()
             .await
             .unwrap();
-
+        table.wait_for_index(&["i_idx"], Duration::from_millis(10)).await.unwrap();
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();

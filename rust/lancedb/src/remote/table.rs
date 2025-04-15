@@ -4,7 +4,7 @@
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-
+use std::time::{Duration};
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
@@ -38,7 +38,7 @@ use crate::{
         TableDefinition, UpdateBuilder,
     },
 };
-
+use crate::index::waiter::wait_for_index;
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
@@ -801,6 +801,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_table_response(&request_id, response).await?;
 
         Ok(())
+    }
+
+    /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
+    /// are not fully indexed within the timeout.
+    async fn wait_for_index(&self, index_names: &[&str], timeout: Duration) -> Result<()>{
+        wait_for_index(self, index_names, timeout).await
     }
 
     async fn merge_insert(
@@ -2408,5 +2414,73 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table.drop_index("my_index").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_index() {
+        let table = _make_table_with_indices(0);
+        table.wait_for_index(&["vector_idx", "my_idx"], Duration::from_secs(1)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_index_timeout() {
+        let table = _make_table_with_indices(100);
+        let e = table.wait_for_index(&["vector_idx", "my_idx"], Duration::from_secs(1)).await.unwrap_err();
+        assert_eq!(e.to_string(), "Timeout error: timed out waiting for indices: [\"vector_idx\", \"my_idx\"] after 1s");
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_index_timeout_never_created() {
+        let table = _make_table_with_indices(0);
+        let e = table.wait_for_index(&["doesnt_exist_idx"], Duration::from_secs(1)).await.unwrap_err();
+        assert_eq!(e.to_string(), "Timeout error: timed out waiting for indices: [\"doesnt_exist_idx\"] after 1s");
+    }
+
+    fn _make_table_with_indices(unindexed_rows: usize) -> Table {
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+
+            let response_body = match request.url().path() {
+                "/v1/table/my_table/index/list/" => {
+                    serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "vector_idx",
+                                "index_uuid": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                                "columns": ["vector"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "my_idx",
+                                "index_uuid": "34255f64-5717-4562-b3fc-2c963f66afa6",
+                                "columns": ["my_column"],
+                                "index_status": "done",
+                            },
+                        ]
+                    })
+                }
+                "/v1/table/my_table/index/vector_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": unindexed_rows,
+                        "index_type": "IVF_PQ",
+                        "distance_type": "l2"
+                    })
+                }
+                "/v1/table/my_table/index/my_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": unindexed_rows,
+                        "index_type": "LABEL_LIST"
+                    })
+                }
+                path => panic!("Unexpected path: {}", path),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::to_string(&response_body).unwrap())
+                .unwrap()
+        });
+        table
     }
 }

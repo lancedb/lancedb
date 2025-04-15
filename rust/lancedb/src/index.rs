@@ -17,6 +17,7 @@ use self::{
 
 pub mod scalar;
 pub mod vector;
+pub mod waiter;
 
 /// Supported index types.
 #[derive(Debug, Clone)]
