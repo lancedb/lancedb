@@ -179,9 +179,7 @@ def test_fts_fuzzy_query():
     )
     table.create_fts_index("text", use_tantivy=False, replace=True)
 
-    results = table.search(
-        MatchQuery("foo", "text", fuzziness=1), query_type="fts"
-    ).to_pandas()
+    results = table.search(MatchQuery("foo", "text", fuzziness=1)).to_pandas()
     assert len(results) == 4
     assert set(results["text"].to_list()) == {
         "foo",
@@ -224,7 +222,6 @@ def test_fts_boost_query():
             MatchQuery("beautiful, cultural, nightlife", "desc"),
             MatchQuery("bad traffic jams, overpriced", "desc"),
         ),
-        query_type="fts",
     ).to_pandas()
 
     # we will hit 3 results because the positive query has 3 hits

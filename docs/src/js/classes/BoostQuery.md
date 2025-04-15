@@ -26,6 +26,9 @@ new BoostQuery(
 ```
 
 Creates an instance of BoostQuery.
+The boost returns documents that match the positive query,
+but penalizes those that match the negative query.
+the penalty is controlled by the `negativeBoost` parameter.
 
 #### Parameters
 

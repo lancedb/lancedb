@@ -253,9 +253,14 @@ def infer_vector_column_name(
     query: Optional[Any],  # inferred later in query builder
     vector_column_name: Optional[str],
 ):
-    if (vector_column_name is None and query is not None and query_type != "fts") or (
-        vector_column_name is None and query_type == "hybrid"
-    ):
+    if vector_column_name is not None:
+        return vector_column_name
+
+    if query_type == "fts":
+        # FTS queries do not require a vector column
+        return None
+
+    if query is not None or query_type == "hybrid":
         try:
             vector_column_name = inf_vector_column_query(schema)
         except Exception as e:

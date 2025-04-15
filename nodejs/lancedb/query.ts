@@ -851,6 +851,9 @@ export class BoostQuery implements FullTextQuery {
   public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of BoostQuery.
+   * The boost returns documents that match the positive query,
+   * but penalizes those that match the negative query.
+   * the penalty is controlled by the `negativeBoost` parameter.
    *
    * @param positive - The positive query that boosts the relevance score.
    * @param negative - The negative query that reduces the relevance score.
