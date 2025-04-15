@@ -1985,6 +1985,12 @@ impl BaseTable for NativeTable {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),
             });
         }
+        if let Some(_) = opts.wait_timeout {
+            return Err(Error::InvalidInput {
+                message: "wait_timeout must be None for NativeTable".to_string(),
+            });
+        }
+
         let schema = self.schema().await?;
 
         let field = schema.field_with_name(&opts.columns[0])?;

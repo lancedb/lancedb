@@ -800,6 +800,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         self.check_table_response(&request_id, response).await?;
 
+        if let Some(wait_timeout) = index.wait_timeout {
+            let name = format!("{}_idx", column);
+            self.wait_for_index(&[&name], wait_timeout).await?;
+        }
+
         Ok(())
     }
 
