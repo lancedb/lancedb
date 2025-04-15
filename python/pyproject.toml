@@ -43,6 +43,9 @@ classifiers = [
 repository = "https://github.com/lancedb/lancedb"
 
 [project.optional-dependencies]
+pylance = [
+    "pylance>=0.23.2",
+]
 tests = [
     "aiohttp",
     "boto3",

@@ -44,6 +44,9 @@ class OpenaiReranker(Reranker):
         self.api_key = api_key
 
     def _rerank(self, result_set: pa.Table, query: str):
+        result_set = self._handle_empty_results(result_set)
+        if len(result_set) == 0:
+            return result_set
         docs = result_set[self.column].to_pylist()
         response = self._client.chat.completions.create(
             model=self.model_name,
@@ -104,18 +107,14 @@ class OpenaiReranker(Reranker):
         vector_results = self._rerank(vector_results, query)
         if self.score == "relevance":
             vector_results = vector_results.drop_columns(["_distance"])
-
         vector_results = vector_results.sort_by([("_relevance_score", "descending")])
-
         return vector_results
 
     def rerank_fts(self, query: str, fts_results: pa.Table):
         fts_results = self._rerank(fts_results, query)
         if self.score == "relevance":
             fts_results = fts_results.drop_columns(["_score"])
-
         fts_results = fts_results.sort_by([("_relevance_score", "descending")])
-
         return fts_results
 
     @cached_property

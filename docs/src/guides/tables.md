@@ -1001,11 +1001,9 @@ In LanceDB OSS, users can set the `read_consistency_interval` parameter on conne
 
 There are three possible settings for `read_consistency_interval`:
 
-1. **Unset**: The database does not check for updates to tables made by other processes. This setting is suitable for applications where the data does not change during the lifetime of the table reference.
-2. **Zero seconds (Strong consistency)**: The database checks for updates on every read. This provides the strongest consistency guarantees, ensuring that all clients see the latest committed data. However, it has the most overhead. This setting is suitable when consistency matters more than having high QPS. For best performance, combine this setting with the storage option `new_table_enable_v2_manifest_paths` set to `true`.
-3. **Custom interval (Eventual consistency, the default)**: The database checks for updates at a custom interval. By default, this is every 5 seconds. This provides eventual consistency, allowing for some lag between write and read operations. Performance wise, this is a middle ground between strong consistency and no consistency check. This setting is suitable for applications where immediate consistency is not critical, but clients should see updated data eventually.
-
-You can always force a synchronization by calling `checkout_latest()` / `checkoutLatest()` on a table.
+1. **Unset (default)**: The database does not check for updates to tables made by other processes. This provides the best query performance, but means that clients may not see the most up-to-date data. This setting is suitable for applications where the data does not change during the lifetime of the table reference.
+2. **Zero seconds (Strong consistency)**: The database checks for updates on every read. This provides the strongest consistency guarantees, ensuring that all clients see the latest committed data. However, it has the most overhead. This setting is suitable when consistency matters more than having high QPS.
+3. **Custom interval (Eventual consistency)**: The database checks for updates at a custom interval, such as every 5 seconds. This provides eventual consistency, allowing for some lag between write and read operations. Performance wise, this is a middle ground between strong consistency and no consistency check. This setting is suitable for applications where immediate consistency is not critical, but clients should see updated data eventually.
 
 !!! tip "Consistency in LanceDB Cloud"
 
@@ -1043,21 +1041,7 @@ You can always force a synchronization by calling `checkout_latest()` / `checkou
         --8<-- "python/python/tests/docs/test_guide_tables.py:table_async_eventual_consistency"
         ```
 
-    For no consistency, use `None`:
-
-    === "Sync API"
-
-        ```python
-        --8<-- "python/python/tests/docs/test_guide_tables.py:table_no_consistency"
-        ```
-
-    === "Async API"
-
-        ```python
-        --8<-- "python/python/tests/docs/test_guide_tables.py:table_async_no_consistency"
-        ```
-
-    To manually check for updates you can use `checkout_latest`:
+    By default, a `Table` will never check for updates from other writers. To manually check for updates you can use `checkout_latest`:
 
     === "Sync API"
 
@@ -1075,25 +1059,15 @@ You can always force a synchronization by calling `checkout_latest()` / `checkou
     To set strong consistency, use `0`:
 
     ```ts
-    --8<-- "nodejs/examples/basic.test.ts:table_strong_consistency"
+    const db = await lancedb.connect({ uri: "./.lancedb", readConsistencyInterval: 0 });
+    const tbl = await db.openTable("my_table");
     ```
 
     For eventual consistency, specify the update interval as seconds:
 
     ```ts
-    --8<-- "nodejs/examples/basic.test.ts:table_eventual_consistency"
-    ```
-
-    For no consistency, use `null`:
-
-    ```ts
-    --8<-- "nodejs/examples/basic.test.ts:table_no_consistency"
-    ```
-
-    To manually check for updates you can use `checkoutLatest`:
-
-    ```ts
-    --8<-- "nodejs/examples/basic.test.ts:table_checkout_latest"
+    const db = await lancedb.connect({ uri: "./.lancedb", readConsistencyInterval: 5 });
+    const tbl = await db.openTable("my_table");
     ```
 
 <!-- Node doesn't yet support the version time travel: https://github.com/lancedb/lancedb/issues/1007

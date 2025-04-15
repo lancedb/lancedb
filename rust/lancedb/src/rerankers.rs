@@ -29,8 +29,8 @@ impl FromStr for NormalizeMethod {
 
     fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
-            "score" => Ok(NormalizeMethod::Score),
-            "rank" => Ok(NormalizeMethod::Rank),
+            "score" => Ok(Self::Score),
+            "rank" => Ok(Self::Rank),
             _ => Err(Error::InvalidInput {
                 message: format!("invalid normalize method: {}", s),
             }),
@@ -41,8 +41,8 @@ impl FromStr for NormalizeMethod {
 impl std::fmt::Display for NormalizeMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NormalizeMethod::Score => write!(f, "score"),
-            NormalizeMethod::Rank => write!(f, "rank"),
+            Self::Score => write!(f, "score"),
+            Self::Rank => write!(f, "rank"),
         }
     }
 }
