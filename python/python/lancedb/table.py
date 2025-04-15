@@ -2141,6 +2141,8 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        if isinstance(query, FullTextQuery):
+            query_type = "fts"
         vector_column_name = infer_vector_column_name(
             schema=self.schema,
             query_type=query_type,
@@ -3223,8 +3225,10 @@ class AsyncTable:
         async def get_embedding_func(
             vector_column_name: Optional[str],
             query_type: QueryType,
-            query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]],
+            query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]],
         ) -> Tuple[str, EmbeddingFunctionConfig]:
+            if isinstance(query, FullTextQuery):
+                query_type = "fts"
             schema = await self.schema()
             vector_column_name = infer_vector_column_name(
                 schema=schema,

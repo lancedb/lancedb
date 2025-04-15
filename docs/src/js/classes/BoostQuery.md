@@ -22,10 +22,13 @@ including methods to retrieve the query type and convert the query to a dictiona
 new BoostQuery(
    positive,
    negative,
-   negativeBoost): BoostQuery
+   options?): BoostQuery
 ```
 
 Creates an instance of BoostQuery.
+The boost returns documents that match the positive query,
+but penalizes those that match the negative query.
+the penalty is controlled by the `negativeBoost` parameter.
 
 #### Parameters
 
@@ -35,8 +38,11 @@ Creates an instance of BoostQuery.
 * **negative**: [`FullTextQuery`](../interfaces/FullTextQuery.md)
     The negative query that reduces the relevance score.
 
-* **negativeBoost**: `number`
-    The factor by which the negative query reduces the score.
+* **options?**
+    Optional parameters for the boost query.
+    - `negativeBoost`: The boost factor for the negative query (default is 0.0).
+
+* **options.negativeBoost?**: `number`
 
 #### Returns
 
@@ -50,6 +56,8 @@ Creates an instance of BoostQuery.
 queryType(): FullTextQueryType
 ```
 
+The type of the full-text query.
+
 #### Returns
 
 [`FullTextQueryType`](../enumerations/FullTextQueryType.md)
@@ -57,19 +65,3 @@ queryType(): FullTextQueryType
 #### Implementation of
 
 [`FullTextQuery`](../interfaces/FullTextQuery.md).[`queryType`](../interfaces/FullTextQuery.md#querytype)
-
-***
-
-### toDict()
-
-```ts
-toDict(): Record<string, unknown>
-```
-
-#### Returns
-
-`Record`&lt;`string`, `unknown`&gt;
-
-#### Implementation of
-
-[`FullTextQuery`](../interfaces/FullTextQuery.md).[`toDict`](../interfaces/FullTextQuery.md#todict)

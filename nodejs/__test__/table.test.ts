@@ -10,7 +10,7 @@ import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
 
-import { Table, connect } from "../lancedb";
+import { MatchQuery, PhraseQuery, Table, connect } from "../lancedb";
 import {
   Table as ArrowTable,
   Field,
@@ -33,6 +33,7 @@ import {
   register,
 } from "../lancedb/embedding";
 import { Index } from "../lancedb/indices";
+import { instanceOfFullTextQuery } from "../lancedb/query";
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Given a table",
@@ -1302,6 +1303,13 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       const results = await table.search("hello").toArray();
       expect(results[0].text).toBe(data[0].text);
+
+      const query = new MatchQuery("goodbye", "text");
+      expect(instanceOfFullTextQuery(query)).toBe(true);
+      const results2 = await table
+        .search(new MatchQuery("goodbye", "text"))
+        .toArray();
+      expect(results2[0].text).toBe(data[1].text);
     });
 
     test("full text index on list", async () => {
@@ -1375,6 +1383,43 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results.length).toBe(2);
       const phraseResults = await table.search('"hello world"').toArray();
       expect(phraseResults.length).toBe(1);
+      const phraseResults2 = await table
+        .search(new PhraseQuery("hello world", "text"))
+        .toArray();
+      expect(phraseResults2.length).toBe(1);
+    });
+
+    test("full text search fuzzy query", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "fa", vector: [0.1, 0.2, 0.3] },
+        { text: "fo", vector: [0.4, 0.5, 0.6] },
+        { text: "fob", vector: [0.4, 0.5, 0.6] },
+        { text: "focus", vector: [0.4, 0.5, 0.6] },
+        { text: "foo", vector: [0.4, 0.5, 0.6] },
+        { text: "food", vector: [0.4, 0.5, 0.6] },
+        { text: "foul", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts(),
+      });
+
+      const results = await table
+        .search(new MatchQuery("foo", "text"))
+        .toArray();
+      expect(results.length).toBe(1);
+      expect(results[0].text).toBe("foo");
+
+      const fuzzyResults = await table
+        .search(new MatchQuery("foo", "text", { fuzziness: 1 }))
+        .toArray();
+      expect(fuzzyResults.length).toBe(4);
+      const resultSet = new Set(fuzzyResults.map((r) => r.text));
+      expect(resultSet.has("foo")).toBe(true);
+      expect(resultSet.has("fob")).toBe(true);
+      expect(resultSet.has("fo")).toBe(true);
+      expect(resultSet.has("food")).toBe(true);
     });
 
     test.each([

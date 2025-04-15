@@ -44,6 +44,8 @@ Creates an instance of `PhraseQuery`.
 queryType(): FullTextQueryType
 ```
 
+The type of the full-text query.
+
 #### Returns
 
 [`FullTextQueryType`](../enumerations/FullTextQueryType.md)
@@ -51,19 +53,3 @@ queryType(): FullTextQueryType
 #### Implementation of
 
 [`FullTextQuery`](../interfaces/FullTextQuery.md).[`queryType`](../interfaces/FullTextQuery.md#querytype)
-
-***
-
-### toDict()
-
-```ts
-toDict(): Record<string, unknown>
-```
-
-#### Returns
-
-`Record`&lt;`string`, `unknown`&gt;
-
-#### Implementation of
-
-[`FullTextQuery`](../interfaces/FullTextQuery.md).[`toDict`](../interfaces/FullTextQuery.md#todict)

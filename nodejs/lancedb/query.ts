@@ -11,6 +11,7 @@ import {
 } from "./arrow";
 import { type IvfPqOptions } from "./indices";
 import {
+  JsFullTextQuery,
   RecordBatchIterator as NativeBatchIterator,
   Query as NativeQuery,
   Table as NativeTable,
@@ -177,9 +178,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
           columns: columns,
         });
       } else {
-        // If query is a FullTextQuery object, convert it to a dict
-        const queryObj = query.toDict();
-        inner.fullTextSearch(queryObj);
+        inner.fullTextSearch({ query: query.inner });
       }
     });
     return this;
@@ -743,8 +742,7 @@ export class Query extends QueryBase<NativeQuery> {
           columns: columns,
         });
       } else {
-        const queryObj = query.toDict();
-        inner.fullTextSearch(queryObj);
+        inner.fullTextSearch({ query: query.inner });
       }
     });
     return this;
@@ -772,130 +770,141 @@ export enum FullTextQueryType {
  * including methods to retrieve the query type and convert the query to a dictionary format.
  */
 export interface FullTextQuery {
+  /**
+   * Returns the inner query object.
+   * This is the underlying query object used by the database engine.
+   * @ignore
+   */
+  inner: JsFullTextQuery;
+
+  /**
+   * The type of the full-text query.
+   */
   queryType(): FullTextQueryType;
-  toDict(): Record<string, unknown>;
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: we want any here
+export function instanceOfFullTextQuery(obj: any): obj is FullTextQuery {
+  return obj != null && obj.inner instanceof JsFullTextQuery;
 }
 
 export class MatchQuery implements FullTextQuery {
+  /** @ignore */
+  public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of MatchQuery.
    *
    * @param query - The text query to search for.
    * @param column - The name of the column to search within.
-   * @param boost - (Optional) The boost factor to influence the relevance score of this query. Default is `1.0`.
-   * @param fuzziness - (Optional) The allowed edit distance for fuzzy matching. Default is `0`.
-   * @param maxExpansions - (Optional) The maximum number of terms to consider for fuzzy matching. Default is `50`.
+   * @param options - Optional parameters for the match query.
+   *   - `boost`: The boost factor for the query (default is 1.0).
+   *   - `fuzziness`: The fuzziness level for the query (default is 0).
+   *   - `maxExpansions`: The maximum number of terms to consider for fuzzy matching (default is 50).
    */
   constructor(
-    private query: string,
-    private column: string,
-    private boost: number = 1.0,
-    private fuzziness: number = 0,
-    private maxExpansions: number = 50,
-  ) {}
+    query: string,
+    column: string,
+    options?: {
+      boost?: number;
+      fuzziness?: number;
+      maxExpansions?: number;
+    },
+  ) {
+    let fuzziness = options?.fuzziness;
+    if (fuzziness === undefined) {
+      fuzziness = 0;
+    }
+    this.inner = JsFullTextQuery.matchQuery(
+      query,
+      column,
+      options?.boost ?? 1.0,
+      fuzziness,
+      options?.maxExpansions ?? 50,
+    );
+  }
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.Match;
   }
-
-  toDict(): Record<string, unknown> {
-    return {
-      [this.queryType()]: {
-        [this.column]: {
-          query: this.query,
-          boost: this.boost,
-          fuzziness: this.fuzziness,
-          // biome-ignore lint/style/useNamingConvention: use underscore for consistency with the other APIs
-          max_expansions: this.maxExpansions,
-        },
-      },
-    };
-  }
 }
 
 export class PhraseQuery implements FullTextQuery {
+  /** @ignore */
+  public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of `PhraseQuery`.
    *
    * @param query - The phrase to search for in the specified column.
    * @param column - The name of the column to search within.
    */
-  constructor(
-    private query: string,
-    private column: string,
-  ) {}
+  constructor(query: string, column: string) {
+    this.inner = JsFullTextQuery.phraseQuery(query, column);
+  }
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.MatchPhrase;
   }
-
-  toDict(): Record<string, unknown> {
-    return {
-      [this.queryType()]: {
-        [this.column]: this.query,
-      },
-    };
-  }
 }
 
 export class BoostQuery implements FullTextQuery {
+  /** @ignore */
+  public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of BoostQuery.
+   * The boost returns documents that match the positive query,
+   * but penalizes those that match the negative query.
+   * the penalty is controlled by the `negativeBoost` parameter.
    *
    * @param positive - The positive query that boosts the relevance score.
    * @param negative - The negative query that reduces the relevance score.
-   * @param negativeBoost - The factor by which the negative query reduces the score.
+   * @param options - Optional parameters for the boost query.
+   *  - `negativeBoost`: The boost factor for the negative query (default is 0.0).
    */
   constructor(
-    private positive: FullTextQuery,
-    private negative: FullTextQuery,
-    private negativeBoost: number,
-  ) {}
+    positive: FullTextQuery,
+    negative: FullTextQuery,
+    options?: {
+      negativeBoost?: number;
+    },
+  ) {
+    this.inner = JsFullTextQuery.boostQuery(
+      positive.inner,
+      negative.inner,
+      options?.negativeBoost,
+    );
+  }
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.Boost;
   }
-
-  toDict(): Record<string, unknown> {
-    return {
-      [this.queryType()]: {
-        positive: this.positive.toDict(),
-        negative: this.negative.toDict(),
-        // biome-ignore lint/style/useNamingConvention: use underscore for consistency with the other APIs
-        negative_boost: this.negativeBoost,
-      },
-    };
-  }
 }
 
 export class MultiMatchQuery implements FullTextQuery {
+  /** @ignore */
+  public readonly inner: JsFullTextQuery;
   /**
    * Creates an instance of MultiMatchQuery.
    *
    * @param query - The text query to search for across multiple columns.
    * @param columns - An array of column names to search within.
-   * @param boosts - (Optional) An array of boost factors corresponding to each column. Default is an array of 1.0 for each column.
-   *
-   * The `boosts` array should have the same length as `columns`. If not provided, all columns will have a default boost of 1.0.
-   * If the length of `boosts` is less than `columns`, it will be padded with 1.0s.
+   * @param options - Optional parameters for the multi-match query.
+   *  - `boosts`: An array of boost factors for each column (default is 1.0 for all).
    */
   constructor(
-    private query: string,
-    private columns: string[],
-    private boosts: number[] = columns.map(() => 1.0),
-  ) {}
+    query: string,
+    columns: string[],
+    options?: {
+      boosts?: number[];
+    },
+  ) {
+    this.inner = JsFullTextQuery.multiMatchQuery(
+      query,
+      columns,
+      options?.boosts,
+    );
+  }
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.MultiMatch;
-  }
-
-  toDict(): Record<string, unknown> {
-    return {
-      [this.queryType()]: {
-        query: this.query,
-        columns: this.columns,
-        boost: this.boosts,
-      },
-    };
   }
 }
