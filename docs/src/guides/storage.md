@@ -342,7 +342,7 @@ For **read and write access**, LanceDB will need a policy such as:
             "Action": [
               "s3:PutObject",
               "s3:GetObject",
-              "s3:DeleteObject",
+              "s3:DeleteObject"
             ],
             "Resource": "arn:aws:s3:::<bucket>/<prefix>/*"
         },
@@ -374,7 +374,7 @@ For **read-only access**, LanceDB will need a policy such as:
         {
             "Effect": "Allow",
             "Action": [
-              "s3:GetObject",
+              "s3:GetObject"
             ],
             "Resource": "arn:aws:s3:::<bucket>/<prefix>/*"
         },
