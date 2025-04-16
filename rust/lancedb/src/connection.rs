@@ -9,7 +9,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatchReader;
 use arrow_schema::{Field, SchemaRef};
 use lance::dataset::ReadParams;
-use object_store::aws::AwsCredential;
+use object_store::{aws::AwsCredential, DynObjectStore};
 
 use crate::arrow::{IntoArrow, IntoArrowStream, SendableRecordBatchStream};
 use crate::catalog::listing::ListingCatalog;
@@ -627,6 +627,7 @@ pub struct ConnectRequest {
     /// consistency only applies to read operations. Write operations are
     /// always consistent.
     pub read_consistency_interval: Option<std::time::Duration>,
+    pub object_store: Option<(Arc<DynObjectStore>, Option<usize>)>,
 }
 
 #[derive(Debug)]
@@ -645,6 +646,7 @@ impl ConnectBuilder {
                 client_config: Default::default(),
                 read_consistency_interval: None,
                 options: HashMap::new(),
+                object_store: None,
             },
             embedding_registry: None,
         }
@@ -732,6 +734,11 @@ impl ConnectBuilder {
     #[cfg(feature = "remote")]
     pub fn client_config(mut self, config: ClientConfig) -> Self {
         self.request.client_config = config;
+        self
+    }
+
+    pub fn object_store(mut self, object_store: (Arc<DynObjectStore>, Option<usize>)) -> Self {
+        self.request.object_store = Some(object_store);
         self
     }
 
@@ -884,6 +891,7 @@ impl CatalogConnectBuilder {
                 client_config: Default::default(),
                 read_consistency_interval: None,
                 options: HashMap::new(),
+                object_store: None,
             },
         }
     }
