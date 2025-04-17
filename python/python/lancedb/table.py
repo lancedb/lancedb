@@ -1745,7 +1745,31 @@ class LanceTable(Table):
         )
 
     def drop_index(self, name: str) -> None:
+        """
+        Drops an index from the table
+
+        Parameters
+        ----------
+        name: str
+            The name of the index to drop
+        """
         return LOOP.run(self._table.drop_index(name))
+
+    def prewarm_index(self, name: str) -> None:
+        """
+        Prewarms an index in the table
+
+        This loads the entire index into memory
+
+        If the index does not fit into the available cache this call
+        may be wasteful
+
+        Parameters
+        ----------
+        name: str
+            The name of the index to prewarm
+        """
+        return LOOP.run(self._table.prewarm_index(name))
 
     def create_scalar_index(
         self,
@@ -3001,6 +3025,23 @@ class AsyncTable:
         of the indices.
         """
         await self._inner.drop_index(name)
+
+    async def prewarm_index(self, name: str) -> None:
+        """
+        Prewarm an index in the table.
+
+        Parameters
+        ----------
+        name: str
+            The name of the index to prewarm
+
+        Notes
+        -----
+        This will load the index into memory.  This may reduce the cold-start time for
+        future queries.  If the index does not fit in the cache then this call may be
+        wasteful.
+        """
+        await self._inner.prewarm_index(name)
 
     async def add(
         self,

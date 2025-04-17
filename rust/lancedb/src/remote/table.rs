@@ -1003,6 +1003,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(())
     }
 
+    async fn prewarm_index(&self, _index_name: &str) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "prewarm_index is not yet supported on LanceDB cloud.".into(),
+        })
+    }
+
     async fn table_definition(&self) -> Result<TableDefinition> {
         Err(Error::NotSupported {
             message: "table_definition is not supported on LanceDB cloud.".into(),
@@ -1769,6 +1775,7 @@ mod tests {
                                 "boost": 1.0,
                                 "fuzziness": 0,
                                 "max_expansions": 50,
+                                "operator": "Or",
                             },
                         }
                     },

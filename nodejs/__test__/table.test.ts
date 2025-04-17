@@ -1312,6 +1312,28 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results2[0].text).toBe(data[1].text);
     });
 
+    test("prewarm full text search index", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: ["lance database", "the", "search"], vector: [0.1, 0.2, 0.3] },
+        { text: ["lance database"], vector: [0.4, 0.5, 0.6] },
+        { text: ["lance", "search"], vector: [0.7, 0.8, 0.9] },
+        { text: ["database", "search"], vector: [1.0, 1.1, 1.2] },
+        { text: ["unrelated", "doc"], vector: [1.3, 1.4, 1.5] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts(),
+      });
+
+      // For the moment, we just confirm we can call prewarmIndex without error
+      // and still search it afterwards
+      await table.prewarmIndex("text_idx");
+
+      const results = await table.search("lance").toArray();
+      expect(results.length).toBe(3);
+    });
+
     test("full text index on list", async () => {
       const db = await connect(tmpDir.name);
       const data = [

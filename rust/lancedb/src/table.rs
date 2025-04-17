@@ -455,6 +455,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     /// Drop an index from the table.
     async fn drop_index(&self, name: &str) -> Result<()>;
+    /// Prewarm an index in the table
+    async fn prewarm_index(&self, name: &str) -> Result<()>;
     /// Get statistics about the index.
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
     /// Merge insert new records into the table.
@@ -1084,6 +1086,22 @@ impl Table {
     /// Use [`Self::list_indices()`] to find the names of the indices.
     pub async fn drop_index(&self, name: &str) -> Result<()> {
         self.inner.drop_index(name).await
+    }
+
+    /// Prewarm an index in the table
+    ///
+    /// This is a hint to fully load the index into memory.  It can be used to
+    /// avoid cold starts
+    ///
+    /// It is generally wasteful to call this if the index does not fit into the
+    /// available cache.
+    ///
+    /// Note: This function is not yet supported on all indices, in which case it
+    /// may do nothing.
+    ///
+    /// Use [`Self::list_indices()`] to find the names of the indices.
+    pub async fn prewarm_index(&self, name: &str) -> Result<()> {
+        self.inner.prewarm_index(name).await
     }
 
     // Take many execution plans and map them into a single plan that adds
@@ -2004,6 +2022,11 @@ impl BaseTable for NativeTable {
         let mut dataset = self.dataset.get_mut().await?;
         dataset.drop_index(index_name).await?;
         Ok(())
+    }
+
+    async fn prewarm_index(&self, index_name: &str) -> Result<()> {
+        let dataset = self.dataset.get().await?;
+        Ok(dataset.prewarm_index(index_name).await?)
     }
 
     async fn update(&self, update: UpdateBuilder) -> Result<u64> {
@@ -3455,6 +3478,9 @@ mod tests {
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.index_type, crate::index::IndexType::FTS);
         assert_eq!(stats.distance_type, None);
+
+        // Make sure we can call prewarm without error
+        table.prewarm_index("text_idx").await.unwrap();
     }
 
     #[tokio::test]
@@ -3550,7 +3576,7 @@ mod tests {
         let native_tbl = table.as_native().unwrap();
 
         let manifest = native_tbl.manifest().await.unwrap();
-        assert_eq!(manifest.config.len(), 0);
+        let base_config_len = manifest.config.len();
 
         native_tbl
             .update_config(vec![("test_key1".to_string(), "test_val1".to_string())])
@@ -3558,7 +3584,7 @@ mod tests {
             .unwrap();
 
         let manifest = native_tbl.manifest().await.unwrap();
-        assert_eq!(manifest.config.len(), 1);
+        assert_eq!(manifest.config.len(), 1 + base_config_len);
         assert_eq!(
             manifest.config.get("test_key1"),
             Some(&"test_val1".to_string())
@@ -3569,7 +3595,7 @@ mod tests {
             .await
             .unwrap();
         let manifest = native_tbl.manifest().await.unwrap();
-        assert_eq!(manifest.config.len(), 2);
+        assert_eq!(manifest.config.len(), 2 + base_config_len);
         assert_eq!(
             manifest.config.get("test_key1"),
             Some(&"test_val1".to_string())
@@ -3587,7 +3613,7 @@ mod tests {
             .await
             .unwrap();
         let manifest = native_tbl.manifest().await.unwrap();
-        assert_eq!(manifest.config.len(), 2);
+        assert_eq!(manifest.config.len(), 2 + base_config_len);
         assert_eq!(
             manifest.config.get("test_key1"),
             Some(&"test_val1".to_string())
@@ -3599,7 +3625,7 @@ mod tests {
 
         native_tbl.delete_config_keys(&["test_key1"]).await.unwrap();
         let manifest = native_tbl.manifest().await.unwrap();
-        assert_eq!(manifest.config.len(), 1);
+        assert_eq!(manifest.config.len(), 1 + base_config_len);
         assert_eq!(
             manifest.config.get("test_key2"),
             Some(&"test_val2_update".to_string())
