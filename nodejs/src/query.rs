@@ -350,10 +350,8 @@ impl JsFullTextQuery {
         boosts: Option<Vec<f64>>,
     ) -> napi::Result<Self> {
         let q = match boosts {
-            Some(boosts) => MultiMatchQuery::try_new(
-                query,
-                columns,
-            ).and_then(|q| q.try_with_boosts(boosts.into_iter().map(|v| v as f32).collect())),
+            Some(boosts) => MultiMatchQuery::try_new(query, columns)
+                .and_then(|q| q.try_with_boosts(boosts.into_iter().map(|v| v as f32).collect())),
             None => MultiMatchQuery::try_new(query, columns),
         }
         .map_err(|e| {

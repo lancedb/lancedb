@@ -1089,16 +1089,16 @@ impl Table {
     }
 
     /// Prewarm an index in the table
-    /// 
+    ///
     /// This is a hint to fully load the index into memory.  It can be used to
     /// avoid cold starts
-    /// 
+    ///
     /// It is generally wasteful to call this if the index does not fit into the
     /// available cache.
-    /// 
+    ///
     /// Note: This function is not yet supported on all indices, in which case it
     /// may do nothing.
-    /// 
+    ///
     /// Use [`Self::list_indices()`] to find the names of the indices.
     pub async fn prewarm_index(&self, name: &str) -> Result<()> {
         self.inner.prewarm_index(name).await
