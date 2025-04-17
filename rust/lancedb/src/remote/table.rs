@@ -1775,6 +1775,7 @@ mod tests {
                                 "boost": 1.0,
                                 "fuzziness": 0,
                                 "max_expansions": 50,
+                                "operator": "Or",
                             },
                         }
                     },

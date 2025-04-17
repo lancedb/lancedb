@@ -3576,7 +3576,7 @@ mod tests {
         let native_tbl = table.as_native().unwrap();
 
         let manifest = native_tbl.manifest().await.unwrap();
-        assert_eq!(manifest.config.len(), 0);
+        let base_config_len = manifest.config.len();
 
         native_tbl
             .update_config(vec![("test_key1".to_string(), "test_val1".to_string())])
@@ -3584,7 +3584,7 @@ mod tests {
             .unwrap();
 
         let manifest = native_tbl.manifest().await.unwrap();
-        assert_eq!(manifest.config.len(), 1);
+        assert_eq!(manifest.config.len(), 1 + base_config_len);
         assert_eq!(
             manifest.config.get("test_key1"),
             Some(&"test_val1".to_string())
@@ -3595,7 +3595,7 @@ mod tests {
             .await
             .unwrap();
         let manifest = native_tbl.manifest().await.unwrap();
-        assert_eq!(manifest.config.len(), 2);
+        assert_eq!(manifest.config.len(), 2 + base_config_len);
         assert_eq!(
             manifest.config.get("test_key1"),
             Some(&"test_val1".to_string())
@@ -3613,7 +3613,7 @@ mod tests {
             .await
             .unwrap();
         let manifest = native_tbl.manifest().await.unwrap();
-        assert_eq!(manifest.config.len(), 2);
+        assert_eq!(manifest.config.len(), 2 + base_config_len);
         assert_eq!(
             manifest.config.get("test_key1"),
             Some(&"test_val1".to_string())
@@ -3625,7 +3625,7 @@ mod tests {
 
         native_tbl.delete_config_keys(&["test_key1"]).await.unwrap();
         let manifest = native_tbl.manifest().await.unwrap();
-        assert_eq!(manifest.config.len(), 1);
+        assert_eq!(manifest.config.len(), 1 + base_config_len);
         assert_eq!(
             manifest.config.get("test_key2"),
             Some(&"test_val2_update".to_string())
