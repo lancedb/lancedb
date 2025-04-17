@@ -236,6 +236,17 @@ export abstract class Table {
   abstract dropIndex(name: string): Promise<void>;
 
   /**
+   * Prewarm an index in the table.
+   *
+   * @param name The name of the index.
+   *
+   * This will load the index into memory.  This may reduce the cold-start time for
+   * future queries.  If the index does not fit in the cache then this call may be
+   * wasteful.
+   */
+  abstract prewarmIndex(name: string): Promise<void>;
+
+  /**
    * Create a {@link Query} Builder.
    *
    * Queries allow you to search your existing data.  By default the query will
@@ -563,6 +574,10 @@ export class LocalTable extends Table {
 
   async dropIndex(name: string): Promise<void> {
     await this.inner.dropIndex(name);
+  }
+
+  async prewarmIndex(name: string): Promise<void> {
+    await this.inner.prewarmIndex(name);
   }
 
   query(): Query {
