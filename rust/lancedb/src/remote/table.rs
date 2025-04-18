@@ -995,6 +995,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let body = response.text().await.err_to_http(request_id.clone())?;
 
+        println!("body: {:?}", body);
         let stats = serde_json::from_str(&body).map_err(|e| Error::Http {
             source: format!("Failed to parse index statistics: {}", e).into(),
             request_id,
@@ -1077,6 +1078,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
+    use http::Response;
     use lance_index::scalar::inverted::query::MatchQuery;
     use lance_index::scalar::FullTextSearchQuery;
     use reqwest::Body;
@@ -2501,11 +2503,15 @@ mod tests {
                         "index_type": "LABEL_LIST"
                     })
                 }
-                path => panic!("Unexpected path: {}", path),
+                path => {
+                    serde_json::json!(None::<String>)
+                }
             };
+            let body = serde_json::to_string(&response_body).unwrap();
+            let status = if body == "null" { 404 } else { 200 };
             http::Response::builder()
-                .status(200)
-                .body(serde_json::to_string(&response_body).unwrap())
+                .status(status)
+                .body(body)
                 .unwrap()
         });
         table
