@@ -2,7 +2,7 @@
 
 LanceDB docs are deployed to https://lancedb.github.io/lancedb/.
 
-Docs is built and deployed automatically by [Github Actions](.github/workflows/docs.yml)
+Docs is built and deployed automatically by [Github Actions](../.github/workflows/docs.yml)
 whenever a commit is pushed to the `main` branch. So it is possible for the docs to show
 unreleased features.
 

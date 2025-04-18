@@ -454,6 +454,28 @@ Modeled after ``VACUUM`` in PostgreSQL.
 
 ***
 
+### prewarmIndex()
+
+```ts
+abstract prewarmIndex(name): Promise<void>
+```
+
+Prewarm an index in the table.
+
+#### Parameters
+
+* **name**: `string`
+    The name of the index.
+    This will load the index into memory.  This may reduce the cold-start time for
+    future queries.  If the index does not fit in the cache then this call may be
+    wasteful.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### query()
 
 ```ts

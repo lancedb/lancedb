@@ -8,7 +8,7 @@ import pyarrow as pa
 import pytest
 import pytest_asyncio
 from lancedb import AsyncConnection, AsyncTable, connect_async
-from lancedb.index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq
+from lancedb.index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 
 
 @pytest_asyncio.fixture
@@ -117,6 +117,18 @@ async def test_create_label_list_index(some_table: AsyncTable):
     await some_table.create_index("tags", config=LabelList())
     indices = await some_table.list_indices()
     assert str(indices) == '[Index(LabelList, columns=["tags"], name="tags_idx")]'
+
+
+@pytest.mark.asyncio
+async def test_full_text_search_index(some_table: AsyncTable):
+    await some_table.create_index("tags", config=FTS(with_position=False))
+    indices = await some_table.list_indices()
+    assert str(indices) == '[Index(FTS, columns=["tags"], name="tags_idx")]'
+
+    await some_table.prewarm_index("tags_idx")
+
+    res = await (await some_table.search("tag0")).to_arrow()
+    assert res.num_rows > 0
 
 
 @pytest.mark.asyncio
