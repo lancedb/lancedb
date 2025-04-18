@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use crate::error::Result;
-use crate::index::IndexStatistics;
 use crate::table::BaseTable;
 use crate::Error;
 use log::debug;
@@ -62,7 +61,7 @@ pub async fn wait_for_index(
                 }
             }
         }
-        remaining.retain(|idx| !completed.contains(&idx));
+        remaining.retain(|idx| !completed.contains(idx));
         if remaining.is_empty() {
             return Ok(());
         }
