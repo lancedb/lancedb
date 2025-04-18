@@ -775,6 +775,23 @@ impl Table {
         )
     }
 
+    /// See [Table::create_index]
+    /// For remote tables, this allows an optional wait_timeout to poll until asynchronous indexing is complete
+    pub fn create_index_with_timeout(&self, columns: &[impl AsRef<str>], index: Index, wait_timeout: Option<std::time::Duration>) -> IndexBuilder {
+        let mut builder = IndexBuilder::new(
+            self.inner.clone(),
+            columns
+                .iter()
+                .map(|val| val.as_ref().to_string())
+                .collect::<Vec<_>>(),
+            index,
+        );
+        if let Some(timeout) = wait_timeout {
+            builder = builder.wait_timeout(timeout);
+        }
+        builder
+    }
+
     /// Create a builder for a merge insert operation
     ///
     /// This operation can add rows, update rows, and remove rows all in a single
@@ -3479,7 +3496,7 @@ mod tests {
             .unwrap();
 
         table
-            .create_index(&["text"], Index::FTS(Default::default()))
+            .create_index_with_timeout(&["text"], Index::FTS(Default::default()))
             .execute()
             .await
             .unwrap();

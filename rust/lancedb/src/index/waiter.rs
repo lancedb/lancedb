@@ -4,9 +4,14 @@
 use crate::error::Result;
 use crate::table::BaseTable;
 use crate::Error;
-use log::debug;
+use log::{debug};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
+use crate::index::IndexStatistics;
+
+const DEFAULT_SLEEP_MS: u64 = 1000;
+const MAX_WAIT: Duration = Duration::from_secs(2 * 60  * 60);
+
 /// Poll the table using list_indices() and index_stats() until all of the indices have 0 un-indexed rows.
 /// Will return Error::Timeout if the columns are not fully indexed within the timeout.
 pub async fn wait_for_index(
@@ -14,6 +19,15 @@ pub async fn wait_for_index(
     index_names: &[&str],
     timeout: Duration,
 ) -> Result<()> {
+    if timeout > MAX_WAIT {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "timeout must be less than {:?}",
+                MAX_WAIT
+            )
+            .to_string(),
+        });
+    }
     let start = Instant::now();
     let mut remaining = index_names.to_vec();
 
@@ -36,6 +50,8 @@ pub async fn wait_for_index(
                 }
                 Some(s) => {
                     if s.num_unindexed_rows == 0 {
+                        // note: this may never stabilize under constant writes.
+                        // we should later replace this with a status/job model
                         completed.push(idx);
                         debug!(
                             "fully indexed '{}'. indexed rows: {}",
@@ -54,8 +70,19 @@ pub async fn wait_for_index(
         if remaining.is_empty() {
             return Ok(());
         }
-        sleep(Duration::from_millis(1000)).await;
+        sleep(Duration::from_millis(DEFAULT_SLEEP_MS)).await;
     }
+
+    // debug log some diagnostics
+    for r in &remaining {
+        let stats = table.index_stats(r.as_ref()).await?;
+        if let Some(s) = stats {
+            debug!("index {} not fully indexed after {:?}. stats: {:?}", r, timeout, s)
+        } else {
+            debug!("index {} not found after {:?}", r, timeout)
+        }
+    }
+
     Err(Error::Timeout {
         message: format!(
             "timed out waiting for indices: {:?} after {:?}",
