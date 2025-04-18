@@ -696,8 +696,9 @@ class Table(ABC):
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
     ) -> None:
         """
-        Wait for indexing to complete for the given index names. This will poll the table until all the indices are
-        fully indexed, or raise a timeout exception if the timeout is reached.
+        Wait for indexing to complete for the given index names.
+        This will poll the table until all the indices are fully indexed,
+        or raise a timeout exception if the timeout is reached.
 
         Parameters
         ----------
@@ -3081,8 +3082,9 @@ class AsyncTable:
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
     ) -> None:
         """
-        Wait for indexing to complete for the given index names. This will poll the table until all the indices are
-        fully indexed, or raise a timeout exception if the timeout is reached.
+        Wait for indexing to complete for the given index names.
+        This will poll the table until all the indices are fully indexed,
+        or raise a timeout exception if the timeout is reached.
 
         Parameters
         ----------
