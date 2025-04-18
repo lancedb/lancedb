@@ -111,6 +111,7 @@ impl Table {
         index: Option<&Index>,
         column: String,
         replace: Option<bool>,
+        wait_timeout_s: Option<u64>,
     ) -> napi::Result<()> {
         let lancedb_index = if let Some(index) = index {
             index.consume()?
@@ -120,6 +121,9 @@ impl Table {
         let mut builder = self.inner_ref()?.create_index(&[column], lancedb_index);
         if let Some(replace) = replace {
             builder = builder.replace(replace);
+        }
+        if let Some(timeout) = wait_timeout_s {
+            builder = builder.wait_timeout(Duration::from_seconds(timeout));
         }
         builder.execute().await.default_error()
     }
@@ -138,6 +142,12 @@ impl Table {
             .prewarm_index(&index_name)
             .await
             .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn wait_for_index(&self, index_names: &[&str], timeout_s: u64) -> Result<()> {
+        let timeout = Duration::from_seconds(timeout_s);
+        self.inner_ref()?.wait_for_index(index_names, timeout).await.default_error()
     }
 
     #[napi(catch_unwind)]
