@@ -3496,7 +3496,7 @@ mod tests {
             .unwrap();
 
         table
-            .create_index_with_timeout(&["text"], Index::FTS(Default::default()))
+            .create_index(&["text"], Index::FTS(Default::default()))
             .execute()
             .await
             .unwrap();

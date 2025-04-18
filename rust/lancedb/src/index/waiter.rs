@@ -36,7 +36,7 @@ pub async fn wait_for_index(
         let mut completed = vec![];
         let indices = table.list_indices().await?;
 
-        for idx in index_names {
+        for idx in remaining {
             if !indices.iter().any(|i| i.name == *idx) {
                 debug!("still waiting for new index '{}'", idx);
                 continue;
