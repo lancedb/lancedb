@@ -1078,7 +1078,6 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
-    use http::Response;
     use lance_index::scalar::inverted::query::MatchQuery;
     use lance_index::scalar::FullTextSearchQuery;
     use reqwest::Body;
@@ -2503,7 +2502,7 @@ mod tests {
                         "index_type": "LABEL_LIST"
                     })
                 }
-                path => {
+                _path => {
                     serde_json::json!(None::<String>)
                 }
             };
