@@ -602,7 +602,7 @@ export class LocalTable extends Table {
     indexNames: string[],
     timeoutSeconds: number,
   ): Promise<void> {
-    await this.inner.waitforIndex(indexNames, timeoutSeconds);
+    await this.inner.waitForIndex(indexNames, timeoutSeconds);
   }
 
   query(): Query {
