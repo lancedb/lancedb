@@ -2509,10 +2509,7 @@ mod tests {
             };
             let body = serde_json::to_string(&response_body).unwrap();
             let status = if body == "null" { 404 } else { 200 };
-            http::Response::builder()
-                .status(status)
-                .body(body)
-                .unwrap()
+            http::Response::builder().status(status).body(body).unwrap()
         });
         table
     }
