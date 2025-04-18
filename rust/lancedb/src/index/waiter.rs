@@ -36,7 +36,7 @@ pub async fn wait_for_index(
         let mut completed = vec![];
         let indices = table.list_indices().await?;
 
-        for idx in remaining {
+        for &idx in &remaining {
             if !indices.iter().any(|i| i.name == *idx) {
                 debug!("still waiting for new index '{}'", idx);
                 continue;
@@ -73,13 +73,12 @@ pub async fn wait_for_index(
         sleep(Duration::from_millis(DEFAULT_SLEEP_MS)).await;
     }
 
-    // debug log some diagnostics
-    for r in &remaining {
+    // debug log index diagnostics
+    for &r in &remaining {
         let stats = table.index_stats(r.as_ref()).await?;
-        if let Some(s) = stats {
-            debug!("index {} not fully indexed after {:?}. stats: {:?}", r, timeout, s)
-        } else {
-            debug!("index {} not found after {:?}", r, timeout)
+        match stats {
+            Some(s) => debug!("index '{}' not fully indexed after {:?}. stats: {:?}", r, timeout, s),
+            None => debug!("index '{}' not found after {:?}", r, timeout),
         }
     }
 
