@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
-
 use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
+use std::sync::Arc;
+use std::time::Duration;
 use vector::IvfFlatIndexBuilder;
 
 use crate::{table::BaseTable, DistanceType, Error, Result};
@@ -17,6 +17,7 @@ use self::{
 
 pub mod scalar;
 pub mod vector;
+pub mod waiter;
 
 /// Supported index types.
 #[derive(Debug, Clone)]
@@ -69,6 +70,7 @@ pub struct IndexBuilder {
     pub(crate) index: Index,
     pub(crate) columns: Vec<String>,
     pub(crate) replace: bool,
+    pub(crate) wait_timeout: Option<Duration>,
 }
 
 impl IndexBuilder {
@@ -78,6 +80,7 @@ impl IndexBuilder {
             index,
             columns,
             replace: true,
+            wait_timeout: None,
         }
     }
 
@@ -88,6 +91,15 @@ impl IndexBuilder {
     /// that index is out of date.
     pub fn replace(mut self, v: bool) -> Self {
         self.replace = v;
+        self
+    }
+
+    /// Duration of time to wait for asynchronous indexing to complete. If not set,
+    /// `create_index()` will not wait.
+    ///
+    /// This is not supported for `NativeTable` since indexing is synchronous.
+    pub fn wait_timeout(mut self, d: Duration) -> Self {
+        self.wait_timeout = Some(d);
         self
     }
 

@@ -177,15 +177,19 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, index=None, replace=None))]
+    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None))]
     pub fn create_index<'a>(
         self_: PyRef<'a, Self>,
         column: String,
         index: Option<Bound<'_, PyAny>>,
         replace: Option<bool>,
+        wait_timeout: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
-        let mut op = self_.inner_ref()?.create_index(&[column], index);
+        let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
+        let mut op = self_
+            .inner_ref()?
+            .create_index_with_timeout(&[column], index, timeout);
         if let Some(replace) = replace {
             op = op.replace(replace);
         }
@@ -200,6 +204,26 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.drop_index(&index_name).await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn wait_for_index<'a>(
+        self_: PyRef<'a, Self>,
+        index_names: Vec<String>,
+        timeout: Bound<'_, PyAny>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let timeout = timeout.extract::<std::time::Duration>()?;
+        future_into_py(self_.py(), async move {
+            let index_refs = index_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<&str>>();
+            inner
+                .wait_for_index(&index_refs, timeout)
+                .await
+                .infer_error()?;
             Ok(())
         })
     }

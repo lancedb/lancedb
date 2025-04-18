@@ -681,4 +681,6 @@ export interface IndexOptions {
    * The default is true
    */
   replace?: boolean;
+
+  waitTimeoutSeconds?: number;
 }

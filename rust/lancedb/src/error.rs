@@ -35,6 +35,8 @@ pub enum Error {
     Schema { message: String },
     #[snafu(display("Runtime error: {message}"))]
     Runtime { message: String },
+    #[snafu(display("Timeout error: {message}"))]
+    Timeout { message: String },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]

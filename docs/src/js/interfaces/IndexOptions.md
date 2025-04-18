@@ -39,3 +39,11 @@ and the same name, then an error will be returned.  This is true even if
 that index is out of date.
 
 The default is true
+
+### waitTimeoutSeconds?
+
+```ts
+optional waitTimeoutSeconds: number;
+```
+
+Whether to wait for asynchronous indexing to complete. If set, an error will be raised if the timeout is exceeded.

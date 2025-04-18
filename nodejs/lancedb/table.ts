@@ -247,6 +247,19 @@ export abstract class Table {
   abstract prewarmIndex(name: string): Promise<void>;
 
   /**
+   * Waits for asynchronous indexing to complete on the table.
+   *
+   * @param indexNames The name of the indices to wait for
+   * @param timeoutSeconds The number of seconds to wait before timing out
+   *
+   * This will raise an error if the indices are not created and fully indexed within the timeout.
+   */
+  abstract waitForIndex(
+    indexNames: string[],
+    timeoutSeconds: number,
+  ): Promise<void>;
+
+  /**
    * Create a {@link Query} Builder.
    *
    * Queries allow you to search your existing data.  By default the query will
@@ -569,7 +582,12 @@ export class LocalTable extends Table {
     // Bit of a hack to get around the fact that TS has no package-scope.
     // biome-ignore lint/suspicious/noExplicitAny: skip
     const nativeIndex = (options?.config as any)?.inner;
-    await this.inner.createIndex(nativeIndex, column, options?.replace);
+    await this.inner.createIndex(
+      nativeIndex,
+      column,
+      options?.replace,
+      options?.waitTimeoutSeconds,
+    );
   }
 
   async dropIndex(name: string): Promise<void> {
@@ -578,6 +596,13 @@ export class LocalTable extends Table {
 
   async prewarmIndex(name: string): Promise<void> {
     await this.inner.prewarmIndex(name);
+  }
+
+  async waitForIndex(
+    indexNames: string[],
+    timeoutSeconds: number,
+  ): Promise<void> {
+    await this.inner.waitForIndex(indexNames, timeoutSeconds);
   }
 
   query(): Query {
