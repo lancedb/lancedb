@@ -779,7 +779,12 @@ impl Table {
 
     /// See [Table::create_index]
     /// For remote tables, this allows an optional wait_timeout to poll until asynchronous indexing is complete
-    pub fn create_index_with_timeout(&self, columns: &[impl AsRef<str>], index: Index, wait_timeout: Option<std::time::Duration>) -> IndexBuilder {
+    pub fn create_index_with_timeout(
+        &self,
+        columns: &[impl AsRef<str>],
+        index: Index,
+        wait_timeout: Option<std::time::Duration>,
+    ) -> IndexBuilder {
         let mut builder = IndexBuilder::new(
             self.inner.clone(),
             columns

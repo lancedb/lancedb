@@ -692,7 +692,9 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    def wait_for_index(self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)) -> None:
+    def wait_for_index(
+        self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
+    ) -> None:
         """
         Wait for indexing to complete for the given index names. This will poll the table until all the indices are
         fully indexed, or raise a timeout exception if the timeout is reached.
@@ -1793,7 +1795,9 @@ class LanceTable(Table):
         """
         return LOOP.run(self._table.prewarm_index(name))
 
-    def wait_for_index(self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)) -> None:
+    def wait_for_index(
+        self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
+    ) -> None:
         return LOOP.run(self._table.wait_for_index(index_names, timeout))
 
     def create_scalar_index(
@@ -3026,7 +3030,9 @@ class AsyncTable:
                     " Bitmap, LabelList, or FTS"
                 )
         try:
-            await self._inner.create_index(column, index=config, replace=replace, wait_timeout=wait_timeout)
+            await self._inner.create_index(
+                column, index=config, replace=replace, wait_timeout=wait_timeout
+            )
         except ValueError as e:
             if "not support the requested language" in str(e):
                 supported_langs = ", ".join(lang_mapping.values())
@@ -3071,7 +3077,9 @@ class AsyncTable:
         """
         await self._inner.prewarm_index(name)
 
-    async def wait_for_index(self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)) -> None:
+    async def wait_for_index(
+        self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
+    ) -> None:
         """
         Wait for indexing to complete for the given index names. This will poll the table until all the indices are
         fully indexed, or raise a timeout exception if the timeout is reached.

@@ -127,7 +127,11 @@ class RemoteTable(Table):
         else:
             raise ValueError(f"Unknown index type: {index_type}")
 
-        LOOP.run(self._table.create_index(column, config=config, replace=replace, wait_timeout=wait_timeout))
+        LOOP.run(
+            self._table.create_index(
+                column, config=config, replace=replace, wait_timeout=wait_timeout
+            )
+        )
 
     def create_fts_index(
         self,
@@ -155,7 +159,11 @@ class RemoteTable(Table):
             remove_stop_words=remove_stop_words,
             ascii_folding=ascii_folding,
         )
-        LOOP.run(self._table.create_index(column, config=config, replace=replace, wait_timeout=wait_timeout))
+        LOOP.run(
+            self._table.create_index(
+                column, config=config, replace=replace, wait_timeout=wait_timeout
+            )
+        )
 
     def create_index(
         self,
@@ -239,7 +247,11 @@ class RemoteTable(Table):
                 " 'IVF_FLAT', 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
             )
 
-        LOOP.run(self._table.create_index(vector_column_name, config=config, wait_timeout=wait_timeout))
+        LOOP.run(
+            self._table.create_index(
+                vector_column_name, config=config, wait_timeout=wait_timeout
+            )
+        )
 
     def add(
         self,
@@ -557,7 +569,9 @@ class RemoteTable(Table):
     def drop_index(self, index_name: str):
         return LOOP.run(self._table.drop_index(index_name))
 
-    def wait_for_index(self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)):
+    def wait_for_index(
+        self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
+    ):
         return LOOP.run(self._table.wait_for_index(index_names, timeout))
 
     def uses_v2_manifest_paths(self) -> bool:

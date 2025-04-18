@@ -236,9 +236,8 @@ def test_table_add_in_threadpool():
 def test_table_create_indices():
     def handler(request):
         index_stats = dict(
-            index_type="IVF_PQ",
-            num_indexed_rows=1000,
-            num_unindexed_rows=0)
+            index_type="IVF_PQ", num_indexed_rows=1000, num_unindexed_rows=0
+        )
 
         if request.path == "/v1/table/test/create_index/":
             request.send_response(200)
@@ -281,7 +280,7 @@ def test_table_create_indices():
                         {
                             "index_name": "vector_idx",
                             "columns": ["vector"],
-                        }
+                        },
                     ]
                 )
             )
@@ -290,25 +289,19 @@ def test_table_create_indices():
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
-            payload = json.dumps(
-                index_stats
-            )
+            payload = json.dumps(index_stats)
             request.wfile.write(payload.encode())
         elif request.path == "/v1/table/test/index/text_idx/stats/":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
-            payload = json.dumps(
-                index_stats
-            )
+            payload = json.dumps(index_stats)
             request.wfile.write(payload.encode())
         elif request.path == "/v1/table/test/index/vector_idx/stats/":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
-            payload = json.dumps(
-                index_stats
-            )
+            payload = json.dumps(index_stats)
             request.wfile.write(payload.encode())
         elif "/drop/" in request.path:
             request.send_response(200)
@@ -323,7 +316,9 @@ def test_table_create_indices():
         table = db.create_table("test", [{"id": 1}])
         table.create_scalar_index("id", wait_timeout=timedelta(seconds=2))
         table.create_fts_index("text", wait_timeout=timedelta(seconds=2))
-        table.create_index(vector_column_name="vector", wait_timeout=timedelta(seconds=10))
+        table.create_index(
+            vector_column_name="vector", wait_timeout=timedelta(seconds=10)
+        )
         table.wait_for_index(["id_idx"], timedelta(seconds=2))
         table.wait_for_index(["text_idx", "vector_idx"], timedelta(seconds=2))
         table.drop_index("vector_idx")
@@ -334,9 +329,8 @@ def test_table_create_indices():
 def test_table_wait_for_index_timeout():
     def handler(request):
         index_stats = dict(
-            index_type="BTREE",
-            num_indexed_rows=1000,
-            num_unindexed_rows=1)
+            index_type="BTREE", num_indexed_rows=1000, num_unindexed_rows=1
+        )
 
         if request.path == "/v1/table/test/create/?mode=create":
             request.send_response(200)
@@ -377,9 +371,7 @@ def test_table_wait_for_index_timeout():
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
-            payload = json.dumps(
-                index_stats
-            )
+            payload = json.dumps(index_stats)
             print(f"{index_stats=}")
             request.wfile.write(payload.encode())
         else:
@@ -388,7 +380,12 @@ def test_table_wait_for_index_timeout():
 
     with mock_lancedb_connection(handler) as db:
         table = db.create_table("test", [{"id": 1}])
-        with pytest.raises(RuntimeError, match=re.escape('Timeout error: timed out waiting for indices: ["id_idx"] after 1s')):
+        with pytest.raises(
+            RuntimeError,
+            match=re.escape(
+                'Timeout error: timed out waiting for indices: ["id_idx"] after 1s'
+            ),
+        ):
             table.wait_for_index(["id_idx"], timedelta(seconds=1))
 
 
