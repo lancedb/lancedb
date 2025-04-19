@@ -257,7 +257,9 @@ async def test_distance_range_with_new_rows_async():
         }
     )
     table = await conn.create_table("test", data)
-    table.create_index("vector", config=IvfPq(num_partitions=1, num_sub_vectors=2))
+    await table.create_index(
+        "vector", config=IvfPq(num_partitions=1, num_sub_vectors=2)
+    )
 
     q = [0, 0]
     rs = await table.query().nearest_to(q).to_arrow()

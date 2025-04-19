@@ -65,7 +65,6 @@ class ColPaliEmbeddings(EmbeddingFunction):
             self.dtype,
             self.device,
             self.use_token_pooling,
-            self.pool_factor,
             self.quantization_config,
         )
 
@@ -76,7 +75,6 @@ class ColPaliEmbeddings(EmbeddingFunction):
         dtype: str,
         device: str,
         use_token_pooling: bool,
-        pool_factor: int,
         quantization_config: Optional[Any],
     ):
         """
@@ -95,6 +93,8 @@ class ColPaliEmbeddings(EmbeddingFunction):
             torch_dtype = torch.bfloat16
         elif dtype == "float16":
             torch_dtype = torch.float16
+        elif dtype == "float64":
+            torch_dtype = torch.float64
         else:
             torch_dtype = torch.float32
 
@@ -112,11 +112,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
         processor = colpali_engine.models.ColQwen2_5_Processor.from_pretrained(
             model_name
         )
-        token_pooler = (
-            HierarchicalTokenPooler(pool_factor=pool_factor)
-            if use_token_pooling
-            else None
-        )
+        token_pooler = HierarchicalTokenPooler() if use_token_pooling else None
         return model, processor, token_pooler
 
     def ndims(self):
@@ -135,6 +131,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
             if self.use_token_pooling and self._token_pooler is not None:
                 query_embeddings = self._token_pooler.pool_embeddings(
                     query_embeddings,
+                    pool_factor=self.pool_factor,
                     padding=True,
                     padding_side=self._processor.tokenizer.padding_side,
                 )
@@ -151,6 +148,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
         if self.use_token_pooling and self._token_pooler is not None:
             embeddings = self._token_pooler.pool_embeddings(
                 embeddings,
+                pool_factor=self.pool_factor,
                 padding=True,
                 padding_side=self._processor.tokenizer.padding_side,
             )

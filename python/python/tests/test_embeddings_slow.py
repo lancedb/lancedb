@@ -600,7 +600,6 @@ def test_colpali(tmp_path):
 
     table = db.create_table("media", schema=MediaItems)
 
-    # Test data - mix of text and images
     texts = [
         "a cute cat playing with yarn",
         "a puppy in a flower field",
