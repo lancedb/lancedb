@@ -255,7 +255,9 @@ async def test_distance_range_with_new_rows_async():
         }
     )
     table = await conn.create_table("test", data)
-    table.create_index("vector", config=IvfPq(num_partitions=1, num_sub_vectors=2))
+    await table.create_index(
+        "vector", config=IvfPq(num_partitions=1, num_sub_vectors=2)
+    )
 
     q = [0, 0]
     rs = await table.query().nearest_to(q).to_arrow()
@@ -784,8 +786,7 @@ async def test_query_search_auto(mem_db_async: AsyncConnection):
     with pytest.raises(
         Exception,
         match=(
-            "Cannot perform full text search unless an INVERTED index has "
-            "been created"
+            "Cannot perform full text search unless an INVERTED index has been created"
         ),
     ):
         query = await (await tbl2.search("0.1")).to_arrow()
