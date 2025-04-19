@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       matrix:
-        config:
+        config: # https://github.com/PyO3/maturin-action#manylinux-docker-container
           - platform: x86_64
             manylinux: "2_17"
             extra_args: ""
@@ -43,7 +43,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.8
+          python-version: 3.9
       - uses: ./.github/workflows/build_linux_wheel
         with:
           python-minor-version: 8

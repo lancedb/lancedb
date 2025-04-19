@@ -4,7 +4,7 @@ description: "Install lance wheel and run unit tests"
 inputs:
   python-minor-version:
     required: true
-    description: "8 9 10 11 12"
+    description: "9 10 11 12 13"
   integration:
     required: false
     description: "Run integration tests"

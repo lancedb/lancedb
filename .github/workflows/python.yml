@@ -35,7 +35,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Install ruff
         run: |
           pip install ruff==0.9.9
@@ -60,7 +60,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Install protobuf compiler
         run: |
           sudo apt update
@@ -89,7 +89,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: "pip"
       - name: Install protobuf
         run: |
@@ -166,7 +166,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: python
@@ -196,7 +196,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: python
