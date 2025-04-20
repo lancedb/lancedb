@@ -540,7 +540,7 @@ def test_voyageai_multimodal_embedding_function():
     db = lancedb.connect("~/lancedb")
     table = db.create_table("test", schema=Images, mode="overwrite")
     labels = ["cat", "cat", "dog", "dog", "horse", "horse"]
-uris = [
+    uris = [
         "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
         "http://farm1.staticflickr.com/134/332220238_da527d8140_z.jpg",
         "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",

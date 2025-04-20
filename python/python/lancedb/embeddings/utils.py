@@ -17,7 +17,8 @@ from typing import Callable, List, Union
 import numpy as np
 import pyarrow as pa
 
-from ..dependencies import pandas as pd, attempt_import_or_raise
+from ..dependencies import pandas as pd
+from ..util import attempt_import_or_raise
 
 
 # ruff: noqa: PERF203

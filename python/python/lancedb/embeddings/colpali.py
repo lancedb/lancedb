@@ -42,7 +42,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
     """
 
     model_name: str = "Metric-AI/ColQwen2.5-3b-multilingual-v1.0"
-    device: str = "cuda:0"
+    device: str = "auto"
     dtype: str = "bfloat16"
     use_token_pooling: bool = True
     pool_factor: int = 2
@@ -153,16 +153,16 @@ class ColPaliEmbeddings(EmbeddingFunction):
                 padding_side=self._processor.tokenizer.padding_side,
             )
 
-        result = []
-        for embedding in embeddings:
-            if isinstance(embedding, torch.Tensor):
-                if embedding.dtype == torch.bfloat16:
-                    embedding = embedding.to(torch.float32)
-                if embedding.dim() == 2:
-                    result.append(
-                        embedding.detach().cpu().numpy().astype(np.float32).tolist()
-                    )
-        return result
+        if isinstance(embeddings, torch.Tensor):
+            tensors = embeddings.detach().cpu()
+            if tensors.dtype == torch.bfloat16:
+                tensors = tensors.to(torch.float32)
+            return (
+                tensors.numpy()
+                .astype(np.float64 if self.dtype == "float64" else np.float32)
+                .tolist()
+            )
+        return []
 
     def generate_text_embeddings(self, text: TEXT) -> List[List[List[float]]]:
         """
@@ -198,7 +198,8 @@ class ColPaliEmbeddings(EmbeddingFunction):
                         response.raise_for_status()
                         pil_images.append(PIL.Image.open(io.BytesIO(response.content)))
                     else:
-                        pil_images.append(PIL.Image.open(image))
+                        with PIL.Image.open(image) as im:
+                            pil_images.append(im.copy())
                 elif isinstance(image, bytes):
                     pil_images.append(PIL.Image.open(io.BytesIO(image)))
                 else:
