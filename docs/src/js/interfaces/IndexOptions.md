@@ -46,4 +46,5 @@ The default is true
 optional waitTimeoutSeconds: number;
 ```
 
+
 Whether to wait for asynchronous indexing to complete. If set, an error will be raised if the timeout is exceeded.
