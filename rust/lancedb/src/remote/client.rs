@@ -127,13 +127,13 @@ pub struct RetryConfig {
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedRetryConfig {
-    retries: u8,
-    connect_retries: u8,
-    read_retries: u8,
-    backoff_factor: f32,
-    backoff_jitter: f32,
-    statuses: Vec<reqwest::StatusCode>,
+pub(crate) struct ResolvedRetryConfig {
+    pub(crate) retries: u8,
+    pub(crate) connect_retries: u8,
+    pub(crate) read_retries: u8,
+    pub(crate) backoff_factor: f32,
+    pub(crate) backoff_jitter: f32,
+    pub(crate) statuses: Vec<reqwest::StatusCode>,
 }
 
 impl TryFrom<RetryConfig> for ResolvedRetryConfig {
@@ -163,8 +163,8 @@ impl TryFrom<RetryConfig> for ResolvedRetryConfig {
 pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     client: reqwest::Client,
     host: String,
-    retry_config: ResolvedRetryConfig,
-    sender: S,
+    pub(crate) retry_config: ResolvedRetryConfig,
+    pub(crate) sender: S,
 }
 
 pub trait HttpSend: Clone + Send + Sync + std::fmt::Debug + 'static {
@@ -378,7 +378,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.post(full_uri)
     }
 
-    pub async fn send(&self, req: RequestBuilder, with_retry: bool, retry_5xx: bool) -> Result<(String, Response)> {
+    pub async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
         // retry around here
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
@@ -411,23 +411,19 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             }
         }
 
-        if with_retry {
-            self.send_with_retry_impl(client, request, request_id, retry_5xx).await
-        } else {
-            let response = self
-                .sender
-                .send(&client, request)
-                .await
-                .err_to_http(request_id.clone())?;
-            debug!(
-                "Received response for request_id={}: {:?}",
-                request_id, &response
-            );
-            Ok((request_id, response))
-        }
+        let response = self
+            .sender
+            .send(&client, request)
+            .await
+            .err_to_http(request_id.clone())?;
+        debug!(
+            "Received response for request_id={}: {:?}",
+            request_id, &response
+        );
+        Ok((request_id, response))
     }
 
-    async fn send_with_retry_impl(
+    async fn send_with_retry(
         &self,
         client: reqwest::Client,
         req: Request,
@@ -507,12 +503,12 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     }
 }
 
-struct RetryCounter<'a> {
-    request_failures: u8,
-    connect_failures: u8,
-    read_failures: u8,
-    config: &'a ResolvedRetryConfig,
-    request_id: String,
+pub struct RetryCounter<'a> {
+    pub request_failures: u8,
+    pub connect_failures: u8,
+    pub read_failures: u8,
+    pub config: &'a ResolvedRetryConfig,
+    pub request_id: String,
 }
 
 impl<'a> RetryCounter<'a> {
@@ -551,7 +547,7 @@ impl<'a> RetryCounter<'a> {
         }
     }
 
-    fn increment_request_failures(&mut self, source: crate::Error) -> Result<()> {
+    pub fn increment_request_failures(&mut self, source: crate::Error) -> Result<()> {
         self.request_failures += 1;
         let status_code = if let crate::Error::Http { status_code, .. } = &source {
             *status_code
@@ -561,19 +557,19 @@ impl<'a> RetryCounter<'a> {
         self.check_out_of_retries(Box::new(source), status_code)
     }
 
-    fn increment_connect_failures(&mut self, source: reqwest::Error) -> Result<()> {
+    pub fn increment_connect_failures(&mut self, source: reqwest::Error) -> Result<()> {
         self.connect_failures += 1;
         let status_code = source.status();
         self.check_out_of_retries(Box::new(source), status_code)
     }
 
-    fn increment_read_failures(&mut self, source: reqwest::Error) -> Result<()> {
+    pub fn increment_read_failures(&mut self, source: reqwest::Error) -> Result<()> {
         self.read_failures += 1;
         let status_code = source.status();
         self.check_out_of_retries(Box::new(source), status_code)
     }
 
-    fn next_sleep_time(&self) -> Duration {
+    pub fn next_sleep_time(&self) -> Duration {
         let backoff = self.config.backoff_factor * (2.0f32.powi(self.request_failures as i32));
         let jitter = rand::random::<f32>() * self.config.backoff_jitter;
         let sleep_time = Duration::from_secs_f32(backoff + jitter);

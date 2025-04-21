@@ -7,7 +7,7 @@ use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::table::{AddDataMode, AnyQuery, Filter};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
-use arrow_array::RecordBatchReader;
+use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
@@ -26,6 +26,8 @@ use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use log::debug;
+use reqwest::{Request, RequestBuilder, Response};
 use tokio::sync::RwLock;
 
 use super::client::RequestResultExt;
@@ -83,7 +85,7 @@ impl<S: HttpSend> RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true, true).await?;
+        let (request_id, response) = self.client.send(request).await?;
 
         let response = self.check_table_response(&request_id, response).await?;
 
@@ -126,6 +128,24 @@ impl<S: HttpSend> RemoteTable<S> {
         let body_stream = futures::stream::iter(body_iter);
         Ok(reqwest::Body::wrap_stream(body_stream))
     }
+
+
+    /// Buffer the reader into memory
+    async fn buffer_reader<R: RecordBatchReader + ?Sized>(reader: &mut R) -> Result<(SchemaRef, Vec<RecordBatch>)> {
+        let schema = reader.schema();
+        let mut batches = Vec::new();
+        while let Some(batch) = reader.next() {
+            batches.push(batch?);
+        }
+        Ok((schema, batches))
+    }
+
+    /// Create a new RecordBatchReader from buffered data
+    fn make_reader(schema: SchemaRef, batches: Vec<RecordBatch>) -> impl RecordBatchReader {
+        let iter = batches.into_iter().map(Ok);
+        RecordBatchIterator::new(iter, schema)
+    }
+
 
     async fn check_table_response(
         &self,
@@ -355,7 +375,7 @@ impl<S: HttpSend> RemoteTable<S> {
             .collect();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.client.send(req, true, true).await?;
+            let (request_id, response) = self.client.send(req).await?;
             self.read_arrow_stream(&request_id, response).await
         });
         let streams = futures::future::try_join_all(futures).await?;
@@ -455,7 +475,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true, false).await?;
+        let (request_id, response) = self.client.send(request).await?;
         self.check_table_response(&request_id, response).await?;
         self.checkout_latest().await?;
         Ok(())
@@ -465,7 +485,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/v1/table/{}/version/list/", self.name));
-        let (request_id, response) = self.client.send(request, true, true).await?;
+        let (request_id, response) = self.client.send(request).await?;
         let response = self.check_table_response(&request_id, response).await?;
 
         #[derive(Deserialize)]
@@ -511,7 +531,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             request = request.json(&body);
         }
 
-        let (request_id, response) = self.client.send(request, true, true).await?;
+        let (request_id, response) = self.client.send(request).await?;
 
         let response = self.check_table_response(&request_id, response).await?;
 
@@ -543,7 +563,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             }
         }
 
-        let (request_id, response) = self.client.send(request, true, false).await?;
+        let (request_id, response) = self.client.send(request).await?;
 
         self.check_table_response(&request_id, response).await?;
 
@@ -612,7 +632,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect::<Vec<_>>();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.client.send(req, true, true).await?;
+            let (request_id, response) = self.client.send(req).await?;
             let response = self.check_table_response(&request_id, response).await?;
             let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -654,7 +674,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.client.send(req, true, true).await?;
+            let (request_id, response) = self.client.send(req).await?;
             let response = self.check_table_response(&request_id, response).await?;
             let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -696,7 +716,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "predicate": update.filter,
         }));
 
-        let (request_id, response) = self.client.send(request, true, false).await?;
+        let (request_id, response) = self.client.send(request).await?;
 
         self.check_table_response(&request_id, response).await?;
 
@@ -710,7 +730,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/delete/", self.name))
             .json(&body);
-        let (request_id, response) = self.client.send(request, true, false).await?;
+        let (request_id, response) = self.client.send(request).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -796,7 +816,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true, false).await?;
+        let (request_id, response) = self.client.send(request).await?;
 
         self.check_table_response(&request_id, response).await?;
 
@@ -820,21 +840,28 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
         self.check_mutable().await?;
+
+        let mut data = Mutex::new(new_data);
+
+        let (schema, batches) = Self::buffer_reader(data.get_mut().unwrap()).await?;
+
         let query = MergeInsertRequest::try_from(params)?;
-        let body = Self::reader_as_body(new_data)?;
+        // let body = Self::reader_as_body(new_data)?;
+
         let request = self
             .client
             .post(&format!("/v1/table/{}/merge_insert/", self.name))
             .query(&query)
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
-            .body(body);
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+            // .body(body);
 
-        let (request_id, response) = self.client.send(request, true, false).await?;
+        let (request_id, response) = RemoteTable::send(&self.client, request, Some(schema), Some(batches), true, false).await?;
 
         self.check_table_response(&request_id, response).await?;
 
         Ok(())
     }
+
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
         Err(Error::NotSupported {
@@ -863,7 +890,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .client
                     .post(&format!("/v1/table/{}/add_columns/", self.name))
                     .json(&body);
-                let (request_id, response) = self.client.send(request, true, false).await?;
+                let (request_id, response) = self.client.send(request).await?;
                 self.check_table_response(&request_id, response).await?;
                 Ok(())
             }
@@ -902,7 +929,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/alter_columns/", self.name))
             .json(&body);
-        let (request_id, response) = self.client.send(request, true, false).await?;
+        let (request_id, response) = self.client.send(request).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -914,7 +941,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/drop_columns/", self.name))
             .json(&body);
-        let (request_id, response) = self.client.send(request, true, false).await?;
+        let (request_id, response) = self.client.send(request).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -928,7 +955,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true, true).await?;
+        let (request_id, response) = self.client.send(request).await?;
         let response = self.check_table_response(&request_id, response).await?;
 
         #[derive(Deserialize)]
@@ -985,7 +1012,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true, true).await?;
+        let (request_id, response) = self.client.send(request).await?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -995,7 +1022,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let body = response.text().await.err_to_http(request_id.clone())?;
 
-        println!("body: {:?}", body);
         let stats = serde_json::from_str(&body).map_err(|e| Error::Http {
             source: format!("Failed to parse index statistics: {}", e).into(),
             request_id,
@@ -1010,7 +1036,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "/v1/table/{}/index/{}/drop/",
             self.name, index_name
         ));
-        let (request_id, response) = self.client.send(request, true, false).await?;
+        let (request_id, response) = self.client.send(request).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -1028,6 +1054,180 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
     fn dataset_uri(&self) -> &str {
         "NOT_SUPPORTED"
+    }
+}
+
+impl<S: HttpSend> RemoteTable<S> {
+    async fn send(client: &RestfulLanceDbClient<S>, mut req: RequestBuilder, schema: Option<SchemaRef>,
+                  batches: Option<Vec<RecordBatch>>, with_retry: bool, retry_5xx: bool) -> Result<(String, Response)> {
+
+        let res = if with_retry {
+            Self::send_with_retry(&client, req, schema, batches, retry_5xx).await?
+        } else {
+            if let Some(batches) = batches {
+                let reader = Self::make_reader(schema.unwrap(), batches);
+                let body = Self::reader_as_body(Box::new(reader))?;
+                req = req.body(body);
+            }
+            client.send(req).await?
+        };
+        Ok(res)
+    }
+
+
+    async fn send_with_retry(
+        client: &RestfulLanceDbClient<S>,
+        mut req: RequestBuilder,
+        schema: Option<SchemaRef>,
+        batches: Option<Vec<RecordBatch>>, retry_5xx: bool
+    ) -> Result<(String, Response)> {
+        if let Some(batches) = batches {
+            let reader = Self::make_reader(schema.unwrap(), batches);
+            let body = Self::reader_as_body(Box::new(reader))?;
+            req = req.body(body);
+        }
+
+        let request_id = "todo".to_string();;
+
+        let retry_config = &client.retry_config;
+        let mut retry_counter = RetryCounter::new(retry_config, request_id);
+
+        let non_5xx_statuses = retry_config.statuses.iter().filter(|s| !s.is_server_error()).cloned().collect::<Vec<_>>();
+        loop {
+            // todo: clone payload, cleanup
+            let request = req.try_clone().ok_or_else(|| Error::Runtime { //
+                message: "Attempted to retry a request that cannot be cloned".to_string(),
+            })?;
+
+            let (c, request) = request.build_split();
+            let response = client
+                .sender
+                .send(&c, request.unwrap())
+                .await
+                .map(|r| (r.status(), r));
+
+            match response {
+                Ok((status, response)) if status.is_success() => {
+                    debug!(
+                        "Received response for request_id={}: {:?}",
+                        retry_counter.request_id, &response
+                    );
+                    return Ok((retry_counter.request_id, response));
+                }
+                Ok((status, response)) if (retry_5xx && retry_config.statuses.contains(&status)) || non_5xx_statuses.contains(&status) => {
+                    let source = client
+                        .check_response(&retry_counter.request_id, response)
+                        .await
+                        .unwrap_err();
+                    retry_counter.increment_request_failures(source)?;
+                }
+                Err(err) if err.is_connect() => {
+                    retry_counter.increment_connect_failures(err)?;
+                }
+                Err(err) if err.is_timeout() || err.is_body() || err.is_decode() => {
+                    retry_counter.increment_read_failures(err)?;
+                }
+                Err(err) => {
+                    let status_code = err.status();
+                    return Err(Error::Http {
+                        source: Box::new(err),
+                        request_id: retry_counter.request_id,
+                        status_code,
+                    });
+                }
+                Ok((_, response)) => return Ok((retry_counter.request_id, response)),
+            }
+
+            let sleep_time = retry_counter.next_sleep_time();
+            tokio::time::sleep(sleep_time).await;
+        }
+    }
+
+}
+
+
+struct RetryCounter<'a> {
+    request_failures: u8,
+    connect_failures: u8,
+    read_failures: u8,
+    config: &'a crate::remote::client::ResolvedRetryConfig,
+    request_id: String,
+}
+
+impl<'a> RetryCounter<'a> {
+    fn new(config: &'a crate::remote::client::ResolvedRetryConfig, request_id: String) -> Self {
+        Self {
+            request_failures: 0,
+            connect_failures: 0,
+            read_failures: 0,
+            config,
+            request_id,
+        }
+    }
+
+    fn check_out_of_retries(
+        &self,
+        source: Box<dyn std::error::Error + Send + Sync>,
+        status_code: Option<reqwest::StatusCode>,
+    ) -> Result<()> {
+        if self.request_failures >= self.config.retries
+            || self.connect_failures >= self.config.connect_retries
+            || self.read_failures >= self.config.read_retries
+        {
+            Err(Error::Retry {
+                request_id: self.request_id.clone(),
+                request_failures: self.request_failures,
+                max_request_failures: self.config.retries,
+                connect_failures: self.connect_failures,
+                max_connect_failures: self.config.connect_retries,
+                read_failures: self.read_failures,
+                max_read_failures: self.config.read_retries,
+                source,
+                status_code,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn increment_request_failures(&mut self, source: crate::Error) -> Result<()> {
+        self.request_failures += 1;
+        let status_code = if let crate::Error::Http { status_code, .. } = &source {
+            *status_code
+        } else {
+            None
+        };
+        self.check_out_of_retries(Box::new(source), status_code)
+    }
+
+    fn increment_connect_failures(&mut self, source: reqwest::Error) -> Result<()> {
+        self.connect_failures += 1;
+        let status_code = source.status();
+        self.check_out_of_retries(Box::new(source), status_code)
+    }
+
+    fn increment_read_failures(&mut self, source: reqwest::Error) -> Result<()> {
+        self.read_failures += 1;
+        let status_code = source.status();
+        self.check_out_of_retries(Box::new(source), status_code)
+    }
+
+    fn next_sleep_time(&self) -> Duration {
+        let backoff = self.config.backoff_factor * (2.0f32.powi(self.request_failures as i32));
+        let jitter = rand::random::<f32>() * self.config.backoff_jitter;
+        let sleep_time = Duration::from_secs_f32(backoff + jitter);
+        debug!(
+            "Retrying request {:?} ({}/{} connect, {}/{} read, {}/{} read) in {:?}",
+            self.request_id,
+            self.connect_failures,
+            self.config.connect_retries,
+            self.request_failures,
+            self.config.retries,
+            self.read_failures,
+            self.config.read_retries,
+            sleep_time
+        );
+        sleep_time
     }
 }
 
