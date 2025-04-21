@@ -364,10 +364,10 @@ impl<S: HttpSend> RemoteTable<S> {
             tokio::pin!(streams);
             tokio::select! {
                 _ = &mut timeout_future => {
-                    return Err(Error::Other {
+                    Err(Error::Other {
                         message: format!("Query timeout after {} ms", timeout.as_millis()),
                         source: None,
-                    });
+                    })
                 }
                 result = &mut streams => {
                     Ok(result?)
