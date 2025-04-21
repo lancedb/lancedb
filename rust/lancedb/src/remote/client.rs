@@ -379,20 +379,10 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     }
 
     pub async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
-        // retry around here
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
 
-        // Set a request id.
-        // TODO: allow the user to supply this, through middleware?
-        let request_id = if let Some(request_id) = request.headers().get(REQUEST_ID_HEADER) {
-            request_id.to_str().unwrap().to_string()
-        } else {
-            let request_id = uuid::Uuid::new_v4().to_string();
-            let header = HeaderValue::from_str(&request_id).unwrap();
-            request.headers_mut().insert(REQUEST_ID_HEADER, header);
-            request_id
-        };
+        let request_id = self.extract_request_id(&mut request);
 
         if log::log_enabled!(log::Level::Debug) {
             let content_type = request
@@ -423,7 +413,24 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         Ok((request_id, response))
     }
 
-    async fn send_with_retry(
+    /// extract the request ID from the request headers.
+    /// If the request ID header is not set, this will generate a new one and set
+    /// it on the request headers
+    pub fn extract_request_id(&self, request: &mut Request) -> String {
+        // Set a request id.
+        // TODO: allow the user to supply this, through middleware?
+        let request_id = if let Some(request_id) = request.headers().get(REQUEST_ID_HEADER) {
+            request_id.to_str().unwrap().to_string()
+        } else {
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let header = HeaderValue::from_str(&request_id).unwrap();
+            request.headers_mut().insert(REQUEST_ID_HEADER, header);
+            request_id
+        };
+        request_id
+    }
+
+    async fn send_with_retry( // todo: remove
         &self,
         client: reqwest::Client,
         req: Request,
@@ -432,12 +439,18 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     ) -> Result<(String, Response)> {
         let mut retry_counter = RetryCounter::new(&self.retry_config, request_id);
 
-        let non_5xx_statuses = self.retry_config.statuses.iter().filter(|s| !s.is_server_error()).cloned().collect::<Vec<_>>();
+        let non_5xx_statuses = self
+            .retry_config
+            .statuses
+            .iter()
+            .filter(|s| !s.is_server_error())
+            .cloned()
+            .collect::<Vec<_>>();
         loop {
             // This only works if the request body is not a stream. If it is
             // a stream, we can't use the retry path. We would need to implement
             // an outer retry.
-            let request = req.try_clone().ok_or_else(|| Error::Runtime { //
+            let request = req.try_clone().ok_or_else(|| Error::Runtime {
                 message: "Attempted to retry a request that cannot be cloned".to_string(),
             })?;
             let response = self
@@ -453,7 +466,10 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                     );
                     return Ok((retry_counter.request_id, response));
                 }
-                Ok((status, response)) if (retry_5xx && self.retry_config.statuses.contains(&status)) || non_5xx_statuses.contains(&status) => {
+                Ok((status, response))
+                    if (retry_5xx && self.retry_config.statuses.contains(&status))
+                        || non_5xx_statuses.contains(&status) =>
+                {
                     let source = self
                         .check_response(&retry_counter.request_id, response)
                         .await
