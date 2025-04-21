@@ -83,7 +83,7 @@ impl<S: HttpSend> RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true, true).await?;
 
         let response = self.check_table_response(&request_id, response).await?;
 
@@ -355,7 +355,7 @@ impl<S: HttpSend> RemoteTable<S> {
             .collect();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.client.send(req, true).await?;
+            let (request_id, response) = self.client.send(req, true, true).await?;
             self.read_arrow_stream(&request_id, response).await
         });
         let streams = futures::future::try_join_all(futures).await?;
@@ -455,7 +455,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true, false).await?;
         self.check_table_response(&request_id, response).await?;
         self.checkout_latest().await?;
         Ok(())
@@ -465,7 +465,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/v1/table/{}/version/list/", self.name));
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
 
         #[derive(Deserialize)]
@@ -511,7 +511,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             request = request.json(&body);
         }
 
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true, true).await?;
 
         let response = self.check_table_response(&request_id, response).await?;
 
@@ -543,7 +543,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             }
         }
 
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.client.send(request, true, false).await?;
 
         self.check_table_response(&request_id, response).await?;
 
@@ -612,7 +612,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect::<Vec<_>>();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.client.send(req, true).await?;
+            let (request_id, response) = self.client.send(req, true, true).await?;
             let response = self.check_table_response(&request_id, response).await?;
             let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -654,7 +654,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.client.send(req, true).await?;
+            let (request_id, response) = self.client.send(req, true, true).await?;
             let response = self.check_table_response(&request_id, response).await?;
             let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -696,7 +696,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "predicate": update.filter,
         }));
 
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.client.send(request, true, false).await?;
 
         self.check_table_response(&request_id, response).await?;
 
@@ -710,7 +710,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/delete/", self.name))
             .json(&body);
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.client.send(request, true, false).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -796,7 +796,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.client.send(request, true, false).await?;
 
         self.check_table_response(&request_id, response).await?;
 
@@ -829,7 +829,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
             .body(body);
 
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.client.send(request, true, false).await?;
 
         self.check_table_response(&request_id, response).await?;
 
@@ -863,7 +863,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .client
                     .post(&format!("/v1/table/{}/add_columns/", self.name))
                     .json(&body);
-                let (request_id, response) = self.client.send(request, false).await?;
+                let (request_id, response) = self.client.send(request, true, false).await?;
                 self.check_table_response(&request_id, response).await?;
                 Ok(())
             }
@@ -902,7 +902,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/alter_columns/", self.name))
             .json(&body);
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.client.send(request, true, false).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -914,7 +914,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/drop_columns/", self.name))
             .json(&body);
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.client.send(request, true, false).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -928,7 +928,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
 
         #[derive(Deserialize)]
@@ -985,7 +985,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true, true).await?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -1010,7 +1010,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "/v1/table/{}/index/{}/drop/",
             self.name, index_name
         ));
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true, false).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }

@@ -118,7 +118,10 @@ pub struct RetryConfig {
     /// You can also set the `LANCE_CLIENT_RETRY_STATUSES` environment variable
     /// to set this value. Use a comma-separated list of integer values.
     ///
-    /// The default is 429, 500, 502, 503.
+    /// Note that write operations will never be retried on 5xx errors as this may
+    /// result in duplicated writes.
+    ///
+    /// The default is 409, 429, 500, 502, 503, 504.
     pub statuses: Option<Vec<u16>>,
     // TODO: should we allow customizing methods?
 }
@@ -145,7 +148,7 @@ impl TryFrom<RetryConfig> for ResolvedRetryConfig {
             backoff_jitter: retry_config.backoff_jitter.unwrap_or(0.25),
             statuses: retry_config
                 .statuses
-                .unwrap_or_else(|| vec![429, 500, 502, 503])
+                .unwrap_or_else(|| vec![409, 429, 500, 502, 503, 504])
                 .into_iter()
                 .map(|status| reqwest::StatusCode::from_u16(status).unwrap())
                 .collect(),
@@ -375,7 +378,8 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.post(full_uri)
     }
 
-    pub async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<(String, Response)> {
+    pub async fn send(&self, req: RequestBuilder, with_retry: bool, retry_5xx: bool) -> Result<(String, Response)> {
+        // retry around here
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
 
@@ -408,7 +412,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
 
         if with_retry {
-            self.send_with_retry_impl(client, request, request_id).await
+            self.send_with_retry_impl(client, request, request_id, retry_5xx).await
         } else {
             let response = self
                 .sender
@@ -428,14 +432,16 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         client: reqwest::Client,
         req: Request,
         request_id: String,
+        retry_5xx: bool,
     ) -> Result<(String, Response)> {
         let mut retry_counter = RetryCounter::new(&self.retry_config, request_id);
 
+        let non_5xx_statuses = self.retry_config.statuses.iter().filter(|s| !s.is_server_error()).cloned().collect::<Vec<_>>();
         loop {
             // This only works if the request body is not a stream. If it is
             // a stream, we can't use the retry path. We would need to implement
             // an outer retry.
-            let request = req.try_clone().ok_or_else(|| Error::Runtime {
+            let request = req.try_clone().ok_or_else(|| Error::Runtime { //
                 message: "Attempted to retry a request that cannot be cloned".to_string(),
             })?;
             let response = self
@@ -451,7 +457,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                     );
                     return Ok((retry_counter.request_id, response));
                 }
-                Ok((status, response)) if self.retry_config.statuses.contains(&status) => {
+                Ok((status, response)) if (retry_5xx && self.retry_config.statuses.contains(&status)) || non_5xx_statuses.contains(&status) => {
                     let source = self
                         .check_response(&retry_counter.request_id, response)
                         .await
