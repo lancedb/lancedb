@@ -765,7 +765,10 @@ This can be used to update zero to all rows depending on how many rows match the
         ];
         const tbl = await db.createTable("my_table", data)
 
-        await tbl.update({vector: [10, 10]}, { where: "x = 2"})
+        await tbl.update({ 
+            values: { vector: [10, 10] },
+            where: "x = 2"
+        });
         ```
 
     === "vectordb (deprecated)"
@@ -784,7 +787,10 @@ This can be used to update zero to all rows depending on how many rows match the
         ];
         const tbl = await db.createTable("my_table", data)
 
-        await tbl.update({ where: "x = 2", values: {vector: [10, 10]} })
+        await tbl.update({ 
+            where: "x = 2", 
+            values: { vector: [10, 10] } 
+        });
         ```
 
 #### Updating using a sql query
