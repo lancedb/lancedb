@@ -753,3 +753,26 @@ Retrieve the version of the table
 #### Returns
 
 `Promise`&lt;`number`&gt;
+
+***
+
+### waitForIndex()
+
+```ts
+abstract waitForIndex(indexNames, timeoutSeconds): Promise<void>
+```
+
+Waits for asynchronous indexing to complete on the table.
+
+#### Parameters
+
+* **indexNames**: `string`[]
+    The name of the indices to wait for
+
+* **timeoutSeconds**: `number`
+    The number of seconds to wait before timing out
+    This will raise an error if the indices are not created and fully indexed within the timeout.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;

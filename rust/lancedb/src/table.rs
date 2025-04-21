@@ -3,10 +3,6 @@
 
 //! LanceDB Table APIs
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
-
 use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
@@ -45,6 +41,10 @@ use lance_table::format::Manifest;
 use lance_table::io::commit::ManifestNamingScheme;
 use log::info;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::format;
+use std::path::Path;
+use std::sync::Arc;
 
 use crate::arrow::IntoArrow;
 use crate::connection::NoData;
@@ -78,6 +78,7 @@ pub mod datafusion;
 pub(crate) mod dataset;
 pub mod merge;
 
+use crate::index::waiter::wait_for_index;
 pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
@@ -491,6 +492,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn table_definition(&self) -> Result<TableDefinition>;
     /// Get the table URI
     fn dataset_uri(&self) -> &str;
+    /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
+    /// are not fully indexed within the timeout.
+    async fn wait_for_index(
+        &self,
+        index_names: &[&str],
+        timeout: std::time::Duration,
+    ) -> Result<()>;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -767,6 +775,28 @@ impl Table {
                 .collect::<Vec<_>>(),
             index,
         )
+    }
+
+    /// See [Table::create_index]
+    /// For remote tables, this allows an optional wait_timeout to poll until asynchronous indexing is complete
+    pub fn create_index_with_timeout(
+        &self,
+        columns: &[impl AsRef<str>],
+        index: Index,
+        wait_timeout: Option<std::time::Duration>,
+    ) -> IndexBuilder {
+        let mut builder = IndexBuilder::new(
+            self.inner.clone(),
+            columns
+                .iter()
+                .map(|val| val.as_ref().to_string())
+                .collect::<Vec<_>>(),
+            index,
+        );
+        if let Some(timeout) = wait_timeout {
+            builder = builder.wait_timeout(timeout);
+        }
+        builder
     }
 
     /// Create a builder for a merge insert operation
@@ -1102,6 +1132,16 @@ impl Table {
     /// Use [`Self::list_indices()`] to find the names of the indices.
     pub async fn prewarm_index(&self, name: &str) -> Result<()> {
         self.inner.prewarm_index(name).await
+    }
+
+    /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
+    /// are not fully indexed within the timeout.
+    pub async fn wait_for_index(
+        &self,
+        index_names: &[&str],
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        self.inner.wait_for_index(index_names, timeout).await
     }
 
     // Take many execution plans and map them into a single plan that adds
@@ -2430,6 +2470,16 @@ impl BaseTable for NativeTable {
             loss,
         }))
     }
+
+    /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
+    /// are not fully indexed within the timeout.
+    async fn wait_for_index(
+        &self,
+        index_names: &[&str],
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        wait_for_index(self, index_names, timeout).await
+    }
 }
 
 #[cfg(test)]
@@ -3213,7 +3263,10 @@ mod tests {
             .execute()
             .await
             .unwrap();
-
+        table
+            .wait_for_index(&["embeddings_idx"], Duration::from_millis(10))
+            .await
+            .unwrap();
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
@@ -3281,7 +3334,10 @@ mod tests {
             .execute()
             .await
             .unwrap();
-
+        table
+            .wait_for_index(&["i_idx"], Duration::from_millis(10))
+            .await
+            .unwrap();
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
