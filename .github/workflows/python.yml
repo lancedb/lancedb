@@ -136,7 +136,7 @@ jobs:
       - uses: ./.github/workflows/run_tests
         with:
           integration: true
-      - name: Test without pylance
+      - name: Test without pylance or pandas
         run: |
           pip uninstall -y pylance pandas
           pytest -vv python/tests/test_table.py
