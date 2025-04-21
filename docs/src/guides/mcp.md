@@ -69,25 +69,6 @@ async def ingest_data(content: str) -> str:
 
 This function takes a string and limit as input and searches the LanceDB table for the most relevant memories.
 
-```python
-@mcp.tool()
-async def retrieve_data(query: str, limit: int = 5) -> str:
-    """
-    Search db using vector search
-    Args:
-        query: The search query
-        limit: Maximum number of results to return
-    """
-    tbl = data[TABLE_NAME]
-    rs = tbl.search(query).limit(limit).to_list()
-    data = [
-        r["text"] for r in rs
-    ]
-    if not data:
-        return "No relevant data found."
-
-    return "\n\n".join(data)
-```
 
 ## Install it on Claude desktop
 
