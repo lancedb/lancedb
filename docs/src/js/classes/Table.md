@@ -46,11 +46,9 @@ abstract add(data, options?): Promise<void>
 Insert records into this Table.
 
 #### Parameters
-
-* **data**: [`Data`](../type-aliases/Data.md)
+    * **data**: [`Data`](../type-aliases/Data.md)
     Records to be inserted into the Table
-
-* **options?**: `Partial`&lt;[`AddDataOptions`](../interfaces/AddDataOptions.md)&gt;
+    * **options?**: `Partial`&lt;[`AddDataOptions`](../interfaces/AddDataOptions.md)&gt;
 
 #### Returns
 
@@ -67,8 +65,7 @@ abstract addColumns(newColumnTransforms): Promise<void>
 Add new columns with defined values.
 
 #### Parameters
-
-* **newColumnTransforms**: [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
+    * **newColumnTransforms**: [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
     pairs of column names and
     the SQL expression to use to calculate the value of the new column. These
     expressions will be evaluated for each row in the table, and can
@@ -89,8 +86,7 @@ abstract alterColumns(columnAlterations): Promise<void>
 Alter the name or nullability of columns.
 
 #### Parameters
-
-* **columnAlterations**: [`ColumnAlteration`](../interfaces/ColumnAlteration.md)[]
+    * **columnAlterations**: [`ColumnAlteration`](../interfaces/ColumnAlteration.md)[]
     One or more alterations to
     apply to columns.
 
@@ -116,8 +112,7 @@ Calling this method will set the table into time-travel mode. If you
 wish to return to standard mode, call `checkoutLatest`.
 
 #### Parameters
-
-* **version**: `number`
+    * **version**: `number`
     The version to checkout
 
 #### Returns
@@ -186,8 +181,7 @@ abstract countRows(filter?): Promise<number>
 Count the total number of rows in the dataset.
 
 #### Parameters
-
-* **filter?**: `string`
+    * **filter?**: `string`
 
 #### Returns
 
@@ -212,10 +206,8 @@ We currently don't support custom named indexes.
 The index name will always be `${column}_idx`.
 
 #### Parameters
-
-* **column**: `string`
-
-* **options?**: `Partial`&lt;[`IndexOptions`](../interfaces/IndexOptions.md)&gt;
+    * **column**: `string`
+    * **options?**: `Partial`&lt;[`IndexOptions`](../interfaces/IndexOptions.md)&gt;
 
 #### Returns
 
@@ -258,8 +250,7 @@ abstract delete(predicate): Promise<void>
 Delete the rows that satisfy the predicate.
 
 #### Parameters
-
-* **predicate**: `string`
+    * **predicate**: `string`
 
 #### Returns
 
@@ -295,8 +286,7 @@ call ``compact_files`` to rewrite the data without the removed columns and
 then call ``cleanup_files`` to remove the old files.
 
 #### Parameters
-
-* **columnNames**: `string`[]
+    * **columnNames**: `string`[]
     The names of the columns to drop. These can
     be nested column references (e.g. "a.b.c") or top-level column names
     (e.g. "a").
@@ -316,8 +306,7 @@ abstract dropIndex(name): Promise<void>
 Drop an index from the table.
 
 #### Parameters
-
-* **name**: `string`
+    * **name**: `string`
     The name of the index.
     This does not delete the index from disk, it just removes it from the table.
     To delete the index, run [Table#optimize](Table.md#optimize) after dropping the index.
@@ -338,8 +327,7 @@ abstract indexStats(name): Promise<undefined | IndexStatistics>
 List all the stats of a specified index
 
 #### Parameters
-
-* **name**: `string`
+    * **name**: `string`
     The name of the index.
 
 #### Returns
@@ -401,8 +389,7 @@ abstract mergeInsert(on): MergeInsertBuilder
 ```
 
 #### Parameters
-
-* **on**: `string` \| `string`[]
+    * **on**: `string` \| `string`[]
 
 #### Returns
 
@@ -445,8 +432,7 @@ Modeled after ``VACUUM`` in PostgreSQL.
  modification operations.
 
 #### Parameters
-
-* **options?**: `Partial`&lt;[`OptimizeOptions`](../interfaces/OptimizeOptions.md)&gt;
+    * **options?**: `Partial`&lt;[`OptimizeOptions`](../interfaces/OptimizeOptions.md)&gt;
 
 #### Returns
 
@@ -463,8 +449,7 @@ abstract prewarmIndex(name): Promise<void>
 Prewarm an index in the table.
 
 #### Parameters
-
-* **name**: `string`
+    * **name**: `string`
     The name of the index.
     This will load the index into memory.  This may reduce the cold-start time for
     future queries.  If the index does not fit in the cache then this call may be
@@ -596,14 +581,11 @@ Create a search query to find the nearest neighbors
 of the given query
 
 #### Parameters
-
-* **query**: `string` \| [`IntoVector`](../type-aliases/IntoVector.md) \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
+    * **query**: `string` \| [`IntoVector`](../type-aliases/IntoVector.md) \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
     the query, a vector or string
-
-* **queryType?**: `string`
+    * **queryType?**: `string`
     the type of the query, "vector", "fts", or "auto"
-
-* **ftsColumns?**: `string` \| `string`[]
+    * **ftsColumns?**: `string` \| `string`[]
     the columns to search in for full text search
     for now, only one column can be searched at a time.
     when "auto" is used, if the query is a string and an embedding function is defined, it will be treated as a vector query
@@ -640,8 +622,7 @@ abstract update(opts): Promise<void>
 Update existing records in the Table
 
 ##### Parameters
-
-* **opts**: `object` & `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
+    * **opts**: `object` & `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
 
 ##### Returns
 
@@ -662,8 +643,7 @@ abstract update(opts): Promise<void>
 Update existing records in the Table
 
 ##### Parameters
-
-* **opts**: `object` & `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
+    * **opts**: `object` & `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
 
 ##### Returns
 
@@ -697,16 +677,14 @@ better performance with a single [`merge_insert`] call instead of
 repeatedly calilng this method.
 
 ##### Parameters
-
-* **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+    * **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
     the
     columns to update
     Keys in the map should specify the name of the column to update.
     Values in the map provide the new value of the column.  These can
     be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
     based on the row being updated (e.g. "my_col + 1")
-
-* **options?**: `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
+    * **options?**: `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
     additional options to control
     the update behavior
 
@@ -729,8 +707,7 @@ is the same thing as calling `nearestTo` on the builder returned
 by `query`.
 
 #### Parameters
-
-* **vector**: [`IntoVector`](../type-aliases/IntoVector.md)
+    * **vector**: [`IntoVector`](../type-aliases/IntoVector.md)
 
 #### Returns
 
