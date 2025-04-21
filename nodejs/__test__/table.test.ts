@@ -507,6 +507,15 @@ describe("When creating an index", () => {
     expect(indices2.length).toBe(0);
   });
 
+  it("should wait for index readiness", async () => {
+    // Create an index and then wait for it to be ready
+    await tbl.createIndex("vec");
+    const indices = await tbl.listIndices();
+    expect(indices.length).toBeGreaterThan(0);
+    const idxName = indices[0].name;
+    await expect(tbl.waitForIndex([idxName], 5)).resolves.toBeUndefined();
+  });
+
   it("should search with distance range", async () => {
     await tbl.createIndex("vec");
 
@@ -824,6 +833,7 @@ describe("When creating an index", () => {
     // Only build index over v1
     await tbl.createIndex("vec", {
       config: Index.ivfPq({ numPartitions: 2, numSubVectors: 2 }),
+      waitTimeoutSeconds: 30,
     });
 
     const rst = await tbl
