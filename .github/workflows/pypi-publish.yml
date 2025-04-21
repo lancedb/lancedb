@@ -75,7 +75,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.12
+          python-version: 3.13
       - uses: ./.github/workflows/build_mac_wheel
         with:
           python-minor-version: 8
@@ -96,7 +96,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.12
+          python-version: 3.13
       - uses: ./.github/workflows/build_windows_wheel
         with:
           python-minor-version: 8
