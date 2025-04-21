@@ -9,7 +9,13 @@ from typing import List, Optional, Tuple
 import pyarrow as pa
 import pydantic
 import pytest
-from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, Vector, pydantic_to_schema
+from lancedb.pydantic import (
+    PYDANTIC_VERSION,
+    LanceModel,
+    Vector,
+    pydantic_to_schema,
+    MultiVector,
+)
 from pydantic import BaseModel
 from pydantic import Field
 
@@ -354,3 +360,55 @@ def test_optional_nested_model():
             ),
         ]
     )
+
+
+def test_multi_vector():
+    class TestModel(pydantic.BaseModel):
+        vec: MultiVector(8)
+
+    schema = pydantic_to_schema(TestModel)
+    assert schema == pa.schema(
+        [pa.field("vec", pa.list_(pa.list_(pa.float32(), 8)), True)]
+    )
+
+    with pytest.raises(pydantic.ValidationError):
+        TestModel(vec=[[1.0] * 7])
+
+    with pytest.raises(pydantic.ValidationError):
+        TestModel(vec=[[1.0] * 9])
+
+    TestModel(vec=[[1.0] * 8])
+    TestModel(vec=[[1.0] * 8, [2.0] * 8])
+
+    TestModel(vec=[])
+
+
+def test_multi_vector_nullable():
+    class NullableModel(pydantic.BaseModel):
+        vec: MultiVector(16, nullable=False)
+
+    schema = pydantic_to_schema(NullableModel)
+    assert schema == pa.schema(
+        [pa.field("vec", pa.list_(pa.list_(pa.float32(), 16)), False)]
+    )
+
+    class DefaultModel(pydantic.BaseModel):
+        vec: MultiVector(16)
+
+    schema = pydantic_to_schema(DefaultModel)
+    assert schema == pa.schema(
+        [pa.field("vec", pa.list_(pa.list_(pa.float32(), 16)), True)]
+    )
+
+
+def test_multi_vector_in_lance_model():
+    class TestModel(LanceModel):
+        id: int
+        vectors: MultiVector(16) = Field(default=[[0.0] * 16])
+
+    schema = pydantic_to_schema(TestModel)
+    assert schema == TestModel.to_arrow_schema()
+    assert TestModel.field_names() == ["id", "vectors"]
+
+    t = TestModel(id=1)
+    assert t.vectors == [[0.0] * 16]

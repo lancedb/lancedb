@@ -18,6 +18,7 @@ import numpy as np
 import pyarrow as pa
 
 from ..dependencies import pandas as pd
+from ..util import attempt_import_or_raise
 
 
 # ruff: noqa: PERF203
@@ -275,3 +276,12 @@ def url_retrieve(url: str):
 def api_key_not_found_help(provider):
     logging.error("Could not find API key for %s", provider)
     raise ValueError(f"Please set the {provider.upper()}_API_KEY environment variable.")
+
+
+def is_flash_attn_2_available():
+    try:
+        attempt_import_or_raise("flash_attn", "flash_attn")
+
+        return True
+    except ImportError:
+        return False
