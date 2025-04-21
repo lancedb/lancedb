@@ -20,7 +20,7 @@ pub async fn wait_for_index(
 ) -> Result<()> {
     if timeout > MAX_WAIT {
         return Err(Error::InvalidInput {
-            message: format!("timeout must be less than {:?}", MAX_WAIT).to_string(),
+            message: format!("timeout must be less than {:?}", MAX_WAIT),
         });
     }
     let start = Instant::now();
@@ -84,7 +84,6 @@ pub async fn wait_for_index(
         message: format!(
             "timed out waiting for indices: {:?} after {:?}",
             remaining, timeout
-        )
-        .to_string(),
+        ),
     })
 }

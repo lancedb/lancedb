@@ -18,6 +18,7 @@ use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
+use lance::dataset::refs::Tags;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
@@ -834,6 +835,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_table_response(&request_id, response).await?;
 
         Ok(())
+    }
+    async fn tags(&self) -> Result<Tags> {
+        return Err(Error::NotSupported {
+            message: "tags is not supported on LanceDB cloud".into(),
+        });
+    }
+    async fn checkout_tag(&self, _tag: &str) -> Result<()> {
+        return Err(Error::NotSupported {
+            message: "checkout_tag is not supported on LanceDB cloud".into(),
+        });
     }
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
