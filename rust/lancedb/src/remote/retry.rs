@@ -92,13 +92,13 @@ impl<'a> RetryCounter<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedRetryConfig {
-    pub(crate) retries: u8,
-    pub(crate) connect_retries: u8,
-    pub(crate) read_retries: u8,
-    pub(crate) backoff_factor: f32,
-    pub(crate) backoff_jitter: f32,
-    pub(crate) statuses: Vec<reqwest::StatusCode>,
+pub struct ResolvedRetryConfig {
+    pub retries: u8,
+    pub connect_retries: u8,
+    pub read_retries: u8,
+    pub backoff_factor: f32,
+    pub backoff_jitter: f32,
+    pub statuses: Vec<reqwest::StatusCode>,
 }
 
 impl TryFrom<RetryConfig> for ResolvedRetryConfig {

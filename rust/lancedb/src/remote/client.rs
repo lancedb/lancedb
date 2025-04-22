@@ -404,7 +404,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
 
     /// Set the request ID header
     pub fn set_request_id(&self, request: &mut Request, request_id: &str) {
-        let header = HeaderValue::from_str(&request_id).unwrap();
+        let header = HeaderValue::from_str(request_id).unwrap();
         request.headers_mut().insert(REQUEST_ID_HEADER, header);
     }
 

@@ -131,12 +131,12 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     /// Buffer the reader into memory
-    async fn buffer_reader<R: RecordBatchReader + ?Sized>(
+    async fn buffer_reader<R: RecordBatchReader>(
         reader: &mut R,
     ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
         let schema = reader.schema();
         let mut batches = Vec::new();
-        while let Some(batch) = reader.next() {
+        for batch in reader.by_ref() {
             batches.push(batch?);
         }
         Ok((schema, batches))
@@ -168,7 +168,7 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<(String, Response)> {
         if !with_retry || self.client.retry_config.retries == 0 {
             let body = Self::reader_as_body(data)?;
-            return Ok(self.client.send(req.body(body)).await?);
+            return self.client.send(req.body(body)).await;
         }
 
         // to support retries, we need to buffer into cloneable batches here
@@ -1652,7 +1652,7 @@ mod tests {
             .execute(data)
             .await
             .unwrap_err();
-        assert_eq!(e.to_string().contains("Hit retry limit"), true);
+        assert!(e.to_string().contains("Hit retry limit"));
     }
 
     #[tokio::test]
