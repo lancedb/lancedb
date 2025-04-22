@@ -1621,8 +1621,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_insert_retries_on_409() {
-        env_logger::init();
-
         let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
