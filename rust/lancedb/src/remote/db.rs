@@ -414,7 +414,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
 impl<S: HttpSend> RemoteDatabase<S> {
     async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
-        RemoteTable::send_with_retry(&self.client, req, None, None, true).await
+        self.client.send_with_retry(req, None, false).await
     }
 }
 

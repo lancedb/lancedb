@@ -21,7 +21,6 @@ use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
-use log::debug;
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
@@ -35,7 +34,6 @@ use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
 use super::ARROW_STREAM_CONTENT_TYPE;
 use crate::index::waiter::wait_for_index;
-use crate::remote::retry::RetryCounter;
 use crate::{
     connection::NoData,
     error::Result,
@@ -150,7 +148,7 @@ impl<S: HttpSend> RemoteTable<S> {
 
     async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<(String, Response)> {
         let res = if with_retry {
-            Self::send_with_retry(&self.client, req, None, None, true).await?
+            self.client.send_with_retry(req, None, true).await?
         } else {
             self.client.send(req).await?
         };
@@ -171,107 +169,18 @@ impl<S: HttpSend> RemoteTable<S> {
             return self.client.send(req.body(body)).await;
         }
 
-        // to support retries, we need to buffer into cloneable batches here
+        // to support retries, buffer into memory and clone the batches on each retry
         let (schema, batches) = Self::buffer_reader(&mut *data).await?;
-
-        // do not retry 5xx responses on streaming write requests
-        let res =
-            Self::send_with_retry(&self.client, req, Some(schema), Some(batches), false).await?;
+        let make_body = Box::new(move || {
+            let reader = Self::make_reader(schema.clone(), batches.clone());
+            Self::reader_as_body(Box::new(reader))
+        });
+        let res = self
+            .client
+            .send_with_retry(req, Some(make_body), false)
+            .await?;
 
         Ok(res)
-    }
-
-    /// Send the request using retries configured in the RetryConfig.
-    /// If retry_5xx is false, 5xx requests will not be retried regardless of the statuses configured
-    /// in the RetryConfig.
-    /// Since this requires arrow serialization, this is implemented here instead of in RestfulLanceDbClient
-    pub async fn send_with_retry(
-        client: &RestfulLanceDbClient<S>,
-        req_builder: RequestBuilder,
-        schema: Option<SchemaRef>,
-        batches: Option<Vec<RecordBatch>>,
-        retry_5xx: bool,
-    ) -> Result<(String, Response)> {
-        let retry_config = &client.retry_config;
-        let non_5xx_statuses = retry_config
-            .statuses
-            .iter()
-            .filter(|s| !s.is_server_error())
-            .cloned()
-            .collect::<Vec<_>>();
-
-        // clone and build the request to extract the request id
-        let tmp_req = req_builder.try_clone().ok_or_else(|| Error::Runtime {
-            message: "Attempted to retry a request that cannot be cloned".to_string(),
-        })?;
-        let (_, r) = tmp_req.build_split();
-        let mut r = r.unwrap();
-        let request_id = client.extract_request_id(&mut r);
-        let mut retry_counter = RetryCounter::new(retry_config, request_id.clone());
-
-        loop {
-            let mut req_builder = req_builder.try_clone().ok_or_else(|| Error::Runtime {
-                message: "Attempted to retry a request that cannot be cloned".to_string(),
-            })?;
-            // set the streaming body on the request builder *after* it is cloned
-            // the input batches are cloned here to support retries
-            if let Some(ref batches) = batches {
-                let schema = schema.clone().ok_or(Error::Runtime {
-                    message: "schema must be provided with streaming body".to_string(),
-                })?;
-                let reader = Self::make_reader(schema, batches.clone());
-                let body = Self::reader_as_body(Box::new(reader))?;
-                req_builder = req_builder.body(body);
-            }
-
-            let (c, request) = req_builder.build_split();
-            let mut request = request.unwrap();
-            client.set_request_id(&mut request, &request_id.clone());
-
-            let response = client
-                .sender
-                .send(&c, request)
-                .await
-                .map(|r| (r.status(), r));
-
-            match response {
-                Ok((status, response)) if status.is_success() => {
-                    debug!(
-                        "Received response for request_id={}: {:?}",
-                        retry_counter.request_id, &response
-                    );
-                    return Ok((retry_counter.request_id, response));
-                }
-                Ok((status, response))
-                    if (retry_5xx && retry_config.statuses.contains(&status))
-                        || non_5xx_statuses.contains(&status) =>
-                {
-                    let source = client
-                        .check_response(&retry_counter.request_id, response)
-                        .await
-                        .unwrap_err();
-                    retry_counter.increment_request_failures(source)?;
-                }
-                Err(err) if err.is_connect() => {
-                    retry_counter.increment_connect_failures(err)?;
-                }
-                Err(err) if err.is_timeout() || err.is_body() || err.is_decode() => {
-                    retry_counter.increment_read_failures(err)?;
-                }
-                Err(err) => {
-                    let status_code = err.status();
-                    return Err(Error::Http {
-                        source: Box::new(err),
-                        request_id: retry_counter.request_id,
-                        status_code,
-                    });
-                }
-                Ok((_, response)) => return Ok((retry_counter.request_id, response)),
-            }
-
-            let sleep_time = retry_counter.next_sleep_time();
-            tokio::time::sleep(sleep_time).await;
-        }
     }
 
     async fn check_table_response(
@@ -772,7 +681,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect::<Vec<_>>();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.client.send(req).await?;
+            let (request_id, response) = self.send(req, true).await?;
             let response = self.check_table_response(&request_id, response).await?;
             let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -814,7 +723,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.client.send(req).await?;
+            let (request_id, response) = self.send(req, true).await?;
             let response = self.check_table_response(&request_id, response).await?;
             let body = response.text().await.err_to_http(request_id.clone())?;
 

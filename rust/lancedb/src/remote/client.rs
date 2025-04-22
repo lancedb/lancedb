@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::{collections::HashMap, future::Future, str::FromStr, time::Duration};
-
 use http::HeaderName;
 use log::debug;
 use reqwest::{
     header::{HeaderMap, HeaderValue},
-    Request, RequestBuilder, Response,
+    Body, Request, RequestBuilder, Response,
 };
+use std::{collections::HashMap, future::Future, str::FromStr, time::Duration};
 
 use crate::error::{Error, Result};
 use crate::remote::db::RemoteOptions;
-use crate::remote::retry::ResolvedRetryConfig;
+use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
@@ -352,9 +351,107 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
-
         let request_id = self.extract_request_id(&mut request);
+        Self::log_request(&mut request, &request_id);
 
+        let response = self
+            .sender
+            .send(&client, request)
+            .await
+            .err_to_http(request_id.clone())?;
+        debug!(
+            "Received response for request_id={}: {:?}",
+            request_id, &response
+        );
+        Ok((request_id, response))
+    }
+
+    /// Send the request using retries configured in the RetryConfig.
+    /// If retry_5xx is false, 5xx requests will not be retried regardless of the statuses configured
+    /// in the RetryConfig.
+    /// Since this requires arrow serialization, this is implemented here instead of in RestfulLanceDbClient
+    pub async fn send_with_retry(
+        &self,
+        req_builder: RequestBuilder,
+        mut make_body: Option<Box<dyn FnMut() -> Result<Body> + Send + 'static>>,
+        retry_5xx: bool,
+    ) -> Result<(String, Response)> {
+        let retry_config = &self.retry_config;
+        let non_5xx_statuses = retry_config
+            .statuses
+            .iter()
+            .filter(|s| !s.is_server_error())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        // clone and build the request to extract the request id
+        let tmp_req = req_builder.try_clone().ok_or_else(|| Error::Runtime {
+            message: "Attempted to retry a request that cannot be cloned".to_string(),
+        })?;
+        let (_, r) = tmp_req.build_split();
+        let mut r = r.unwrap();
+        let request_id = self.extract_request_id(&mut r);
+        let mut retry_counter = RetryCounter::new(retry_config, request_id.clone());
+
+        loop {
+            let mut req_builder = req_builder.try_clone().ok_or_else(|| Error::Runtime {
+                message: "Attempted to retry a request that cannot be cloned".to_string(),
+            })?;
+
+            // set the streaming body on the request builder after clone
+            if let Some(body_gen) = make_body.as_mut() {
+                let body = body_gen()?;
+                req_builder = req_builder.body(body);
+            }
+
+            let (c, request) = req_builder.build_split();
+            let mut request = request.unwrap();
+            self.set_request_id(&mut request, &request_id.clone());
+            Self::log_request(&mut request, &request_id);
+
+            let response = self.sender.send(&c, request).await.map(|r| (r.status(), r));
+
+            match response {
+                Ok((status, response)) if status.is_success() => {
+                    debug!(
+                        "Received response for request_id={}: {:?}",
+                        retry_counter.request_id, &response
+                    );
+                    return Ok((retry_counter.request_id, response));
+                }
+                Ok((status, response))
+                    if (retry_5xx && retry_config.statuses.contains(&status))
+                        || non_5xx_statuses.contains(&status) =>
+                {
+                    let source = self
+                        .check_response(&retry_counter.request_id, response)
+                        .await
+                        .unwrap_err();
+                    retry_counter.increment_request_failures(source)?;
+                }
+                Err(err) if err.is_connect() => {
+                    retry_counter.increment_connect_failures(err)?;
+                }
+                Err(err) if err.is_timeout() || err.is_body() || err.is_decode() => {
+                    retry_counter.increment_read_failures(err)?;
+                }
+                Err(err) => {
+                    let status_code = err.status();
+                    return Err(Error::Http {
+                        source: Box::new(err),
+                        request_id: retry_counter.request_id,
+                        status_code,
+                    });
+                }
+                Ok((_, response)) => return Ok((retry_counter.request_id, response)),
+            }
+
+            let sleep_time = retry_counter.next_sleep_time();
+            tokio::time::sleep(sleep_time).await;
+        }
+    }
+
+    fn log_request(request: &mut Request, request_id: &String) {
         if log::log_enabled!(log::Level::Debug) {
             let content_type = request
                 .headers()
@@ -371,17 +468,6 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 debug!("Sending request_id={}: {:?}", request_id, request);
             }
         }
-
-        let response = self
-            .sender
-            .send(&client, request)
-            .await
-            .err_to_http(request_id.clone())?;
-        debug!(
-            "Received response for request_id={}: {:?}",
-            request_id, &response
-        );
-        Ok((request_id, response))
     }
 
     /// Extract the request ID from the request headers.
