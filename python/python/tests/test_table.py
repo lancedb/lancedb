@@ -529,6 +529,113 @@ def test_versioning(mem_db: DBConnection):
     assert len(table) == 2
 
 
+def test_tags(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+
+    table.tags.create("tag1", 1)
+    tags = table.tags.list()
+    assert "tag1" in tags
+    assert tags["tag1"]["version"] == 1
+
+    table.add(
+        data=[
+            {"vector": [10.0, 11.0], "item": "baz", "price": 30.0},
+        ],
+    )
+
+    table.tags.create("tag2", 2)
+    tags = table.tags.list()
+    assert "tag1" in tags
+    assert "tag2" in tags
+    assert tags["tag1"]["version"] == 1
+    assert tags["tag2"]["version"] == 2
+
+    table.tags.delete("tag2")
+    table.tags.update("tag1", 2)
+    tags = table.tags.list()
+    assert "tag1" in tags
+    assert tags["tag1"]["version"] == 2
+
+    table.tags.update("tag1", 1)
+    tags = table.tags.list()
+    assert "tag1" in tags
+    assert tags["tag1"]["version"] == 1
+
+    table.checkout("tag1")
+    assert table.version == 1
+    assert table.count_rows() == 2
+    table.tags.create("tag2", 2)
+    table.checkout("tag2")
+    assert table.version == 2
+    assert table.count_rows() == 3
+    table.checkout_latest()
+    table.add(
+        data=[
+            {"vector": [12.0, 13.0], "item": "baz", "price": 40.0},
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_tags(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+
+    await table.tags.create("tag1", 1)
+    tags = await table.tags.list()
+    assert "tag1" in tags
+    assert tags["tag1"]["version"] == 1
+
+    await table.add(
+        data=[
+            {"vector": [10.0, 11.0], "item": "baz", "price": 30.0},
+        ],
+    )
+
+    await table.tags.create("tag2", 2)
+    tags = await table.tags.list()
+    assert "tag1" in tags
+    assert "tag2" in tags
+    assert tags["tag1"]["version"] == 1
+    assert tags["tag2"]["version"] == 2
+
+    await table.tags.delete("tag2")
+    await table.tags.update("tag1", 2)
+    tags = await table.tags.list()
+    assert "tag1" in tags
+    assert tags["tag1"]["version"] == 2
+
+    await table.tags.update("tag1", 1)
+    tags = await table.tags.list()
+    assert "tag1" in tags
+    assert tags["tag1"]["version"] == 1
+
+    await table.checkout("tag1")
+    assert await table.version() == 1
+    assert await table.count_rows() == 2
+    await table.tags.create("tag2", 2)
+    await table.checkout("tag2")
+    assert await table.version() == 2
+    assert await table.count_rows() == 3
+    await table.checkout_latest()
+    await table.add(
+        data=[
+            {"vector": [12.0, 13.0], "item": "baz", "price": 40.0},
+        ],
+    )
+
+
 @patch("lancedb.table.AsyncTable.create_index")
 def test_create_index_method(mock_create_index, mem_db: DBConnection):
     table = mem_db.create_table(
