@@ -7,10 +7,6 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-  pull_request:
-    paths:
-      - .github/workflows/docs.yml
-
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
@@ -18,11 +14,12 @@ permissions:
   id-token: write
 
 # Allow one concurrent deployment
-# concurrency:
-#   group: "pages"
-#   cancel-in-progress: true
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
 
 env:
+  # This reduces the disk space needed for the build
   RUSTFLAGS: "-C debuginfo=0"
   # according to: https://matklad.github.io/2021/09/04/fast-rust-builds.html
   # CI builds are faster with incremental disabled.
@@ -31,9 +28,9 @@ env:
 jobs:
   # Single deploy job since we're just deploying
   build:
-    # environment:
-    #   name: github-pages
-    #   url: ${{ steps.deployment.outputs.page_url }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -79,12 +76,12 @@ jobs:
         working-directory: docs
         run: |
           PYTHONPATH=. mkdocs build
-      # - name: Setup Pages
-      #   uses: actions/configure-pages@v2
-      # - name: Upload artifact
-      #   uses: actions/upload-pages-artifact@v3
-      #   with:
-      #     path: "docs/site"
-      # - name: Deploy to GitHub Pages
-      #   id: deployment
-      #   uses: actions/deploy-pages@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v2
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "docs/site"
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
