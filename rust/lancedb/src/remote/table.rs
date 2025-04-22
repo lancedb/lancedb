@@ -18,7 +18,6 @@ use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
-use lance::dataset::refs::Tags;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
@@ -44,7 +43,7 @@ use crate::{
         TableDefinition, UpdateBuilder,
     },
 };
-
+use lance::dataset::refs::Tags;
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 
 #[derive(Debug)]

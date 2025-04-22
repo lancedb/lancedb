@@ -1178,6 +1178,73 @@ describe("when dealing with versioning", () => {
   });
 });
 
+describe("when dealing with tags", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("can manage tags", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    expect(await table.version()).toBe(1);
+
+    await table.add([{ id: 2n, vector: [0.3, 0.4] }]);
+    expect(await table.version()).toBe(2);
+
+    const tagsManager = await table.tags();
+
+    const initialTags = await tagsManager.list();
+    expect(Object.keys(initialTags).length).toBe(0);
+
+    const tag1 = "tag1";
+    await tagsManager.create(tag1, 1);
+    expect(await tagsManager.getVersion(tag1)).toBe(1);
+
+    const tagsAfterFirst = await tagsManager.list();
+    expect(Object.keys(tagsAfterFirst).length).toBe(1);
+    expect(tagsAfterFirst).toHaveProperty(tag1);
+    expect(tagsAfterFirst[tag1].version).toBe(1);
+
+    await tagsManager.create("tag2", 2);
+    expect(await tagsManager.getVersion("tag2")).toBe(2);
+
+    const tagsAfterSecond = await tagsManager.list();
+    expect(Object.keys(tagsAfterSecond).length).toBe(2);
+    expect(tagsAfterSecond).toHaveProperty(tag1);
+    expect(tagsAfterSecond[tag1].version).toBe(1);
+    expect(tagsAfterSecond).toHaveProperty("tag2");
+    expect(tagsAfterSecond["tag2"].version).toBe(2);
+
+    await table.add([{ id: 3n, vector: [0.5, 0.6] }]);
+    await tagsManager.update(tag1, 3);
+    expect(await tagsManager.getVersion(tag1)).toBe(3);
+
+    await tagsManager.delete("tag2");
+    const tagsAfterDelete = await tagsManager.list();
+    expect(Object.keys(tagsAfterDelete).length).toBe(1);
+    expect(tagsAfterDelete).toHaveProperty(tag1);
+    expect(tagsAfterDelete[tag1].version).toBe(3);
+
+    await table.add([{ id: 4n, vector: [0.7, 0.8] }]);
+    expect(await table.version()).toBe(4);
+
+    await table.checkout(tag1);
+    expect(await table.version()).toBe(3);
+
+    await table.checkoutLatest();
+    expect(await table.version()).toBe(4);
+  });
+});
+
 describe("when optimizing a dataset", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;

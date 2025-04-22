@@ -20,6 +20,7 @@ import {
   IndexConfig,
   IndexStatistics,
   OptimizeStats,
+  Tags,
   Table as _NativeTable,
 } from "./native";
 import {
@@ -374,7 +375,7 @@ export abstract class Table {
    *
    * Calling this method will set the table into time-travel mode. If you
    * wish to return to standard mode, call `checkoutLatest`.
-   * @param {number} version The version to checkout
+   * @param {number | string} version The version to checkout, could be version number or tag
    * @example
    * ```typescript
    * import * as lancedb from "@lancedb/lancedb"
@@ -390,7 +391,8 @@ export abstract class Table {
    * console.log(await table.version()); // 2
    * ```
    */
-  abstract checkout(version: number): Promise<void>;
+  abstract checkout(version: number | string): Promise<void>;
+
   /**
    * Checkout the latest version of the table. _This is an in-place operation._
    *
@@ -403,6 +405,23 @@ export abstract class Table {
    * List all the versions of the table
    */
   abstract listVersions(): Promise<Version[]>;
+
+  /**
+   * Get a tags manager for this table.
+   *
+   * Tags allow you to label specific versions of a table with a human-readable name.
+   * The returned tags manager can be used to list, create, update, or delete tags.
+   *
+   * @returns A promise that resolves to a Tags object for managing table tags
+   * @example
+   * ```typescript
+   * const tagsManager = await table.tags();
+   * await tagsManager.create("v1", 1);
+   * const tags = await tagsManager.list();
+   * console.log(tags); // { "v1": { version: 1, manifestSize: ... } }
+   * ```
+   */
+  abstract tags(): Promise<Tags>;
 
   /**
    * Restore the table to the currently checked out version
@@ -699,8 +718,11 @@ export class LocalTable extends Table {
     return await this.inner.version();
   }
 
-  async checkout(version: number): Promise<void> {
-    await this.inner.checkout(version);
+  async checkout(version: number | string): Promise<void> {
+    if (typeof version === "string") {
+      return this.inner.checkoutTag(version);
+    }
+    return this.inner.checkout(version);
   }
 
   async checkoutLatest(): Promise<void> {
@@ -717,6 +739,10 @@ export class LocalTable extends Table {
 
   async restore(): Promise<void> {
     await this.inner.restore();
+  }
+
+  async tags(): Promise<Tags> {
+    return await this.inner.tags();
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {

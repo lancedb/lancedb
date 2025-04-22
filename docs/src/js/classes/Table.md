@@ -117,8 +117,8 @@ wish to return to standard mode, call `checkoutLatest`.
 
 #### Parameters
 
-* **version**: `number`
-    The version to checkout
+* **version**: `string` \| `number`
+    The version to checkout, could be version number or tag
 
 #### Returns
 

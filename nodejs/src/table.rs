@@ -7,12 +7,12 @@ use arrow_ipc::writer::FileWriter;
 use lancedb::ipc::ipc_file_to_batches;
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
+    OptimizeAction, OptimizeOptions, Table as LanceDbTable, Tags as LanceTags,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::error::NapiErrorExt;
+use crate::error::{convert_error, NapiErrorExt};
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, VectorQuery};
@@ -250,6 +250,14 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn checkout_tag(&self, tag: String) -> napi::Result<()> {
+        self.inner_ref()?
+            .checkout_tag(tag.as_str())
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn checkout_latest(&self) -> napi::Result<()> {
         self.inner_ref()?.checkout_latest().await.default_error()
     }
@@ -279,6 +287,12 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn restore(&self) -> napi::Result<()> {
         self.inner_ref()?.restore().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn tags(&self) -> napi::Result<Tags> {
+        let tags = self.inner_ref()?.tags().await.default_error()?;
+        Ok(Tags { inner: tags })
     }
 
     #[napi(catch_unwind)]
@@ -545,4 +559,87 @@ pub struct Version {
     pub version: i64,
     pub timestamp: i64,
     pub metadata: HashMap<String, String>,
+}
+
+#[napi]
+pub struct TagContents {
+    pub version: i64,
+    pub manifest_size: i64,
+}
+
+#[napi]
+pub struct Tags {
+    inner: LanceTags,
+}
+
+#[napi]
+impl Tags {
+    #[napi]
+    pub async fn list(&self) -> napi::Result<HashMap<String, TagContents>> {
+        let rust_tags = self.inner.list().await.map_err(|e| {
+            napi::Error::from_reason(format!("Failed to list tags: {}", convert_error(&e)))
+        })?;
+        let tag_contents = rust_tags
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    TagContents {
+                        version: v.version as i64,
+                        manifest_size: v.manifest_size as i64,
+                    },
+                )
+            })
+            .collect();
+
+        Ok(tag_contents)
+    }
+
+    #[napi]
+    pub async fn get_version(&self, tag: String) -> napi::Result<i64> {
+        self.inner
+            .get_version(&tag)
+            .await
+            .map(|v| v as i64)
+            .map_err(|e| {
+                napi::Error::from_reason(format!(
+                    "Failed to get version for tag {}: {}",
+                    tag,
+                    convert_error(&e)
+                ))
+            })
+    }
+
+    #[napi]
+    pub async unsafe fn create(&mut self, tag: String, version: i64) -> napi::Result<()> {
+        self.inner.create(&tag, version as u64).await.map_err(|e| {
+            napi::Error::from_reason(format!(
+                "Failed to create tag {}: {}",
+                tag,
+                convert_error(&e)
+            ))
+        })
+    }
+
+    #[napi]
+    pub async unsafe fn delete(&mut self, tag: String) -> napi::Result<()> {
+        self.inner.delete(&tag).await.map_err(|e| {
+            napi::Error::from_reason(format!(
+                "Failed to delete tag {}: {}",
+                tag,
+                convert_error(&e)
+            ))
+        })
+    }
+
+    #[napi]
+    pub async unsafe fn update(&mut self, tag: String, version: i64) -> napi::Result<()> {
+        self.inner.update(&tag, version as u64).await.map_err(|e| {
+            napi::Error::from_reason(format!(
+                "Failed to update tag {}: {}",
+                tag,
+                convert_error(&e)
+            ))
+        })
+    }
 }
