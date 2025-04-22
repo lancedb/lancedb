@@ -8,9 +8,9 @@
 
 pub(crate) mod client;
 pub(crate) mod db;
+mod retry;
 pub(crate) mod table;
 pub(crate) mod util;
-mod retry;
 
 const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
 #[cfg(test)]

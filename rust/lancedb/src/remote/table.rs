@@ -21,13 +21,13 @@ use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
+use log::debug;
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use log::debug;
 use tokio::sync::RwLock;
 
 use super::client::RequestResultExt;
