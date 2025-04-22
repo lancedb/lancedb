@@ -18,9 +18,9 @@ permissions:
   id-token: write
 
 # Allow one concurrent deployment
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
+# concurrency:
+#   group: "pages"
+#   cancel-in-progress: true
 
 env:
   RUSTFLAGS: "-C debuginfo=0"
