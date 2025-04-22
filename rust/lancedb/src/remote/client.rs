@@ -4,7 +4,7 @@
 use std::{collections::HashMap, future::Future, str::FromStr, time::Duration};
 
 use http::HeaderName;
-use log::{debug};
+use log::debug;
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     Request, RequestBuilder, Response,
