@@ -21,13 +21,13 @@ use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
-use log::{debug, info};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use log::debug;
 use tokio::sync::RwLock;
 
 use super::client::RequestResultExt;
@@ -209,8 +209,6 @@ impl<S: HttpSend> RemoteTable<S> {
         let request_id = client.extract_request_id(&mut r);
         let mut retry_counter = RetryCounter::new(retry_config, request_id.clone());
 
-        info!("{:#?}", r.headers());
-
         loop {
             let mut req_builder = req_builder.try_clone().ok_or_else(|| Error::Runtime {
                 message: "Attempted to retry a request that cannot be cloned".to_string(),
@@ -229,8 +227,6 @@ impl<S: HttpSend> RemoteTable<S> {
             let (c, request) = req_builder.build_split();
             let mut request = request.unwrap();
             client.set_request_id(&mut request, &request_id.clone());
-
-            debug!("request headers: {:#?}", request.headers());
 
             let response = client
                 .sender
