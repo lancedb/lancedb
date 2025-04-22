@@ -4,7 +4,7 @@
 use std::{collections::HashMap, future::Future, str::FromStr, time::Duration};
 
 use http::HeaderName;
-use log::{debug, info};
+use log::{debug};
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     Request, RequestBuilder, Response,
@@ -397,8 +397,6 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             self.set_request_id(request, &request_id);
             request_id
         };
-
-        info!("{:#?}", request.headers());
         request_id
     }
 

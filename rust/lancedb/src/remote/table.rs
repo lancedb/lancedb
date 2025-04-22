@@ -131,12 +131,12 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     /// Buffer the reader into memory
-    async fn buffer_reader<R: RecordBatchReader>(
+    async fn buffer_reader<R: RecordBatchReader + ?Sized>(
         reader: &mut R,
     ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
         let schema = reader.schema();
         let mut batches = Vec::new();
-        for batch in reader.by_ref() {
+        while let Some(batch) = reader.next() {
             batches.push(batch?);
         }
         Ok((schema, batches))
@@ -163,7 +163,7 @@ impl<S: HttpSend> RemoteTable<S> {
     async fn send_streaming(
         &self,
         req: RequestBuilder,
-        data: Box<dyn RecordBatchReader + Send>,
+        mut data: Box<dyn RecordBatchReader + Send>,
         with_retry: bool,
     ) -> Result<(String, Response)> {
         if !with_retry || self.client.retry_config.retries == 0 {
@@ -172,8 +172,7 @@ impl<S: HttpSend> RemoteTable<S> {
         }
 
         // to support retries, we need to buffer into cloneable batches here
-        let mut data = Mutex::new(data);
-        let (schema, batches) = Self::buffer_reader(data.get_mut().unwrap()).await?;
+        let (schema, batches) = Self::buffer_reader(&mut *data).await?;
 
         // do not retry 5xx responses on streaming write requests
         let res =
