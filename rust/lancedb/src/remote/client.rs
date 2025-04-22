@@ -352,7 +352,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
         let request_id = self.extract_request_id(&mut request);
-        Self::log_request(&mut request, &request_id);
+        self.log_request(&request, &request_id);
 
         let response = self
             .sender
@@ -407,7 +407,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             let (c, request) = req_builder.build_split();
             let mut request = request.unwrap();
             self.set_request_id(&mut request, &request_id.clone());
-            Self::log_request(&mut request, &request_id);
+            self.log_request(&request, &request_id);
 
             let response = self.sender.send(&c, request).await.map(|r| (r.status(), r));
 
@@ -451,7 +451,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
     }
 
-    fn log_request(request: &mut Request, request_id: &String) {
+    fn log_request(&self, request: &Request, request_id: &String) {
         if log::log_enabled!(log::Level::Debug) {
             let content_type = request
                 .headers()
