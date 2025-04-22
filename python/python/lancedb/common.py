@@ -9,7 +9,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.dataset
 
-from .dependencies import pandas as pd
+from .dependencies import _check_for_pandas, pandas as pd
 
 DATA = Union[List[dict], "pd.DataFrame", pa.Table, Iterable[pa.RecordBatch]]
 VEC = Union[list, np.ndarray, pa.Array, pa.ChunkedArray]
@@ -63,7 +63,7 @@ def data_to_reader(
     data: DATA, schema: Optional[pa.Schema] = None
 ) -> pa.RecordBatchReader:
     """Convert various types of input into a RecordBatchReader"""
-    if pd is not None and isinstance(data, pd.DataFrame):
+    if _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         return pa.Table.from_pandas(data, schema=schema).to_reader()
     elif isinstance(data, pa.Table):
         return data.to_reader()
