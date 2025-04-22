@@ -2,6 +2,11 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 use std::{collections::HashMap, sync::Arc};
 
+use crate::{
+    error::PythonErrorExt,
+    index::{extract_index_params, IndexConfig},
+    query::Query,
+};
 use arrow::{
     datatypes::{DataType, Schema},
     ffi_stream::ArrowArrayStreamReader,
@@ -12,18 +17,12 @@ use lancedb::table::{
     Table as LanceDbTable,
 };
 use pyo3::{
-    exceptions::{PyKeyError, PyRuntimeError, PyValueError},
+    exceptions::{PyIOError, PyKeyError, PyRuntimeError, PyValueError},
     pyclass, pymethods,
-    types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
-    Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
+    types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods, PyInt, PyString},
+    Bound, FromPyObject, PyAny, PyObject, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
-
-use crate::{
-    error::PythonErrorExt,
-    index::{extract_index_params, IndexConfig},
-    query::Query,
-};
 
 /// Statistics about a compaction operation.
 #[pyclass(get_all)]
@@ -322,10 +321,26 @@ impl Table {
         })
     }
 
-    pub fn checkout(self_: PyRef<'_, Self>, version: u64) -> PyResult<Bound<'_, PyAny>> {
+    pub fn checkout(self_: PyRef<'_, Self>, version: PyObject) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        future_into_py(self_.py(), async move {
-            inner.checkout(version).await.infer_error()
+        let py = self_.py();
+        let (is_int, int_value, string_value) = if let Ok(i) = version.downcast_bound::<PyInt>(py) {
+            let num: u64 = i.extract()?;
+            (true, num, String::new())
+        } else if let Ok(s) = version.downcast_bound::<PyString>(py) {
+            let str_value = s.to_string();
+            (false, 0, str_value)
+        } else {
+            return Err(PyIOError::new_err(
+                "version must be an integer or a string.",
+            ));
+        };
+        future_into_py(py, async move {
+            if is_int {
+                inner.checkout(int_value).await.infer_error()
+            } else {
+                inner.checkout_tag(&string_value).await.infer_error()
+            }
         })
     }
 
@@ -540,6 +555,61 @@ impl Table {
         future_into_py(self_.py(), async move {
             let column_refs = columns.iter().map(String::as_str).collect::<Vec<&str>>();
             inner.drop_columns(&column_refs).await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn tags(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let tags = inner.tags().await.infer_error()?;
+            let res = tags.list().await.map_err(Into::into).infer_error()?;
+
+            Python::with_gil(|py| {
+                let py_dict = PyDict::new(py);
+                for (key, contents) in res {
+                    let value_dict = PyDict::new(py);
+                    value_dict.set_item("version", contents.version)?;
+                    value_dict.set_item("manifest_size", contents.manifest_size)?;
+                    py_dict.set_item(key, value_dict)?;
+                }
+                Ok(py_dict.unbind())
+            })
+        })
+    }
+
+    pub fn create_tag(self_: PyRef<Self>, tag: String, version: u64) -> PyResult<Bound<PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut tags = inner.tags().await.infer_error()?;
+            tags.create(tag.as_str(), version)
+                .await
+                .map_err(Into::into)
+                .infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn delete_tag(self_: PyRef<Self>, tag: String) -> PyResult<Bound<PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut tags = inner.tags().await.infer_error()?;
+            tags.delete(tag.as_str())
+                .await
+                .map_err(Into::into)
+                .infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn update_tag(self_: PyRef<Self>, tag: String, version: u64) -> PyResult<Bound<PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut tags = inner.tags().await.infer_error()?;
+            tags.update(tag.as_str(), version)
+                .await
+                .map_err(Into::into)
+                .infer_error()?;
             Ok(())
         })
     }

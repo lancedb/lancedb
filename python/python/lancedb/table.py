@@ -1354,7 +1354,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def checkout(self, version: int):
+    def checkout(self, version: int | str):
         """
         Checks out a specific version of the Table
 
@@ -1368,6 +1368,12 @@ class Table(ABC):
 
         Any operation that modifies the table will fail while the table is in a checked
         out state.
+
+        Parameters
+        ----------
+        version: int | str,
+            The version to check out. A version number (`int`) or a tag
+            (`str`) can be provided.
 
         To return the table to a normal state use `[Self::checkout_latest]`
         """
@@ -3797,6 +3803,9 @@ class AsyncTable:
         out state and the read_consistency_interval, if any, will apply.
         """
         await self._inner.restore(version)
+
+    async def tags(self):
+        await self._inner.tags()
 
     async def optimize(
         self,
