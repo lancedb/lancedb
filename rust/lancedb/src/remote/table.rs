@@ -136,8 +136,7 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
         let schema = reader.schema();
         let mut batches = Vec::new();
-        #[allow(clippy::while_let_on_iterator)]
-        while let Some(batch) = reader.next() {
+        for batch in reader {
             batches.push(batch?);
         }
         Ok((schema, batches))
