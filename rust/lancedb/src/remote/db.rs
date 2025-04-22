@@ -10,6 +10,7 @@ use http::StatusCode;
 use lance_io::object_store::StorageOptions;
 use moka::future::Cache;
 use reqwest::header::CONTENT_TYPE;
+use reqwest::{RequestBuilder, Response};
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
@@ -255,8 +256,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         if let Some(start_after) = request.start_after {
             req = req.query(&[("page_token", start_after)]);
         }
-        // todo: add retries
-        let (request_id, rsp) = self.client.send(req).await?;
+        let (request_id, rsp) = self.send(req).await?;
         let rsp = self.client.check_response(&request_id, rsp).await?;
         let version = parse_server_version(&request_id, &rsp)?;
         let tables = rsp
@@ -301,9 +301,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .post(&format!("/v1/table/{}/create/", request.name))
             .query(&[("mode", Into::<&str>::into(&request.mode))])
             .body(data_buffer)
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE); //
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
-        let (request_id, rsp) = self.client.send(req).await?;
+        let (request_id, rsp) = self.send(req).await?;
 
         if rsp.status() == StatusCode::BAD_REQUEST {
             let body = rsp.text().await.err_to_http(request_id.clone())?;
@@ -363,7 +363,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let req = self
                 .client
                 .post(&format!("/v1/table/{}/describe/", request.name));
-            let (request_id, rsp) = self.client.send(req).await?;
+            let (request_id, rsp) = self.send(req).await?;
             if rsp.status() == StatusCode::NOT_FOUND {
                 return Err(crate::Error::TableNotFound { name: request.name });
             }
@@ -384,7 +384,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .client
             .post(&format!("/v1/table/{}/rename/", current_name));
         let req = req.json(&serde_json::json!({ "new_table_name": new_name }));
-        let (request_id, resp) = self.client.send(req).await?;
+        let (request_id, resp) = self.send(req).await?;
         self.client.check_response(&request_id, resp).await?;
         let table = self.table_cache.remove(current_name).await;
         if let Some(table) = table {
@@ -395,7 +395,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn drop_table(&self, name: &str) -> Result<()> {
         let req = self.client.post(&format!("/v1/table/{}/drop/", name));
-        let (request_id, resp) = self.client.send(req).await?;
+        let (request_id, resp) = self.send(req).await?;
         self.client.check_response(&request_id, resp).await?;
         self.table_cache.remove(name).await;
         Ok(())
@@ -409,6 +409,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+impl<S: HttpSend> RemoteDatabase<S> {
+    async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
+        RemoteTable::send_with_retry(&self.client, req, None, None, true).await
     }
 }
 

@@ -21,8 +21,8 @@ use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
-use log::debug;
-use reqwest::{Request, RequestBuilder, Response};
+use log::{debug, info};
+use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::pin::Pin;
@@ -35,6 +35,7 @@ use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
 use super::ARROW_STREAM_CONTENT_TYPE;
 use crate::index::waiter::wait_for_index;
+use crate::remote::retry::RetryCounter;
 use crate::{
     connection::NoData,
     error::Result,
@@ -147,14 +148,9 @@ impl<S: HttpSend> RemoteTable<S> {
         RecordBatchIterator::new(iter, schema)
     }
 
-    async fn send(
-        &self,
-        // client: &RestfulLanceDbClient<S>,
-        req: RequestBuilder,
-        with_retry: bool,
-    ) -> Result<(String, Response)> {
+    async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<(String, Response)> {
         let res = if with_retry {
-            self.send_with_retry(req, None, None, true).await?
+            Self::send_with_retry(&self.client, req, None, None, true).await?
         } else {
             self.client.send(req).await?
         };
@@ -172,7 +168,7 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<(String, Response)> {
         if !with_retry || self.client.retry_config.retries == 0 {
             let body = Self::reader_as_body(data)?;
-            return Ok(self.client.send(req.body(body)).await?)
+            return Ok(self.client.send(req.body(body)).await?);
         }
 
         // to support retries, we need to buffer into cloneable batches here
@@ -180,7 +176,8 @@ impl<S: HttpSend> RemoteTable<S> {
         let (schema, batches) = Self::buffer_reader(data.get_mut().unwrap()).await?;
 
         // do not retry 5xx responses on streaming write requests
-        let res = self.send_with_retry(req, Some(schema), Some(batches), false).await?;
+        let res =
+            Self::send_with_retry(&self.client, req, Some(schema), Some(batches), false).await?;
 
         Ok(res)
     }
@@ -188,14 +185,15 @@ impl<S: HttpSend> RemoteTable<S> {
     /// Send the request using retries configured in the RetryConfig.
     /// If retry_5xx is false, 5xx requests will not be retried regardless of the statuses configured
     /// in the RetryConfig.
-    async fn send_with_retry(
-        &self,
+    /// Since this requires arrow serialization, this is implemented here instead of in RestfulLanceDbClient
+    pub async fn send_with_retry(
+        client: &RestfulLanceDbClient<S>,
         req_builder: RequestBuilder,
         schema: Option<SchemaRef>,
         batches: Option<Vec<RecordBatch>>,
         retry_5xx: bool,
     ) -> Result<(String, Response)> {
-        let retry_config = &self.client.retry_config;
+        let retry_config = &client.retry_config;
         let non_5xx_statuses = retry_config
             .statuses
             .iter()
@@ -203,15 +201,27 @@ impl<S: HttpSend> RemoteTable<S> {
             .cloned()
             .collect::<Vec<_>>();
 
+        // clone and build the request to extract the request id
+        let tmp_req = req_builder.try_clone().ok_or_else(|| Error::Runtime {
+            message: "Attempted to retry a request that cannot be cloned".to_string(),
+        })?;
+        let (_, r) = tmp_req.build_split();
+        let mut r = r.unwrap();
+        let request_id = client.extract_request_id(&mut r);
+        let mut retry_counter = RetryCounter::new(retry_config, request_id.clone());
+
+        info!("{:#?}", r.headers());
+
         loop {
             let mut req_builder = req_builder.try_clone().ok_or_else(|| Error::Runtime {
                 message: "Attempted to retry a request that cannot be cloned".to_string(),
             })?;
-
             // set the streaming body on the request builder *after* it is cloned
             // the input batches are cloned here to support retries
             if let Some(ref batches) = batches {
-                let schema = schema.clone().ok_or(Error::Runtime { message: "schema must be provided with streaming body".to_string() })?;
+                let schema = schema.clone().ok_or(Error::Runtime {
+                    message: "schema must be provided with streaming body".to_string(),
+                })?;
                 let reader = Self::make_reader(schema, batches.clone());
                 let body = Self::reader_as_body(Box::new(reader))?;
                 req_builder = req_builder.body(body);
@@ -219,11 +229,11 @@ impl<S: HttpSend> RemoteTable<S> {
 
             let (c, request) = req_builder.build_split();
             let mut request = request.unwrap();
-            let request_id = self.client.extract_request_id(&mut request);
+            client.set_request_id(&mut request, &request_id.clone());
 
-            let mut retry_counter = RetryCounter::new(retry_config, request_id);
+            debug!("request headers: {:#?}", request.headers());
 
-            let response = self.client
+            let response = client
                 .sender
                 .send(&c, request)
                 .await
@@ -238,15 +248,15 @@ impl<S: HttpSend> RemoteTable<S> {
                     return Ok((retry_counter.request_id, response));
                 }
                 Ok((status, response))
-                if (retry_5xx && retry_config.statuses.contains(&status))
-                    || non_5xx_statuses.contains(&status) =>
-                    {
-                        let source = self.client
-                            .check_response(&retry_counter.request_id, response)
-                            .await
-                            .unwrap_err();
-                        retry_counter.increment_request_failures(source)?;
-                    }
+                    if (retry_5xx && retry_config.statuses.contains(&status))
+                        || non_5xx_statuses.contains(&status) =>
+                {
+                    let source = client
+                        .check_response(&retry_counter.request_id, response)
+                        .await
+                        .unwrap_err();
+                    retry_counter.increment_request_failures(source)?;
+                }
                 Err(err) if err.is_connect() => {
                     retry_counter.increment_connect_failures(err)?;
                 }
@@ -671,23 +681,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
         self.check_mutable().await?;
-        // let body = Self::reader_as_body(data)?;
-        // let mut request = self
-        //     .client
-        //     .post(&format!("/v1/table/{}/insert/", self.name))
-        //     .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
-        //     .body(body);
-
-        // let mut data = Mutex::new(data);
-
-        // todo: disable buffering if retries are disabled?
-        // let (schema, batches) = Self::buffer_reader(data.get_mut().unwrap()).await?;
-
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/insert/", self.name))
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
-        // .body(body);
 
         match add.mode {
             AddDataMode::Append => {}
@@ -696,8 +693,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             }
         }
 
-        let (request_id, response) =
-            self.send_streaming(request, data, true).await?;
+        let (request_id, response) = self.send_streaming(request, data, true).await?;
         self.check_table_response(&request_id, response).await?;
 
         Ok(())
@@ -1183,91 +1179,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 }
 
-struct RetryCounter<'a> {
-    request_failures: u8,
-    connect_failures: u8,
-    read_failures: u8,
-    config: &'a crate::remote::client::ResolvedRetryConfig,
-    request_id: String,
-}
-
-impl<'a> RetryCounter<'a> {
-    fn new(config: &'a crate::remote::client::ResolvedRetryConfig, request_id: String) -> Self {
-        Self {
-            request_failures: 0,
-            connect_failures: 0,
-            read_failures: 0,
-            config,
-            request_id,
-        }
-    }
-
-    fn check_out_of_retries(
-        &self,
-        source: Box<dyn std::error::Error + Send + Sync>,
-        status_code: Option<reqwest::StatusCode>,
-    ) -> Result<()> {
-        if self.request_failures >= self.config.retries
-            || self.connect_failures >= self.config.connect_retries
-            || self.read_failures >= self.config.read_retries
-        {
-            Err(Error::Retry {
-                request_id: self.request_id.clone(),
-                request_failures: self.request_failures,
-                max_request_failures: self.config.retries,
-                connect_failures: self.connect_failures,
-                max_connect_failures: self.config.connect_retries,
-                read_failures: self.read_failures,
-                max_read_failures: self.config.read_retries,
-                source,
-                status_code,
-            })
-        } else {
-            Ok(())
-        }
-    }
-
-    fn increment_request_failures(&mut self, source: crate::Error) -> Result<()> {
-        self.request_failures += 1;
-        let status_code = if let crate::Error::Http { status_code, .. } = &source {
-            *status_code
-        } else {
-            None
-        };
-        self.check_out_of_retries(Box::new(source), status_code)
-    }
-
-    fn increment_connect_failures(&mut self, source: reqwest::Error) -> Result<()> {
-        self.connect_failures += 1;
-        let status_code = source.status();
-        self.check_out_of_retries(Box::new(source), status_code)
-    }
-
-    fn increment_read_failures(&mut self, source: reqwest::Error) -> Result<()> {
-        self.read_failures += 1;
-        let status_code = source.status();
-        self.check_out_of_retries(Box::new(source), status_code)
-    }
-
-    fn next_sleep_time(&self) -> Duration {
-        let backoff = self.config.backoff_factor * (2.0f32.powi(self.request_failures as i32));
-        let jitter = rand::random::<f32>() * self.config.backoff_jitter;
-        let sleep_time = Duration::from_secs_f32(backoff + jitter);
-        debug!(
-            "Retrying request {:?} ({}/{} connect, {}/{} read, {}/{} read) in {:?}",
-            self.request_id,
-            self.connect_failures,
-            self.config.connect_retries,
-            self.request_failures,
-            self.config.retries,
-            self.read_failures,
-            self.config.read_retries,
-            sleep_time
-        );
-        sleep_time
-    }
-}
-
 #[derive(Serialize)]
 struct MergeInsertRequest {
     on: String,
@@ -1706,6 +1617,44 @@ mod tests {
         let body = collect_body(body).await;
         let expected_body = write_ipc_stream(&batch);
         assert_eq!(&body, &expected_body);
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_retries_on_409() {
+        env_logger::init();
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let data = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        // Default parameters
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
+
+            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(params["on"], "some_col");
+            assert_eq!(params["when_matched_update_all"], "false");
+            assert_eq!(params["when_not_matched_insert_all"], "false");
+            assert_eq!(params["when_not_matched_by_source_delete"], "false");
+            assert!(!params.contains_key("when_matched_update_all_filt"));
+            assert!(!params.contains_key("when_not_matched_by_source_delete_filt"));
+
+            http::Response::builder().status(409).body("").unwrap()
+        });
+
+        let e = table
+            .merge_insert(&["some_col"])
+            .execute(data)
+            .await
+            .unwrap_err();
+        assert_eq!(e.to_string().contains("Hit retry limit"), true);
     }
 
     #[tokio::test]
