@@ -429,74 +429,74 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         };
         request_id
     }
-
-    async fn send_with_retry( // todo: remove
-        &self,
-        client: reqwest::Client,
-        req: Request,
-        request_id: String,
-        retry_5xx: bool,
-    ) -> Result<(String, Response)> {
-        let mut retry_counter = RetryCounter::new(&self.retry_config, request_id);
-
-        let non_5xx_statuses = self
-            .retry_config
-            .statuses
-            .iter()
-            .filter(|s| !s.is_server_error())
-            .cloned()
-            .collect::<Vec<_>>();
-        loop {
-            // This only works if the request body is not a stream. If it is
-            // a stream, we can't use the retry path. We would need to implement
-            // an outer retry.
-            let request = req.try_clone().ok_or_else(|| Error::Runtime {
-                message: "Attempted to retry a request that cannot be cloned".to_string(),
-            })?;
-            let response = self
-                .sender
-                .send(&client, request)
-                .await
-                .map(|r| (r.status(), r));
-            match response {
-                Ok((status, response)) if status.is_success() => {
-                    debug!(
-                        "Received response for request_id={}: {:?}",
-                        retry_counter.request_id, &response
-                    );
-                    return Ok((retry_counter.request_id, response));
-                }
-                Ok((status, response))
-                    if (retry_5xx && self.retry_config.statuses.contains(&status))
-                        || non_5xx_statuses.contains(&status) =>
-                {
-                    let source = self
-                        .check_response(&retry_counter.request_id, response)
-                        .await
-                        .unwrap_err();
-                    retry_counter.increment_request_failures(source)?;
-                }
-                Err(err) if err.is_connect() => {
-                    retry_counter.increment_connect_failures(err)?;
-                }
-                Err(err) if err.is_timeout() || err.is_body() || err.is_decode() => {
-                    retry_counter.increment_read_failures(err)?;
-                }
-                Err(err) => {
-                    let status_code = err.status();
-                    return Err(Error::Http {
-                        source: Box::new(err),
-                        request_id: retry_counter.request_id,
-                        status_code,
-                    });
-                }
-                Ok((_, response)) => return Ok((retry_counter.request_id, response)),
-            }
-
-            let sleep_time = retry_counter.next_sleep_time();
-            tokio::time::sleep(sleep_time).await;
-        }
-    }
+    //
+    // async fn send_with_retry( // todo: remove
+    //     &self,
+    //     client: reqwest::Client,
+    //     req: Request,
+    //     request_id: String,
+    //     retry_5xx: bool,
+    // ) -> Result<(String, Response)> {
+    //     let mut retry_counter = RetryCounter::new(&self.retry_config, request_id);
+    //
+    //     let non_5xx_statuses = self
+    //         .retry_config
+    //         .statuses
+    //         .iter()
+    //         .filter(|s| !s.is_server_error())
+    //         .cloned()
+    //         .collect::<Vec<_>>();
+    //     loop {
+    //         // This only works if the request body is not a stream. If it is
+    //         // a stream, we can't use the retry path. We would need to implement
+    //         // an outer retry.
+    //         let request = req.try_clone().ok_or_else(|| Error::Runtime {
+    //             message: "Attempted to retry a request that cannot be cloned".to_string(),
+    //         })?;
+    //         let response = self
+    //             .sender
+    //             .send(&client, request)
+    //             .await
+    //             .map(|r| (r.status(), r));
+    //         match response {
+    //             Ok((status, response)) if status.is_success() => {
+    //                 debug!(
+    //                     "Received response for request_id={}: {:?}",
+    //                     retry_counter.request_id, &response
+    //                 );
+    //                 return Ok((retry_counter.request_id, response));
+    //             }
+    //             Ok((status, response))
+    //                 if (retry_5xx && self.retry_config.statuses.contains(&status))
+    //                     || non_5xx_statuses.contains(&status) =>
+    //             {
+    //                 let source = self
+    //                     .check_response(&retry_counter.request_id, response)
+    //                     .await
+    //                     .unwrap_err();
+    //                 retry_counter.increment_request_failures(source)?;
+    //             }
+    //             Err(err) if err.is_connect() => {
+    //                 retry_counter.increment_connect_failures(err)?;
+    //             }
+    //             Err(err) if err.is_timeout() || err.is_body() || err.is_decode() => {
+    //                 retry_counter.increment_read_failures(err)?;
+    //             }
+    //             Err(err) => {
+    //                 let status_code = err.status();
+    //                 return Err(Error::Http {
+    //                     source: Box::new(err),
+    //                     request_id: retry_counter.request_id,
+    //                     status_code,
+    //                 });
+    //             }
+    //             Ok((_, response)) => return Ok((retry_counter.request_id, response)),
+    //         }
+    //
+    //         let sleep_time = retry_counter.next_sleep_time();
+    //         tokio::time::sleep(sleep_time).await;
+    //     }
+    // }
 
     pub async fn check_response(&self, request_id: &str, response: Response) -> Result<Response> {
         // Try to get the response text, but if that fails, just return the status code
