@@ -255,7 +255,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         if let Some(start_after) = request.start_after {
             req = req.query(&[("page_token", start_after)]);
         }
-        let (request_id, rsp) = self.client.send(req, true).await?;
+        let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
         let rsp = self.client.check_response(&request_id, rsp).await?;
         let version = parse_server_version(&request_id, &rsp)?;
         let tables = rsp
@@ -302,7 +302,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .body(data_buffer)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
-        let (request_id, rsp) = self.client.send(req, false).await?;
+        let (request_id, rsp) = self.client.send(req).await?;
 
         if rsp.status() == StatusCode::BAD_REQUEST {
             let body = rsp.text().await.err_to_http(request_id.clone())?;
@@ -362,7 +362,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let req = self
                 .client
                 .post(&format!("/v1/table/{}/describe/", request.name));
-            let (request_id, rsp) = self.client.send(req, true).await?;
+            let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
             if rsp.status() == StatusCode::NOT_FOUND {
                 return Err(crate::Error::TableNotFound { name: request.name });
             }
@@ -383,7 +383,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .client
             .post(&format!("/v1/table/{}/rename/", current_name));
         let req = req.json(&serde_json::json!({ "new_table_name": new_name }));
-        let (request_id, resp) = self.client.send(req, false).await?;
+        let (request_id, resp) = self.client.send(req).await?;
         self.client.check_response(&request_id, resp).await?;
         let table = self.table_cache.remove(current_name).await;
         if let Some(table) = table {
@@ -394,7 +394,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn drop_table(&self, name: &str) -> Result<()> {
         let req = self.client.post(&format!("/v1/table/{}/drop/", name));
-        let (request_id, resp) = self.client.send(req, true).await?;
+        let (request_id, resp) = self.client.send(req).await?;
         self.client.check_response(&request_id, resp).await?;
         self.table_cache.remove(name).await;
         Ok(())

@@ -7,7 +7,7 @@ use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::table::{AddDataMode, AnyQuery, Filter};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
-use arrow_array::RecordBatchReader;
+use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
@@ -21,6 +21,7 @@ use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
+use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::pin::Pin;
@@ -83,7 +84,7 @@ impl<S: HttpSend> RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.send(request, true).await?;
 
         let response = self.check_table_response(&request_id, response).await?;
 
@@ -125,6 +126,61 @@ impl<S: HttpSend> RemoteTable<S> {
         });
         let body_stream = futures::stream::iter(body_iter);
         Ok(reqwest::Body::wrap_stream(body_stream))
+    }
+
+    /// Buffer the reader into memory
+    async fn buffer_reader<R: RecordBatchReader + ?Sized>(
+        reader: &mut R,
+    ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
+        let schema = reader.schema();
+        let mut batches = Vec::new();
+        for batch in reader {
+            batches.push(batch?);
+        }
+        Ok((schema, batches))
+    }
+
+    /// Create a new RecordBatchReader from buffered data
+    fn make_reader(schema: SchemaRef, batches: Vec<RecordBatch>) -> impl RecordBatchReader {
+        let iter = batches.into_iter().map(Ok);
+        RecordBatchIterator::new(iter, schema)
+    }
+
+    async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<(String, Response)> {
+        let res = if with_retry {
+            self.client.send_with_retry(req, None, true).await?
+        } else {
+            self.client.send(req).await?
+        };
+        Ok(res)
+    }
+
+    /// Send the request with streaming body.
+    /// This will use retries if with_retry is set and the number of configured retries is > 0.
+    /// If retries are enabled, the stream will be buffered into memory.
+    async fn send_streaming(
+        &self,
+        req: RequestBuilder,
+        mut data: Box<dyn RecordBatchReader + Send>,
+        with_retry: bool,
+    ) -> Result<(String, Response)> {
+        if !with_retry || self.client.retry_config.retries == 0 {
+            let body = Self::reader_as_body(data)?;
+            return self.client.send(req.body(body)).await;
+        }
+
+        // to support retries, buffer into memory and clone the batches on each retry
+        let (schema, batches) = Self::buffer_reader(&mut *data).await?;
+        let make_body = Box::new(move || {
+            let reader = Self::make_reader(schema.clone(), batches.clone());
+            Self::reader_as_body(Box::new(reader))
+        });
+        let res = self
+            .client
+            .send_with_retry(req, Some(make_body), false)
+            .await?;
+
+        Ok(res)
     }
 
     async fn check_table_response(
@@ -339,8 +395,6 @@ impl<S: HttpSend> RemoteTable<S> {
         let mut request = self.client.post(&format!("/v1/table/{}/query/", self.name));
 
         if let Some(timeout) = options.timeout {
-            // Client side timeout
-            request = request.timeout(timeout);
             // Also send to server, so it can abort the query if it takes too long.
             // (If it doesn't fit into u64, it's not worth sending anyways.)
             if let Ok(timeout_ms) = u64::try_from(timeout.as_millis()) {
@@ -355,11 +409,29 @@ impl<S: HttpSend> RemoteTable<S> {
             .collect();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.client.send(req, true).await?;
+            let (request_id, response) = self.send(req, true).await?;
             self.read_arrow_stream(&request_id, response).await
         });
-        let streams = futures::future::try_join_all(futures).await?;
-        Ok(streams)
+        let streams = futures::future::try_join_all(futures);
+
+        if let Some(timeout) = options.timeout {
+            let timeout_future = tokio::time::sleep(timeout);
+            tokio::pin!(timeout_future);
+            tokio::pin!(streams);
+            tokio::select! {
+                _ = &mut timeout_future => {
+                    Err(Error::Other {
+                        message: format!("Query timeout after {} ms", timeout.as_millis()),
+                        source: None,
+                    })
+                }
+                result = &mut streams => {
+                    Ok(result?)
+                }
+            }
+        } else {
+            Ok(streams.await?)
+        }
     }
 
     async fn prepare_query_bodies(&self, query: &AnyQuery) -> Result<Vec<serde_json::Value>> {
@@ -455,7 +527,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         self.checkout_latest().await?;
         Ok(())
@@ -465,7 +537,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/v1/table/{}/version/list/", self.name));
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
 
         #[derive(Deserialize)]
@@ -511,7 +583,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             request = request.json(&body);
         }
 
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.send(request, true).await?;
 
         let response = self.check_table_response(&request_id, response).await?;
 
@@ -529,12 +601,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
         self.check_mutable().await?;
-        let body = Self::reader_as_body(data)?;
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/insert/", self.name))
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
-            .body(body);
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
         match add.mode {
             AddDataMode::Append => {}
@@ -543,8 +613,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             }
         }
 
-        let (request_id, response) = self.client.send(request, false).await?;
-
+        let (request_id, response) = self.send_streaming(request, data, true).await?;
         self.check_table_response(&request_id, response).await?;
 
         Ok(())
@@ -612,7 +681,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect::<Vec<_>>();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.client.send(req, true).await?;
+            let (request_id, response) = self.send(req, true).await?;
             let response = self.check_table_response(&request_id, response).await?;
             let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -654,7 +723,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect();
 
         let futures = requests.into_iter().map(|req| async move {
-            let (request_id, response) = self.client.send(req, true).await?;
+            let (request_id, response) = self.send(req, true).await?;
             let response = self.check_table_response(&request_id, response).await?;
             let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -696,7 +765,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "predicate": update.filter,
         }));
 
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.send(request, true).await?;
 
         self.check_table_response(&request_id, response).await?;
 
@@ -710,7 +779,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/delete/", self.name))
             .json(&body);
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -796,7 +865,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.send(request, true).await?;
 
         self.check_table_response(&request_id, response).await?;
 
@@ -820,16 +889,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
         self.check_mutable().await?;
+
         let query = MergeInsertRequest::try_from(params)?;
-        let body = Self::reader_as_body(new_data)?;
         let request = self
             .client
             .post(&format!("/v1/table/{}/merge_insert/", self.name))
             .query(&query)
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
-            .body(body);
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.send_streaming(request, new_data, true).await?;
 
         self.check_table_response(&request_id, response).await?;
 
@@ -873,7 +941,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .client
                     .post(&format!("/v1/table/{}/add_columns/", self.name))
                     .json(&body);
-                let (request_id, response) = self.client.send(request, false).await?;
+                let (request_id, response) = self.send(request, true).await?; // todo:
                 self.check_table_response(&request_id, response).await?;
                 Ok(())
             }
@@ -912,7 +980,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/alter_columns/", self.name))
             .json(&body);
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -924,7 +992,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/drop_columns/", self.name))
             .json(&body);
-        let (request_id, response) = self.client.send(request, false).await?;
+        let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -938,7 +1006,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
 
         #[derive(Deserialize)]
@@ -995,7 +1063,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.send(request, true).await?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -1005,7 +1073,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let body = response.text().await.err_to_http(request_id.clone())?;
 
-        println!("body: {:?}", body);
         let stats = serde_json::from_str(&body).map_err(|e| Error::Http {
             source: format!("Failed to parse index statistics: {}", e).into(),
             request_id,
@@ -1020,7 +1087,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "/v1/table/{}/index/{}/drop/",
             self.name, index_name
         ));
-        let (request_id, response) = self.client.send(request, true).await?;
+        let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
@@ -1479,6 +1546,42 @@ mod tests {
         let body = collect_body(body).await;
         let expected_body = write_ipc_stream(&batch);
         assert_eq!(&body, &expected_body);
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_retries_on_409() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let data = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        // Default parameters
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
+
+            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(params["on"], "some_col");
+            assert_eq!(params["when_matched_update_all"], "false");
+            assert_eq!(params["when_not_matched_insert_all"], "false");
+            assert_eq!(params["when_not_matched_by_source_delete"], "false");
+            assert!(!params.contains_key("when_matched_update_all_filt"));
+            assert!(!params.contains_key("when_not_matched_by_source_delete_filt"));
+
+            http::Response::builder().status(409).body("").unwrap()
+        });
+
+        let e = table
+            .merge_insert(&["some_col"])
+            .execute(data)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("Hit retry limit"));
     }
 
     #[tokio::test]
