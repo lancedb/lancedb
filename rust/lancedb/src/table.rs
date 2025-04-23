@@ -81,7 +81,7 @@ pub mod merge;
 use crate::index::waiter::wait_for_index;
 pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
-pub use lance::dataset::refs::{TagContents, Tags};
+pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
 
@@ -402,6 +402,24 @@ pub enum AnyQuery {
     VectorQuery(VectorQueryRequest),
 }
 
+#[async_trait]
+pub trait Tags: Send {
+    /// List the tags of the table.
+    async fn list(&self) -> Result<HashMap<String, TagContents>>;
+
+    /// Get the version of the table referenced by a tag.
+    async fn get_version(&self, tag: &str) -> Result<u64>;
+
+    /// Create a new tag for the given version of the table.
+    async fn create(&mut self, tag: &str, version: u64) -> Result<()>;
+
+    /// Delete a tag from the table.
+    async fn delete(&mut self, tag: &str) -> Result<()>;
+
+    /// Update an existing tag to point to a new version of the table.
+    async fn update(&mut self, tag: &str, version: u64) -> Result<()>;
+}
+
 /// A trait for anything "table-like".  This is used for both native tables (which target
 /// Lance datasets) and remote tables (which target LanceDB cloud)
 ///
@@ -468,7 +486,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()>;
     /// Gets the table tag manager.
-    async fn tags(&self) -> Result<Tags>;
+    async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
     /// Add columns to the table.
@@ -1169,7 +1187,7 @@ impl Table {
     }
 
     /// Get the tags manager.
-    pub async fn tags(&self) -> Result<Tags> {
+    pub async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
         self.inner.tags().await
     }
 
@@ -1222,6 +1240,35 @@ impl Table {
         )
         .unwrap();
         Ok(Arc::new(repartitioned))
+    }
+}
+
+pub struct NativeTags {
+    inner: LanceTags,
+}
+#[async_trait]
+impl Tags for NativeTags {
+    async fn list(&self) -> Result<HashMap<String, TagContents>> {
+        Ok(self.inner.list().await?)
+    }
+
+    async fn get_version(&self, tag: &str) -> Result<u64> {
+        Ok(self.inner.get_version(tag).await?)
+    }
+
+    async fn create(&mut self, tag: &str, version: u64) -> Result<()> {
+        self.inner.create(tag, version).await?;
+        Ok(())
+    }
+
+    async fn delete(&mut self, tag: &str) -> Result<()> {
+        self.inner.delete(tag).await?;
+        Ok(())
+    }
+
+    async fn update(&mut self, tag: &str, version: u64) -> Result<()> {
+        self.inner.update(tag, version).await?;
+        Ok(())
     }
 }
 
@@ -2348,9 +2395,12 @@ impl BaseTable for NativeTable {
         Ok(())
     }
 
-    async fn tags(&self) -> Result<Tags> {
+    async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
         let dataset = self.dataset.get().await?;
-        Ok(dataset.tags.clone())
+
+        Ok(Box::new(NativeTags {
+            inner: dataset.tags.clone(),
+        }))
     }
 
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {

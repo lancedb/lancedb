@@ -7,12 +7,12 @@ use arrow_ipc::writer::FileWriter;
 use lancedb::ipc::ipc_file_to_batches;
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Table as LanceDbTable, Tags as LanceTags,
+    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::error::{convert_error, NapiErrorExt};
+use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, VectorQuery};
@@ -291,8 +291,9 @@ impl Table {
 
     #[napi(catch_unwind)]
     pub async fn tags(&self) -> napi::Result<Tags> {
-        let tags = self.inner_ref()?.tags().await.default_error()?;
-        Ok(Tags { inner: tags })
+        Ok(Tags {
+            inner: self.inner_ref()?.clone(),
+        })
     }
 
     #[napi(catch_unwind)]
@@ -569,17 +570,16 @@ pub struct TagContents {
 
 #[napi]
 pub struct Tags {
-    inner: LanceTags,
+    inner: LanceDbTable,
 }
 
 #[napi]
 impl Tags {
     #[napi]
     pub async fn list(&self) -> napi::Result<HashMap<String, TagContents>> {
-        let rust_tags = self.inner.list().await.map_err(|e| {
-            napi::Error::from_reason(format!("Failed to list tags: {}", convert_error(&e)))
-        })?;
-        let tag_contents = rust_tags
+        let rust_tags = self.inner.tags().await.default_error()?;
+        let tag_list = rust_tags.as_ref().list().await.default_error()?;
+        let tag_contents = tag_list
             .into_iter()
             .map(|(k, v)| {
                 (
@@ -597,49 +597,42 @@ impl Tags {
 
     #[napi]
     pub async fn get_version(&self, tag: String) -> napi::Result<i64> {
-        self.inner
-            .get_version(&tag)
+        let rust_tags = self.inner.tags().await.default_error()?;
+        rust_tags
+            .as_ref()
+            .get_version(tag.as_str())
             .await
             .map(|v| v as i64)
-            .map_err(|e| {
-                napi::Error::from_reason(format!(
-                    "Failed to get version for tag {}: {}",
-                    tag,
-                    convert_error(&e)
-                ))
-            })
+            .default_error()
     }
 
     #[napi]
     pub async unsafe fn create(&mut self, tag: String, version: i64) -> napi::Result<()> {
-        self.inner.create(&tag, version as u64).await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to create tag {}: {}",
-                tag,
-                convert_error(&e)
-            ))
-        })
+        let mut rust_tags = self.inner.tags().await.default_error()?;
+        rust_tags
+            .as_mut()
+            .create(tag.as_str(), version as u64)
+            .await
+            .default_error()
     }
 
     #[napi]
     pub async unsafe fn delete(&mut self, tag: String) -> napi::Result<()> {
-        self.inner.delete(&tag).await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to delete tag {}: {}",
-                tag,
-                convert_error(&e)
-            ))
-        })
+        let mut rust_tags = self.inner.tags().await.default_error()?;
+        rust_tags
+            .as_mut()
+            .delete(tag.as_str())
+            .await
+            .default_error()
     }
 
     #[napi]
     pub async unsafe fn update(&mut self, tag: String, version: i64) -> napi::Result<()> {
-        self.inner.update(&tag, version as u64).await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to update tag {}: {}",
-                tag,
-                convert_error(&e)
-            ))
-        })
+        let mut rust_tags = self.inner.tags().await.default_error()?;
+        rust_tags
+            .as_mut()
+            .update(tag.as_str(), version as u64)
+            .await
+            .default_error()
     }
 }

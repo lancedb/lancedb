@@ -4,6 +4,7 @@
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
+use crate::table::Tags;
 use crate::table::{AddDataMode, AnyQuery, Filter};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
@@ -18,11 +19,13 @@ use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
+use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -44,8 +47,44 @@ use crate::{
         TableDefinition, UpdateBuilder,
     },
 };
-use lance::dataset::refs::Tags;
+
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
+
+pub struct RemoteTags {
+    _inner: RemoteTable,
+}
+#[async_trait]
+impl Tags for RemoteTags {
+    async fn list(&self) -> Result<HashMap<String, TagContents>> {
+        return Err(Error::NotSupported {
+            message: "tags is not supported on LanceDB cloud".into(),
+        });
+    }
+
+    async fn get_version(&self, _tag: &str) -> Result<u64> {
+        return Err(Error::NotSupported {
+            message: "tags is not supported on LanceDB cloud".into(),
+        });
+    }
+
+    async fn create(&mut self, _tag: &str, _version: u64) -> Result<()> {
+        return Err(Error::NotSupported {
+            message: "tags is not supported on LanceDB cloud".into(),
+        });
+    }
+
+    async fn delete(&mut self, _tag: &str) -> Result<()> {
+        return Err(Error::NotSupported {
+            message: "tags is not supported on LanceDB cloud".into(),
+        });
+    }
+
+    async fn update(&mut self, _tag: &str, _version: u64) -> Result<()> {
+        return Err(Error::NotSupported {
+            message: "tags is not supported on LanceDB cloud".into(),
+        });
+    }
+}
 
 #[derive(Debug)]
 pub struct RemoteTable<S: HttpSend = Sender> {
@@ -903,7 +942,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
-    async fn tags(&self) -> Result<Tags> {
+    async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
         return Err(Error::NotSupported {
             message: "tags is not supported on LanceDB cloud".into(),
         });
