@@ -367,6 +367,10 @@ impl Table {
         Query::new(self.inner_ref().unwrap().query())
     }
 
+    pub fn tags(&self) -> Tags {
+        Tags::new(self.inner_ref().unwrap().clone())
+    }
+
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.
     #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, retrain=None))]
     pub fn optimize(
@@ -559,61 +563,6 @@ impl Table {
         })
     }
 
-    pub fn tags(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner_ref()?.clone();
-        future_into_py(self_.py(), async move {
-            let tags = inner.tags().await.infer_error()?;
-            let res = tags.list().await.infer_error()?;
-
-            Python::with_gil(|py| {
-                let py_dict = PyDict::new(py);
-                for (key, contents) in res {
-                    let value_dict = PyDict::new(py);
-                    value_dict.set_item("version", contents.version)?;
-                    value_dict.set_item("manifest_size", contents.manifest_size)?;
-                    py_dict.set_item(key, value_dict)?;
-                }
-                Ok(py_dict.unbind())
-            })
-        })
-    }
-
-    pub fn get_tag_version(self_: PyRef<'_, Self>, tag: String) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner_ref()?.clone();
-        future_into_py(self_.py(), async move {
-            let tags = inner.tags().await.infer_error()?;
-            let res = tags.get_version(tag.as_str()).await.infer_error()?;
-            Ok(res)
-        })
-    }
-
-    pub fn create_tag(self_: PyRef<Self>, tag: String, version: u64) -> PyResult<Bound<PyAny>> {
-        let inner = self_.inner_ref()?.clone();
-        future_into_py(self_.py(), async move {
-            let mut tags = inner.tags().await.infer_error()?;
-            tags.create(tag.as_str(), version).await.infer_error()?;
-            Ok(())
-        })
-    }
-
-    pub fn delete_tag(self_: PyRef<Self>, tag: String) -> PyResult<Bound<PyAny>> {
-        let inner = self_.inner_ref()?.clone();
-        future_into_py(self_.py(), async move {
-            let mut tags = inner.tags().await.infer_error()?;
-            tags.delete(tag.as_str()).await.infer_error()?;
-            Ok(())
-        })
-    }
-
-    pub fn update_tag(self_: PyRef<Self>, tag: String, version: u64) -> PyResult<Bound<PyAny>> {
-        let inner = self_.inner_ref()?.clone();
-        future_into_py(self_.py(), async move {
-            let mut tags = inner.tags().await.infer_error()?;
-            tags.update(tag.as_str(), version).await.infer_error()?;
-            Ok(())
-        })
-    }
-
     pub fn replace_field_metadata<'a>(
         self_: PyRef<'a, Self>,
         field_name: String,
@@ -655,4 +604,73 @@ pub struct MergeInsertParams {
     when_not_matched_insert_all: bool,
     when_not_matched_by_source_delete: bool,
     when_not_matched_by_source_condition: Option<String>,
+}
+
+#[pyclass]
+pub struct Tags {
+    inner: LanceDbTable,
+}
+
+impl Tags {
+    pub fn new(table: LanceDbTable) -> Self {
+        Self { inner: table }
+    }
+}
+
+#[pymethods]
+impl Tags {
+    pub fn list(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let tags = inner.tags().await.infer_error()?;
+            let res = tags.list().await.infer_error()?;
+
+            Python::with_gil(|py| {
+                let py_dict = PyDict::new(py);
+                for (key, contents) in res {
+                    let value_dict = PyDict::new(py);
+                    value_dict.set_item("version", contents.version)?;
+                    value_dict.set_item("manifest_size", contents.manifest_size)?;
+                    py_dict.set_item(key, value_dict)?;
+                }
+                Ok(py_dict.unbind())
+            })
+        })
+    }
+
+    pub fn get_version(self_: PyRef<'_, Self>, tag: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let tags = inner.tags().await.infer_error()?;
+            let res = tags.get_version(tag.as_str()).await.infer_error()?;
+            Ok(res)
+        })
+    }
+
+    pub fn create(self_: PyRef<Self>, tag: String, version: u64) -> PyResult<Bound<PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let mut tags = inner.tags().await.infer_error()?;
+            tags.create(tag.as_str(), version).await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn delete(self_: PyRef<Self>, tag: String) -> PyResult<Bound<PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let mut tags = inner.tags().await.infer_error()?;
+            tags.delete(tag.as_str()).await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn update(self_: PyRef<Self>, tag: String, version: u64) -> PyResult<Bound<PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let mut tags = inner.tags().await.infer_error()?;
+            tags.update(tag.as_str(), version).await.infer_error()?;
+            Ok(())
+        })
+    }
 }

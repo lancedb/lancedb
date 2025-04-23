@@ -4082,6 +4082,17 @@ class Tags:
         """
         return LOOP.run(self._table.tags.list())
 
+    def get_version(self, tag: str) -> int:
+        """
+        Get the version of a tag.
+
+        Parameters
+        ----------
+        tag: str,
+            The name of the tag to get the version for.
+        """
+        return LOOP.run(self._table.tags.get_version(tag))
+
     def create(self, tag: str, version: int) -> None:
         """
         Create a tag for a given table version.
@@ -4138,7 +4149,18 @@ class AsyncTags:
         dict[str, Tag]
             A dictionary mapping tag names to version numbers.
         """
-        return await self._table.tags()
+        return await self._table.tags().list()
+
+    async def get_version(self, tag: str) -> int:
+        """
+        Get the version of a tag.
+
+        Parameters
+        ----------
+        tag: str,
+            The name of the tag to get the version for.
+        """
+        return await self._table.tags().get_version(tag)
 
     async def create(self, tag: str, version: int) -> None:
         """
@@ -4152,7 +4174,7 @@ class AsyncTags:
         version: int,
             The table version to tag.
         """
-        await self._table.create_tag(tag, version)
+        await self._table.tags().create(tag, version)
 
     async def delete(self, tag: str) -> None:
         """
@@ -4163,7 +4185,7 @@ class AsyncTags:
         tag: str,
             The name of the tag to delete.
         """
-        await self._table.delete_tag(tag)
+        await self._table.tags().delete(tag)
 
     async def update(self, tag: str, version: int) -> None:
         """
@@ -4176,4 +4198,4 @@ class AsyncTags:
         version: int,
             The new table version to tag.
         """
-        await self._table.update_tag(tag, version)
+        await self._table.tags().update(tag, version)
