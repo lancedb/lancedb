@@ -224,7 +224,8 @@ impl<S: HttpSend> RemoteTable<S> {
         }
 
         // Server requires k.
-        let limit = params.limit.unwrap_or(usize::MAX);
+        // use isize::MAX as usize to avoid overflow: https://github.com/lancedb/lancedb/issues/2211
+        let limit = params.limit.unwrap_or(isize::MAX as usize);
         body["k"] = serde_json::Value::Number(serde_json::Number::from(limit));
 
         if let Some(filter) = &params.filter {
@@ -1616,7 +1617,7 @@ mod tests {
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let expected_body = serde_json::json!({
-                "k": usize::MAX,
+                "k": isize::MAX as usize,
                 "prefilter": true,
                 "vector": [], // Empty vector means no vector query.
                 "version": null,
