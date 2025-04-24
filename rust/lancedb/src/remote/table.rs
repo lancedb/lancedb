@@ -55,7 +55,7 @@ pub struct RemoteTags<'a, S: HttpSend = Sender> {
 }
 
 #[async_trait]
-impl<'a, S: HttpSend + 'static> Tags for RemoteTags<'a, S> {
+impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
     async fn list(&self) -> Result<HashMap<String, TagContents>> {
         let request = self
             .inner
@@ -94,7 +94,7 @@ impl<'a, S: HttpSend + 'static> Tags for RemoteTags<'a, S> {
         let request = self
             .inner
             .client
-            .post(&format!("/v1/table/{}/tags/get_version/", self.inner.name))
+            .post(&format!("/v1/table/{}/tags/version/", self.inner.name))
             .json(&serde_json::json!({ "tag": tag }));
 
         let (request_id, response) = self.inner.send(request, true).await?;
