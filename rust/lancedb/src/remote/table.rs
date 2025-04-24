@@ -50,39 +50,110 @@ use crate::{
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 
-pub struct RemoteTags {
-    _inner: RemoteTable,
+pub struct RemoteTags<'a, S: HttpSend = Sender> {
+    inner: &'a RemoteTable<S>,
 }
+
 #[async_trait]
-impl Tags for RemoteTags {
+impl<'a, S: HttpSend + 'static> Tags for RemoteTags<'a, S> {
     async fn list(&self) -> Result<HashMap<String, TagContents>> {
-        return Err(Error::NotSupported {
-            message: "tags is not supported on LanceDB cloud".into(),
-        });
+        let request = self.inner.client.post(&format!("/v1/table/{}/tags/list/", self.inner.name));
+        let (request_id, response) = self.inner.send(request, true).await?;
+        let response = self.inner.check_table_response(&request_id, response).await?;
+
+        match response.text().await {
+            Ok(body) => {
+                // Explicitly tell serde_json what type we want to deserialize into
+                let tags_map: HashMap<String, TagContents> = serde_json::from_str(&body).map_err(|e| Error::Http {
+                    source: format!("Failed to parse tags list: {}", e).into(),
+                    request_id,
+                    status_code: None,
+                })?;
+
+                Ok(tags_map)
+            },
+            Err(err) => {
+                let status_code = err.status();
+                Err(Error::Http {
+                    source: Box::new(err),
+                    request_id,
+                    status_code,
+                })
+            }
+        }
     }
 
-    async fn get_version(&self, _tag: &str) -> Result<u64> {
-        return Err(Error::NotSupported {
-            message: "tags is not supported on LanceDB cloud".into(),
-        });
+    async fn get_version(&self, tag: &str) -> Result<u64> {
+        let request = self.inner
+            .client
+            .post(&format!("/v1/table/{}/tags/get_version/", self.inner.name))
+            .json(&serde_json::json!({ "tag": tag }));
+
+        let (request_id, response) = self.inner.send(request, true).await?;
+        let response = self.inner.check_table_response(&request_id, response).await?;
+
+        match response.text().await {
+            Ok(body) => {
+                let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| Error::Http {
+                    source: format!("Failed to parse tag version: {}", e).into(),
+                    request_id: request_id.clone(),
+                    status_code: None,
+                })?;
+
+                value.get("version").and_then(|v| v.as_u64()).ok_or_else(|| Error::Http {
+                    source: format!("Invalid tag version response: {}", body).into(),
+                    request_id,
+                    status_code: None,
+                })
+            },
+            Err(err) => {
+                let status_code = err.status();
+                Err(Error::Http {
+                    source: Box::new(err),
+                    request_id,
+                    status_code,
+                })
+            }
+        }
     }
 
-    async fn create(&mut self, _tag: &str, _version: u64) -> Result<()> {
-        return Err(Error::NotSupported {
-            message: "tags is not supported on LanceDB cloud".into(),
-        });
+    async fn create(&mut self, tag: &str, version: u64) -> Result<()> {
+        let request = self.inner
+            .client
+            .post(&format!("/v1/table/{}/tags/create/", self.inner.name))
+            .json(&serde_json::json!({
+                "tag": tag,
+                "version": version
+            }));
+
+        let (request_id, response) = self.inner.send(request, true).await?;
+        self.inner.check_table_response(&request_id, response).await?;
+        Ok(())
     }
 
-    async fn delete(&mut self, _tag: &str) -> Result<()> {
-        return Err(Error::NotSupported {
-            message: "tags is not supported on LanceDB cloud".into(),
-        });
+    async fn delete(&mut self, tag: &str) -> Result<()> {
+        let request = self.inner
+            .client
+            .post(&format!("/v1/table/{}/tags/delete/", self.inner.name))
+            .json(&serde_json::json!({ "tag": tag }));
+
+        let (request_id, response) = self.inner.send(request, true).await?;
+        self.inner.check_table_response(&request_id, response).await?;
+        Ok(())
     }
 
-    async fn update(&mut self, _tag: &str, _version: u64) -> Result<()> {
-        return Err(Error::NotSupported {
-            message: "tags is not supported on LanceDB cloud".into(),
-        });
+    async fn update(&mut self, tag: &str, version: u64) -> Result<()> {
+        let request = self.inner
+            .client
+            .post(&format!("/v1/table/{}/tags/update/", self.inner.name))
+            .json(&serde_json::json!({
+                "tag": tag,
+                "version": version
+            }));
+
+        let (request_id, response) = self.inner.send(request, true).await?;
+        self.inner.check_table_response(&request_id, response).await?;
+        Ok(())
     }
 }
 
@@ -942,15 +1013,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
+
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
-        return Err(Error::NotSupported {
-            message: "tags is not supported on LanceDB cloud".into(),
-        });
+        Ok(Box::new(RemoteTags {
+            inner: self,
+        }))
     }
-    async fn checkout_tag(&self, _tag: &str) -> Result<()> {
-        return Err(Error::NotSupported {
-            message: "checkout_tag is not supported on LanceDB cloud".into(),
-        });
+    async fn checkout_tag(&self, tag: &str) -> Result<()> {
+        let tags = self.tags().await?;
+        let version = tags.get_version(tag).await?;
+        let mut write_guard = self.version.write().await;
+        *write_guard = Some(version);
+        Ok(())
     }
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
