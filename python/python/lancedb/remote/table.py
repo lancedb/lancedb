@@ -18,8 +18,7 @@ from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
-from ..table import AsyncTable, IndexStatistics, Query, Table
-
+from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
 
 class RemoteTable(Table):
     def __init__(
@@ -53,6 +52,10 @@ class RemoteTable(Table):
     def version(self) -> int:
         """Get the current version of the table"""
         return LOOP.run(self._table.version())
+
+    @property
+    def tags(self) -> Tags:
+        return Tags(self._table)
 
     @cached_property
     def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:

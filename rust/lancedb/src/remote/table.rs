@@ -57,21 +57,28 @@ pub struct RemoteTags<'a, S: HttpSend = Sender> {
 #[async_trait]
 impl<'a, S: HttpSend + 'static> Tags for RemoteTags<'a, S> {
     async fn list(&self) -> Result<HashMap<String, TagContents>> {
-        let request = self.inner.client.post(&format!("/v1/table/{}/tags/list/", self.inner.name));
+        let request = self
+            .inner
+            .client
+            .post(&format!("/v1/table/{}/tags/list/", self.inner.name));
         let (request_id, response) = self.inner.send(request, true).await?;
-        let response = self.inner.check_table_response(&request_id, response).await?;
+        let response = self
+            .inner
+            .check_table_response(&request_id, response)
+            .await?;
 
         match response.text().await {
             Ok(body) => {
                 // Explicitly tell serde_json what type we want to deserialize into
-                let tags_map: HashMap<String, TagContents> = serde_json::from_str(&body).map_err(|e| Error::Http {
-                    source: format!("Failed to parse tags list: {}", e).into(),
-                    request_id,
-                    status_code: None,
-                })?;
+                let tags_map: HashMap<String, TagContents> =
+                    serde_json::from_str(&body).map_err(|e| Error::Http {
+                        source: format!("Failed to parse tags list: {}", e).into(),
+                        request_id,
+                        status_code: None,
+                    })?;
 
                 Ok(tags_map)
-            },
+            }
             Err(err) => {
                 let status_code = err.status();
                 Err(Error::Http {
@@ -84,28 +91,36 @@ impl<'a, S: HttpSend + 'static> Tags for RemoteTags<'a, S> {
     }
 
     async fn get_version(&self, tag: &str) -> Result<u64> {
-        let request = self.inner
+        let request = self
+            .inner
             .client
             .post(&format!("/v1/table/{}/tags/get_version/", self.inner.name))
             .json(&serde_json::json!({ "tag": tag }));
 
         let (request_id, response) = self.inner.send(request, true).await?;
-        let response = self.inner.check_table_response(&request_id, response).await?;
+        let response = self
+            .inner
+            .check_table_response(&request_id, response)
+            .await?;
 
         match response.text().await {
             Ok(body) => {
-                let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| Error::Http {
-                    source: format!("Failed to parse tag version: {}", e).into(),
-                    request_id: request_id.clone(),
-                    status_code: None,
-                })?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&body).map_err(|e| Error::Http {
+                        source: format!("Failed to parse tag version: {}", e).into(),
+                        request_id: request_id.clone(),
+                        status_code: None,
+                    })?;
 
-                value.get("version").and_then(|v| v.as_u64()).ok_or_else(|| Error::Http {
-                    source: format!("Invalid tag version response: {}", body).into(),
-                    request_id,
-                    status_code: None,
-                })
-            },
+                value
+                    .get("version")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| Error::Http {
+                        source: format!("Invalid tag version response: {}", body).into(),
+                        request_id,
+                        status_code: None,
+                    })
+            }
             Err(err) => {
                 let status_code = err.status();
                 Err(Error::Http {
@@ -118,7 +133,8 @@ impl<'a, S: HttpSend + 'static> Tags for RemoteTags<'a, S> {
     }
 
     async fn create(&mut self, tag: &str, version: u64) -> Result<()> {
-        let request = self.inner
+        let request = self
+            .inner
             .client
             .post(&format!("/v1/table/{}/tags/create/", self.inner.name))
             .json(&serde_json::json!({
@@ -127,23 +143,29 @@ impl<'a, S: HttpSend + 'static> Tags for RemoteTags<'a, S> {
             }));
 
         let (request_id, response) = self.inner.send(request, true).await?;
-        self.inner.check_table_response(&request_id, response).await?;
+        self.inner
+            .check_table_response(&request_id, response)
+            .await?;
         Ok(())
     }
 
     async fn delete(&mut self, tag: &str) -> Result<()> {
-        let request = self.inner
+        let request = self
+            .inner
             .client
             .post(&format!("/v1/table/{}/tags/delete/", self.inner.name))
             .json(&serde_json::json!({ "tag": tag }));
 
         let (request_id, response) = self.inner.send(request, true).await?;
-        self.inner.check_table_response(&request_id, response).await?;
+        self.inner
+            .check_table_response(&request_id, response)
+            .await?;
         Ok(())
     }
 
     async fn update(&mut self, tag: &str, version: u64) -> Result<()> {
-        let request = self.inner
+        let request = self
+            .inner
             .client
             .post(&format!("/v1/table/{}/tags/update/", self.inner.name))
             .json(&serde_json::json!({
@@ -152,7 +174,9 @@ impl<'a, S: HttpSend + 'static> Tags for RemoteTags<'a, S> {
             }));
 
         let (request_id, response) = self.inner.send(request, true).await?;
-        self.inner.check_table_response(&request_id, response).await?;
+        self.inner
+            .check_table_response(&request_id, response)
+            .await?;
         Ok(())
     }
 }
@@ -1015,9 +1039,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
-        Ok(Box::new(RemoteTags {
-            inner: self,
-        }))
+        Ok(Box::new(RemoteTags { inner: self }))
     }
     async fn checkout_tag(&self, tag: &str) -> Result<()> {
         let tags = self.tags().await?;
