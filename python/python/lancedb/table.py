@@ -4154,7 +4154,7 @@ class AsyncTags:
         dict[str, Tag]
             A dictionary mapping tag names to version numbers.
         """
-        return await self._table.tags().list()
+        return await self._table.tags.list()
 
     async def get_version(self, tag: str) -> int:
         """
@@ -4165,7 +4165,7 @@ class AsyncTags:
         tag: str,
             The name of the tag to get the version for.
         """
-        return await self._table.tags().get_version(tag)
+        return await self._table.tags.get_version(tag)
 
     async def create(self, tag: str, version: int) -> None:
         """
@@ -4179,7 +4179,7 @@ class AsyncTags:
         version: int,
             The table version to tag.
         """
-        await self._table.tags().create(tag, version)
+        await self._table.tags.create(tag, version)
 
     async def delete(self, tag: str) -> None:
         """
@@ -4190,7 +4190,7 @@ class AsyncTags:
         tag: str,
             The name of the tag to delete.
         """
-        await self._table.tags().delete(tag)
+        await self._table.tags.delete(tag)
 
     async def update(self, tag: str, version: int) -> None:
         """
@@ -4203,4 +4203,4 @@ class AsyncTags:
         version: int,
             The new table version to tag.
         """
-        await self._table.tags().update(tag, version)
+        await self._table.tags.update(tag, version)

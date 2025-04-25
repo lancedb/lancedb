@@ -367,8 +367,9 @@ impl Table {
         Query::new(self.inner_ref().unwrap().query())
     }
 
-    pub fn tags(&self) -> Tags {
-        Tags::new(self.inner_ref().unwrap().clone())
+    #[getter]
+    pub fn tags(&self) -> PyResult<Tags> {
+        Ok(Tags::new(self.inner_ref()?.clone()))
     }
 
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.

@@ -403,7 +403,7 @@ pub enum AnyQuery {
 }
 
 #[async_trait]
-pub trait Tags: Send {
+pub trait Tags: Send + Sync {
     /// List the tags of the table.
     async fn list(&self) -> Result<HashMap<String, TagContents>>;
 
