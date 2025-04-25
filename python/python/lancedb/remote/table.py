@@ -20,6 +20,7 @@ from lancedb.embeddings import EmbeddingFunctionRegistry
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
 from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
 
+
 class RemoteTable(Table):
     def __init__(
         self,
@@ -84,7 +85,7 @@ class RemoteTable(Table):
         """to_pandas() is not yet supported on LanceDB cloud."""
         return NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
-    def checkout(self, version: int | str):
+    def checkout(self, version: Union[int, str]):
         return LOOP.run(self._table.checkout(version))
 
     def checkout_latest(self):

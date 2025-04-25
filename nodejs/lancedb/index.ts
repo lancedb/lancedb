@@ -23,6 +23,8 @@ export {
   OptimizeStats,
   CompactionStats,
   RemovalStats,
+  Tags,
+  TagContents,
 } from "./native.js";
 
 export {

@@ -615,6 +615,34 @@ of the given query
 
 ***
 
+### tags()
+
+```ts
+abstract tags(): Promise<Tags>
+```
+
+Get a tags manager for this table.
+
+Tags allow you to label specific versions of a table with a human-readable name.
+The returned tags manager can be used to list, create, update, or delete tags.
+
+#### Returns
+
+`Promise`&lt;[`Tags`](Tags.md)&gt;
+
+A tags manager for this table
+
+#### Example
+
+```typescript
+const tagsManager = await table.tags();
+await tagsManager.create("v1", 1);
+const tags = await tagsManager.list();
+console.log(tags); // { "v1": { version: 1, manifestSize: ... } }
+```
+
+***
+
 ### toArrow()
 
 ```ts

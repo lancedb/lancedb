@@ -1384,7 +1384,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def checkout(self, version: int | str):
+    def checkout(self, version: Union[int, str]):
         """
         Checks out a specific version of the Table
 
@@ -1589,6 +1589,11 @@ class LanceTable(Table):
             To remove a version that has been tagged, you must first
             :py:meth:`~Tags.delete` the associated tag.
 
+        Returns
+        -------
+        Tags
+            The tag manager for managing tags for the table.
+
         Examples
         --------
         >>> import lancedb
@@ -1598,16 +1603,16 @@ class LanceTable(Table):
         >>> table.tags.create("v1", table.version)
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
         >>> tags = table.tags.list()
-        >>> print(tags)
-        {'v1': 1}
-        >>> table.checkout(tags["v1"])
+        >>> print(tags["v1"]["version"])
+        1
+        >>> table.checkout("v1")
         >>> table.to_pandas()
             vector    type
         0  [1.1, 0.9]  vector
         """
         return Tags(self._table)
 
-    def checkout(self, version: int | str):
+    def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
 
         This allows viewing previous versions of the table. If you wish to

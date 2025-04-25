@@ -412,7 +412,7 @@ export abstract class Table {
    * Tags allow you to label specific versions of a table with a human-readable name.
    * The returned tags manager can be used to list, create, update, or delete tags.
    *
-   * @returns A promise that resolves to a Tags object for managing table tags
+   * @returns {Tags} A tags manager for this table
    * @example
    * ```typescript
    * const tagsManager = await table.tags();
