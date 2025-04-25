@@ -1636,51 +1636,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         raise NotImplementedError("to_query_object not yet supported on a hybrid query")
 
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
-        vector_query, fts_query = self._validate_query(
-            self._query, self._vector, self._text
-        )
-        self._fts_query = LanceFtsQueryBuilder(
-            self._table, fts_query, fts_columns=self._fts_columns
-        )
-        vector_query = self._query_to_vector(
-            self._table, vector_query, self._vector_column
-        )
-        self._vector_query = LanceVectorQueryBuilder(
-            self._table, vector_query, self._vector_column
-        )
-
-        if self._limit:
-            self._vector_query.limit(self._limit)
-            self._fts_query.limit(self._limit)
-        if self._columns:
-            self._vector_query.select(self._columns)
-            self._fts_query.select(self._columns)
-        if self._where:
-            self._vector_query.where(self._where, self._postfilter)
-            self._fts_query.where(self._where, self._postfilter)
-        if self._with_row_id:
-            self._vector_query.with_row_id(True)
-            self._fts_query.with_row_id(True)
-        if self._phrase_query:
-            self._fts_query.phrase_query(True)
-        if self._distance_type:
-            self._vector_query.metric(self._distance_type)
-        if self._nprobes:
-            self._vector_query.nprobes(self._nprobes)
-        if self._refine_factor:
-            self._vector_query.refine_factor(self._refine_factor)
-        if self._ef:
-            self._vector_query.ef(self._ef)
-        if self._bypass_vector_index:
-            self._vector_query.bypass_vector_index()
-        if self._lower_bound or self._upper_bound:
-            self._vector_query.distance_range(
-                lower_bound=self._lower_bound, upper_bound=self._upper_bound
-            )
-
-        if self._reranker is None:
-            self._reranker = RRFReranker()
-
+        self._create_query_builders()
         with ThreadPoolExecutor() as executor:
             fts_future = executor.submit(
                 self._fts_query.with_row_id(True).to_arrow, timeout=timeout
@@ -2002,6 +1958,112 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         """
         self._bypass_vector_index = True
         return self
+
+    def explain_plan(self, verbose: Optional[bool] = False) -> str:
+        """Return the execution plan for this query.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", [{"vector": [99.0, 99]}])
+        >>> query = [100, 100]
+        >>> plan = table.search(query).explain_plan(True)
+        >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+        ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
+        GlobalLimitExec: skip=0, fetch=10
+          FilterExec: _distance@2 IS NOT NULL
+            SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+              KNNVectorDistance: metric=l2
+                LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+
+        Parameters
+        ----------
+        verbose : bool, default False
+            Use a verbose output format.
+
+        Returns
+        -------
+        plan : str
+        """  # noqa: E501
+        self._create_query_builders()
+
+        results = ["Vector Search Plan:"]
+        results.append(
+            self._table._explain_plan(
+                self._vector_query.to_query_object(), verbose=verbose
+            )
+        )
+        results.append("FTS Search Plan:")
+        results.append(
+            self._table._explain_plan(
+                self._fts_query.to_query_object(), verbose=verbose
+            )
+        )
+        return "\n".join(results)
+
+    def analyze_plan(self):
+        """Execute the query and display with runtime metrics.
+
+        Returns
+        -------
+        plan : str
+        """
+        self._create_query_builders()
+
+        results = ["Vector Search Plan:"]
+        results.append(self._table._analyze_plan(self._vector_query.to_query_object()))
+        results.append("FTS Search Plan:")
+        results.append(self._table._analyze_plan(self._fts_query.to_query_object()))
+        return "\n".join(results)
+
+    def _create_query_builders(self):
+        """Set up and configure the vector and FTS query builders."""
+        vector_query, fts_query = self._validate_query(
+            self._query, self._vector, self._text
+        )
+        self._fts_query = LanceFtsQueryBuilder(
+            self._table, fts_query, fts_columns=self._fts_columns
+        )
+        vector_query = self._query_to_vector(
+            self._table, vector_query, self._vector_column
+        )
+        self._vector_query = LanceVectorQueryBuilder(
+            self._table, vector_query, self._vector_column
+        )
+
+        # Apply common configurations
+        if self._limit:
+            self._vector_query.limit(self._limit)
+            self._fts_query.limit(self._limit)
+        if self._columns:
+            self._vector_query.select(self._columns)
+            self._fts_query.select(self._columns)
+        if self._where:
+            self._vector_query.where(self._where, self._postfilter)
+            self._fts_query.where(self._where, self._postfilter)
+        if self._with_row_id:
+            self._vector_query.with_row_id(True)
+            self._fts_query.with_row_id(True)
+        if self._phrase_query:
+            self._fts_query.phrase_query(True)
+        if self._distance_type:
+            self._vector_query.metric(self._distance_type)
+        if self._nprobes:
+            self._vector_query.nprobes(self._nprobes)
+        if self._refine_factor:
+            self._vector_query.refine_factor(self._refine_factor)
+        if self._ef:
+            self._vector_query.ef(self._ef)
+        if self._bypass_vector_index:
+            self._vector_query.bypass_vector_index()
+        if self._lower_bound or self._upper_bound:
+            self._vector_query.distance_range(
+                lower_bound=self._lower_bound, upper_bound=self._upper_bound
+            )
+
+        if self._reranker is None:
+            self._reranker = RRFReranker()
 
 
 class AsyncQueryBase(object):
