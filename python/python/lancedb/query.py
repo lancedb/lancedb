@@ -1586,6 +1586,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._refine_factor = None
         self._distance_type = None
         self._phrase_query = None
+        self._lower_bound = None
+        self._upper_bound = None
 
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and (vector is not None or text is not None):
@@ -1665,6 +1667,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.ef(self._ef)
         if self._bypass_vector_index:
             self._vector_query.bypass_vector_index()
+        if self._lower_bound or self._upper_bound:
+            self._vector_query.distance_range(
+                lower_bound=self._lower_bound, upper_bound=self._upper_bound
+            )
 
         if self._reranker is None:
             self._reranker = RRFReranker()

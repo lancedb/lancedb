@@ -4,13 +4,32 @@
 import lancedb
 
 from lancedb.query import LanceHybridQueryBuilder
+from lancedb.rerankers.rrf import RRFReranker
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
 import pytest_asyncio
 
 from lancedb.index import FTS
-from lancedb.table import AsyncTable
+from lancedb.table import AsyncTable, Table
+
+
+@pytest.fixture
+def sync_table(tmpdir_factory) -> Table:
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    db = lancedb.connect(tmp_path)
+    data = pa.table(
+        {
+            "text": pa.array(["a", "b", "cat", "dog"]),
+            "vector": pa.array(
+                [[0.1, 0.1], [2, 2], [-0.1, -0.1], [0.5, -0.5]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+    table = db.create_table("test", data)
+    table.create_fts_index("text", with_position=False, use_tantivy=False)
+    return table
 
 
 @pytest_asyncio.fixture
@@ -100,6 +119,26 @@ async def test_async_hybrid_query_default_limit(table: AsyncTable):
     assert texts.count("close_vec") == 2
     assert texts.count("dog") == 1
     assert texts.count("a") == 1
+
+
+def test_hybrid_query_distance_range(sync_table: Table):
+    reranker = RRFReranker(return_score="all")
+    result = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .distance_range(lower_bound=0.2, upper_bound=0.5)
+        .rerank(reranker)
+        .limit(2)
+        .to_arrow()
+    )
+    # the distances are [0.1, 0.26, 1.06, 6.56]
+    # so we should get 0.26 and 1.06
+    assert len(result) == 2
+    print(result)
+    for dist in result["_distance"]:
+        if dist.is_valid:
+            assert 0.2 <= dist.as_py() <= 0.5
 
 
 @pytest.mark.asyncio
