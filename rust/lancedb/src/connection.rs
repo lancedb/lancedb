@@ -300,7 +300,7 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// for older versions of LanceDB (prior to 0.10.0).</div>
     ///
     /// To migrate an existing dataset, instead use the
-    /// [[NativeTable::migrate_manifest_paths_v2]].
+    /// [`crate::table::NativeTable::migrate_manifest_paths_v2()`].
     ///
     /// This has no effect in LanceDB Cloud.
     #[deprecated(since = "0.15.1", note = "Use `database_options` instead")]
@@ -547,7 +547,7 @@ impl Connection {
     /// * `name` - The name of the table
     ///
     /// # Returns
-    /// Created [`TableRef`], or [`Error::TableNotFound`] if the table does not exist.
+    /// Created [`OpenTableBuilder`], or [`Error::TableNotFound`] if the table does not exist.
     pub fn open_table(&self, name: impl Into<String>) -> OpenTableBuilder {
         OpenTableBuilder::new(
             self.internal.clone(),
@@ -636,7 +636,7 @@ pub struct ConnectBuilder {
 }
 
 impl ConnectBuilder {
-    /// Create a new [`ConnectOptions`] with the given database URI.
+    /// Create a new [`ConnectBuilder`] with the given database URI.
     pub fn new(uri: &str) -> Self {
         Self {
             request: ConnectRequest {
@@ -863,7 +863,7 @@ impl ConnectBuilder {
 /// # Arguments
 ///
 /// * `uri` - URI where the database is located, can be a local directory, supported remote cloud storage,
-///   or a LanceDB Cloud database.  See [ConnectOptions::uri] for a list of accepted formats
+///   or a LanceDB Cloud database.  See [`ConnectRequest::uri`] for a list of accepted formats
 pub fn connect(uri: &str) -> ConnectBuilder {
     ConnectBuilder::new(uri)
 }

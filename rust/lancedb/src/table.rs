@@ -646,8 +646,8 @@ impl Table {
     ///
     /// Note: if your condition is something like "some_id_column == 7" and
     /// you are updating many rows (with different ids) then you will get
-    /// better performance with a single [`merge_insert`] call instead of
-    /// repeatedly calilng this method.
+    /// better performance with a single [`Self::merge_insert`] call instead of
+    /// repeatedly calling this method.
     pub fn update(&self) -> UpdateBuilder {
         UpdateBuilder::new(self.inner.clone())
     }
@@ -889,7 +889,7 @@ impl Table {
     /// vector similarity, sorting, and more.
     ///
     /// Note: By default, all columns are returned.  For best performance, you should
-    /// only fetch the columns you need.  See [`Query::select_with_projection`] for
+    /// only fetch the columns you need.  See [`crate::query::QueryBase::select`] for
     /// more details.
     ///
     /// When appropriate, various indices and statistics will be used to accelerate
@@ -903,7 +903,7 @@ impl Table {
     /// closest to the query vector [1.0, 2.0, 3.0].  If an index has been created
     /// on the "vector" column then this will perform an ANN search.
     ///
-    /// The [`Query::refine_factor`] and [`Query::nprobes`] methods are used to
+    /// The [`VectorQuery::refine_factor`] and [`VectorQuery::nprobes`] methods are used to
     /// control the recall / latency tradeoff of the search.
     ///
     /// ```no_run
@@ -1331,7 +1331,7 @@ impl NativeTable {
     ///
     /// # Returns
     ///
-    /// * A [TableImpl] object.
+    /// * A [`NativeTable`] object.
     pub async fn create(
         uri: &str,
         name: &str,

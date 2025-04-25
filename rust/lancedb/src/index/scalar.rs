@@ -44,7 +44,7 @@ pub struct BitmapIndexBuilder {}
 
 /// Builder for LabelList index.
 ///
-/// [LabeListIndexBuilder] is a scalar index that can be used on `List<T>` columns to
+/// [`LabelListIndexBuilder`] is a scalar index that can be used on `List<T>` columns to
 /// support queries with `array_contains_all` and `array_contains_any`
 /// using an underlying bitmap index.
 ///

@@ -30,7 +30,7 @@ impl RRFReranker {
     /// The parameter k is a constant used in the RRF formula (default is 60).
     /// Experiments indicate that k = 60 was near-optimal, but that the choice
     /// is not critical. See paper:
-    /// https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf
+    /// <https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf>
     pub fn new(k: f32) -> Self {
         Self { k }
     }

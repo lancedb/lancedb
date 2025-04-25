@@ -47,7 +47,7 @@ pub enum Select {
     /// The first item in each tuple is a name to assign to the output column.
     /// The second item in each tuple is an SQL expression to evaluate the result.
     ///
-    /// See [`Query::select`] for more details and examples
+    /// See [`QueryBase::select`] for more details and examples
     Dynamic(Vec<(String, String)>),
 }
 
@@ -55,7 +55,7 @@ impl Select {
     /// Create a simple selection that only selects the given columns
     ///
     /// This method is a convenience method for creating a [`Select::Columns`] variant
-    /// from either Vec<&str> or Vec<String>
+    /// from either `Vec<&str>` or `Vec<String>`
     pub fn columns(columns: &[impl AsRef<str>]) -> Self {
         Self::Columns(columns.iter().map(|c| c.as_ref().to_string()).collect())
     }
@@ -76,7 +76,7 @@ impl Select {
 /// A trait for converting a type to a query vector
 ///
 /// This is primarily intended to allow rust users that are unfamiliar with Arrow
-/// a chance to use native types such as Vec<f32> instead of arrow arrays.  It also
+/// a chance to use native types such as `Vec<f32>` instead of arrow arrays.  It also
 /// serves as an integration point for other rust libraries such as polars.
 ///
 /// By accepting the query vector as an array we are potentially allowing any data
@@ -88,12 +88,12 @@ pub trait IntoQueryVector {
     /// Convert the user's query vector input to a query vector
     ///
     /// This trait exists to allow users to provide many different types as
-    /// input to the [`crate::query::QueryBuilder::nearest_to`] method.
+    /// input to the [`crate::query::Query::nearest_to`] method.
     ///
     /// By default, there is no embedding model registered, and the input should
     /// be the vector that the user wants to search with.  LanceDb expects a
     /// fixed-size-list of floats.  This means the input will need to be something
-    /// that can be converted to a fixed-size-list of floats (e.g. a Vec<f32>)
+    /// that can be converted to a fixed-size-list of floats (e.g. a `Vec<f32>`)
     ///
     /// This crate provides a variety of default impls for common types.
     ///
@@ -432,7 +432,7 @@ pub trait QueryBase {
     /// results match the filter.
     ///
     /// Post filtering happens during the "refine stage" (described in more detail in
-    /// [`Self::refine_factor`]).  This means that setting a higher refine factor can often
+    /// [`VectorQuery::refine_factor`]).  This means that setting a higher refine factor can often
     /// help restore some of the results lost by post filtering.
     fn postfilter(self) -> Self;
 
@@ -710,7 +710,7 @@ impl Query {
     ///
     /// If there is only one vector column (a column whose data type is a
     /// fixed size list of floats) then the column does not need to be specified.
-    /// If there is more than one vector column you must use [`Query::column`]
+    /// If there is more than one vector column you must use [`VectorQuery::column`]
     /// to specify which column you would like to compare with.
     ///
     /// If no index has been created on the vector column then a vector query
