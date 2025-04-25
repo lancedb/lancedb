@@ -111,6 +111,7 @@ impl Table {
         index: Option<&Index>,
         column: String,
         replace: Option<bool>,
+        wait_timeout_s: Option<i64>,
     ) -> napi::Result<()> {
         let lancedb_index = if let Some(index) = index {
             index.consume()?
@@ -120,6 +121,10 @@ impl Table {
         let mut builder = self.inner_ref()?.create_index(&[column], lancedb_index);
         if let Some(replace) = replace {
             builder = builder.replace(replace);
+        }
+        if let Some(timeout) = wait_timeout_s {
+            builder =
+                builder.wait_timeout(std::time::Duration::from_secs(timeout.try_into().unwrap()));
         }
         builder.execute().await.default_error()
     }
@@ -136,6 +141,18 @@ impl Table {
     pub async fn prewarm_index(&self, index_name: String) -> napi::Result<()> {
         self.inner_ref()?
             .prewarm_index(&index_name)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn wait_for_index(&self, index_names: Vec<String>, timeout_s: i64) -> Result<()> {
+        let timeout = std::time::Duration::from_secs(timeout_s.try_into().unwrap());
+        let index_names: Vec<&str> = index_names.iter().map(|s| s.as_str()).collect();
+        let slice: &[&str] = &index_names;
+
+        self.inner_ref()?
+            .wait_for_index(slice, timeout)
             .await
             .default_error()
     }

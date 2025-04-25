@@ -152,6 +152,104 @@ def Vector(
     return FixedSizeList
 
 
+def MultiVector(
+    dim: int, value_type: pa.DataType = pa.float32(), nullable: bool = True
+) -> Type:
+    """Pydantic MultiVector Type for multi-vector embeddings.
+
+    This type represents a list of vectors, each with the same dimension.
+    Useful for models that produce multiple embeddings per input, like ColPali.
+
+    Parameters
+    ----------
+    dim : int
+        The dimension of each vector in the multi-vector.
+    value_type : pyarrow.DataType, optional
+        The value type of the vectors, by default pa.float32()
+    nullable : bool, optional
+        Whether the multi-vector is nullable, by default it is True.
+
+    Examples
+    --------
+
+    >>> import pydantic
+    >>> from lancedb.pydantic import MultiVector
+    ...
+    >>> class MyModel(pydantic.BaseModel):
+    ...     id: int
+    ...     text: str
+    ...     embeddings: MultiVector(128)  # List of 128-dimensional vectors
+    >>> schema = pydantic_to_schema(MyModel)
+    >>> assert schema == pa.schema([
+    ...     pa.field("id", pa.int64(), False),
+    ...     pa.field("text", pa.utf8(), False),
+    ...     pa.field("embeddings", pa.list_(pa.list_(pa.float32(), 128)))
+    ... ])
+    """
+
+    class MultiVectorList(list, FixedSizeListMixin):
+        def __repr__(self):
+            return f"MultiVector(dim={dim})"
+
+        @staticmethod
+        def nullable() -> bool:
+            return nullable
+
+        @staticmethod
+        def dim() -> int:
+            return dim
+
+        @staticmethod
+        def value_arrow_type() -> pa.DataType:
+            return value_type
+
+        @staticmethod
+        def is_multi_vector() -> bool:
+            return True
+
+        @classmethod
+        def __get_pydantic_core_schema__(
+            cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
+        ) -> CoreSchema:
+            return core_schema.no_info_after_validator_function(
+                cls,
+                core_schema.list_schema(
+                    items_schema=core_schema.list_schema(
+                        min_length=dim,
+                        max_length=dim,
+                        items_schema=core_schema.float_schema(),
+                    ),
+                ),
+            )
+
+        @classmethod
+        def __get_validators__(cls) -> Generator[Callable, None, None]:
+            yield cls.validate
+
+        # For pydantic v1
+        @classmethod
+        def validate(cls, v):
+            if not isinstance(v, (list, range)):
+                raise TypeError("A list of vectors is needed")
+            for vec in v:
+                if not isinstance(vec, (list, range, np.ndarray)) or len(vec) != dim:
+                    raise TypeError(f"Each vector must be a list of {dim} numbers")
+            return cls(v)
+
+        if PYDANTIC_VERSION.major < 2:
+
+            @classmethod
+            def __modify_schema__(cls, field_schema: Dict[str, Any]):
+                field_schema["items"] = {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": dim,
+                    "maxItems": dim,
+                }
+
+    return MultiVectorList
+
+
 def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     """Convert a field with native Python type to Arrow data type.
 
@@ -206,6 +304,9 @@ def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
             fields = _pydantic_model_to_fields(tp)
             return pa.struct(fields)
         if issubclass(tp, FixedSizeListMixin):
+            if getattr(tp, "is_multi_vector", lambda: False)():
+                return pa.list_(pa.list_(tp.value_arrow_type(), tp.dim()))
+            # For regular Vector
             return pa.list_(tp.value_arrow_type(), tp.dim())
     return _py_type_to_arrow_type(tp, field)
 

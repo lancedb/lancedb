@@ -77,6 +77,7 @@ embeddings = [
     "pillow",
     "open-clip-torch",
     "cohere",
+    "colpali-engine>=0.3.10",
     "huggingface_hub",
     "InstructorEmbedding",
     "google.generativeai",

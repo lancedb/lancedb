@@ -631,6 +631,7 @@ class Table(ABC):
         index_cache_size: Optional[int] = None,
         *,
         index_type: VectorIndexType = "IVF_PQ",
+        wait_timeout: Optional[timedelta] = None,
         num_bits: int = 8,
         max_iterations: int = 50,
         sample_rate: int = 256,
@@ -666,6 +667,8 @@ class Table(ABC):
         num_bits: int
             The number of bits to encode sub-vectors. Only used with the IVF_PQ index.
             Only 4 and 8 are supported.
+        wait_timeout: timedelta, optional
+            The timeout to wait if indexing is asynchronous.
         """
         raise NotImplementedError
 
@@ -689,6 +692,23 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def wait_for_index(
+        self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
+    ) -> None:
+        """
+        Wait for indexing to complete for the given index names.
+        This will poll the table until all the indices are fully indexed,
+        or raise a timeout exception if the timeout is reached.
+
+        Parameters
+        ----------
+        index_names: str
+            The name of the indices to poll
+        timeout: timedelta
+            Timeout to wait for asynchronous indexing. The default is 5 minutes.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def create_scalar_index(
         self,
@@ -696,6 +716,7 @@ class Table(ABC):
         *,
         replace: bool = True,
         index_type: ScalarIndexType = "BTREE",
+        wait_timeout: Optional[timedelta] = None,
     ):
         """Create a scalar index on a column.
 
@@ -708,7 +729,8 @@ class Table(ABC):
             Replace the existing index if it exists.
         index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"], default "BTREE"
             The type of index to create.
-
+        wait_timeout: timedelta, optional
+            The timeout to wait if indexing is asynchronous.
         Examples
         --------
 
@@ -767,6 +789,7 @@ class Table(ABC):
         stem: bool = False,
         remove_stop_words: bool = False,
         ascii_folding: bool = False,
+        wait_timeout: Optional[timedelta] = None,
     ):
         """Create a full-text search index on the table.
 
@@ -822,6 +845,8 @@ class Table(ABC):
         ascii_folding : bool, default False
             Whether to fold ASCII characters. This converts accented characters to
             their ASCII equivalent. For example, "café" would be converted to "cafe".
+        wait_timeout: timedelta, optional
+            The timeout to wait if indexing is asynchronous.
         """
         raise NotImplementedError
 
@@ -1770,6 +1795,11 @@ class LanceTable(Table):
             The name of the index to prewarm
         """
         return LOOP.run(self._table.prewarm_index(name))
+
+    def wait_for_index(
+        self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
+    ) -> None:
+        return LOOP.run(self._table.wait_for_index(index_names, timeout))
 
     def create_scalar_index(
         self,
@@ -2964,6 +2994,7 @@ class AsyncTable:
         config: Optional[
             Union[IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
         ] = None,
+        wait_timeout: Optional[timedelta] = None,
     ):
         """Create an index to speed up queries
 
@@ -2988,6 +3019,8 @@ class AsyncTable:
             For advanced configuration you can specify the type of index you would
             like to create.   You can also specify index-specific parameters when
             creating an index object.
+        wait_timeout: timedelta, optional
+            The timeout to wait if indexing is asynchronous.
         """
         if config is not None:
             if not isinstance(
@@ -2998,7 +3031,9 @@ class AsyncTable:
                     " Bitmap, LabelList, or FTS"
                 )
         try:
-            await self._inner.create_index(column, index=config, replace=replace)
+            await self._inner.create_index(
+                column, index=config, replace=replace, wait_timeout=wait_timeout
+            )
         except ValueError as e:
             if "not support the requested language" in str(e):
                 supported_langs = ", ".join(lang_mapping.values())
@@ -3042,6 +3077,23 @@ class AsyncTable:
         wasteful.
         """
         await self._inner.prewarm_index(name)
+
+    async def wait_for_index(
+        self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
+    ) -> None:
+        """
+        Wait for indexing to complete for the given index names.
+        This will poll the table until all the indices are fully indexed,
+        or raise a timeout exception if the timeout is reached.
+
+        Parameters
+        ----------
+        index_names: str
+            The name of the indices to poll
+        timeout: timedelta
+            Timeout to wait for asynchronous indexing. The default is 5 minutes.
+        """
+        await self._inner.wait_for_index(index_names, timeout)
 
     async def add(
         self,

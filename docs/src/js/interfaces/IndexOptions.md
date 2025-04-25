@@ -39,3 +39,11 @@ and the same name, then an error will be returned.  This is true even if
 that index is out of date.
 
 The default is true
+
+***
+
+### waitTimeoutSeconds?
+
+```ts
+optional waitTimeoutSeconds: number;
+```
