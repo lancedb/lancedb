@@ -140,6 +140,24 @@ def test_hybrid_query_distance_range(sync_table: Table):
 
 
 @pytest.mark.asyncio
+async def test_hybrid_query_distance_range_async(table: AsyncTable):
+    reranker = RRFReranker(return_score="all")
+    result = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("cat and dog")
+        .distance_range(lower_bound=0.2, upper_bound=0.5)
+        .rerank(reranker)
+        .limit(2)
+        .to_arrow()
+    )
+    assert len(result) == 2
+    for dist in result["_distance"]:
+        if dist.is_valid:
+            assert 0.2 <= dist.as_py() <= 0.5
+
+
+@pytest.mark.asyncio
 async def test_explain_plan(table: AsyncTable):
     plan = await (
         table.query().nearest_to_text("dog").nearest_to([0.1, 0.1]).explain_plan(True)
