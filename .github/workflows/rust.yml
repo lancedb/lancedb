@@ -57,7 +57,7 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --tests --all-features --message-format=json -- -D warnings | cargo-action-fmt
       - name: Check docs
-        run: cargo doc --workspace --features remote --no-deps --message-format=json | cargo-action-fmt
+        run: RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --features remote --no-deps --message-format=json | cargo-action-fmt
 
   build-no-lock:
     runs-on: ubuntu-24.04
