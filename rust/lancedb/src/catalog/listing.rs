@@ -81,7 +81,7 @@ impl ListingCatalogOptionsBuilder {
 /// [`crate::database::listing::ListingDatabase`]
 #[derive(Debug)]
 pub struct ListingCatalog {
-    object_store: ObjectStore,
+    object_store: Arc<ObjectStore>,
 
     uri: String,
 
@@ -105,7 +105,7 @@ impl ListingCatalog {
     }
 
     async fn open_path(path: &str) -> Result<Self> {
-        let (object_store, base_path) = ObjectStore::from_path(path).unwrap();
+        let (object_store, base_path) = ObjectStore::from_uri(path).await.unwrap();
         if object_store.is_local() {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
