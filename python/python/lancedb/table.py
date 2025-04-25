@@ -1607,7 +1607,7 @@ class LanceTable(Table):
         1
         >>> table.checkout("v1")
         >>> table.to_pandas()
-            vector    type
+               vector    type
         0  [1.1, 0.9]  vector
         """
         return Tags(self._table)
