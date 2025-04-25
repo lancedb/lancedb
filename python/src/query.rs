@@ -652,6 +652,11 @@ impl HybridQuery {
         self.inner_vec.bypass_vector_index();
     }
 
+    #[pyo3(signature = (lower_bound=None, upper_bound=None))]
+    pub fn distance_range(&mut self, lower_bound: Option<f32>, upper_bound: Option<f32>) {
+        self.inner_vec.distance_range(lower_bound, upper_bound);
+    }
+
     pub fn to_vector_query(&mut self) -> PyResult<VectorQuery> {
         Ok(VectorQuery {
             inner: self.inner_vec.inner.clone(),
