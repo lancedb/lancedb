@@ -126,14 +126,12 @@ def test_hybrid_query_distance_range(sync_table: Table):
     result = (
         sync_table.search(query_type="hybrid")
         .vector([0.0, 0.4])
-        .text("dog")
+        .text("cat and dog")
         .distance_range(lower_bound=0.2, upper_bound=0.5)
         .rerank(reranker)
         .limit(2)
         .to_arrow()
     )
-    # the distances are [0.1, 0.26, 1.06, 6.56]
-    # so we should get 0.26 and 1.06
     assert len(result) == 2
     print(result)
     for dist in result["_distance"]:
