@@ -28,6 +28,9 @@ napi-derive = "2.16.4"
 lzma-sys = { version = "*", features = ["static"] }
 log.workspace = true
 
+# Workaround for build failure until we can fix it.
+aws-lc-sys = "=0.28.0"
+
 [build-dependencies]
 napi-build = "2.1"
 

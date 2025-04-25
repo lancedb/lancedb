@@ -201,7 +201,7 @@ impl ListingDatabaseOptionsBuilder {
 /// We will have two tables named `table1` and `table2`.
 #[derive(Debug)]
 pub struct ListingDatabase {
-    object_store: ObjectStore,
+    object_store: Arc<ObjectStore>,
     query_string: Option<String>,
 
     pub(crate) uri: String,
