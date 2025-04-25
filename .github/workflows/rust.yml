@@ -25,16 +25,22 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  fmt:
+    name: Format check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Run format
+        run: cargo fmt --all -- --check
   lint:
     timeout-minutes: 30
     runs-on: ubuntu-24.04
     defaults:
       run:
         shell: bash
-    env:
-      # Need up-to-date compilers for kernels
-      CC: clang-18
-      CXX: clang++-18
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,19 +52,16 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y protobuf-compiler libssl-dev
-      - name: Run format
-        run: cargo fmt --all -- --check
+          sudo apt install -y protobuf-compiler
+      - uses: olix0r/cargo-action-fmt/setup@v2
       - name: Run clippy
-        run: cargo clippy --workspace --tests --all-features -- -D warnings
+        run: cargo clippy --workspace --tests --all-features --message-format=json -- -D warnings | cargo-action-fmt
+      - name: Check docs
+        run: cargo doc --workspace --features remote --no-deps --message-format=json | cargo-action-fmt
 
   build-no-lock:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      # Need up-to-date compilers for kernels
-      CC: clang
-      CXX: clang++
     steps:
       - uses: actions/checkout@v4
       # Building without a lock file often requires the latest Rust version since downstream
@@ -74,7 +77,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y protobuf-compiler libssl-dev
+          sudo apt install -y protobuf-compiler
       - name: Build all
         run: |
           cargo build --benches --all-features --tests
@@ -89,10 +92,6 @@ jobs:
       run:
         shell: bash
         working-directory: rust
-    env:
-      # Need up-to-date compilers for kernels
-      CC: clang-18
-      CXX: clang++-18
     steps:
       - uses: actions/checkout@v4
         with:
