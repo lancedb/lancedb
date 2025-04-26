@@ -46,7 +46,6 @@ jobs:
           python-version: 3.9
       - uses: ./.github/workflows/build_linux_wheel
         with:
-          python-minor-version: 9
           args: "--release --strip ${{ matrix.config.extra_args }}"
           arm-build: ${{ matrix.config.platform == 'aarch64' }}
           manylinux: ${{ matrix.config.manylinux }}
