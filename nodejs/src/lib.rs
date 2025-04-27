@@ -32,7 +32,7 @@ pub struct ConnectionOptions {
     pub read_consistency_interval: Option<f64>,
     /// (For LanceDB OSS only): configuration for object storage.
     ///
-    /// The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+    /// The available options are described at <https://lancedb.github.io/lancedb/guides/storage/>
     pub storage_options: Option<HashMap<String, String>>,
 
     /// (For LanceDB cloud only): configuration for the remote HTTP client.

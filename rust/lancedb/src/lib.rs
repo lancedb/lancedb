@@ -50,7 +50,7 @@
 //! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
 //! - `db://dbname` - Lance Cloud
 //!
-//! You can also use [`ConnectOptions`] to configure the connection to the database.
+//! You can also use [`crate::connection::ConnectBuilder`] to configure the connection to the database.
 //!
 //! ```rust
 //! use object_store::aws::AwsCredential;
