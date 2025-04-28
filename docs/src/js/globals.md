@@ -27,6 +27,8 @@
 - [QueryBase](classes/QueryBase.md)
 - [RecordBatchIterator](classes/RecordBatchIterator.md)
 - [Table](classes/Table.md)
+- [TagContents](classes/TagContents.md)
+- [Tags](classes/Tags.md)
 - [VectorColumnOptions](classes/VectorColumnOptions.md)
 - [VectorQuery](classes/VectorQuery.md)
 

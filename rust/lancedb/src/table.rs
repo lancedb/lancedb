@@ -81,6 +81,7 @@ pub mod merge;
 use crate::index::waiter::wait_for_index;
 pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
+pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
 
@@ -401,6 +402,24 @@ pub enum AnyQuery {
     VectorQuery(VectorQueryRequest),
 }
 
+#[async_trait]
+pub trait Tags: Send + Sync {
+    /// List the tags of the table.
+    async fn list(&self) -> Result<HashMap<String, TagContents>>;
+
+    /// Get the version of the table referenced by a tag.
+    async fn get_version(&self, tag: &str) -> Result<u64>;
+
+    /// Create a new tag for the given version of the table.
+    async fn create(&mut self, tag: &str, version: u64) -> Result<()>;
+
+    /// Delete a tag from the table.
+    async fn delete(&mut self, tag: &str) -> Result<()>;
+
+    /// Update an existing tag to point to a new version of the table.
+    async fn update(&mut self, tag: &str, version: u64) -> Result<()>;
+}
+
 /// A trait for anything "table-like".  This is used for both native tables (which target
 /// Lance datasets) and remote tables (which target LanceDB cloud)
 ///
@@ -466,6 +485,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()>;
+    /// Gets the table tag manager.
+    async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
     /// Add columns to the table.
@@ -482,6 +503,9 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn version(&self) -> Result<u64>;
     /// Checkout a specific version of the table.
     async fn checkout(&self, version: u64) -> Result<()>;
+    /// Checkout a table version referenced by a tag.
+    /// Tags provide a human-readable way to reference specific versions of the table.
+    async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
     /// Restore the table to the currently checked out version.
@@ -1058,6 +1082,24 @@ impl Table {
         self.inner.checkout(version).await
     }
 
+    /// Checks out a specific version of the Table by tag
+    ///
+    /// Any read operation on the table will now access the data at the version referenced by the tag.
+    /// As a consequence, calling this method will disable any read consistency interval
+    /// that was previously set.
+    ///
+    /// This is a read-only operation that turns the table into a sort of "view"
+    /// or "detached head".  Other table instances will not be affected.  To make the change
+    /// permanent you can use the `[Self::restore]` method.
+    ///
+    /// Any operation that modifies the table will fail while the table is in a checked
+    /// out state.
+    ///
+    /// To return the table to a normal state use `[Self::checkout_latest]`
+    pub async fn checkout_tag(&self, tag: &str) -> Result<()> {
+        self.inner.checkout_tag(tag).await
+    }
+
     /// Ensures the table is pointing at the latest version
     ///
     /// This can be used to manually update a table when the read_consistency_interval is None
@@ -1144,6 +1186,11 @@ impl Table {
         self.inner.wait_for_index(index_names, timeout).await
     }
 
+    /// Get the tags manager.
+    pub async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
+        self.inner.tags().await
+    }
+
     // Take many execution plans and map them into a single plan that adds
     // a query_index column and unions them.
     pub(crate) fn multi_vector_plan(
@@ -1193,6 +1240,35 @@ impl Table {
         )
         .unwrap();
         Ok(Arc::new(repartitioned))
+    }
+}
+
+pub struct NativeTags {
+    inner: LanceTags,
+}
+#[async_trait]
+impl Tags for NativeTags {
+    async fn list(&self) -> Result<HashMap<String, TagContents>> {
+        Ok(self.inner.list().await?)
+    }
+
+    async fn get_version(&self, tag: &str) -> Result<u64> {
+        Ok(self.inner.get_version(tag).await?)
+    }
+
+    async fn create(&mut self, tag: &str, version: u64) -> Result<()> {
+        self.inner.create(tag, version).await?;
+        Ok(())
+    }
+
+    async fn delete(&mut self, tag: &str) -> Result<()> {
+        self.inner.delete(tag).await?;
+        Ok(())
+    }
+
+    async fn update(&mut self, tag: &str, version: u64) -> Result<()> {
+        self.inner.update(tag, version).await?;
+        Ok(())
     }
 }
 
@@ -1940,6 +2016,10 @@ impl BaseTable for NativeTable {
         self.dataset.as_time_travel(version).await
     }
 
+    async fn checkout_tag(&self, tag: &str) -> Result<()> {
+        self.dataset.as_time_travel(tag).await
+    }
+
     async fn checkout_latest(&self) -> Result<()> {
         self.dataset
             .as_latest(self.read_consistency_interval)
@@ -2313,6 +2393,14 @@ impl BaseTable for NativeTable {
     async fn delete(&self, predicate: &str) -> Result<()> {
         self.dataset.get_mut().await?.delete(predicate).await?;
         Ok(())
+    }
+
+    async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
+        let dataset = self.dataset.get().await?;
+
+        Ok(Box::new(NativeTags {
+            inner: dataset.tags.clone(),
+        }))
     }
 
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
@@ -3079,6 +3167,60 @@ mod tests {
             )],
             schema,
         )
+    }
+
+    #[tokio::test]
+    async fn test_tags() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.version().await.unwrap(), 1);
+        table.add(some_sample_data()).execute().await.unwrap();
+        assert_eq!(table.version().await.unwrap(), 2);
+        let mut tags_manager = table.tags().await.unwrap();
+        let tags = tags_manager.list().await.unwrap();
+        assert!(tags.is_empty(), "Tags should be empty initially");
+        let tag1 = "tag1";
+        tags_manager.create(tag1, 1).await.unwrap();
+        assert_eq!(tags_manager.get_version(tag1).await.unwrap(), 1);
+        let tags = tags_manager.list().await.unwrap();
+        assert_eq!(tags.len(), 1);
+        assert!(tags.contains_key(tag1));
+        assert_eq!(tags.get(tag1).unwrap().version, 1);
+        tags_manager.create("tag2", 2).await.unwrap();
+        assert_eq!(tags_manager.get_version("tag2").await.unwrap(), 2);
+        let tags = tags_manager.list().await.unwrap();
+        assert_eq!(tags.len(), 2);
+        assert!(tags.contains_key(tag1));
+        assert_eq!(tags.get(tag1).unwrap().version, 1);
+        assert!(tags.contains_key("tag2"));
+        assert_eq!(tags.get("tag2").unwrap().version, 2);
+        // Test update and delete
+        table.add(some_sample_data()).execute().await.unwrap();
+        tags_manager.update(tag1, 3).await.unwrap();
+        assert_eq!(tags_manager.get_version(tag1).await.unwrap(), 3);
+        tags_manager.delete("tag2").await.unwrap();
+        let tags = tags_manager.list().await.unwrap();
+        assert_eq!(tags.len(), 1);
+        assert!(tags.contains_key(tag1));
+        assert_eq!(tags.get(tag1).unwrap().version, 3);
+        // Test checkout tag
+        table.add(some_sample_data()).execute().await.unwrap();
+        assert_eq!(table.version().await.unwrap(), 4);
+        table.checkout_tag(tag1).await.unwrap();
+        assert_eq!(table.version().await.unwrap(), 3);
+        table.checkout_latest().await.unwrap();
+        assert_eq!(table.version().await.unwrap(), 4);
     }
 
     #[tokio::test]

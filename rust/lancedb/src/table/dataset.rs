@@ -7,7 +7,7 @@ use std::{
     time::{self, Duration, Instant},
 };
 
-use lance::Dataset;
+use lance::{dataset::refs, Dataset};
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::error::Result;
@@ -83,19 +83,32 @@ impl DatasetRef {
         }
     }
 
-    async fn as_time_travel(&mut self, target_version: u64) -> Result<()> {
+    async fn as_time_travel(&mut self, target_version: impl Into<refs::Ref>) -> Result<()> {
+        let target_ref = target_version.into();
+
         match self {
             Self::Latest { dataset, .. } => {
+                let new_dataset = dataset.checkout_version(target_ref.clone()).await?;
+                let version_value = new_dataset.version().version;
+
                 *self = Self::TimeTravel {
-                    dataset: dataset.checkout_version(target_version).await?,
-                    version: target_version,
+                    dataset: new_dataset,
+                    version: version_value,
                 };
             }
             Self::TimeTravel { dataset, version } => {
-                if *version != target_version {
+                let should_checkout = match &target_ref {
+                    refs::Ref::Version(target_ver) => version != target_ver,
+                    refs::Ref::Tag(_) => true, // Always checkout for tags
+                };
+
+                if should_checkout {
+                    let new_dataset = dataset.checkout_version(target_ref).await?;
+                    let version_value = new_dataset.version().version;
+
                     *self = Self::TimeTravel {
-                        dataset: dataset.checkout_version(target_version).await?,
-                        version: target_version,
+                        dataset: new_dataset,
+                        version: version_value,
                     };
                 }
             }
@@ -175,7 +188,7 @@ impl DatasetConsistencyWrapper {
         write_guard.as_latest(read_consistency_interval).await
     }
 
-    pub async fn as_time_travel(&self, target_version: u64) -> Result<()> {
+    pub async fn as_time_travel(&self, target_version: impl Into<refs::Ref>) -> Result<()> {
         self.0.write().await.as_time_travel(target_version).await
     }
 
