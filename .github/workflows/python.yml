@@ -69,7 +69,8 @@ jobs:
       - name: Install dependencies
         run: |
           python ../ci/parse_requirements.py pyproject.toml --extras dev,tests,embeddings > requirements.txt
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install --prefer-binary --only-binary "pandas" -r requirements.txt
       - name: Run pyright
         run: pyright
 
@@ -100,7 +101,8 @@ jobs:
           workspaces: python
       - name: Install
         run: |
-          pip install --prefer-binary --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
+          python -m pip install --upgrade pip
+          pip install --prefer-binary --only-binary "pandas" --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
           pip install tantivy
           pip install mlx
       - name: Doctest
