@@ -4,7 +4,14 @@
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
+use crate::table::AddColumnsResult;
+use crate::table::AddResult;
+use crate::table::AlterColumnsResult;
+use crate::table::DeleteResult;
+use crate::table::DropColumnsResult;
+use crate::table::MergeInsertResult;
 use crate::table::Tags;
+use crate::table::UpdateResult;
 use crate::table::{AddDataMode, AnyQuery, Filter};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
@@ -734,7 +741,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         add: AddDataBuilder<NoData>,
         data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<()> {
+    ) -> Result<AddResult> {
         self.check_mutable().await?;
         let mut request = self
             .client
@@ -749,9 +756,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
 
         let (request_id, response) = self.send_streaming(request, data, true).await?;
-        self.check_table_response(&request_id, response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
 
-        Ok(())
+        if body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(AddResult { version });
+        }
+
+        let add_response: AddResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse add response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+        Ok(add_response)
     }
 
     async fn create_plan(
@@ -884,7 +903,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(final_analyze)
     }
 
-    async fn update(&self, update: UpdateBuilder) -> Result<u64> {
+    async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult> {
         self.check_mutable().await?;
         let request = self
             .client
@@ -901,13 +920,29 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }));
 
         let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
 
-        self.check_table_response(&request_id, response).await?;
+        if body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(UpdateResult {
+                rows_updated: 0,
+                version,
+            });
+        }
 
-        Ok(0) // TODO: support returning number of modified rows once supported in SaaS.
+        let update_response: UpdateResult =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse update response: {}", e).into(),
+                request_id,
+                status_code: None,
+            })?;
+
+        Ok(update_response)
     }
 
-    async fn delete(&self, predicate: &str) -> Result<()> {
+    async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
         self.check_mutable().await?;
         let body = serde_json::json!({ "predicate": predicate });
         let request = self
@@ -915,8 +950,22 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .post(&format!("/v1/table/{}/delete/", self.name))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
-        self.check_table_response(&request_id, response).await?;
-        Ok(())
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(DeleteResult { version });
+        }
+
+        let delete_response: DeleteResult =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse delete response: {}", e).into(),
+                request_id,
+                status_code: None,
+            })?;
+        Ok(delete_response)
     }
 
     async fn create_index(&self, mut index: IndexBuilder) -> Result<()> {
@@ -1022,7 +1071,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<()> {
+    ) -> Result<MergeInsertResult> {
         self.check_mutable().await?;
 
         let query = MergeInsertRequest::try_from(params)?;
@@ -1034,9 +1083,23 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let (request_id, response) = self.send_streaming(request, new_data, true).await?;
 
-        self.check_table_response(&request_id, response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
 
-        Ok(())
+        if body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(MergeInsertResult { version });
+        }
+
+        let merge_insert_response: MergeInsertResult =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse merge_insert response: {}", e).into(),
+                request_id,
+                status_code: None,
+            })?;
+
+        Ok(merge_insert_response)
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -1059,7 +1122,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         transforms: NewColumnTransform,
         _read_columns: Option<Vec<String>>,
-    ) -> Result<()> {
+    ) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
         match transforms {
             NewColumnTransform::SqlExpressions(expressions) => {
@@ -1077,9 +1140,24 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .client
                     .post(&format!("/v1/table/{}/add_columns/", self.name))
                     .json(&body);
-                let (request_id, response) = self.send(request, true).await?; // todo:
-                self.check_table_response(&request_id, response).await?;
-                Ok(())
+                let (request_id, response) = self.send(request, true).await?;
+                let response = self.check_table_response(&request_id, response).await?;
+                let body = response.text().await.err_to_http(request_id.clone())?;
+
+                if body == "{}" {
+                    // Backward compatible with old servers
+                    let version = self.version().await?;
+                    return Ok(AddColumnsResult { version });
+                }
+
+                let result: AddColumnsResult =
+                    serde_json::from_str(&body).map_err(|e| Error::Http {
+                        source: format!("Failed to parse add_columns response: {}", e).into(),
+                        request_id,
+                        status_code: None,
+                    })?;
+
+                Ok(result)
             }
             _ => {
                 return Err(Error::NotSupported {
@@ -1089,7 +1167,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
     }
 
-    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()> {
+    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
         self.check_mutable().await?;
         let body = alterations
             .iter()
@@ -1117,11 +1195,25 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .post(&format!("/v1/table/{}/alter_columns/", self.name))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
-        self.check_table_response(&request_id, response).await?;
-        Ok(())
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(AlterColumnsResult { version });
+        }
+
+        let result: AlterColumnsResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse alter_columns response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        Ok(result)
     }
 
-    async fn drop_columns(&self, columns: &[&str]) -> Result<()> {
+    async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
         self.check_mutable().await?;
         let body = serde_json::json!({ "columns": columns });
         let request = self
@@ -1129,8 +1221,22 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .post(&format!("/v1/table/{}/drop_columns/", self.name))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
-        self.check_table_response(&request_id, response).await?;
-        Ok(())
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(DropColumnsResult { version });
+        }
+
+        let result: DropColumnsResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse drop_columns response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        Ok(result)
     }
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {

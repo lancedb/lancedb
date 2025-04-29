@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use lancedb::{arrow::IntoArrow, ipc::ipc_file_to_batches, table::merge::MergeInsertBuilder};
+use lancedb::{arrow::IntoArrow, ipc::ipc_file_to_batches, table::{merge::MergeInsertBuilder}};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::error::convert_error;
+use crate::{error::convert_error, table::MergeInsertResult};
 
 #[napi]
 #[derive(Clone)]
@@ -37,7 +37,7 @@ impl NativeMergeInsertBuilder {
     }
 
     #[napi(catch_unwind)]
-    pub async fn execute(&self, buf: Buffer) -> napi::Result<()> {
+    pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeInsertResult> {
         let data = ipc_file_to_batches(buf.to_vec())
             .and_then(IntoArrow::into_arrow)
             .map_err(|e| {
@@ -46,12 +46,13 @@ impl NativeMergeInsertBuilder {
 
         let this = self.clone();
 
-        this.inner.execute(data).await.map_err(|e| {
+        let res = this.inner.execute(data).await.map_err(|e| {
             napi::Error::from_reason(format!(
                 "Failed to execute merge insert: {}",
                 convert_error(&e)
             ))
-        })
+        })?;
+        Ok(res.into())
     }
 }
 
