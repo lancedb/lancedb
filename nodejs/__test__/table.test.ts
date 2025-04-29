@@ -71,6 +71,12 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await expect(table.countRows()).resolves.toBe(3);
     });
 
+    it("should show table stats", async () => {
+      await table.add([{ id: 1 }, { id: 2 }]);
+      await table.add([{ id: 1 }]);
+      await expect(table.stats()).resolves.toBe({});
+    });
+
     it("should overwrite data if asked", async () => {
       await table.add([{ id: 1 }, { id: 2 }]);
       await table.add([{ id: 1 }], { mode: "overwrite" });

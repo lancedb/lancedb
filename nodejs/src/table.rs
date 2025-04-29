@@ -5,10 +5,7 @@ use std::collections::HashMap;
 
 use arrow_ipc::writer::FileWriter;
 use lancedb::ipc::ipc_file_to_batches;
-use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Table as LanceDbTable, TableStatistics,
-};
+use lancedb::table::{AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions, Table as LanceDbTable};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -159,7 +156,8 @@ impl Table {
 
     #[napi(catch_unwind)]
     pub async fn stats(&self) -> Result<TableStatistics> {
-        self.inner_ref()?.stats().await.default_error()
+        let stats = self.inner_ref()?.stats().await.default_error()?;
+        Ok(stats.into())
     }
 
     #[napi(catch_unwind)]
@@ -556,6 +554,67 @@ impl From<lancedb::index::IndexStatistics> for IndexStatistics {
             distance_type: value.distance_type.map(|d| d.to_string()),
             num_indices: value.num_indices,
             loss: value.loss,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct TableStatistics {
+    /// The total number of bytes in the table
+    pub total_bytes: i64,
+
+    /// The number of rows in the table
+    pub num_rows: i64,
+
+    /// The number of indices in the table
+    pub num_indices: i64,
+
+    /// Statistics on table fragments
+    pub fragment_stats: FragmentStatistics,
+}
+
+#[napi(object)]
+pub struct FragmentStatistics {
+    /// The number of fragments in the table
+    pub num_fragments: i64,
+
+    /// The number of uncompacted fragments in the table
+    pub num_small_fragments: i64,
+
+    /// Statistics on the number of rows in the table fragments
+    pub lengths: FragmentSummaryStats,
+}
+
+#[napi(object)]
+pub struct FragmentSummaryStats {
+    pub min: i64,
+    pub max: i64,
+    pub mean: i64,
+    pub p25: i64,
+    pub p50: i64,
+    pub p75: i64,
+    pub p99: i64,
+}
+
+impl From<lancedb::table::TableStatistics> for TableStatistics {
+    fn from(v: lancedb::table::TableStatistics) -> Self {
+        Self {
+            total_bytes: v.total_bytes as i64,
+            num_rows: v.num_rows as i64,
+            num_indices: v.num_indices as i64,
+            fragment_stats: FragmentStatistics {
+                num_fragments: v.fragment_stats.num_fragments as i64,
+                num_small_fragments: v.fragment_stats.num_small_fragments as i64,
+                lengths: FragmentSummaryStats {
+                    min: v.fragment_stats.lengths.min as i64,
+                    max: v.fragment_stats.lengths.max as i64,
+                    mean: v.fragment_stats.lengths.mean as i64,
+                    p25: v.fragment_stats.lengths.p25 as i64,
+                    p50: v.fragment_stats.lengths.p50 as i64,
+                    p75: v.fragment_stats.lengths.p75 as i64,
+                    p99: v.fragment_stats.lengths.p99 as i64,
+                },
+            },
         }
     }
 }
