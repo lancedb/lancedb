@@ -74,7 +74,24 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     it("should show table stats", async () => {
       await table.add([{ id: 1 }, { id: 2 }]);
       await table.add([{ id: 1 }]);
-      await expect(table.stats()).resolves.toBe({});
+      await expect(table.stats()).resolves.toEqual({
+        fragmentStats: {
+          lengths: {
+            max: 2,
+            mean: 1,
+            min: 1,
+            p25: 1,
+            p50: 2,
+            p75: 2,
+            p99: 2,
+          },
+          numFragments: 2,
+          numSmallFragments: 2,
+        },
+        numIndices: 0,
+        numRows: 3,
+        totalBytes: 24,
+      });
     });
 
     it("should overwrite data if asked", async () => {
