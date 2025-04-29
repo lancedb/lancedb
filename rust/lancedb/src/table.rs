@@ -3755,10 +3755,7 @@ mod tests {
         ]));
         let batch = RecordBatch::try_new(
             schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..num_rows)),
-                text,
-            ],
+            vec![Arc::new(Int32Array::from_iter_values(0..num_rows)), text],
         )
         .unwrap();
 
