@@ -250,6 +250,14 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn checkout_tag(&self, tag: String) -> napi::Result<()> {
+        self.inner_ref()?
+            .checkout_tag(tag.as_str())
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn checkout_latest(&self) -> napi::Result<()> {
         self.inner_ref()?.checkout_latest().await.default_error()
     }
@@ -279,6 +287,13 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn restore(&self) -> napi::Result<()> {
         self.inner_ref()?.restore().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn tags(&self) -> napi::Result<Tags> {
+        Ok(Tags {
+            inner: self.inner_ref()?.clone(),
+        })
     }
 
     #[napi(catch_unwind)]
@@ -545,4 +560,79 @@ pub struct Version {
     pub version: i64,
     pub timestamp: i64,
     pub metadata: HashMap<String, String>,
+}
+
+#[napi]
+pub struct TagContents {
+    pub version: i64,
+    pub manifest_size: i64,
+}
+
+#[napi]
+pub struct Tags {
+    inner: LanceDbTable,
+}
+
+#[napi]
+impl Tags {
+    #[napi]
+    pub async fn list(&self) -> napi::Result<HashMap<String, TagContents>> {
+        let rust_tags = self.inner.tags().await.default_error()?;
+        let tag_list = rust_tags.as_ref().list().await.default_error()?;
+        let tag_contents = tag_list
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    TagContents {
+                        version: v.version as i64,
+                        manifest_size: v.manifest_size as i64,
+                    },
+                )
+            })
+            .collect();
+
+        Ok(tag_contents)
+    }
+
+    #[napi]
+    pub async fn get_version(&self, tag: String) -> napi::Result<i64> {
+        let rust_tags = self.inner.tags().await.default_error()?;
+        rust_tags
+            .as_ref()
+            .get_version(tag.as_str())
+            .await
+            .map(|v| v as i64)
+            .default_error()
+    }
+
+    #[napi]
+    pub async unsafe fn create(&mut self, tag: String, version: i64) -> napi::Result<()> {
+        let mut rust_tags = self.inner.tags().await.default_error()?;
+        rust_tags
+            .as_mut()
+            .create(tag.as_str(), version as u64)
+            .await
+            .default_error()
+    }
+
+    #[napi]
+    pub async unsafe fn delete(&mut self, tag: String) -> napi::Result<()> {
+        let mut rust_tags = self.inner.tags().await.default_error()?;
+        rust_tags
+            .as_mut()
+            .delete(tag.as_str())
+            .await
+            .default_error()
+    }
+
+    #[napi]
+    pub async unsafe fn update(&mut self, tag: String, version: i64) -> napi::Result<()> {
+        let mut rust_tags = self.inner.tags().await.default_error()?;
+        rust_tags
+            .as_mut()
+            .update(tag.as_str(), version as u64)
+            .await
+            .default_error()
+    }
 }

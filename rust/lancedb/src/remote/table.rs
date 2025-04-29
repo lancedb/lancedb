@@ -5,6 +5,7 @@ use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
+use crate::table::Tags;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
@@ -18,11 +19,13 @@ use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
+use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -46,6 +49,137 @@ use crate::{
 };
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
+
+pub struct RemoteTags<'a, S: HttpSend = Sender> {
+    inner: &'a RemoteTable<S>,
+}
+
+#[async_trait]
+impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
+    async fn list(&self) -> Result<HashMap<String, TagContents>> {
+        let request = self
+            .inner
+            .client
+            .post(&format!("/v1/table/{}/tags/list/", self.inner.name));
+        let (request_id, response) = self.inner.send(request, true).await?;
+        let response = self
+            .inner
+            .check_table_response(&request_id, response)
+            .await?;
+
+        match response.text().await {
+            Ok(body) => {
+                // Explicitly tell serde_json what type we want to deserialize into
+                let tags_map: HashMap<String, TagContents> =
+                    serde_json::from_str(&body).map_err(|e| Error::Http {
+                        source: format!("Failed to parse tags list: {}", e).into(),
+                        request_id,
+                        status_code: None,
+                    })?;
+
+                Ok(tags_map)
+            }
+            Err(err) => {
+                let status_code = err.status();
+                Err(Error::Http {
+                    source: Box::new(err),
+                    request_id,
+                    status_code,
+                })
+            }
+        }
+    }
+
+    async fn get_version(&self, tag: &str) -> Result<u64> {
+        let request = self
+            .inner
+            .client
+            .post(&format!("/v1/table/{}/tags/version/", self.inner.name))
+            .json(&serde_json::json!({ "tag": tag }));
+
+        let (request_id, response) = self.inner.send(request, true).await?;
+        let response = self
+            .inner
+            .check_table_response(&request_id, response)
+            .await?;
+
+        match response.text().await {
+            Ok(body) => {
+                let value: serde_json::Value =
+                    serde_json::from_str(&body).map_err(|e| Error::Http {
+                        source: format!("Failed to parse tag version: {}", e).into(),
+                        request_id: request_id.clone(),
+                        status_code: None,
+                    })?;
+
+                value
+                    .get("version")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| Error::Http {
+                        source: format!("Invalid tag version response: {}", body).into(),
+                        request_id,
+                        status_code: None,
+                    })
+            }
+            Err(err) => {
+                let status_code = err.status();
+                Err(Error::Http {
+                    source: Box::new(err),
+                    request_id,
+                    status_code,
+                })
+            }
+        }
+    }
+
+    async fn create(&mut self, tag: &str, version: u64) -> Result<()> {
+        let request = self
+            .inner
+            .client
+            .post(&format!("/v1/table/{}/tags/create/", self.inner.name))
+            .json(&serde_json::json!({
+                "tag": tag,
+                "version": version
+            }));
+
+        let (request_id, response) = self.inner.send(request, true).await?;
+        self.inner
+            .check_table_response(&request_id, response)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete(&mut self, tag: &str) -> Result<()> {
+        let request = self
+            .inner
+            .client
+            .post(&format!("/v1/table/{}/tags/delete/", self.inner.name))
+            .json(&serde_json::json!({ "tag": tag }));
+
+        let (request_id, response) = self.inner.send(request, true).await?;
+        self.inner
+            .check_table_response(&request_id, response)
+            .await?;
+        Ok(())
+    }
+
+    async fn update(&mut self, tag: &str, version: u64) -> Result<()> {
+        let request = self
+            .inner
+            .client
+            .post(&format!("/v1/table/{}/tags/update/", self.inner.name))
+            .json(&serde_json::json!({
+                "tag": tag,
+                "version": version
+            }));
+
+        let (request_id, response) = self.inner.send(request, true).await?;
+        self.inner
+            .check_table_response(&request_id, response)
+            .await?;
+        Ok(())
+    }
+}
 
 #[derive(Debug)]
 pub struct RemoteTable<S: HttpSend = Sender> {
@@ -905,6 +1039,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(())
     }
 
+    async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
+        Ok(Box::new(RemoteTags { inner: self }))
+    }
+    async fn checkout_tag(&self, tag: &str) -> Result<()> {
+        let tags = self.tags().await?;
+        let version = tags.get_version(tag).await?;
+        let mut write_guard = self.version.write().await;
+        *write_guard = Some(version);
+        Ok(())
+    }
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
         Err(Error::NotSupported {

@@ -77,6 +77,7 @@ if TYPE_CHECKING:
         OptimizeStats,
         CleanupStats,
         CompactionStats,
+        Tag,
     )
     from .db import LanceDBConnection
     from .index import IndexConfig
@@ -578,6 +579,35 @@ class Table(ABC):
     def schema(self) -> pa.Schema:
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
         of this Table
+
+        """
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def tags(self) -> Tags:
+        """Tag management for the table.
+
+        Similar to Git, tags are a way to add metadata to a specific version of the
+        table.
+
+        .. warning::
+
+            Tagged versions are exempted from the :py:meth:`cleanup_old_versions()`
+            process.
+
+            To remove a version that has been tagged, you must first
+            :py:meth:`~Tags.delete` the associated tag.
+
+        Examples
+        --------
+
+        .. code-block:: python
+
+            table = db.open_table("my_table")
+            table.tags.create("v2-prod-20250203", 10)
+
+            tags = table.tags.list()
 
         """
         raise NotImplementedError
@@ -1354,7 +1384,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def checkout(self, version: int):
+    def checkout(self, version: Union[int, str]):
         """
         Checks out a specific version of the Table
 
@@ -1368,6 +1398,12 @@ class Table(ABC):
 
         Any operation that modifies the table will fail while the table is in a checked
         out state.
+
+        Parameters
+        ----------
+        version: int | str,
+            The version to check out. A version number (`int`) or a tag
+            (`str`) can be provided.
 
         To return the table to a normal state use `[Self::checkout_latest]`
         """
@@ -1538,7 +1574,45 @@ class LanceTable(Table):
         """Get the current version of the table"""
         return LOOP.run(self._table.version())
 
-    def checkout(self, version: int):
+    @property
+    def tags(self) -> Tags:
+        """Tag management for the table.
+
+        Similar to Git, tags are a way to add metadata to a specific version of the
+        table.
+
+        .. warning::
+
+            Tagged versions are exempted from the :py:meth:`cleanup_old_versions()`
+            process.
+
+            To remove a version that has been tagged, you must first
+            :py:meth:`~Tags.delete` the associated tag.
+
+        Returns
+        -------
+        Tags
+            The tag manager for managing tags for the table.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table",
+        ...    [{"vector": [1.1, 0.9], "type": "vector"}])
+        >>> table.tags.create("v1", table.version)
+        >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
+        >>> tags = table.tags.list()
+        >>> print(tags["v1"]["version"])
+        1
+        >>> table.checkout("v1")
+        >>> table.to_pandas()
+               vector    type
+        0  [1.1, 0.9]  vector
+        """
+        return Tags(self._table)
+
+    def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
 
         This allows viewing previous versions of the table. If you wish to
@@ -1550,8 +1624,9 @@ class LanceTable(Table):
 
         Parameters
         ----------
-        version : int
-            The version to checkout.
+        version: int | str,
+            The version to check out. A version number (`int`) or a tag
+            (`str`) can be provided.
 
         Examples
         --------
@@ -3746,7 +3821,7 @@ class AsyncTable:
 
         return versions
 
-    async def checkout(self, version: int):
+    async def checkout(self, version: int | str):
         """
         Checks out a specific version of the Table
 
@@ -3760,6 +3835,12 @@ class AsyncTable:
 
         Any operation that modifies the table will fail while the table is in a checked
         out state.
+
+        Parameters
+        ----------
+        version: int | str,
+            The version to check out. A version number (`int`) or a tag
+            (`str`) can be provided.
 
         To return the table to a normal state use `[Self::checkout_latest]`
         """
@@ -3797,6 +3878,24 @@ class AsyncTable:
         out state and the read_consistency_interval, if any, will apply.
         """
         await self._inner.restore(version)
+
+    @property
+    def tags(self) -> AsyncTags:
+        """Tag management for the dataset.
+
+        Similar to Git, tags are a way to add metadata to a specific version of the
+        dataset.
+
+        .. warning::
+
+            Tagged versions are exempted from the
+            :py:meth:`optimize(cleanup_older_than)` process.
+
+            To remove a version that has been tagged, you must first
+            :py:meth:`~Tags.delete` the associated tag.
+
+        """
+        return AsyncTags(self._inner)
 
     async def optimize(
         self,
@@ -3967,3 +4066,141 @@ class IndexStatistics:
     # a dictionary instead of a class.
     def __getitem__(self, key):
         return getattr(self, key)
+
+
+class Tags:
+    """
+    Table tag manager.
+    """
+
+    def __init__(self, table):
+        self._table = table
+
+    def list(self) -> Dict[str, Tag]:
+        """
+        List all table tags.
+
+        Returns
+        -------
+        dict[str, Tag]
+            A dictionary mapping tag names to version numbers.
+        """
+        return LOOP.run(self._table.tags.list())
+
+    def get_version(self, tag: str) -> int:
+        """
+        Get the version of a tag.
+
+        Parameters
+        ----------
+        tag: str,
+            The name of the tag to get the version for.
+        """
+        return LOOP.run(self._table.tags.get_version(tag))
+
+    def create(self, tag: str, version: int) -> None:
+        """
+        Create a tag for a given table version.
+
+        Parameters
+        ----------
+        tag: str,
+            The name of the tag to create. This name must be unique among all tag
+            names for the table.
+        version: int,
+            The table version to tag.
+        """
+        LOOP.run(self._table.tags.create(tag, version))
+
+    def delete(self, tag: str) -> None:
+        """
+        Delete tag from the table.
+
+        Parameters
+        ----------
+        tag: str,
+            The name of the tag to delete.
+        """
+        LOOP.run(self._table.tags.delete(tag))
+
+    def update(self, tag: str, version: int) -> None:
+        """
+        Update tag to a new version.
+
+        Parameters
+        ----------
+        tag: str,
+            The name of the tag to update.
+        version: int,
+            The new table version to tag.
+        """
+        LOOP.run(self._table.tags.update(tag, version))
+
+
+class AsyncTags:
+    """
+    Async table tag manager.
+    """
+
+    def __init__(self, table):
+        self._table = table
+
+    async def list(self) -> Dict[str, Tag]:
+        """
+        List all table tags.
+
+        Returns
+        -------
+        dict[str, Tag]
+            A dictionary mapping tag names to version numbers.
+        """
+        return await self._table.tags.list()
+
+    async def get_version(self, tag: str) -> int:
+        """
+        Get the version of a tag.
+
+        Parameters
+        ----------
+        tag: str,
+            The name of the tag to get the version for.
+        """
+        return await self._table.tags.get_version(tag)
+
+    async def create(self, tag: str, version: int) -> None:
+        """
+        Create a tag for a given table version.
+
+        Parameters
+        ----------
+        tag: str,
+            The name of the tag to create. This name must be unique among all tag
+            names for the table.
+        version: int,
+            The table version to tag.
+        """
+        await self._table.tags.create(tag, version)
+
+    async def delete(self, tag: str) -> None:
+        """
+        Delete tag from the table.
+
+        Parameters
+        ----------
+        tag: str,
+            The name of the tag to delete.
+        """
+        await self._table.tags.delete(tag)
+
+    async def update(self, tag: str, version: int) -> None:
+        """
+        Update tag to a new version.
+
+        Parameters
+        ----------
+        tag: str,
+            The name of the tag to update.
+        version: int,
+            The new table version to tag.
+        """
+        await self._table.tags.update(tag, version)
