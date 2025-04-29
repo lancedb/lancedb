@@ -8,13 +8,23 @@
 
 ## Properties
 
-### totalBytes
+### fragmentStats
 
 ```ts
-totalBytes: number;
+fragmentStats: FragmentStatistics;
 ```
 
-The total number of bytes in the table.
+Statistics on table fragments
+
+***
+
+### numIndices
+
+```ts
+numIndices: number;
+```
+
+The number of indices in the table
 
 ***
 
@@ -24,24 +34,14 @@ The total number of bytes in the table.
 numRows: number;
 ```
 
-The number of rows in the table.
+The number of rows in the table
 
 ***
 
-### numIndices
+### totalBytes
 
 ```ts
- numIndices: number;
+totalBytes: number;
 ```
 
-The number of indices in the table.
-
-***
-
-### fragmentStats
-
-```ts
-fragmentStats: FragmentStatistics;
-```
-
-Statistics on table fragments.
+The total number of bytes in the table
