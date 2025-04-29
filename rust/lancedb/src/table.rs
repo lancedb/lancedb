@@ -2673,7 +2673,6 @@ pub struct FragmentStatistics {
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct FragmentSummaryStats {
-    ///
     pub min: usize,
     pub max: usize,
     pub mean: usize,
