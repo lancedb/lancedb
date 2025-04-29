@@ -5,10 +5,7 @@ use std::collections::HashMap;
 
 use arrow_ipc::writer::FileWriter;
 use lancedb::ipc::ipc_file_to_batches;
-use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
-};
+use lancedb::table::{AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions, Table as LanceDbTable, TableStatistics};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -153,6 +150,14 @@ impl Table {
 
         self.inner_ref()?
             .wait_for_index(slice, timeout)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn stats(&self) -> Result<TableStatistics> {
+        self.inner_ref()?
+            .stats()
             .await
             .default_error()
     }
