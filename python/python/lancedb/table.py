@@ -4119,17 +4119,17 @@ class FragmentStatistics:
     num_small_fragments: int
         The total number of small fragments in the table.
         Small fragments have low row counts and may need to be compacted.
-    lengths: FragmentSizeStats
+    lengths: FragmentSummaryStats
         Statistics about the number of rows in the table fragments.
     """
 
     num_fragments: int
     num_small_fragments: int
-    lengths: FragmentSizeStats
+    lengths: FragmentSummaryStats
 
 
 @dataclass
-class FragmentSizeStats:
+class FragmentSummaryStats:
     """
     Statistics about fragments sizes
 

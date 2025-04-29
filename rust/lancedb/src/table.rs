@@ -2618,7 +2618,7 @@ impl BaseTable for NativeTable {
         let frag_stats = FragmentStatistics {
             num_fragments,
             num_small_fragments,
-            lengths: FragmentSizeStats {
+            lengths: FragmentSummaryStats {
                 min,
                 max,
                 mean,
@@ -2664,7 +2664,7 @@ pub struct FragmentStatistics {
     pub num_small_fragments: usize,
 
     /// Statistics on the number of rows in the table fragments
-    pub lengths: FragmentSizeStats,
+    pub lengths: FragmentSummaryStats,
     // todo: add size statistics
     // /// Statistics on the number of bytes in the table fragments
     // sizes: FragmentStats,
@@ -2672,7 +2672,7 @@ pub struct FragmentStatistics {
 
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
-pub struct FragmentSizeStats {
+pub struct FragmentSummaryStats {
     pub min: usize,
     pub max: usize,
     pub mean: usize,
@@ -3756,7 +3756,7 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(Int32Array::from_iter_values(0..num_rows as i32)),
+                Arc::new(Int32Array::from_iter_values(0..num_rows)),
                 text,
             ],
         )
@@ -4072,8 +4072,8 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(Int32Array::from_iter_values(0..100 as i32)),
-                Arc::new(Int32Array::from_iter_values(0..100 as i32)),
+                Arc::new(Int32Array::from_iter_values(0..100)),
+                Arc::new(Int32Array::from_iter_values(0..100)),
             ],
         )
         .unwrap();
@@ -4090,8 +4090,8 @@ mod tests {
             let batch = RecordBatch::try_new(
                 schema.clone(),
                 vec![
-                    Arc::new(Int32Array::from_iter_values(0..15 as i32)),
-                    Arc::new(Int32Array::from_iter_values(0..15 as i32)),
+                    Arc::new(Int32Array::from_iter_values(0..15)),
+                    Arc::new(Int32Array::from_iter_values(0..15)),
                 ],
             )
             .unwrap();
@@ -4125,7 +4125,7 @@ mod tests {
                 fragment_stats: FragmentStatistics {
                     num_fragments: 11,
                     num_small_fragments: 11,
-                    lengths: FragmentSizeStats {
+                    lengths: FragmentSummaryStats {
                         min: 15,
                         max: 100,
                         mean: 22,
@@ -4148,7 +4148,7 @@ mod tests {
                 fragment_stats: FragmentStatistics {
                     num_fragments: 0,
                     num_small_fragments: 0,
-                    lengths: FragmentSizeStats {
+                    lengths: FragmentSummaryStats {
                         min: 0,
                         max: 0,
                         mean: 0,
