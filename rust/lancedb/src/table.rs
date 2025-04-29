@@ -81,10 +81,12 @@ pub mod merge;
 use crate::index::waiter::wait_for_index;
 use crate::DistanceType;
 pub use chrono::Duration;
+use datafusion_catalog::TableProvider;
 use futures::future::join_all;
 use itertools::Itertools;
 pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
+use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;
 use serde_with::skip_serializing_none;
 
@@ -2497,10 +2499,9 @@ impl BaseTable for NativeTable {
     async fn stats(&self) -> Result<TableStatistics> {
         let num_rows = self.count_rows(None).await?;
         let num_indices = self.list_indices().await?.len();
-
         let ds = self.dataset.get().await?;
-        let frags = ds.get_fragments();
 
+        let frags = ds.get_fragments();
         let frag_sizes = join_all(
             frags
                 .iter()
@@ -2531,7 +2532,7 @@ impl BaseTable for NativeTable {
         let frag_stats = FragmentStatistics {
             num_fragments,
             num_small_fragments,
-            sizes: FragmentSizes {
+            lengths: FragmentStats {
                 min,
                 max,
                 mean,
@@ -2572,13 +2573,16 @@ pub struct FragmentStatistics {
     /// The number of uncompacted fragments in the table
     num_small_fragments: usize,
 
-    /// Fragment size statistics
-    sizes: FragmentSizes,
+    /// Statistics on the number of rows in the table fragments
+    lengths: FragmentStats,
+    // todo: add size statistics
+    // /// Statistics on the number of bytes in the table fragments
+    // sizes: FragmentStats,
 }
 
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
-pub struct FragmentSizes {
+pub struct FragmentStats {
     min: usize,
     max: usize,
     mean: usize,
@@ -3976,7 +3980,7 @@ mod tests {
                 fragment_stats: FragmentStatistics {
                     num_fragments: 11,
                     num_small_fragments: 11,
-                    sizes: FragmentSizes {
+                    lengths: FragmentStats {
                         min: 15,
                         max: 100,
                         mean: 22,
@@ -3998,7 +4002,7 @@ mod tests {
                 fragment_stats: FragmentStatistics {
                     num_fragments: 0,
                     num_small_fragments: 0,
-                    sizes: FragmentSizes {
+                    lengths: FragmentStats {
                         min: 0,
                         max: 0,
                         mean: 0,
