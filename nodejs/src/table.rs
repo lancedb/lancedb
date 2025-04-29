@@ -5,7 +5,10 @@ use std::collections::HashMap;
 
 use arrow_ipc::writer::FileWriter;
 use lancedb::ipc::ipc_file_to_batches;
-use lancedb::table::{AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions, Table as LanceDbTable};
+use lancedb::table::{
+    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
+    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
+};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
