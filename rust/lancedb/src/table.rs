@@ -79,11 +79,8 @@ pub(crate) mod dataset;
 pub mod merge;
 
 use crate::index::waiter::wait_for_index;
-use crate::DistanceType;
 pub use chrono::Duration;
-use datafusion_catalog::TableProvider;
 use futures::future::join_all;
-use itertools::Itertools;
 pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
@@ -2500,15 +2497,18 @@ impl BaseTable for NativeTable {
         let num_rows = self.count_rows(None).await?;
         let num_indices = self.list_indices().await?.len();
         let ds = self.dataset.get().await?;
+        let ds_clone = (*ds).clone();
+        let ds_stats = Arc::new(ds_clone).calculate_data_stats().await?;
+        let total_bytes = ds_stats.fields.iter().map(|f| f.bytes_on_disk).sum::<u64>() as usize;
 
         let frags = ds.get_fragments();
-        let frag_sizes = join_all(
+        let mut sorted_sizes = join_all(
             frags
                 .iter()
                 .map(|frag| async move { frag.physical_rows().await.unwrap_or(0) }),
         )
         .await;
-        let sorted_sizes = frag_sizes.into_iter().sorted().collect::<Vec<usize>>();
+        sorted_sizes.sort();
 
         let small_frag_threshold = 100000;
         let num_fragments = sorted_sizes.len();
@@ -2543,6 +2543,7 @@ impl BaseTable for NativeTable {
             },
         };
         let stats = TableStatistics {
+            total_bytes,
             num_rows,
             num_indices,
             fragment_stats: frag_stats,
@@ -2554,6 +2555,9 @@ impl BaseTable for NativeTable {
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct TableStatistics {
+    /// The total number of bytes in the table
+    pub total_bytes: usize,
+
     /// The number of rows in the table
     pub num_rows: usize,
 
@@ -3942,7 +3946,7 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        for i in 0..10 {
+        for _ in 0..10 {
             let batch = RecordBatch::try_new(
                 schema.clone(),
                 vec![
@@ -3977,6 +3981,7 @@ mod tests {
             TableStatistics {
                 num_rows: 250,
                 num_indices: 0,
+                total_bytes: 2000,
                 fragment_stats: FragmentStatistics {
                     num_fragments: 11,
                     num_small_fragments: 11,
@@ -3999,6 +4004,7 @@ mod tests {
             TableStatistics {
                 num_rows: 0,
                 num_indices: 0,
+                total_bytes: 0,
                 fragment_stats: FragmentStatistics {
                     num_fragments: 0,
                     num_small_fragments: 0,
