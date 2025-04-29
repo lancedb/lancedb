@@ -740,6 +740,13 @@ class Table(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def stats(self) -> TableStatistics:
+        """
+        Retrieve table and fragment statistics.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def create_scalar_index(
         self,
         column: str,
@@ -1875,6 +1882,9 @@ class LanceTable(Table):
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
     ) -> None:
         return LOOP.run(self._table.wait_for_index(index_names, timeout))
+
+    def stats(self) -> TableStatistics:
+        return LOOP.run(self._table.stats())
 
     def create_scalar_index(
         self,
@@ -3170,6 +3180,12 @@ class AsyncTable:
         """
         await self._inner.wait_for_index(index_names, timeout)
 
+    async def stats(self) -> TableStatistics:
+        """
+        Retrieve table and fragment statistics.
+        """
+        return await self._inner.stats()
+
     async def add(
         self,
         data: DATA,
@@ -4066,6 +4082,82 @@ class IndexStatistics:
     # a dictionary instead of a class.
     def __getitem__(self, key):
         return getattr(self, key)
+
+
+@dataclass
+class TableStatistics:
+    """
+    Statistics about a table and fragments.
+
+    Attributes
+    ----------
+    total_bytes: int
+        The total number of bytes in the table.
+    num_rows: int
+        The total number of rows in the table.
+    num_indices: int
+        The total number of indices in the table.
+    fragment_stats: FragmentStatistics
+        Statistics about fragments in the table.
+    """
+
+    total_bytes: int
+    num_rows: int
+    num_indices: int
+    fragment_stats: FragmentStatistics
+
+
+@dataclass
+class FragmentStatistics:
+    """
+    Statistics about fragments.
+
+    Attributes
+    ----------
+    num_fragments: int
+        The total number of fragments in the table.
+    num_small_fragments: int
+        The total number of small fragments in the table.
+        Small fragments have low row counts and may need to be compacted.
+    lengths: FragmentSummaryStats
+        Statistics about the number of rows in the table fragments.
+    """
+
+    num_fragments: int
+    num_small_fragments: int
+    lengths: FragmentSummaryStats
+
+
+@dataclass
+class FragmentSummaryStats:
+    """
+    Statistics about fragments sizes
+
+    Attributes
+    ----------
+    min: int
+        The number of rows in the fragment with the fewest rows.
+    max: int
+        The number of rows in the fragment with the most rows.
+    mean: int
+        The mean number of rows in the fragments.
+    p25: int
+        The 25th percentile of number of rows in the fragments.
+    p50: int
+        The 50th percentile of number of rows in the fragments.
+    p75: int
+        The 75th percentile of number of rows in the fragments.
+    p99: int
+        The 99th percentile of number of rows in the fragments.
+    """
+
+    min: int
+    max: int
+    mean: int
+    p25: int
+    p50: int
+    p75: int
+    p99: int
 
 
 class Tags:

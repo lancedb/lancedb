@@ -615,6 +615,22 @@ of the given query
 
 ***
 
+### stats()
+
+```ts
+abstract stats(): Promise<TableStatistics>
+```
+
+Returns table and fragment statistics
+
+#### Returns
+
+`Promise`&lt;[`TableStatistics`](../interfaces/TableStatistics.md)&gt;
+
+The table and fragment statistics
+
+***
+
 ### tags()
 
 ```ts

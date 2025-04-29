@@ -80,10 +80,13 @@ pub mod merge;
 
 use crate::index::waiter::wait_for_index;
 pub use chrono::Duration;
+use futures::future::join_all;
 pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
+use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;
+use serde_with::skip_serializing_none;
 
 /// Defines the type of column
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -523,6 +526,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         index_names: &[&str],
         timeout: std::time::Duration,
     ) -> Result<()>;
+    /// Get statistics on the table
+    async fn stats(&self) -> Result<TableStatistics>;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -1240,6 +1245,11 @@ impl Table {
         )
         .unwrap();
         Ok(Arc::new(repartitioned))
+    }
+
+    /// Retrieve statistics on the table
+    pub async fn stats(&self) -> Result<TableStatistics> {
+        self.inner.stats().await
     }
 }
 
@@ -2568,6 +2578,108 @@ impl BaseTable for NativeTable {
     ) -> Result<()> {
         wait_for_index(self, index_names, timeout).await
     }
+
+    async fn stats(&self) -> Result<TableStatistics> {
+        let num_rows = self.count_rows(None).await?;
+        let num_indices = self.list_indices().await?.len();
+        let ds = self.dataset.get().await?;
+        let ds_clone = (*ds).clone();
+        let ds_stats = Arc::new(ds_clone).calculate_data_stats().await?;
+        let total_bytes = ds_stats.fields.iter().map(|f| f.bytes_on_disk).sum::<u64>() as usize;
+
+        let frags = ds.get_fragments();
+        let mut sorted_sizes = join_all(
+            frags
+                .iter()
+                .map(|frag| async move { frag.physical_rows().await.unwrap_or(0) }),
+        )
+        .await;
+        sorted_sizes.sort();
+
+        let small_frag_threshold = 100000;
+        let num_fragments = sorted_sizes.len();
+        let num_small_fragments = sorted_sizes
+            .iter()
+            .filter(|&&size| size < small_frag_threshold)
+            .count();
+
+        let p25 = *sorted_sizes.get(num_fragments / 4).unwrap_or(&0);
+        let p50 = *sorted_sizes.get(num_fragments / 2).unwrap_or(&0);
+        let p75 = *sorted_sizes.get(num_fragments * 3 / 4).unwrap_or(&0);
+        let p99 = *sorted_sizes.get(num_fragments * 99 / 100).unwrap_or(&0);
+        let min = sorted_sizes.first().copied().unwrap_or(0);
+        let max = sorted_sizes.last().copied().unwrap_or(0);
+        let mean = if num_fragments == 0 {
+            0
+        } else {
+            sorted_sizes.iter().copied().sum::<usize>() / num_fragments
+        };
+
+        let frag_stats = FragmentStatistics {
+            num_fragments,
+            num_small_fragments,
+            lengths: FragmentSummaryStats {
+                min,
+                max,
+                mean,
+                p25,
+                p50,
+                p75,
+                p99,
+            },
+        };
+        let stats = TableStatistics {
+            total_bytes,
+            num_rows,
+            num_indices,
+            fragment_stats: frag_stats,
+        };
+        Ok(stats)
+    }
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct TableStatistics {
+    /// The total number of bytes in the table
+    pub total_bytes: usize,
+
+    /// The number of rows in the table
+    pub num_rows: usize,
+
+    /// The number of indices in the table
+    pub num_indices: usize,
+
+    /// Statistics on table fragments
+    pub fragment_stats: FragmentStatistics,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct FragmentStatistics {
+    /// The number of fragments in the table
+    pub num_fragments: usize,
+
+    /// The number of uncompacted fragments in the table
+    pub num_small_fragments: usize,
+
+    /// Statistics on the number of rows in the table fragments
+    pub lengths: FragmentSummaryStats,
+    // todo: add size statistics
+    // /// Statistics on the number of bytes in the table fragments
+    // sizes: FragmentStats,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct FragmentSummaryStats {
+    pub min: usize,
+    pub max: usize,
+    pub mean: usize,
+    pub p25: usize,
+    pub p50: usize,
+    pub p75: usize,
+    pub p99: usize,
 }
 
 #[cfg(test)]
@@ -3944,5 +4056,109 @@ mod tests {
             field.metadata.get("test_field_key1"),
             Some(&"test_field_val1".to_string())
         );
+    }
+
+    #[tokio::test]
+    pub async fn test_stats() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("foo", DataType::Int32, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)),
+                Arc::new(Int32Array::from_iter_values(0..100)),
+            ],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table(
+                "test_stats",
+                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+            )
+            .execute()
+            .await
+            .unwrap();
+        for _ in 0..10 {
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..15)),
+                    Arc::new(Int32Array::from_iter_values(0..15)),
+                ],
+            )
+            .unwrap();
+            table
+                .add(RecordBatchIterator::new(
+                    vec![Ok(batch.clone())],
+                    batch.schema(),
+                ))
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        let empty_table = conn
+            .create_table(
+                "test_stats_empty",
+                RecordBatchIterator::new(vec![], batch.schema()),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        let res = table.stats().await.unwrap();
+        println!("{:#?}", res);
+        assert_eq!(
+            res,
+            TableStatistics {
+                num_rows: 250,
+                num_indices: 0,
+                total_bytes: 2000,
+                fragment_stats: FragmentStatistics {
+                    num_fragments: 11,
+                    num_small_fragments: 11,
+                    lengths: FragmentSummaryStats {
+                        min: 15,
+                        max: 100,
+                        mean: 22,
+                        p25: 15,
+                        p50: 15,
+                        p75: 15,
+                        p99: 100,
+                    },
+                },
+            }
+        );
+        let res = empty_table.stats().await.unwrap();
+        println!("{:#?}", res);
+        assert_eq!(
+            res,
+            TableStatistics {
+                num_rows: 0,
+                num_indices: 0,
+                total_bytes: 0,
+                fragment_stats: FragmentStatistics {
+                    num_fragments: 0,
+                    num_small_fragments: 0,
+                    lengths: FragmentSummaryStats {
+                        min: 0,
+                        max: 0,
+                        mean: 0,
+                        p25: 0,
+                        p50: 0,
+                        p75: 0,
+                        p99: 0,
+                    },
+                },
+            }
+        )
     }
 }

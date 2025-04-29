@@ -1695,3 +1695,31 @@ def test_replace_field_metadata(tmp_path):
     schema = table.schema
     field = schema[0].metadata
     assert field == {b"foo": b"bar"}
+
+
+def test_stats(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
+    )
+    assert len(table) == 2
+    stats = table.stats()
+    print(f"{stats=}")
+    assert stats == {
+        "total_bytes": 38,
+        "num_rows": 2,
+        "num_indices": 0,
+        "fragment_stats": {
+            "num_fragments": 1,
+            "num_small_fragments": 1,
+            "lengths": {
+                "min": 2,
+                "max": 2,
+                "mean": 2,
+                "p25": 2,
+                "p50": 2,
+                "p75": 2,
+                "p99": 2,
+            },
+        },
+    }

@@ -5,7 +5,7 @@ use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::table::Tags;
-use crate::table::{AddDataMode, AnyQuery, Filter};
+use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
@@ -1241,6 +1241,20 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
     fn dataset_uri(&self) -> &str {
         "NOT_SUPPORTED"
+    }
+
+    async fn stats(&self) -> Result<TableStatistics> {
+        let request = self.client.post(&format!("/v1/table/{}/stats/", self.name));
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        let stats = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse table statistics: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+        Ok(stats)
     }
 }
 
