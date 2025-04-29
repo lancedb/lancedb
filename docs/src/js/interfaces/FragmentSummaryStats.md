@@ -30,6 +30,8 @@ mean: number;
 min: number;
 ```
 
+Statistics on the number of rows in the table fragments
+
 ***
 
 ### p25

@@ -590,12 +590,25 @@ pub struct FragmentStatistics {
 
 #[napi(object)]
 pub struct FragmentSummaryStats {
+    /// The number of rows in the fragment with the fewest rows
     pub min: i64,
+
+    /// The number of rows in the fragment with the most rows
     pub max: i64,
+
+    /// The mean number of rows in the fragments
     pub mean: i64,
+
+    /// The 25th percentile of number of rows in the fragments
     pub p25: i64,
+
+    /// The 50th percentile of number of rows in the fragments
     pub p50: i64,
+
+    /// The 75th percentile of number of rows in the fragments
     pub p75: i64,
+
+    /// The 99th percentile of number of rows in the fragments
     pub p99: i64,
 }
 
