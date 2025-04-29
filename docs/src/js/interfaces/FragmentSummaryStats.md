@@ -14,6 +14,8 @@
 max: number;
 ```
 
+The number of rows in the fragment with the most rows
+
 ***
 
 ### mean
@@ -21,6 +23,8 @@ max: number;
 ```ts
 mean: number;
 ```
+
+The mean number of rows in the fragments
 
 ***
 
@@ -30,7 +34,7 @@ mean: number;
 min: number;
 ```
 
-Statistics on the number of rows in the table fragments
+The number of rows in the fragment with the fewest rows
 
 ***
 
@@ -40,6 +44,8 @@ Statistics on the number of rows in the table fragments
 p25: number;
 ```
 
+The 25th percentile of number of rows in the fragments
+
 ***
 
 ### p50
@@ -47,6 +53,8 @@ p25: number;
 ```ts
 p50: number;
 ```
+
+The 50th percentile of number of rows in the fragments
 
 ***
 
@@ -56,6 +64,8 @@ p50: number;
 p75: number;
 ```
 
+The 75th percentile of number of rows in the fragments
+
 ***
 
 ### p99
@@ -63,3 +73,5 @@ p75: number;
 ```ts
 p99: number;
 ```
+
+The 99th percentile of number of rows in the fragments
