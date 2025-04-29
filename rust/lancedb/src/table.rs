@@ -526,7 +526,6 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         index_names: &[&str],
         timeout: std::time::Duration,
     ) -> Result<()>;
-
     /// Get statistics on the table
     async fn stats(&self) -> Result<TableStatistics>;
 }
@@ -1249,7 +1248,6 @@ impl Table {
     }
 
     /// Retrieve statistics on the table
-    ///
     pub async fn stats(&self) -> Result<TableStatistics> {
         self.inner.stats().await
     }
@@ -2620,7 +2618,7 @@ impl BaseTable for NativeTable {
         let frag_stats = FragmentStatistics {
             num_fragments,
             num_small_fragments,
-            lengths: FragmentStats {
+            lengths: FragmentSizeStats {
                 min,
                 max,
                 mean,
@@ -2660,13 +2658,13 @@ pub struct TableStatistics {
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct FragmentStatistics {
     /// The number of fragments in the table
-    num_fragments: usize,
+    pub num_fragments: usize,
 
     /// The number of uncompacted fragments in the table
-    num_small_fragments: usize,
+    pub num_small_fragments: usize,
 
     /// Statistics on the number of rows in the table fragments
-    lengths: FragmentStats,
+    pub lengths: FragmentSizeStats,
     // todo: add size statistics
     // /// Statistics on the number of bytes in the table fragments
     // sizes: FragmentStats,
@@ -2674,14 +2672,14 @@ pub struct FragmentStatistics {
 
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
-pub struct FragmentStats {
-    min: usize,
-    max: usize,
-    mean: usize,
-    p25: usize,
-    p50: usize,
-    p75: usize,
-    p99: usize,
+pub struct FragmentSizeStats {
+    pub min: usize,
+    pub max: usize,
+    pub mean: usize,
+    pub p25: usize,
+    pub p50: usize,
+    pub p75: usize,
+    pub p99: usize,
 }
 
 #[cfg(test)]
@@ -4127,7 +4125,7 @@ mod tests {
                 fragment_stats: FragmentStatistics {
                     num_fragments: 11,
                     num_small_fragments: 11,
-                    lengths: FragmentStats {
+                    lengths: FragmentSizeStats {
                         min: 15,
                         max: 100,
                         mean: 22,
@@ -4150,7 +4148,7 @@ mod tests {
                 fragment_stats: FragmentStatistics {
                     num_fragments: 0,
                     num_small_fragments: 0,
-                    lengths: FragmentStats {
+                    lengths: FragmentSizeStats {
                         min: 0,
                         max: 0,
                         mean: 0,

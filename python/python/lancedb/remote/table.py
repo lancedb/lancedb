@@ -578,6 +578,9 @@ class RemoteTable(Table):
     ):
         return LOOP.run(self._table.wait_for_index(index_names, timeout))
 
+    def stats(self):
+        return LOOP.run(self._table.stats())
+
     def uses_v2_manifest_paths(self) -> bool:
         raise NotImplementedError(
             "uses_v2_manifest_paths() is not supported on the LanceDB Cloud"
