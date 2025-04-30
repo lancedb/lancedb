@@ -73,7 +73,7 @@ export class MergeInsertBuilder {
   /**
    * Executes the merge insert operation
    *
-   * Nothing is returned but the `Table` is updated
+   * @returns Statistics about the merge operation: counts of inserted, updated, and deleted rows
    */
   async execute(data: Data): Promise<MergeStats> {
     let schema: Schema;
