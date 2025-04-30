@@ -20,13 +20,13 @@ use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
 use lance::dataset::scanner::Scanner;
 pub use lance::dataset::ColumnAlteration;
+pub use lance::dataset::MergeStats;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::{
     InsertBuilder, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
 };
-pub use lance::dataset::MergeStats;
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::io::WrappingObjectStore;
