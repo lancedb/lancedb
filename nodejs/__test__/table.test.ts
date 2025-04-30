@@ -338,11 +338,16 @@ describe("merge insert", () => {
       { a: 3, b: "y" },
       { a: 4, b: "z" },
     ];
-    await table
+    const stats = await table
       .mergeInsert("a")
       .whenMatchedUpdateAll()
       .whenNotMatchedInsertAll()
       .execute(newData);
+
+    expect(stats.numInsertedRows).toBe(1n);
+    expect(stats.numUpdatedRows).toBe(2n);
+    expect(stats.numDeletedRows).toBe(0n);
+
     const expected = [
       { a: 1, b: "a" },
       { a: 2, b: "x" },

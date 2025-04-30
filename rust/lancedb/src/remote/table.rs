@@ -1035,8 +1035,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let (request_id, response) = self.send_streaming(request, new_data, true).await?;
 
+        // TODO: server can response with these stats in response body.
+        // We should test that we can handle both empty response from old server
+        // and response with stats from new server.
         self.check_table_response(&request_id, response).await?;
-
         Ok(MergeStats::default())
     }
 
@@ -1349,7 +1351,12 @@ mod tests {
             Box::pin(table.count_rows(None).map_ok(|_| ())),
             Box::pin(table.update().column("a", "a + 1").execute().map_ok(|_| ())),
             Box::pin(table.add(example_data()).execute().map_ok(|_| ())),
-            Box::pin(table.merge_insert(&["test"]).execute(example_data())),
+            Box::pin(
+                table
+                    .merge_insert(&["test"])
+                    .execute(example_data())
+                    .map_ok(|_| ()),
+            ),
             Box::pin(table.delete("false")),
             Box::pin(table.add_columns(
                 NewColumnTransform::SqlExpressions(vec![("x".into(), "y".into())]),
