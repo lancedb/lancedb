@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
+use lance::dataset::MergeStats;
 
 use crate::Result;
 
@@ -86,8 +87,9 @@ impl MergeInsertBuilder {
 
     /// Executes the merge insert operation
     ///
-    /// Nothing is returned but the [`super::Table`] is updated
-    pub async fn execute(self, new_data: Box<dyn RecordBatchReader + Send>) -> Result<()> {
+    /// Returns statistics about the merge operation including the number of rows
+    /// inserted, updated, and deleted.
+    pub async fn execute(self, new_data: Box<dyn RecordBatchReader + Send>) -> Result<MergeStats> {
         self.table.clone().merge_insert(self, new_data).await
     }
 }

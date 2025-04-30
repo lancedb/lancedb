@@ -2489,7 +2489,9 @@ class LanceTable(Table):
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
     ):
-        LOOP.run(self._table._do_merge(merge, new_data, on_bad_vectors, fill_value))
+        return LOOP.run(
+            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
+        )
 
     @deprecation.deprecated(
         deprecated_in="0.21.0",
@@ -3636,7 +3638,7 @@ class AsyncTable:
         )
         if isinstance(data, pa.Table):
             data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
-        await self._inner.execute_merge_insert(
+        return await self._inner.execute_merge_insert(
             data,
             dict(
                 on=merge._on,

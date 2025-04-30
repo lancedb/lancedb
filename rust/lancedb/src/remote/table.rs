@@ -47,6 +47,7 @@ use crate::{
         TableDefinition, UpdateBuilder,
     },
 };
+use lance::dataset::MergeStats;
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 
@@ -1022,7 +1023,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<()> {
+    ) -> Result<MergeStats> {
         self.check_mutable().await?;
 
         let query = MergeInsertRequest::try_from(params)?;
@@ -1036,7 +1037,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         self.check_table_response(&request_id, response).await?;
 
-        Ok(())
+        Ok(MergeStats::default())
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {

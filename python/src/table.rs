@@ -489,8 +489,14 @@ impl Table {
         }
 
         future_into_py(self_.py(), async move {
-            builder.execute(Box::new(batches)).await.infer_error()?;
-            Ok(())
+            let stats = builder.execute(Box::new(batches)).await.infer_error()?;
+            Python::with_gil(|py| {
+                let dict = PyDict::new(py);
+                dict.set_item("num_inserted_rows", stats.num_inserted_rows)?;
+                dict.set_item("num_updated_rows", stats.num_updated_rows)?;
+                dict.set_item("num_deleted_rows", stats.num_deleted_rows)?;
+                Ok(dict.unbind())
+            })
         })
     }
 

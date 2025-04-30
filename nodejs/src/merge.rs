@@ -51,7 +51,9 @@ impl NativeMergeInsertBuilder {
                 "Failed to execute merge insert: {}",
                 convert_error(&e)
             ))
-        })
+        });
+
+        Ok(())
     }
 }
 
