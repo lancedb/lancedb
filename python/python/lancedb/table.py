@@ -78,6 +78,13 @@ if TYPE_CHECKING:
         CleanupStats,
         CompactionStats,
         Tag,
+        AddColumnsResult,
+        AddResult,
+        AlterColumnsResult,
+        DeleteResult,
+        DropColumnsResult,
+        MergeInsertResult,
+        UpdateResult,
     )
     from .db import LanceDBConnection
     from .index import IndexConfig
@@ -887,7 +894,7 @@ class Table(ABC):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
-    ):
+    ) -> AddResult:
         """Add more data to the [Table](Table).
 
         Parameters
@@ -909,6 +916,10 @@ class Table(ABC):
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
+        Returns
+        -------
+        AddResult
+            An object containing the new version number of the table after adding data.
         """
         raise NotImplementedError
 
@@ -1082,10 +1093,10 @@ class Table(ABC):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
-    ): ...
+    ) -> MergeInsertResult: ...
 
     @abstractmethod
-    def delete(self, where: str):
+    def delete(self, where: str) -> DeleteResult:
         """Delete rows from the table.
 
         This can be used to delete a single row, many rows, all rows, or
@@ -1099,6 +1110,11 @@ class Table(ABC):
             - For example, 'x = 2' or 'x IN (1, 2, 3)'.
 
             The filter must not be empty, or it will error.
+
+        Returns
+        -------
+        DeleteResult
+            An object containing the new version number of the table after deletion.
 
         Examples
         --------
@@ -1142,7 +1158,7 @@ class Table(ABC):
         values: Optional[dict] = None,
         *,
         values_sql: Optional[Dict[str, str]] = None,
-    ):
+    ) -> UpdateResult:
         """
         This can be used to update zero to all rows depending on how many
         rows match the where clause. If no where clause is provided, then
@@ -1163,6 +1179,12 @@ class Table(ABC):
             The values to update, expressed as SQL expression strings. These can
             reference existing columns. For example, {"x": "x + 1"} will increment
             the x column by 1.
+
+        Returns
+        -------
+        UpdateResult
+            - rows_updated: The number of rows that were updated
+            - version: The new version number of the table after the update
 
         Examples
         --------
@@ -1345,6 +1367,11 @@ class Table(ABC):
             Alternatively, a pyarrow Field or Schema can be provided to add
             new columns with the specified data types. The new columns will
             be initialized with null values.
+
+        Returns
+        -------
+        AddColumnsResult
+            version: the new version number of the table after adding columns.
         """
 
     @abstractmethod
@@ -1370,10 +1397,15 @@ class Table(ABC):
                 nullability is not changed. Only non-nullable columns can be changed
                 to nullable. Currently, you cannot change a nullable column to
                 non-nullable.
+
+        Returns
+        -------
+        AlterColumnsResult
+            version: the new version number of the table after the alteration.
         """
 
     @abstractmethod
-    def drop_columns(self, columns: Iterable[str]):
+    def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         """
         Drop columns from the table.
 
@@ -1381,6 +1413,11 @@ class Table(ABC):
         ----------
         columns : Iterable[str]
             The names of the columns to drop.
+
+        Returns
+        -------
+        DropColumnsResult
+            version: the new version number of the table dropping the columns.
         """
 
     @abstractmethod
@@ -2043,7 +2080,7 @@ class LanceTable(Table):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
-    ):
+    ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
         has embedding functions, then the vector columns
@@ -2067,7 +2104,7 @@ class LanceTable(Table):
         int
             The number of vectors in the table.
         """
-        LOOP.run(
+        return LOOP.run(
             self._table.add(
                 data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
             )
@@ -2397,8 +2434,8 @@ class LanceTable(Table):
         )
         return self
 
-    def delete(self, where: str):
-        LOOP.run(self._table.delete(where))
+    def delete(self, where: str) -> DeleteResult:
+        return LOOP.run(self._table.delete(where))
 
     def update(
         self,
@@ -2406,7 +2443,7 @@ class LanceTable(Table):
         values: Optional[dict] = None,
         *,
         values_sql: Optional[Dict[str, str]] = None,
-    ):
+    ) -> UpdateResult:
         """
         This can be used to update zero to all rows depending on how many
         rows match the where clause.
@@ -2423,6 +2460,12 @@ class LanceTable(Table):
             The values to update, expressed as SQL expression strings. These can
             reference existing columns. For example, {"x": "x + 1"} will increment
             the x column by 1.
+
+        Returns
+        -------
+        UpdateResult
+            - rows_updated: The number of rows that were updated
+            - version: The new version number of the table after the update
 
         Examples
         --------
@@ -2444,7 +2487,7 @@ class LanceTable(Table):
         2  2  [10.0, 10.0]
 
         """
-        LOOP.run(self._table.update(values, where=where, updates_sql=values_sql))
+        return LOOP.run(self._table.update(values, where=where, updates_sql=values_sql))
 
     def _execute_query(
         self,
@@ -2478,8 +2521,10 @@ class LanceTable(Table):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
-    ):
-        LOOP.run(self._table._do_merge(merge, new_data, on_bad_vectors, fill_value))
+    ) -> MergeInsertResult:
+        return LOOP.run(
+            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
+        )
 
     @deprecation.deprecated(
         deprecated_in="0.21.0",
@@ -2621,14 +2666,16 @@ class LanceTable(Table):
 
     def add_columns(
         self, transforms: Dict[str, str] | pa.field | List[pa.field] | pa.Schema
-    ):
-        LOOP.run(self._table.add_columns(transforms))
+    ) -> AddColumnsResult:
+        return LOOP.run(self._table.add_columns(transforms))
 
-    def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
-        LOOP.run(self._table.alter_columns(*alterations))
+    def alter_columns(
+        self, *alterations: Iterable[Dict[str, str]]
+    ) -> AlterColumnsResult:
+        return LOOP.run(self._table.alter_columns(*alterations))
 
-    def drop_columns(self, columns: Iterable[str]):
-        LOOP.run(self._table.drop_columns(columns))
+    def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
+        return LOOP.run(self._table.drop_columns(columns))
 
     def uses_v2_manifest_paths(self) -> bool:
         """
@@ -3177,7 +3224,7 @@ class AsyncTable:
         mode: Optional[Literal["append", "overwrite"]] = "append",
         on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
-    ):
+    ) -> AddResult:
         """Add more data to the [Table](Table).
 
         Parameters
@@ -3216,7 +3263,7 @@ class AsyncTable:
         if isinstance(data, pa.Table):
             data = data.to_reader()
 
-        await self._inner.add(data, mode or "append")
+        return await self._inner.add(data, mode or "append")
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """
@@ -3604,7 +3651,7 @@ class AsyncTable:
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
-    ):
+    ) -> MergeInsertResult:
         schema = await self.schema()
         if on_bad_vectors is None:
             on_bad_vectors = "error"
@@ -3620,7 +3667,7 @@ class AsyncTable:
         )
         if isinstance(data, pa.Table):
             data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
-        await self._inner.execute_merge_insert(
+        return await self._inner.execute_merge_insert(
             data,
             dict(
                 on=merge._on,
@@ -3632,7 +3679,7 @@ class AsyncTable:
             ),
         )
 
-    async def delete(self, where: str):
+    async def delete(self, where: str) -> DeleteResult:
         """Delete rows from the table.
 
         This can be used to delete a single row, many rows, all rows, or
@@ -3688,7 +3735,7 @@ class AsyncTable:
         *,
         where: Optional[str] = None,
         updates_sql: Optional[Dict[str, str]] = None,
-    ):
+    ) -> UpdateResult:
         """
         This can be used to update zero to all rows in the table.
 
@@ -3709,6 +3756,13 @@ class AsyncTable:
             be column names. The values should be SQL expressions.  These can be SQL
             literals (e.g. "7" or "'foo'") or they can be expressions based on the
             previous value of the row (e.g. "x + 1" to increment the x column by 1)
+
+        Returns
+        -------
+        UpdateResult
+            An object containing:
+            - rows_updated: The number of rows that were updated
+            - version: The new version number of the table after the update
 
         Examples
         --------
@@ -3738,7 +3792,7 @@ class AsyncTable:
 
     async def add_columns(
         self, transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema
-    ):
+    ) -> AddColumnsResult:
         """
         Add new columns with defined values.
 
@@ -3750,6 +3804,12 @@ class AsyncTable:
             each row in the table, and can reference existing columns.
             Alternatively, you can pass a pyarrow field or schema to add
             new columns with NULLs.
+
+        Returns
+        -------
+        AddColumnsResult
+            version: the new version number of the table after adding columns.
+
         """
         if isinstance(transforms, pa.Field):
             transforms = [transforms]
@@ -3758,11 +3818,13 @@ class AsyncTable:
         ):
             transforms = pa.schema(transforms)
         if isinstance(transforms, pa.Schema):
-            await self._inner.add_columns_with_schema(transforms)
+            return await self._inner.add_columns_with_schema(transforms)
         else:
-            await self._inner.add_columns(list(transforms.items()))
+            return await self._inner.add_columns(list(transforms.items()))
 
-    async def alter_columns(self, *alterations: Iterable[dict[str, Any]]):
+    async def alter_columns(
+        self, *alterations: Iterable[dict[str, Any]]
+    ) -> AlterColumnsResult:
         """
         Alter column names and nullability.
 
@@ -3782,8 +3844,13 @@ class AsyncTable:
                 nullability is not changed. Only non-nullable columns can be changed
                 to nullable. Currently, you cannot change a nullable column to
                 non-nullable.
+
+        Returns
+        -------
+        AlterColumnsResult
+            version: the new version number of the table after the alteration.
         """
-        await self._inner.alter_columns(alterations)
+        return await self._inner.alter_columns(alterations)
 
     async def drop_columns(self, columns: Iterable[str]):
         """
@@ -3794,7 +3861,7 @@ class AsyncTable:
         columns : Iterable[str]
             The names of the columns to drop.
         """
-        await self._inner.drop_columns(columns)
+        return await self._inner.drop_columns(columns)
 
     async def version(self) -> int:
         """

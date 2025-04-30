@@ -106,15 +106,22 @@ async def test_update_async(mem_db_async: AsyncConnection):
     table = await mem_db_async.create_table("some_table", data=[{"id": 0}])
     assert await table.count_rows("id == 0") == 1
     assert await table.count_rows("id == 7") == 0
-    await table.update({"id": 7})
+    update_res = await table.update({"id": 7})
+    assert update_res.rows_updated == 1
+    assert update_res.version == 2
     assert await table.count_rows("id == 7") == 1
     assert await table.count_rows("id == 0") == 0
-    await table.add([{"id": 2}])
-    await table.update(where="id % 2 == 0", updates_sql={"id": "5"})
+    add_res = await table.add([{"id": 2}])
+    assert add_res.version == 3
+    update_res = await table.update(where="id % 2 == 0", updates_sql={"id": "5"})
+    assert update_res.rows_updated == 1
+    assert update_res.version == 4
     assert await table.count_rows("id == 7") == 1
     assert await table.count_rows("id == 2") == 0
     assert await table.count_rows("id == 5") == 1
-    await table.update({"id": 10}, where="id == 5")
+    update_res = await table.update({"id": 10}, where="id == 5")
+    assert update_res.rows_updated == 1
+    assert update_res.version == 5
     assert await table.count_rows("id == 10") == 1
 
 
@@ -437,7 +444,8 @@ def test_add_pydantic_model(mem_db: DBConnection):
             content="foo", meta=Metadata(source="bar", timestamp=datetime.now())
         ),
     )
-    tbl.add([expected])
+    add_res = tbl.add([expected])
+    assert add_res.version == 2
 
     result = tbl.search([0.0, 0.0]).limit(1).to_pydantic(LanceSchema)[0]
     assert result == expected
@@ -459,11 +467,12 @@ async def test_add_async(mem_db_async: AsyncConnection):
         ],
     )
     assert await table.count_rows() == 2
-    await table.add(
+    add_res = await table.add(
         data=[
             {"vector": [10.0, 11.0], "item": "baz", "price": 30.0},
         ],
     )
+    assert add_res.version == 2
     assert await table.count_rows() == 3
 
 
@@ -795,7 +804,8 @@ def test_delete(mem_db: DBConnection):
     )
     assert len(table) == 2
     assert len(table.list_versions()) == 1
-    table.delete("id=0")
+    delete_res = table.delete("id=0")
+    assert delete_res.version == 2
     assert len(table.list_versions()) == 2
     assert table.version == 2
     assert len(table) == 1
@@ -809,7 +819,9 @@ def test_update(mem_db: DBConnection):
     )
     assert len(table) == 2
     assert len(table.list_versions()) == 1
-    table.update(where="id=0", values={"vector": [1.1, 1.1]})
+    update_res = table.update(where="id=0", values={"vector": [1.1, 1.1]})
+    assert update_res.version == 2
+    assert update_res.rows_updated == 1
     assert len(table.list_versions()) == 2
     assert table.version == 2
     assert len(table) == 2
@@ -898,9 +910,13 @@ def test_merge_insert(mem_db: DBConnection):
     new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
 
     # upsert
-    table.merge_insert(
-        "a"
-    ).when_matched_update_all().when_not_matched_insert_all().execute(new_data)
+    merge_insert_res = (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+    assert merge_insert_res.version == 2
 
     expected = pa.table({"a": [1, 2, 3, 4], "b": ["a", "x", "y", "z"]})
     assert table.to_arrow().sort_by("a") == expected
@@ -908,17 +924,22 @@ def test_merge_insert(mem_db: DBConnection):
     table.restore(version)
 
     # conditional update
-    table.merge_insert("a").when_matched_update_all(where="target.b = 'b'").execute(
-        new_data
+    merge_insert_res = (
+        table.merge_insert("a")
+        .when_matched_update_all(where="target.b = 'b'")
+        .execute(new_data)
     )
+    assert merge_insert_res.version == 4
     expected = pa.table({"a": [1, 2, 3], "b": ["a", "x", "c"]})
     assert table.to_arrow().sort_by("a") == expected
 
     table.restore(version)
 
     # insert-if-not-exists
-    table.merge_insert("a").when_not_matched_insert_all().execute(new_data)
-
+    merge_insert_res = (
+        table.merge_insert("a").when_not_matched_insert_all().execute(new_data)
+    )
+    assert merge_insert_res.version == 6
     expected = pa.table({"a": [1, 2, 3, 4], "b": ["a", "b", "c", "z"]})
     assert table.to_arrow().sort_by("a") == expected
 
@@ -1478,11 +1499,13 @@ def test_restore_consistency(tmp_path):
 def test_add_columns(mem_db: DBConnection):
     data = pa.table({"id": [0, 1]})
     table = LanceTable.create(mem_db, "my_table", data=data)
-    table.add_columns({"new_col": "id + 2"})
+    add_columns_res = table.add_columns({"new_col": "id + 2"})
+    assert add_columns_res.version == 2
     assert table.to_arrow().column_names == ["id", "new_col"]
     assert table.to_arrow()["new_col"].to_pylist() == [2, 3]
 
-    table.add_columns({"null_int": "cast(null as bigint)"})
+    add_columns_res = table.add_columns({"null_int": "cast(null as bigint)"})
+    assert add_columns_res.version == 3
     assert table.schema.field("null_int").type == pa.int64()
 
 
@@ -1490,7 +1513,8 @@ def test_add_columns(mem_db: DBConnection):
 async def test_add_columns_async(mem_db_async: AsyncConnection):
     data = pa.table({"id": [0, 1]})
     table = await mem_db_async.create_table("my_table", data=data)
-    await table.add_columns({"new_col": "id + 2"})
+    add_columns_res = await table.add_columns({"new_col": "id + 2"})
+    assert add_columns_res.version == 2
     data = await table.to_arrow()
     assert data.column_names == ["id", "new_col"]
     assert data["new_col"].to_pylist() == [2, 3]
@@ -1500,9 +1524,10 @@ async def test_add_columns_async(mem_db_async: AsyncConnection):
 async def test_add_columns_with_schema(mem_db_async: AsyncConnection):
     data = pa.table({"id": [0, 1]})
     table = await mem_db_async.create_table("my_table", data=data)
-    await table.add_columns(
+    add_columns_res = await table.add_columns(
         [pa.field("x", pa.int64()), pa.field("vector", pa.list_(pa.float32(), 8))]
     )
+    assert add_columns_res.version == 2
 
     assert await table.schema() == pa.schema(
         [
@@ -1513,11 +1538,12 @@ async def test_add_columns_with_schema(mem_db_async: AsyncConnection):
     )
 
     table = await mem_db_async.create_table("table2", data=data)
-    await table.add_columns(
+    add_columns_res = await table.add_columns(
         pa.schema(
             [pa.field("y", pa.int64()), pa.field("emb", pa.list_(pa.float32(), 8))]
         )
     )
+    assert add_columns_res.version == 2
     assert await table.schema() == pa.schema(
         [
             pa.field("id", pa.int64()),
@@ -1530,7 +1556,8 @@ async def test_add_columns_with_schema(mem_db_async: AsyncConnection):
 def test_alter_columns(mem_db: DBConnection):
     data = pa.table({"id": [0, 1]})
     table = mem_db.create_table("my_table", data=data)
-    table.alter_columns({"path": "id", "rename": "new_id"})
+    alter_columns_res = table.alter_columns({"path": "id", "rename": "new_id"})
+    assert alter_columns_res.version == 2
     assert table.to_arrow().column_names == ["new_id"]
 
 
@@ -1538,9 +1565,13 @@ def test_alter_columns(mem_db: DBConnection):
 async def test_alter_columns_async(mem_db_async: AsyncConnection):
     data = pa.table({"id": [0, 1]})
     table = await mem_db_async.create_table("my_table", data=data)
-    await table.alter_columns({"path": "id", "rename": "new_id"})
+    alter_columns_res = await table.alter_columns({"path": "id", "rename": "new_id"})
+    assert alter_columns_res.version == 2
     assert (await table.to_arrow()).column_names == ["new_id"]
-    await table.alter_columns(dict(path="new_id", data_type=pa.int16(), nullable=True))
+    alter_columns_res = await table.alter_columns(
+        dict(path="new_id", data_type=pa.int16(), nullable=True)
+    )
+    assert alter_columns_res.version == 3
     data = await table.to_arrow()
     assert data.column(0).type == pa.int16()
     assert data.schema.field(0).nullable
@@ -1549,7 +1580,8 @@ async def test_alter_columns_async(mem_db_async: AsyncConnection):
 def test_drop_columns(mem_db: DBConnection):
     data = pa.table({"id": [0, 1], "category": ["a", "b"]})
     table = mem_db.create_table("my_table", data=data)
-    table.drop_columns(["category"])
+    drop_columns_res = table.drop_columns(["category"])
+    assert drop_columns_res.version == 2
     assert table.to_arrow().column_names == ["id"]
 
 
@@ -1557,7 +1589,8 @@ def test_drop_columns(mem_db: DBConnection):
 async def test_drop_columns_async(mem_db_async: AsyncConnection):
     data = pa.table({"id": [0, 1], "category": ["a", "b"]})
     table = await mem_db_async.create_table("my_table", data=data)
-    await table.drop_columns(["category"])
+    drop_columns_res = await table.drop_columns(["category"])
+    assert drop_columns_res.version == 2
     assert (await table.to_arrow()).column_names == ["id"]
 
 

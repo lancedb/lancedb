@@ -58,6 +58,158 @@ pub struct OptimizeStats {
     pub prune: RemovalStats,
 }
 
+#[pyclass(get_all)]
+#[derive(Clone, Debug)]
+pub struct UpdateResult {
+    pub rows_updated: u64,
+    pub version: u64,
+}
+
+#[pymethods]
+impl UpdateResult {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "UpdateResult(rows_updated={}, version={})",
+            self.rows_updated, self.version
+        )
+    }
+}
+
+impl From<lancedb::table::UpdateResult> for UpdateResult {
+    fn from(result: lancedb::table::UpdateResult) -> Self {
+        Self {
+            rows_updated: result.rows_updated,
+            version: result.version,
+        }
+    }
+}
+
+#[pyclass(get_all)]
+#[derive(Clone, Debug)]
+pub struct AddResult {
+    pub version: u64,
+}
+
+#[pymethods]
+impl AddResult {
+    pub fn __repr__(&self) -> String {
+        format!("AddResult(version={})", self.version)
+    }
+}
+
+impl From<lancedb::table::AddResult> for AddResult {
+    fn from(result: lancedb::table::AddResult) -> Self {
+        Self {
+            version: result.version,
+        }
+    }
+}
+
+#[pyclass(get_all)]
+#[derive(Clone, Debug)]
+pub struct DeleteResult {
+    pub version: u64,
+}
+
+#[pymethods]
+impl DeleteResult {
+    pub fn __repr__(&self) -> String {
+        format!("DeleteResult(version={})", self.version)
+    }
+}
+
+impl From<lancedb::table::DeleteResult> for DeleteResult {
+    fn from(result: lancedb::table::DeleteResult) -> Self {
+        Self {
+            version: result.version,
+        }
+    }
+}
+
+#[pyclass(get_all)]
+#[derive(Clone, Debug)]
+pub struct MergeInsertResult {
+    pub version: u64,
+}
+
+#[pymethods]
+impl MergeInsertResult {
+    pub fn __repr__(&self) -> String {
+        format!("MergeInsertResult(version={})", self.version)
+    }
+}
+
+impl From<lancedb::table::MergeInsertResult> for MergeInsertResult {
+    fn from(result: lancedb::table::MergeInsertResult) -> Self {
+        Self {
+            version: result.version,
+        }
+    }
+}
+
+#[pyclass(get_all)]
+#[derive(Clone, Debug)]
+pub struct AddColumnsResult {
+    pub version: u64,
+}
+
+#[pymethods]
+impl AddColumnsResult {
+    pub fn __repr__(&self) -> String {
+        format!("AddColumnsResult(version={})", self.version)
+    }
+}
+
+impl From<lancedb::table::AddColumnsResult> for AddColumnsResult {
+    fn from(result: lancedb::table::AddColumnsResult) -> Self {
+        Self {
+            version: result.version,
+        }
+    }
+}
+
+#[pyclass(get_all)]
+#[derive(Clone, Debug)]
+pub struct AlterColumnsResult {
+    pub version: u64,
+}
+
+#[pymethods]
+impl AlterColumnsResult {
+    pub fn __repr__(&self) -> String {
+        format!("AlterColumnsResult(version={})", self.version)
+    }
+}
+
+impl From<lancedb::table::AlterColumnsResult> for AlterColumnsResult {
+    fn from(result: lancedb::table::AlterColumnsResult) -> Self {
+        Self {
+            version: result.version,
+        }
+    }
+}
+
+#[pyclass(get_all)]
+#[derive(Clone, Debug)]
+pub struct DropColumnsResult {
+    pub version: u64,
+}
+
+#[pymethods]
+impl DropColumnsResult {
+    pub fn __repr__(&self) -> String {
+        format!("DropColumnsResult(version={})", self.version)
+    }
+}
+
+impl From<lancedb::table::DropColumnsResult> for DropColumnsResult {
+    fn from(result: lancedb::table::DropColumnsResult) -> Self {
+        Self {
+            version: result.version,
+        }
+    }
+}
+
 #[pyclass]
 pub struct Table {
     // We keep a copy of the name to use if the inner table is dropped
@@ -132,15 +284,16 @@ impl Table {
         }
 
         future_into_py(self_.py(), async move {
-            op.execute().await.infer_error()?;
-            Ok(())
+            let result = op.execute().await.infer_error()?;
+            Ok(AddResult::from(result))
         })
     }
 
     pub fn delete(self_: PyRef<'_, Self>, condition: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.delete(&condition).await.infer_error()
+            let result = inner.delete(&condition).await.infer_error()?;
+            Ok(DeleteResult::from(result))
         })
     }
 
@@ -160,8 +313,8 @@ impl Table {
             op = op.column(column_name, value);
         }
         future_into_py(self_.py(), async move {
-            op.execute().await.infer_error()?;
-            Ok(())
+            let result = op.execute().await.infer_error()?;
+            Ok(UpdateResult::from(result))
         })
     }
 
@@ -455,8 +608,8 @@ impl Table {
         }
 
         future_into_py(self_.py(), async move {
-            builder.execute(Box::new(batches)).await.infer_error()?;
-            Ok(())
+            let res = builder.execute(Box::new(batches)).await.infer_error()?;
+            Ok(MergeInsertResult::from(res))
         })
     }
 
@@ -492,8 +645,8 @@ impl Table {
 
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.add_columns(definitions, None).await.infer_error()?;
-            Ok(())
+            let result = inner.add_columns(definitions, None).await.infer_error()?;
+            Ok(AddColumnsResult::from(result))
         })
     }
 
@@ -506,8 +659,8 @@ impl Table {
 
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.add_columns(transform, None).await.infer_error()?;
-            Ok(())
+            let result = inner.add_columns(transform, None).await.infer_error()?;
+            Ok(AddColumnsResult::from(result))
         })
     }
 
@@ -550,8 +703,8 @@ impl Table {
 
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.alter_columns(&alterations).await.infer_error()?;
-            Ok(())
+            let result = inner.alter_columns(&alterations).await.infer_error()?;
+            Ok(AlterColumnsResult::from(result))
         })
     }
 
@@ -559,8 +712,8 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let column_refs = columns.iter().map(String::as_str).collect::<Vec<&str>>();
-            inner.drop_columns(&column_refs).await.infer_error()?;
-            Ok(())
+            let result = inner.drop_columns(&column_refs).await.infer_error()?;
+            Ok(DropColumnsResult::from(result))
         })
     }
 
