@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 import { Data, Schema, fromDataToBuffer } from "./arrow";
-import { NativeMergeInsertBuilder } from "./native";
+import { MergeInsertResult, NativeMergeInsertBuilder } from "./native";
 
 /** A builder used to create and run a merge insert operation */
 export class MergeInsertBuilder {
@@ -73,9 +73,10 @@ export class MergeInsertBuilder {
   /**
    * Executes the merge insert operation
    *
-   * Nothing is returned but the `Table` is updated
+   * @returns {Promise<MergeInsertResult>} A promise that resolves to an object containing
+   * the new version number of the table after the merge operation.
    */
-  async execute(data: Data): Promise<void> {
+  async execute(data: Data): Promise<MergeInsertResult> {
     let schema: Schema;
     if (this.#schema instanceof Promise) {
       schema = await this.#schema;
@@ -84,6 +85,6 @@ export class MergeInsertBuilder {
       schema = this.#schema;
     }
     const buffer = await fromDataToBuffer(data, undefined, schema);
-    await this.#native.execute(buffer);
+    return await this.#native.execute(buffer);
   }
 }

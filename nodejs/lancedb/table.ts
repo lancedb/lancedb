@@ -16,11 +16,17 @@ import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { MergeInsertBuilder } from "./merge";
 import {
+  AddColumnsResult,
   AddColumnsSql,
+  AddResult,
+  AlterColumnsResult,
+  DeleteResult,
+  DropColumnsResult,
   IndexConfig,
   IndexStatistics,
   OptimizeStats,
   Tags,
+  UpdateResult,
   Table as _NativeTable,
 } from "./native";
 import {
@@ -125,12 +131,19 @@ export abstract class Table {
   /**
    * Insert records into this Table.
    * @param {Data} data Records to be inserted into the Table
+   * @returns {Promise<AddResult>} A promise that resolves to an object
+   * containing the new version number of the table
    */
-  abstract add(data: Data, options?: Partial<AddDataOptions>): Promise<void>;
+  abstract add(
+    data: Data,
+    options?: Partial<AddDataOptions>,
+  ): Promise<AddResult>;
   /**
    * Update existing records in the Table
    * @param opts.values The values to update. The keys are the column names and the values
    * are the values to set.
+   * @returns {Promise<UpdateResult>} A promise that resolves to an object containing
+   * the number of rows updated and the new version number
    * @example
    * ```ts
    * table.update({where:"x = 2", values:{"vector": [10, 10]}})
@@ -140,11 +153,13 @@ export abstract class Table {
     opts: {
       values: Map<string, IntoSql> | Record<string, IntoSql>;
     } & Partial<UpdateOptions>,
-  ): Promise<void>;
+  ): Promise<UpdateResult>;
   /**
    * Update existing records in the Table
    * @param opts.valuesSql The values to update. The keys are the column names and the values
    * are the values to set. The values are SQL expressions.
+   * @returns {Promise<UpdateResult>} A promise that resolves to an object containing
+   * the number of rows updated and the new version number
    * @example
    * ```ts
    * table.update({where:"x = 2", valuesSql:{"x": "x + 1"}})
@@ -154,7 +169,7 @@ export abstract class Table {
     opts: {
       valuesSql: Map<string, string> | Record<string, string>;
     } & Partial<UpdateOptions>,
-  ): Promise<void>;
+  ): Promise<UpdateResult>;
   /**
    * Update existing records in the Table
    *
@@ -172,6 +187,8 @@ export abstract class Table {
    * repeatedly calilng this method.
    * @param {Map<string, string> | Record<string, string>} updates - the
    * columns to update
+   * @returns {Promise<UpdateResult>} A promise that resolves to an object
+   * containing the number of rows updated and the new version number
    *
    * Keys in the map should specify the name of the column to update.
    * Values in the map provide the new value of the column.  These can
@@ -183,12 +200,16 @@ export abstract class Table {
   abstract update(
     updates: Map<string, string> | Record<string, string>,
     options?: Partial<UpdateOptions>,
-  ): Promise<void>;
+  ): Promise<UpdateResult>;
 
   /** Count the total number of rows in the dataset. */
   abstract countRows(filter?: string): Promise<number>;
-  /** Delete the rows that satisfy the predicate. */
-  abstract delete(predicate: string): Promise<void>;
+  /**
+   * Delete the rows that satisfy the predicate.
+   * @returns {Promise<DeleteResult>} A promise that resolves to an object
+   * containing the new version number of the table
+   */
+  abstract delete(predicate: string): Promise<DeleteResult>;
   /**
    * Create an index to speed up queries.
    *
@@ -342,15 +363,23 @@ export abstract class Table {
    * the SQL expression to use to calculate the value of the new column. These
    * expressions will be evaluated for each row in the table, and can
    * reference existing columns in the table.
+   * @returns {Promise<AddColumnsResult>} A promise that resolves to an object
+   * containing the new version number of the table after adding the columns.
    */
-  abstract addColumns(newColumnTransforms: AddColumnsSql[]): Promise<void>;
+  abstract addColumns(
+    newColumnTransforms: AddColumnsSql[],
+  ): Promise<AddColumnsResult>;
 
   /**
    * Alter the name or nullability of columns.
    * @param {ColumnAlteration[]} columnAlterations One or more alterations to
    * apply to columns.
+   * @returns {Promise<AlterColumnsResult>} A promise that resolves to an object
+   * containing the new version number of the table after altering the columns.
    */
-  abstract alterColumns(columnAlterations: ColumnAlteration[]): Promise<void>;
+  abstract alterColumns(
+    columnAlterations: ColumnAlteration[],
+  ): Promise<AlterColumnsResult>;
   /**
    * Drop one or more columns from the dataset
    *
@@ -361,8 +390,10 @@ export abstract class Table {
    * @param {string[]} columnNames The names of the columns to drop. These can
    * be nested column references (e.g. "a.b.c") or top-level column names
    * (e.g. "a").
+   * @returns {Promise<DropColumnsResult>} A promise that resolves to an object
+   * containing the new version number of the table after dropping the columns.
    */
-  abstract dropColumns(columnNames: string[]): Promise<void>;
+  abstract dropColumns(columnNames: string[]): Promise<DropColumnsResult>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -521,12 +552,12 @@ export class LocalTable extends Table {
     return tbl.schema;
   }
 
-  async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
+  async add(data: Data, options?: Partial<AddDataOptions>): Promise<AddResult> {
     const mode = options?.mode ?? "append";
     const schema = await this.schema();
 
     const buffer = await fromDataToBuffer(data, undefined, schema);
-    await this.inner.add(buffer, mode);
+    return await this.inner.add(buffer, mode);
   }
 
   async update(
@@ -539,7 +570,7 @@ export class LocalTable extends Table {
           valuesSql: Map<string, string> | Record<string, string>;
         } & Partial<UpdateOptions>),
     options?: Partial<UpdateOptions>,
-  ) {
+  ): Promise<UpdateResult> {
     const isValues =
       "values" in optsOrUpdates && typeof optsOrUpdates.values !== "string";
     const isValuesSql =
@@ -586,15 +617,15 @@ export class LocalTable extends Table {
         columns = Object.entries(optsOrUpdates as Record<string, string>);
         predicate = options?.where;
     }
-    await this.inner.update(predicate, columns);
+    return await this.inner.update(predicate, columns);
   }
 
   async countRows(filter?: string): Promise<number> {
     return await this.inner.countRows(filter);
   }
 
-  async delete(predicate: string): Promise<void> {
-    await this.inner.delete(predicate);
+  async delete(predicate: string): Promise<DeleteResult> {
+    return await this.inner.delete(predicate);
   }
 
   async createIndex(column: string, options?: Partial<IndexOptions>) {
@@ -682,11 +713,15 @@ export class LocalTable extends Table {
 
   // TODO: Support BatchUDF
 
-  async addColumns(newColumnTransforms: AddColumnsSql[]): Promise<void> {
-    await this.inner.addColumns(newColumnTransforms);
+  async addColumns(
+    newColumnTransforms: AddColumnsSql[],
+  ): Promise<AddColumnsResult> {
+    return await this.inner.addColumns(newColumnTransforms);
   }
 
-  async alterColumns(columnAlterations: ColumnAlteration[]): Promise<void> {
+  async alterColumns(
+    columnAlterations: ColumnAlteration[],
+  ): Promise<AlterColumnsResult> {
     const processedAlterations = columnAlterations.map((alteration) => {
       if (typeof alteration.dataType === "string") {
         return {
@@ -707,11 +742,11 @@ export class LocalTable extends Table {
       }
     });
 
-    await this.inner.alterColumns(processedAlterations);
+    return await this.inner.alterColumns(processedAlterations);
   }
 
-  async dropColumns(columnNames: string[]): Promise<void> {
-    await this.inner.dropColumns(columnNames);
+  async dropColumns(columnNames: string[]): Promise<DropColumnsResult> {
+    return await this.inner.dropColumns(columnNames);
   }
 
   async version(): Promise<number> {
