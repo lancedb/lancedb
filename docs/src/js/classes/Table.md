@@ -40,7 +40,7 @@ Returns the name of the table
 ### add()
 
 ```ts
-abstract add(data, options?): Promise<void>
+abstract add(data, options?): Promise<AddResult>
 ```
 
 Insert records into this Table.
@@ -54,14 +54,17 @@ Insert records into this Table.
 
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`AddResult`](../interfaces/AddResult.md)&gt;
+
+A promise that resolves to an object
+containing the new version number of the table
 
 ***
 
 ### addColumns()
 
 ```ts
-abstract addColumns(newColumnTransforms): Promise<void>
+abstract addColumns(newColumnTransforms): Promise<AddColumnsResult>
 ```
 
 Add new columns with defined values.
@@ -76,14 +79,17 @@ Add new columns with defined values.
 
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`AddColumnsResult`](../interfaces/AddColumnsResult.md)&gt;
+
+A promise that resolves to an object
+containing the new version number of the table after adding the columns.
 
 ***
 
 ### alterColumns()
 
 ```ts
-abstract alterColumns(columnAlterations): Promise<void>
+abstract alterColumns(columnAlterations): Promise<AlterColumnsResult>
 ```
 
 Alter the name or nullability of columns.
@@ -96,7 +102,10 @@ Alter the name or nullability of columns.
 
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`AlterColumnsResult`](../interfaces/AlterColumnsResult.md)&gt;
+
+A promise that resolves to an object
+containing the new version number of the table after altering the columns.
 
 ***
 
@@ -252,7 +261,7 @@ await table.createIndex("my_float_col");
 ### delete()
 
 ```ts
-abstract delete(predicate): Promise<void>
+abstract delete(predicate): Promise<DeleteResult>
 ```
 
 Delete the rows that satisfy the predicate.
@@ -263,7 +272,10 @@ Delete the rows that satisfy the predicate.
 
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`DeleteResult`](../interfaces/DeleteResult.md)&gt;
+
+A promise that resolves to an object
+containing the new version number of the table
 
 ***
 
@@ -284,7 +296,7 @@ Return a brief description of the table
 ### dropColumns()
 
 ```ts
-abstract dropColumns(columnNames): Promise<void>
+abstract dropColumns(columnNames): Promise<DropColumnsResult>
 ```
 
 Drop one or more columns from the dataset
@@ -303,7 +315,10 @@ then call ``cleanup_files`` to remove the old files.
 
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`DropColumnsResult`](../interfaces/DropColumnsResult.md)&gt;
+
+A promise that resolves to an object
+containing the new version number of the table after dropping the columns.
 
 ***
 
@@ -662,7 +677,7 @@ Return the table as an arrow table
 #### update(opts)
 
 ```ts
-abstract update(opts): Promise<void>
+abstract update(opts): Promise<UpdateResult>
 ```
 
 Update existing records in the Table
@@ -673,7 +688,10 @@ Update existing records in the Table
 
 ##### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`UpdateResult`](../interfaces/UpdateResult.md)&gt;
+
+A promise that resolves to an object containing
+the number of rows updated and the new version number
 
 ##### Example
 
@@ -684,7 +702,7 @@ table.update({where:"x = 2", values:{"vector": [10, 10]}})
 #### update(opts)
 
 ```ts
-abstract update(opts): Promise<void>
+abstract update(opts): Promise<UpdateResult>
 ```
 
 Update existing records in the Table
@@ -695,7 +713,10 @@ Update existing records in the Table
 
 ##### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`UpdateResult`](../interfaces/UpdateResult.md)&gt;
+
+A promise that resolves to an object containing
+the number of rows updated and the new version number
 
 ##### Example
 
@@ -706,7 +727,7 @@ table.update({where:"x = 2", valuesSql:{"x": "x + 1"}})
 #### update(updates, options)
 
 ```ts
-abstract update(updates, options?): Promise<void>
+abstract update(updates, options?): Promise<UpdateResult>
 ```
 
 Update existing records in the Table
@@ -729,10 +750,6 @@ repeatedly calilng this method.
 * **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
     the
     columns to update
-    Keys in the map should specify the name of the column to update.
-    Values in the map provide the new value of the column.  These can
-    be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
-    based on the row being updated (e.g. "my_col + 1")
 
 * **options?**: `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
     additional options to control
@@ -740,7 +757,15 @@ repeatedly calilng this method.
 
 ##### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`UpdateResult`](../interfaces/UpdateResult.md)&gt;
+
+A promise that resolves to an object
+containing the number of rows updated and the new version number
+
+Keys in the map should specify the name of the column to update.
+Values in the map provide the new value of the column.  These can
+be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
+based on the row being updated (e.g. "my_col + 1")
 
 ***
 

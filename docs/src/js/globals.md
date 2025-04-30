@@ -34,13 +34,18 @@
 
 ## Interfaces
 
+- [AddColumnsResult](interfaces/AddColumnsResult.md)
 - [AddColumnsSql](interfaces/AddColumnsSql.md)
 - [AddDataOptions](interfaces/AddDataOptions.md)
+- [AddResult](interfaces/AddResult.md)
+- [AlterColumnsResult](interfaces/AlterColumnsResult.md)
 - [ClientConfig](interfaces/ClientConfig.md)
 - [ColumnAlteration](interfaces/ColumnAlteration.md)
 - [CompactionStats](interfaces/CompactionStats.md)
 - [ConnectionOptions](interfaces/ConnectionOptions.md)
 - [CreateTableOptions](interfaces/CreateTableOptions.md)
+- [DeleteResult](interfaces/DeleteResult.md)
+- [DropColumnsResult](interfaces/DropColumnsResult.md)
 - [ExecutableQuery](interfaces/ExecutableQuery.md)
 - [FtsOptions](interfaces/FtsOptions.md)
 - [FullTextQuery](interfaces/FullTextQuery.md)
@@ -52,6 +57,7 @@
 - [IndexStatistics](interfaces/IndexStatistics.md)
 - [IvfFlatOptions](interfaces/IvfFlatOptions.md)
 - [IvfPqOptions](interfaces/IvfPqOptions.md)
+- [MergeInsertResult](interfaces/MergeInsertResult.md)
 - [OpenTableOptions](interfaces/OpenTableOptions.md)
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)
@@ -61,6 +67,7 @@
 - [TableNamesOptions](interfaces/TableNamesOptions.md)
 - [TimeoutConfig](interfaces/TimeoutConfig.md)
 - [UpdateOptions](interfaces/UpdateOptions.md)
+- [UpdateResult](interfaces/UpdateResult.md)
 - [Version](interfaces/Version.md)
 
 ## Type Aliases

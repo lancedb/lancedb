@@ -25,6 +25,13 @@ export {
   RemovalStats,
   Tags,
   TagContents,
+  MergeInsertResult,
+  AddResult,
+  AddColumnsResult,
+  AlterColumnsResult,
+  DeleteResult,
+  DropColumnsResult,
+  UpdateResult,
 } from "./native.js";
 
 export {
