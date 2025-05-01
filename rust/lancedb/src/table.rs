@@ -20,7 +20,6 @@ use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
 use lance::dataset::scanner::Scanner;
 pub use lance::dataset::ColumnAlteration;
-pub use lance::dataset::MergeStats;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
@@ -1539,10 +1538,13 @@ impl NativeTable {
         batches: impl RecordBatchReader + Send + 'static,
         left_on: &str,
         right_on: &str,
-    ) -> Result<u64> {
-        let mut dataset = self.dataset.get_mut().await?;
-        dataset.merge(batches, left_on, right_on).await?;
-        Ok(dataset.version().version)
+    ) -> Result<()> {
+        self.dataset
+            .get_mut()
+            .await?
+            .merge(batches, left_on, right_on)
+            .await?;
+        Ok(())
     }
 
     /// Remove old versions of the dataset from disk.

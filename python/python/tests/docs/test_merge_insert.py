@@ -18,19 +18,19 @@ def test_upsert(mem_db):
         {"id": 1, "name": "Bobby"},
         {"id": 2, "name": "Charlie"},
     ]
-    stats = (
+    res = (
         table.merge_insert("id")
         .when_matched_update_all()
         .when_not_matched_insert_all()
         .execute(new_users)
     )
     table.count_rows()  # 3
-    stats  # {'num_inserted_rows': 1, 'num_updated_rows': 1, 'num_deleted_rows': 0}
+    res  # {'num_inserted_rows': 1, 'num_updated_rows': 1, 'num_deleted_rows': 0}
     # --8<-- [end:upsert_basic]
     assert table.count_rows() == 3
-    assert stats["num_inserted_rows"] == 1
-    assert stats["num_updated_rows"] == 1
-    assert stats["num_deleted_rows"] == 0
+    assert res.num_inserted_rows == 1
+    assert res.num_deleted_rows == 0
+    assert res.num_updated_rows == 1
 
 
 @pytest.mark.asyncio
