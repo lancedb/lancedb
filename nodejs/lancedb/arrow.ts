@@ -639,8 +639,9 @@ function transposeData(
 ): Vector {
   if (field.type instanceof Struct) {
     const childFields = field.type.children;
+    const fullPath = [...path, field.name];
     const childVectors = childFields.map((child) => {
-      return transposeData(data, child, [...path, child.name]);
+      return transposeData(data, child, fullPath);
     });
     const structData = makeData({
       type: field.type,
@@ -652,7 +653,14 @@ function transposeData(
     const values = data.map((datum) => {
       let current: unknown = datum;
       for (const key of valuesPath) {
-        if (isObject(current) && Object.hasOwn(current, key)) {
+        if (current == null) {
+          return null;
+        }
+
+        if (
+          isObject(current) &&
+          (Object.hasOwn(current, key) || key in current)
+        ) {
           current = current[key];
         } else {
           return null;
