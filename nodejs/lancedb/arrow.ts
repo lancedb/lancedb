@@ -656,8 +656,11 @@ function transposeData(
         if (current == null) {
           return null;
         }
-        
-        if (isObject(current) && (Object.hasOwn(current, key) || key in current)) {
+
+        if (
+          isObject(current) &&
+          (Object.hasOwn(current, key) || key in current)
+        ) {
           current = current[key];
         } else {
           return null;

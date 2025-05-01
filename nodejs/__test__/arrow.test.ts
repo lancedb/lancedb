@@ -385,48 +385,53 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
               filePath: "/path/to/file1.ts",
               startLine: 10,
               endLine: 20,
-              text: "function test() { return true; }"
-            }
+              text: "function test() { return true; }",
+            },
           },
           {
-            id: "doc2", 
+            id: "doc2",
             vector: [4, 5, 6],
             metadata: {
               filePath: "/path/to/file2.ts",
               startLine: 30,
               endLine: 40,
-              text: "function test2() { return false; }"
-            }
-          }
+              text: "function test2() { return false; }",
+            },
+          },
         ];
-        
+
         // Create Arrow table from the data
         const table = makeArrowTable(testData);
-        
+
         // Verify schema has the nested struct fields
-        const metadataField = table.schema.fields.find(f => f.name === "metadata");
+        const metadataField = table.schema.fields.find(
+          (f) => f.name === "metadata",
+        );
         expect(metadataField).toBeDefined();
         // biome-ignore lint/suspicious/noExplicitAny: accessing fields in different Arrow versions
         const childNames = metadataField?.type.children.map((c: any) => c.name);
         expect(childNames).toEqual([
-          "filePath", "startLine", "endLine", "text"
+          "filePath",
+          "startLine",
+          "endLine",
+          "text",
         ]);
-        
+
         // Convert to buffer and back (simulating storage and retrieval)
         const buf = await fromTableToBuffer(table);
         const retrievedTable = tableFromIPC(buf);
-        
+
         // Verify the retrieved table has the same structure
         const rows = [];
         for (let i = 0; i < retrievedTable.numRows; i++) {
           rows.push(retrievedTable.get(i));
         }
-        
+
         // Check values in the first row
         const firstRow = rows[0];
         expect(firstRow.id).toBe("doc1");
         expect(firstRow.vector.toJSON()).toEqual([1, 2, 3]);
-        
+
         // Verify metadata values are preserved (this is where the bug is)
         expect(firstRow.metadata).toBeDefined();
         expect(firstRow.metadata.filePath).toBe("/path/to/file1.ts");
