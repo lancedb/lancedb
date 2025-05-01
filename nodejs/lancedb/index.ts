@@ -28,6 +28,7 @@ export {
   FragmentSummaryStats,
   Tags,
   TagContents,
+  MergeStats,
 } from "./native.js";
 
 export {

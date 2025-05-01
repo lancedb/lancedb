@@ -33,12 +33,10 @@ Construct a MergeInsertBuilder. __Internal use only.__
 ### execute()
 
 ```ts
-execute(data): Promise<void>
+execute(data): Promise<MergeStats>
 ```
 
 Executes the merge insert operation
-
-Nothing is returned but the `Table` is updated
 
 #### Parameters
 
@@ -46,7 +44,9 @@ Nothing is returned but the `Table` is updated
 
 #### Returns
 
-`Promise`&lt;`void`&gt;
+`Promise`&lt;[`MergeStats`](../interfaces/MergeStats.md)&gt;
+
+Statistics about the merge operation: counts of inserted, updated, and deleted rows
 
 ***
 

@@ -962,10 +962,12 @@ class Table(ABC):
         >>> table = db.create_table("my_table", data)
         >>> new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
         >>> # Perform a "upsert" operation
-        >>> table.merge_insert("a")             \\
+        >>> stats = table.merge_insert("a")     \\
         ...      .when_matched_update_all()     \\
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
+        >>> stats
+        {'num_inserted_rows': 1, 'num_updated_rows': 2, 'num_deleted_rows': 0}
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -2489,7 +2491,9 @@ class LanceTable(Table):
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
     ):
-        LOOP.run(self._table._do_merge(merge, new_data, on_bad_vectors, fill_value))
+        return LOOP.run(
+            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
+        )
 
     @deprecation.deprecated(
         deprecated_in="0.21.0",
@@ -3277,10 +3281,12 @@ class AsyncTable:
         >>> table = db.create_table("my_table", data)
         >>> new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
         >>> # Perform a "upsert" operation
-        >>> table.merge_insert("a")             \\
+        >>> stats = table.merge_insert("a")     \\
         ...      .when_matched_update_all()     \\
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
+        >>> stats
+        {'num_inserted_rows': 1, 'num_updated_rows': 2, 'num_deleted_rows': 0}
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -3636,7 +3642,7 @@ class AsyncTable:
         )
         if isinstance(data, pa.Table):
             data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
-        await self._inner.execute_merge_insert(
+        return await self._inner.execute_merge_insert(
             data,
             dict(
                 on=merge._on,

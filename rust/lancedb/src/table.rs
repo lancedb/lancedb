@@ -20,6 +20,7 @@ use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
 use lance::dataset::scanner::Scanner;
 pub use lance::dataset::ColumnAlteration;
+pub use lance::dataset::MergeStats;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
@@ -487,7 +488,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<()>;
+    ) -> Result<MergeStats>;
     /// Gets the table tag manager.
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
@@ -2367,7 +2368,7 @@ impl BaseTable for NativeTable {
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<()> {
+    ) -> Result<MergeStats> {
         let dataset = Arc::new(self.dataset.get().await?.clone());
         let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
         match (
@@ -2394,9 +2395,9 @@ impl BaseTable for NativeTable {
             builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
         }
         let job = builder.try_build()?;
-        let (new_dataset, _stats) = job.execute_reader(new_data).await?;
+        let (new_dataset, stats) = job.execute_reader(new_data).await?;
         self.dataset.set_latest(new_dataset.as_ref().clone()).await;
-        Ok(())
+        Ok(stats)
     }
 
     /// Delete rows from the table

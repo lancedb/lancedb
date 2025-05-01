@@ -54,6 +54,7 @@
 - [IndexStatistics](interfaces/IndexStatistics.md)
 - [IvfFlatOptions](interfaces/IvfFlatOptions.md)
 - [IvfPqOptions](interfaces/IvfPqOptions.md)
+- [MergeStats](interfaces/MergeStats.md)
 - [OpenTableOptions](interfaces/OpenTableOptions.md)
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)
