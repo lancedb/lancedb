@@ -1089,7 +1089,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if body == "{}" {
             // Backward compatible with old servers
             let version = self.version().await?;
-            return Ok(MergeResult { version, num_deleted_rows: 0, num_inserted_rows: 0, num_updated_rows: 0 });
+            return Ok(MergeResult {
+                version,
+                num_deleted_rows: 0,
+                num_inserted_rows: 0,
+                num_updated_rows: 0,
+            });
         }
 
         let merge_insert_response: MergeResult =
@@ -1460,16 +1465,20 @@ mod tests {
                     .execute(example_data())
                     .map_ok(|_| ()),
             ),
-            Box::pin(table.delete("false")),
-            Box::pin(table.add_columns(
-                NewColumnTransform::SqlExpressions(vec![("x".into(), "y".into())]),
-                None,
-            )),
+            Box::pin(table.delete("false").map_ok(|_| ())),
+            Box::pin(
+                table
+                    .add_columns(
+                        NewColumnTransform::SqlExpressions(vec![("x".into(), "y".into())]),
+                        None,
+                    )
+                    .map_ok(|_| ()),
+            ),
             Box::pin(async {
                 let alterations = vec![ColumnAlteration::new("x".into()).rename("y".into())];
-                table.alter_columns(&alterations).await
+                table.alter_columns(&alterations).await.map(|_| ())
             }),
-            Box::pin(table.drop_columns(&["a"])),
+            Box::pin(table.drop_columns(&["a"]).map_ok(|_| ())),
             // TODO: other endpoints.
         ];
 

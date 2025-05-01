@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use arrow_ipc::writer::FileWriter;
 use lancedb::ipc::ipc_file_to_batches;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions, Table as LanceDbTable
+    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
+    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -192,13 +193,17 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn add_columns(&self, transforms: Vec<AddColumnsSql>) -> napi::Result<AddColumnsResult> {
+    pub async fn add_columns(
+        &self,
+        transforms: Vec<AddColumnsSql>,
+    ) -> napi::Result<AddColumnsResult> {
         let transforms = transforms
             .into_iter()
             .map(|sql| (sql.name, sql.value_sql))
             .collect::<Vec<_>>();
         let transforms = NewColumnTransform::SqlExpressions(transforms);
-        let res = self.inner_ref()?
+        let res = self
+            .inner_ref()?
             .add_columns(transforms, None)
             .await
             .default_error()?;
@@ -206,7 +211,10 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn alter_columns(&self, alterations: Vec<ColumnAlteration>) -> napi::Result<AlterColumnsResult> {
+    pub async fn alter_columns(
+        &self,
+        alterations: Vec<ColumnAlteration>,
+    ) -> napi::Result<AlterColumnsResult> {
         for alteration in &alterations {
             if alteration.rename.is_none()
                 && alteration.nullable.is_none()
@@ -223,7 +231,8 @@ impl Table {
             .collect::<std::result::Result<Vec<_>, String>>()
             .map_err(napi::Error::from_reason)?;
 
-        let res = self.inner_ref()?
+        let res = self
+            .inner_ref()?
             .alter_columns(&alterations)
             .await
             .default_error()?;
@@ -233,7 +242,8 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn drop_columns(&self, columns: Vec<String>) -> napi::Result<DropColumnsResult> {
         let col_refs = columns.iter().map(String::as_str).collect::<Vec<_>>();
-        let res = self.inner_ref()?
+        let res = self
+            .inner_ref()?
             .drop_columns(&col_refs)
             .await
             .default_error()?;

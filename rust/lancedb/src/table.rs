@@ -1095,7 +1095,10 @@ impl Table {
     }
 
     /// Change a column's name or nullability.
-    pub async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
+    pub async fn alter_columns(
+        &self,
+        alterations: &[ColumnAlteration],
+    ) -> Result<AlterColumnsResult> {
         self.inner.alter_columns(alterations).await
     }
 
