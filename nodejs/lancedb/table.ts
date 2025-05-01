@@ -25,6 +25,7 @@ import {
   IndexConfig,
   IndexStatistics,
   OptimizeStats,
+  TableStatistics,
   Tags,
   UpdateResult,
   Table as _NativeTable,
@@ -513,6 +514,13 @@ export abstract class Table {
    * Use {@link Table.listIndices} to find the names of the indices.
    */
   abstract indexStats(name: string): Promise<IndexStatistics | undefined>;
+
+  /** Returns table and fragment statistics
+   *
+   * @returns {TableStatistics} The table and fragment statistics
+   *
+   */
+  abstract stats(): Promise<TableStatistics>;
 }
 
 export class LocalTable extends Table {
@@ -810,6 +818,11 @@ export class LocalTable extends Table {
     }
     return stats;
   }
+
+  async stats(): Promise<TableStatistics> {
+    return await this.inner.stats();
+  }
+
   mergeInsert(on: string | string[]): MergeInsertBuilder {
     on = Array.isArray(on) ? on : [on];
     return new MergeInsertBuilder(this.inner.mergeInsert(on), this.schema());

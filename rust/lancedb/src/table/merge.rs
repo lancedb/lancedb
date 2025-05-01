@@ -7,7 +7,7 @@ use arrow_array::RecordBatchReader;
 
 use crate::Result;
 
-use super::{BaseTable, MergeInsertResult};
+use super::{BaseTable, MergeResult};
 
 /// A builder used to create and run a merge insert operation
 ///
@@ -86,8 +86,9 @@ impl MergeInsertBuilder {
 
     /// Executes the merge insert operation
     ///
-    /// Nothing is returned but the [`super::Table`] is updated
-    pub async fn execute(self, new_data: Box<dyn RecordBatchReader + Send>) -> Result<MergeInsertResult> {
+    /// Returns version and statistics about the merge operation including the number of rows
+    /// inserted, updated, and deleted.
+    pub async fn execute(self, new_data: Box<dyn RecordBatchReader + Send>) -> Result<MergeResult> {
         self.table.clone().merge_insert(self, new_data).await
     }
 }

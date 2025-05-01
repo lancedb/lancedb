@@ -9,10 +9,10 @@ use crate::table::AddResult;
 use crate::table::AlterColumnsResult;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
-use crate::table::MergeInsertResult;
+use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
-use crate::table::{AddDataMode, AnyQuery, Filter};
+use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
@@ -1071,7 +1071,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<MergeInsertResult> {
+    ) -> Result<MergeResult> {
         self.check_mutable().await?;
 
         let query = MergeInsertRequest::try_from(params)?;
@@ -1089,10 +1089,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if body == "{}" {
             // Backward compatible with old servers
             let version = self.version().await?;
-            return Ok(MergeInsertResult { version });
+            return Ok(MergeResult { version, num_deleted_rows: 0, num_inserted_rows: 0, num_updated_rows: 0 });
         }
 
-        let merge_insert_response: MergeInsertResult =
+        let merge_insert_response: MergeResult =
             serde_json::from_str(&body).map_err(|e| Error::Http {
                 source: format!("Failed to parse merge_insert response: {}", e).into(),
                 request_id,
@@ -1348,6 +1348,20 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn dataset_uri(&self) -> &str {
         "NOT_SUPPORTED"
     }
+
+    async fn stats(&self) -> Result<TableStatistics> {
+        let request = self.client.post(&format!("/v1/table/{}/stats/", self.name));
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        let stats = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse table statistics: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+        Ok(stats)
+    }
 }
 
 #[derive(Serialize)]
@@ -1440,7 +1454,12 @@ mod tests {
             Box::pin(table.count_rows(None).map_ok(|_| ())),
             Box::pin(table.update().column("a", "a + 1").execute().map_ok(|_| ())),
             Box::pin(table.add(example_data()).execute().map_ok(|_| ())),
-            Box::pin(table.merge_insert(&["test"]).execute(example_data())),
+            Box::pin(
+                table
+                    .merge_insert(&["test"])
+                    .execute(example_data())
+                    .map_ok(|_| ()),
+            ),
             Box::pin(table.delete("false")),
             Box::pin(table.add_columns(
                 NewColumnTransform::SqlExpressions(vec![("x".into(), "y".into())]),

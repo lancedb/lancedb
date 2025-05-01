@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use lancedb::{arrow::IntoArrow, ipc::ipc_file_to_batches, table::{merge::MergeInsertBuilder}};
+use lancedb::{arrow::IntoArrow, ipc::ipc_file_to_batches, table::merge::MergeInsertBuilder};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::{error::convert_error, table::MergeInsertResult};
+use crate::{error::convert_error, table::MergeResult};
 
 #[napi]
 #[derive(Clone)]
@@ -37,7 +37,7 @@ impl NativeMergeInsertBuilder {
     }
 
     #[napi(catch_unwind)]
-    pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeInsertResult> {
+    pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeResult> {
         let data = ipc_file_to_batches(buf.to_vec())
             .and_then(IntoArrow::into_arrow)
             .map_err(|e| {

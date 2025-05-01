@@ -389,6 +389,50 @@ def test_table_wait_for_index_timeout():
             table.wait_for_index(["id_idx"], timedelta(seconds=1))
 
 
+def test_stats():
+    stats = {
+        "total_bytes": 38,
+        "num_rows": 2,
+        "num_indices": 0,
+        "fragment_stats": {
+            "num_fragments": 1,
+            "num_small_fragments": 1,
+            "lengths": {
+                "min": 2,
+                "max": 2,
+                "mean": 2,
+                "p25": 2,
+                "p50": 2,
+                "p75": 2,
+                "p99": 2,
+            },
+        },
+    }
+
+    def handler(request):
+        if request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/stats/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            payload = json.dumps(stats)
+            request.wfile.write(payload.encode())
+        else:
+            print(request.path)
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        res = table.stats()
+        print(f"{res=}")
+        assert res == stats
+
+
 @contextlib.contextmanager
 def query_test_table(query_handler, *, server_version=Version("0.1.0")):
     def handler(request):

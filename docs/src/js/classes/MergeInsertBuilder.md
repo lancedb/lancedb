@@ -33,7 +33,7 @@ Construct a MergeInsertBuilder. __Internal use only.__
 ### execute()
 
 ```ts
-execute(data): Promise<MergeInsertResult>
+execute(data): Promise<MergeResult>
 ```
 
 Executes the merge insert operation
@@ -44,10 +44,9 @@ Executes the merge insert operation
 
 #### Returns
 
-`Promise`&lt;[`MergeInsertResult`](../interfaces/MergeInsertResult.md)&gt;
+`Promise`&lt;[`MergeResult`](../interfaces/MergeResult.md)&gt;
 
-A promise that resolves to an object containing
-the new version number of the table after the merge operation.
+the merge result
 
 ***
 

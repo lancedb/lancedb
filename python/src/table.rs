@@ -128,21 +128,33 @@ impl From<lancedb::table::DeleteResult> for DeleteResult {
 
 #[pyclass(get_all)]
 #[derive(Clone, Debug)]
-pub struct MergeInsertResult {
+pub struct MergeResult {
     pub version: u64,
+    pub num_updated_rows: u64,
+    pub num_inserted_rows: u64,
+    pub num_deleted_rows: u64,
 }
 
 #[pymethods]
-impl MergeInsertResult {
+impl MergeResult {
     pub fn __repr__(&self) -> String {
-        format!("MergeInsertResult(version={})", self.version)
+        format!(
+            "MergeResult(version={}, num_updated_rows={}, num_inserted_rows={}, num_deleted_rows={})",
+            self.version,
+            self.num_updated_rows,
+            self.num_inserted_rows,
+            self.num_deleted_rows
+        )
     }
 }
 
-impl From<lancedb::table::MergeInsertResult> for MergeInsertResult {
-    fn from(result: lancedb::table::MergeInsertResult) -> Self {
+impl From<lancedb::table::MergeResult> for MergeResult {
+    fn from(result: lancedb::table::MergeResult) -> Self {
         Self {
             version: result.version,
+            num_updated_rows: result.num_updated_rows,
+            num_inserted_rows: result.num_inserted_rows,
+            num_deleted_rows: result.num_deleted_rows,
         }
     }
 }
@@ -432,6 +444,40 @@ impl Table {
         })
     }
 
+    pub fn stats(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let stats = inner.stats().await.infer_error()?;
+            Python::with_gil(|py| {
+                let dict = PyDict::new(py);
+                dict.set_item("total_bytes", stats.total_bytes)?;
+                dict.set_item("num_rows", stats.num_rows)?;
+                dict.set_item("num_indices", stats.num_indices)?;
+
+                let fragment_stats = PyDict::new(py);
+                fragment_stats.set_item("num_fragments", stats.fragment_stats.num_fragments)?;
+                fragment_stats.set_item(
+                    "num_small_fragments",
+                    stats.fragment_stats.num_small_fragments,
+                )?;
+
+                let fragment_lengths = PyDict::new(py);
+                fragment_lengths.set_item("min", stats.fragment_stats.lengths.min)?;
+                fragment_lengths.set_item("max", stats.fragment_stats.lengths.max)?;
+                fragment_lengths.set_item("mean", stats.fragment_stats.lengths.mean)?;
+                fragment_lengths.set_item("p25", stats.fragment_stats.lengths.p25)?;
+                fragment_lengths.set_item("p50", stats.fragment_stats.lengths.p50)?;
+                fragment_lengths.set_item("p75", stats.fragment_stats.lengths.p75)?;
+                fragment_lengths.set_item("p99", stats.fragment_stats.lengths.p99)?;
+
+                fragment_stats.set_item("lengths", fragment_lengths)?;
+                dict.set_item("fragment_stats", fragment_stats)?;
+
+                Ok(Some(dict.unbind()))
+            })
+        })
+    }
+
     pub fn __repr__(&self) -> String {
         match &self.inner {
             None => format!("ClosedTable({})", self.name),
@@ -609,7 +655,7 @@ impl Table {
 
         future_into_py(self_.py(), async move {
             let res = builder.execute(Box::new(batches)).await.infer_error()?;
-            Ok(MergeInsertResult::from(res))
+            Ok(MergeResult::from(res))
         })
     }
 

@@ -14,7 +14,7 @@ from lancedb._lancedb import (
     DeleteResult,
     DropColumnsResult,
     IndexConfig,
-    MergeInsertResult,
+    MergeResult,
     UpdateResult,
 )
 from lancedb.embeddings.base import EmbeddingFunctionConfig
@@ -426,7 +426,7 @@ class RemoteTable(Table):
         new_data: DATA,
         on_bad_vectors: str,
         fill_value: float,
-    ) -> MergeInsertResult:
+    ) -> MergeResult:
         return LOOP.run(
             self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
         )
@@ -605,6 +605,9 @@ class RemoteTable(Table):
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
     ):
         return LOOP.run(self._table.wait_for_index(index_names, timeout))
+
+    def stats(self):
+        return LOOP.run(self._table.stats())
 
     def uses_v2_manifest_paths(self) -> bool:
         raise NotImplementedError(

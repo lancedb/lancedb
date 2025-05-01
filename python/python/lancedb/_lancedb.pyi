@@ -223,8 +223,11 @@ class UpdateResult:
     rows_updated: int
     version: int
 
-class MergeInsertResult:
+class MergeResult:
     version: int
+    num_updated_rows: int
+    num_inserted_rows: int
+    num_deleted_rows: int
 
 class AddColumnsResult:
     version: int

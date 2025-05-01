@@ -917,6 +917,9 @@ def test_merge_insert(mem_db: DBConnection):
         .execute(new_data)
     )
     assert merge_insert_res.version == 2
+    assert merge_insert_res.num_inserted_rows == 1
+    assert merge_insert_res.num_updated_rows == 2
+    assert merge_insert_res.num_deleted_rows == 0
 
     expected = pa.table({"a": [1, 2, 3, 4], "b": ["a", "x", "y", "z"]})
     assert table.to_arrow().sort_by("a") == expected
@@ -930,6 +933,9 @@ def test_merge_insert(mem_db: DBConnection):
         .execute(new_data)
     )
     assert merge_insert_res.version == 4
+    assert merge_insert_res.num_inserted_rows == 0
+    assert merge_insert_res.num_updated_rows == 1
+    assert merge_insert_res.num_deleted_rows == 0
     expected = pa.table({"a": [1, 2, 3], "b": ["a", "x", "c"]})
     assert table.to_arrow().sort_by("a") == expected
 
@@ -940,6 +946,9 @@ def test_merge_insert(mem_db: DBConnection):
         table.merge_insert("a").when_not_matched_insert_all().execute(new_data)
     )
     assert merge_insert_res.version == 6
+    assert merge_insert_res.num_inserted_rows == 1
+    assert merge_insert_res.num_updated_rows == 0
+    assert merge_insert_res.num_deleted_rows == 0
     expected = pa.table({"a": [1, 2, 3, 4], "b": ["a", "b", "c", "z"]})
     assert table.to_arrow().sort_by("a") == expected
 
@@ -948,13 +957,17 @@ def test_merge_insert(mem_db: DBConnection):
     new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
 
     # replace-range
-    (
+    merge_insert_res = (
         table.merge_insert("a")
         .when_matched_update_all()
         .when_not_matched_insert_all()
         .when_not_matched_by_source_delete("a > 2")
         .execute(new_data)
     )
+    assert merge_insert_res.version == 8
+    assert merge_insert_res.num_inserted_rows == 1
+    assert merge_insert_res.num_updated_rows == 1
+    assert merge_insert_res.num_deleted_rows == 1
 
     expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
     assert table.to_arrow().sort_by("a") == expected
@@ -962,11 +975,17 @@ def test_merge_insert(mem_db: DBConnection):
     table.restore(version)
 
     # replace-range no condition
-    table.merge_insert(
-        "a"
-    ).when_matched_update_all().when_not_matched_insert_all().when_not_matched_by_source_delete().execute(
-        new_data
+    merge_insert_res = (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete()
+        .execute(new_data)
     )
+    assert merge_insert_res.version == 10
+    assert merge_insert_res.num_inserted_rows == 1
+    assert merge_insert_res.num_updated_rows == 1
+    assert merge_insert_res.num_deleted_rows == 2
 
     expected = pa.table({"a": [2, 4], "b": ["x", "z"]})
     assert table.to_arrow().sort_by("a") == expected
@@ -1728,3 +1747,31 @@ def test_replace_field_metadata(tmp_path):
     schema = table.schema
     field = schema[0].metadata
     assert field == {b"foo": b"bar"}
+
+
+def test_stats(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
+    )
+    assert len(table) == 2
+    stats = table.stats()
+    print(f"{stats=}")
+    assert stats == {
+        "total_bytes": 38,
+        "num_rows": 2,
+        "num_indices": 0,
+        "fragment_stats": {
+            "num_fragments": 1,
+            "num_small_fragments": 1,
+            "lengths": {
+                "min": 2,
+                "max": 2,
+                "mean": 2,
+                "p25": 2,
+                "p50": 2,
+                "p75": 2,
+                "p99": 2,
+            },
+        },
+    }

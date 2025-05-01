@@ -72,6 +72,29 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await expect(table.countRows()).resolves.toBe(3);
     });
 
+    it("should show table stats", async () => {
+      await table.add([{ id: 1 }, { id: 2 }]);
+      await table.add([{ id: 1 }]);
+      await expect(table.stats()).resolves.toEqual({
+        fragmentStats: {
+          lengths: {
+            max: 2,
+            mean: 1,
+            min: 1,
+            p25: 1,
+            p50: 2,
+            p75: 2,
+            p99: 2,
+          },
+          numFragments: 2,
+          numSmallFragments: 2,
+        },
+        numIndices: 0,
+        numRows: 3,
+        totalBytes: 24,
+      });
+    });
+
     it("should overwrite data if asked", async () => {
       const addRes = await table.add([{ id: 1 }, { id: 2 }]);
       expect(addRes).toHaveProperty("version");
@@ -329,6 +352,9 @@ describe("merge insert", () => {
       .execute(newData);
     expect(mergeInsertRes).toHaveProperty("version");
     expect(mergeInsertRes.version).toBe(2);
+    expect(mergeInsertRes.numInsertedRows).toBe(1);
+    expect(mergeInsertRes.numUpdatedRows).toBe(2);
+    expect(mergeInsertRes.numDeletedRows).toBe(0);
 
     const expected = [
       { a: 1, b: "a" },

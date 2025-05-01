@@ -83,7 +83,7 @@ if TYPE_CHECKING:
         AlterColumnsResult,
         DeleteResult,
         DropColumnsResult,
-        MergeInsertResult,
+        MergeResult,
         UpdateResult,
     )
     from .db import LanceDBConnection
@@ -747,6 +747,13 @@ class Table(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def stats(self) -> TableStatistics:
+        """
+        Retrieve table and fragment statistics.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def create_scalar_index(
         self,
         column: str,
@@ -966,10 +973,12 @@ class Table(ABC):
         >>> table = db.create_table("my_table", data)
         >>> new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
         >>> # Perform a "upsert" operation
-        >>> table.merge_insert("a")             \\
+        >>> stats = table.merge_insert("a")     \\
         ...      .when_matched_update_all()     \\
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
+        >>> stats
+        {'num_inserted_rows': 1, 'num_updated_rows': 2, 'num_deleted_rows': 0}
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -1093,7 +1102,7 @@ class Table(ABC):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
-    ) -> MergeInsertResult: ...
+    ) -> MergeResult: ...
 
     @abstractmethod
     def delete(self, where: str) -> DeleteResult:
@@ -1913,6 +1922,9 @@ class LanceTable(Table):
     ) -> None:
         return LOOP.run(self._table.wait_for_index(index_names, timeout))
 
+    def stats(self) -> TableStatistics:
+        return LOOP.run(self._table.stats())
+
     def create_scalar_index(
         self,
         column: str,
@@ -2521,7 +2533,7 @@ class LanceTable(Table):
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
-    ) -> MergeInsertResult:
+    ) -> MergeResult:
         return LOOP.run(
             self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
         )
@@ -3217,6 +3229,12 @@ class AsyncTable:
         """
         await self._inner.wait_for_index(index_names, timeout)
 
+    async def stats(self) -> TableStatistics:
+        """
+        Retrieve table and fragment statistics.
+        """
+        return await self._inner.stats()
+
     async def add(
         self,
         data: DATA,
@@ -3308,10 +3326,12 @@ class AsyncTable:
         >>> table = db.create_table("my_table", data)
         >>> new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
         >>> # Perform a "upsert" operation
-        >>> table.merge_insert("a")             \\
+        >>> stats = table.merge_insert("a")     \\
         ...      .when_matched_update_all()     \\
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
+        >>> stats
+        {'num_inserted_rows': 1, 'num_updated_rows': 2, 'num_deleted_rows': 0}
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -3651,7 +3671,7 @@ class AsyncTable:
         new_data: DATA,
         on_bad_vectors: OnBadVectorsType,
         fill_value: float,
-    ) -> MergeInsertResult:
+    ) -> MergeResult:
         schema = await self.schema()
         if on_bad_vectors is None:
             on_bad_vectors = "error"
@@ -4133,6 +4153,82 @@ class IndexStatistics:
     # a dictionary instead of a class.
     def __getitem__(self, key):
         return getattr(self, key)
+
+
+@dataclass
+class TableStatistics:
+    """
+    Statistics about a table and fragments.
+
+    Attributes
+    ----------
+    total_bytes: int
+        The total number of bytes in the table.
+    num_rows: int
+        The total number of rows in the table.
+    num_indices: int
+        The total number of indices in the table.
+    fragment_stats: FragmentStatistics
+        Statistics about fragments in the table.
+    """
+
+    total_bytes: int
+    num_rows: int
+    num_indices: int
+    fragment_stats: FragmentStatistics
+
+
+@dataclass
+class FragmentStatistics:
+    """
+    Statistics about fragments.
+
+    Attributes
+    ----------
+    num_fragments: int
+        The total number of fragments in the table.
+    num_small_fragments: int
+        The total number of small fragments in the table.
+        Small fragments have low row counts and may need to be compacted.
+    lengths: FragmentSummaryStats
+        Statistics about the number of rows in the table fragments.
+    """
+
+    num_fragments: int
+    num_small_fragments: int
+    lengths: FragmentSummaryStats
+
+
+@dataclass
+class FragmentSummaryStats:
+    """
+    Statistics about fragments sizes
+
+    Attributes
+    ----------
+    min: int
+        The number of rows in the fragment with the fewest rows.
+    max: int
+        The number of rows in the fragment with the most rows.
+    mean: int
+        The mean number of rows in the fragments.
+    p25: int
+        The 25th percentile of number of rows in the fragments.
+    p50: int
+        The 50th percentile of number of rows in the fragments.
+    p75: int
+        The 75th percentile of number of rows in the fragments.
+    p99: int
+        The 99th percentile of number of rows in the fragments.
+    """
+
+    min: int
+    max: int
+    mean: int
+    p25: int
+    p50: int
+    p75: int
+    p99: int
 
 
 class Tags:
