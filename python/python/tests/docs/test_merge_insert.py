@@ -80,16 +80,19 @@ def test_insert_if_not_exists(mem_db):
         {"domain": "google.com", "name": "Google"},
         {"domain": "facebook.com", "name": "Facebook"},
     ]
-    stats = (
+    res = (
         table.merge_insert("domain").when_not_matched_insert_all().execute(new_domains)
     )
     table.count_rows()  # 3
-    stats  # {'num_inserted_rows': 1, 'num_updated_rows': 0, 'num_deleted_rows': 0}
+    res
+    # MergeResult(version=2, num_updated_rows=0,
+    # num_inserted_rows=1, num_deleted_rows=0)
     # --8<-- [end:insert_if_not_exists]
     assert table.count_rows() == 3
-    assert stats["num_inserted_rows"] == 1
-    assert stats["num_updated_rows"] == 0
-    assert stats["num_deleted_rows"] == 0
+    assert res.version == 2
+    assert res.num_inserted_rows == 1
+    assert res.num_deleted_rows == 0
+    assert res.num_updated_rows == 0
 
 
 @pytest.mark.asyncio
@@ -107,16 +110,19 @@ async def test_insert_if_not_exists_async(mem_db_async):
         {"domain": "google.com", "name": "Google"},
         {"domain": "facebook.com", "name": "Facebook"},
     ]
-    stats = await (
+    res = await (
         table.merge_insert("domain").when_not_matched_insert_all().execute(new_domains)
     )
     await table.count_rows()  # 3
-    stats  # {'num_inserted_rows': 1, 'num_updated_rows': 0, 'num_deleted_rows': 0}
-    # --8<-- [end:insert_if_not_exists_async]
+    res
+    # MergeResult(version=2, num_updated_rows=0,
+    # num_inserted_rows=1, num_deleted_rows=0)
+    # --8<-- [end:insert_if_not_exists]
     assert await table.count_rows() == 3
-    assert stats["num_inserted_rows"] == 1
-    assert stats["num_updated_rows"] == 0
-    assert stats["num_deleted_rows"] == 0
+    assert res.version == 2
+    assert res.num_inserted_rows == 1
+    assert res.num_deleted_rows == 0
+    assert res.num_updated_rows == 0
 
 
 def test_replace_range(mem_db):
@@ -134,7 +140,7 @@ def test_replace_range(mem_db):
     new_chunks = [
         {"doc_id": 1, "chunk_id": 0, "text": "Baz"},
     ]
-    stats = (
+    res = (
         table.merge_insert(["doc_id", "chunk_id"])
         .when_matched_update_all()
         .when_not_matched_insert_all()
@@ -142,12 +148,15 @@ def test_replace_range(mem_db):
         .execute(new_chunks)
     )
     table.count_rows("doc_id = 1")  # 1
-    stats  # {'num_inserted_rows': 0, 'num_updated_rows': 1, 'num_deleted_rows': 1}
-    # --8<-- [end:replace_range]
+    res
+    # MergeResult(version=2, num_updated_rows=1,
+    # num_inserted_rows=0, num_deleted_rows=1)
+    # --8<-- [end:insert_if_not_exists]
     assert table.count_rows("doc_id = 1") == 1
-    assert stats["num_inserted_rows"] == 0
-    assert stats["num_updated_rows"] == 1
-    assert stats["num_deleted_rows"] == 1
+    assert res.version == 2
+    assert res.num_inserted_rows == 0
+    assert res.num_deleted_rows == 1
+    assert res.num_updated_rows == 1
 
 
 @pytest.mark.asyncio
@@ -166,7 +175,7 @@ async def test_replace_range_async(mem_db_async):
     new_chunks = [
         {"doc_id": 1, "chunk_id": 0, "text": "Baz"},
     ]
-    stats = await (
+    res = await (
         table.merge_insert(["doc_id", "chunk_id"])
         .when_matched_update_all()
         .when_not_matched_insert_all()
@@ -174,9 +183,12 @@ async def test_replace_range_async(mem_db_async):
         .execute(new_chunks)
     )
     await table.count_rows("doc_id = 1")  # 1
-    stats  # {'num_inserted_rows': 0, 'num_updated_rows': 1, 'num_deleted_rows': 1}
-    # --8<-- [end:replace_range_async]
+    res
+    # MergeResult(version=2, num_updated_rows=1,
+    # num_inserted_rows=0, num_deleted_rows=1)
+    # --8<-- [end:insert_if_not_exists]
     assert await table.count_rows("doc_id = 1") == 1
-    assert stats["num_inserted_rows"] == 0
-    assert stats["num_updated_rows"] == 1
-    assert stats["num_deleted_rows"] == 1
+    assert res.version == 2
+    assert res.num_inserted_rows == 0
+    assert res.num_deleted_rows == 1
+    assert res.num_updated_rows == 1
