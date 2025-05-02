@@ -415,6 +415,7 @@ class LanceModel(pydantic.BaseModel):
     >>> table.add([
     ...     TestModel(name="test", vector=[1.0, 2.0])
     ... ])
+    AddResult(version=2)
     >>> table.search([0., 0.]).limit(1).to_pydantic(TestModel)
     [TestModel(name='test', vector=FixedSizeList(dim=2))]
     """

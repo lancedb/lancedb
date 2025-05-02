@@ -557,6 +557,7 @@ class Table(ABC):
     Can append new data with [Table.add()][lancedb.table.Table.add].
 
     >>> table.add([{"vector": [0.5, 1.3], "b": 4}])
+    AddResult(version=2)
 
     Can query the table with [Table.search][lancedb.table.Table.search].
 
@@ -973,12 +974,12 @@ class Table(ABC):
         >>> table = db.create_table("my_table", data)
         >>> new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
         >>> # Perform a "upsert" operation
-        >>> stats = table.merge_insert("a")     \\
+        >>> res = table.merge_insert("a")     \\
         ...      .when_matched_update_all()     \\
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
-        >>> stats
-        {'num_inserted_rows': 1, 'num_updated_rows': 2, 'num_deleted_rows': 0}
+        >>> res
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -987,7 +988,7 @@ class Table(ABC):
         1  2  x
         2  3  y
         3  4  z
-        """
+        """ # noqa: E501
         on = [on] if isinstance(on, str) else list(iter(on))
 
         return LanceMergeInsertBuilder(self, on)
@@ -1141,6 +1142,7 @@ class Table(ABC):
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
         >>> table.delete("x = 2")
+        DeleteResult(version=2)
         >>> table.to_pandas()
            x      vector
         0  1  [1.0, 2.0]
@@ -1154,6 +1156,7 @@ class Table(ABC):
         >>> to_remove
         '1, 5'
         >>> table.delete(f"x IN ({to_remove})")
+        DeleteResult(version=3)
         >>> table.to_pandas()
            x      vector
         0  3  [5.0, 6.0]
@@ -1208,12 +1211,14 @@ class Table(ABC):
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
         >>> table.update(where="x = 2", values={"vector": [10.0, 10]})
+        UpdateResult(rows_updated=1, version=2)
         >>> table.to_pandas()
            x        vector
         0  1    [1.0, 2.0]
         1  3    [5.0, 6.0]
         2  2  [10.0, 10.0]
         >>> table.update(values_sql={"x": "x + 1"})
+        UpdateResult(rows_updated=3, version=3)
         >>> table.to_pandas()
            x        vector
         0  2    [1.0, 2.0]
@@ -1648,6 +1653,7 @@ class LanceTable(Table):
         ...    [{"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.tags.create("v1", table.version)
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
+        AddResult(version=2)
         >>> tags = table.tags.list()
         >>> print(tags["v1"]["version"])
         1
@@ -1686,6 +1692,7 @@ class LanceTable(Table):
                vector    type
         0  [1.1, 0.9]  vector
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
+        AddResult(version=2)
         >>> table.version
         2
         >>> table.checkout(1)
@@ -1728,6 +1735,7 @@ class LanceTable(Table):
                vector    type
         0  [1.1, 0.9]  vector
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
+        AddResult(version=2)
         >>> table.version
         2
         >>> table.restore(1)
@@ -2492,6 +2500,7 @@ class LanceTable(Table):
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
         >>> table.update(where="x = 2", values={"vector": [10.0, 10]})
+        UpdateResult(rows_updated=1, version=2)
         >>> table.to_pandas()
            x        vector
         0  1    [1.0, 2.0]
@@ -3326,12 +3335,12 @@ class AsyncTable:
         >>> table = db.create_table("my_table", data)
         >>> new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
         >>> # Perform a "upsert" operation
-        >>> stats = table.merge_insert("a")     \\
+        >>> res = table.merge_insert("a")     \\
         ...      .when_matched_update_all()     \\
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
-        >>> stats
-        {'num_inserted_rows': 1, 'num_updated_rows': 2, 'num_deleted_rows': 0}
+        >>> res
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -3340,7 +3349,7 @@ class AsyncTable:
         1  2  x
         2  3  y
         3  4  z
-        """
+        """ # noqa: E501
         on = [on] if isinstance(on, str) else list(iter(on))
 
         return LanceMergeInsertBuilder(self, on)
@@ -3730,6 +3739,7 @@ class AsyncTable:
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
         >>> table.delete("x = 2")
+        DeleteResult(version=2)
         >>> table.to_pandas()
            x      vector
         0  1  [1.0, 2.0]
@@ -3743,6 +3753,7 @@ class AsyncTable:
         >>> to_remove
         '1, 5'
         >>> table.delete(f"x IN ({to_remove})")
+        DeleteResult(version=3)
         >>> table.to_pandas()
            x      vector
         0  3  [5.0, 6.0]
