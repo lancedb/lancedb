@@ -105,7 +105,8 @@ markdown_extensions:
 nav:
   - Home:
       - LanceDB: index.md
-      - 🏃🏼‍♂️ Quick start: basic.md
+      - 👉 Quickstart: quickstart.md
+      - 🏃🏼‍♂️ Basic Usage: basic.md
       - 📚 Concepts:
           - Vector search: concepts/vector_search.md
           - Indexing:
@@ -237,7 +238,9 @@ nav:
           - 👾 JavaScript (lancedb): js/globals.md
           - 🦀 Rust: https://docs.rs/lancedb/latest/lancedb/
 
-  - Quick start: basic.md
+  - Getting Started:
+      - Quickstart: quickstart.md
+      - Basic Usage: basic.md
   - Concepts:
       - Vector search: concepts/vector_search.md
       - Indexing:

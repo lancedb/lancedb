@@ -1,4 +1,4 @@
-# Quick start
+# Basic Usage
 
 !!! info "LanceDB can be run in a number of ways:"
 
