@@ -34,6 +34,7 @@ import {
 } from "../lancedb/embedding";
 import { Index } from "../lancedb/indices";
 import { instanceOfFullTextQuery } from "../lancedb/query";
+import exp = require("constants");
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Given a table",
@@ -95,7 +96,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     });
 
     it("should overwrite data if asked", async () => {
-      await table.add([{ id: 1 }, { id: 2 }]);
+      const addRes = await table.add([{ id: 1 }, { id: 2 }]);
+      expect(addRes).toHaveProperty("version");
+      expect(addRes.version).toBe(2);
       await table.add([{ id: 1 }], { mode: "overwrite" });
       await expect(table.countRows()).resolves.toBe(1);
     });
@@ -111,7 +114,11 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await table.add([{ id: 1 }]);
       expect(await table.countRows("id == 1")).toBe(1);
       expect(await table.countRows("id == 7")).toBe(0);
-      await table.update({ id: "7" });
+      const updateRes = await table.update({ id: "7" });
+      expect(updateRes).toHaveProperty("version");
+      expect(updateRes.version).toBe(3);
+      expect(updateRes).toHaveProperty("rowsUpdated");
+      expect(updateRes.rowsUpdated).toBe(1);
       expect(await table.countRows("id == 1")).toBe(0);
       expect(await table.countRows("id == 7")).toBe(1);
       await table.add([{ id: 2 }]);
@@ -338,15 +345,16 @@ describe("merge insert", () => {
       { a: 3, b: "y" },
       { a: 4, b: "z" },
     ];
-    const stats = await table
+    const mergeInsertRes = await table
       .mergeInsert("a")
       .whenMatchedUpdateAll()
       .whenNotMatchedInsertAll()
       .execute(newData);
-
-    expect(stats.numInsertedRows).toBe(1n);
-    expect(stats.numUpdatedRows).toBe(2n);
-    expect(stats.numDeletedRows).toBe(0n);
+    expect(mergeInsertRes).toHaveProperty("version");
+    expect(mergeInsertRes.version).toBe(2);
+    expect(mergeInsertRes.numInsertedRows).toBe(1);
+    expect(mergeInsertRes.numUpdatedRows).toBe(2);
+    expect(mergeInsertRes.numDeletedRows).toBe(0);
 
     const expected = [
       { a: 1, b: "a" },
@@ -365,10 +373,12 @@ describe("merge insert", () => {
       { a: 3, b: "y" },
       { a: 4, b: "z" },
     ];
-    await table
+    const mergeInsertRes = await table
       .mergeInsert("a")
       .whenMatchedUpdateAll({ where: "target.b = 'b'" })
       .execute(newData);
+    expect(mergeInsertRes).toHaveProperty("version");
+    expect(mergeInsertRes.version).toBe(2);
 
     const expected = [
       { a: 1, b: "a" },
@@ -1028,15 +1038,19 @@ describe("schema evolution", function () {
       { id: 1n, vector: [0.1, 0.2] },
     ]);
     // Can create a non-nullable column only through addColumns at the moment.
-    await table.addColumns([
+    const addColumnsRes = await table.addColumns([
       { name: "price", valueSql: "cast(10.0 as double)" },
     ]);
+    expect(addColumnsRes).toHaveProperty("version");
+    expect(addColumnsRes.version).toBe(2);
     expect(await table.schema()).toEqual(schema);
 
-    await table.alterColumns([
+    const alterColumnsRes = await table.alterColumns([
       { path: "id", rename: "new_id" },
       { path: "price", nullable: true },
     ]);
+    expect(alterColumnsRes).toHaveProperty("version");
+    expect(alterColumnsRes.version).toBe(3);
 
     const expectedSchema = new Schema([
       new Field("new_id", new Int64(), true),
@@ -1154,7 +1168,9 @@ describe("schema evolution", function () {
     const table = await con.createTable("vectors", [
       { id: 1n, vector: [0.1, 0.2] },
     ]);
-    await table.dropColumns(["vector"]);
+    const dropColumnsRes = await table.dropColumns(["vector"]);
+    expect(dropColumnsRes).toHaveProperty("version");
+    expect(dropColumnsRes.version).toBe(2);
 
     const expectedSchema = new Schema([new Field("id", new Int64(), true)]);
     expect(await table.schema()).toEqual(expectedSchema);

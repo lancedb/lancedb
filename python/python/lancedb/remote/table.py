@@ -7,7 +7,16 @@ from functools import cached_property
 from typing import Dict, Iterable, List, Optional, Union, Literal
 import warnings
 
-from lancedb._lancedb import IndexConfig
+from lancedb._lancedb import (
+    AddColumnsResult,
+    AddResult,
+    AlterColumnsResult,
+    DeleteResult,
+    DropColumnsResult,
+    IndexConfig,
+    MergeResult,
+    UpdateResult,
+)
 from lancedb.embeddings.base import EmbeddingFunctionConfig
 from lancedb.index import FTS, BTree, Bitmap, HnswPq, HnswSq, IvfFlat, IvfPq, LabelList
 from lancedb.remote.db import LOOP
@@ -263,7 +272,7 @@ class RemoteTable(Table):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-    ) -> int:
+    ) -> AddResult:
         """Add more data to the [Table](Table). It has the same API signature as
         the OSS version.
 
@@ -286,8 +295,12 @@ class RemoteTable(Table):
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
+        Returns
+        -------
+        AddResult
+            An object containing the new version number of the table after adding data.
         """
-        LOOP.run(
+        return LOOP.run(
             self._table.add(
                 data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
             )
@@ -413,10 +426,12 @@ class RemoteTable(Table):
         new_data: DATA,
         on_bad_vectors: str,
         fill_value: float,
-    ):
-        LOOP.run(self._table._do_merge(merge, new_data, on_bad_vectors, fill_value))
+    ) -> MergeResult:
+        return LOOP.run(
+            self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
+        )
 
-    def delete(self, predicate: str):
+    def delete(self, predicate: str) -> DeleteResult:
         """Delete rows from the table.
 
         This can be used to delete a single row, many rows, all rows, or
@@ -430,6 +445,11 @@ class RemoteTable(Table):
             - For example, 'x = 2' or 'x IN (1, 2, 3)'.
 
             The filter must not be empty, or it will error.
+
+        Returns
+        -------
+        DeleteResult
+            An object containing the new version number of the table after deletion.
 
         Examples
         --------
@@ -463,7 +483,7 @@ class RemoteTable(Table):
            x      vector  _distance # doctest: +SKIP
         0  2  [3.0, 4.0]       85.0 # doctest: +SKIP
         """
-        LOOP.run(self._table.delete(predicate))
+        return LOOP.run(self._table.delete(predicate))
 
     def update(
         self,
@@ -471,7 +491,7 @@ class RemoteTable(Table):
         values: Optional[dict] = None,
         *,
         values_sql: Optional[Dict[str, str]] = None,
-    ):
+    ) -> UpdateResult:
         """
         This can be used to update zero to all rows depending on how many
         rows match the where clause.
@@ -488,6 +508,12 @@ class RemoteTable(Table):
             The values to update, expressed as SQL expression strings. These can
             reference existing columns. For example, {"x": "x + 1"} will increment
             the x column by 1.
+
+        Returns
+        -------
+        UpdateResult
+            - rows_updated: The number of rows that were updated
+            - version: The new version number of the table after the update
 
         Examples
         --------
@@ -513,7 +539,7 @@ class RemoteTable(Table):
         2  2  [10.0, 10.0] # doctest: +SKIP
 
         """
-        LOOP.run(
+        return LOOP.run(
             self._table.update(where=where, updates=values, updates_sql=values_sql)
         )
 
@@ -561,13 +587,15 @@ class RemoteTable(Table):
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
 
-    def add_columns(self, transforms: Dict[str, str]):
+    def add_columns(self, transforms: Dict[str, str]) -> AddColumnsResult:
         return LOOP.run(self._table.add_columns(transforms))
 
-    def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
+    def alter_columns(
+        self, *alterations: Iterable[Dict[str, str]]
+    ) -> AlterColumnsResult:
         return LOOP.run(self._table.alter_columns(*alterations))
 
-    def drop_columns(self, columns: Iterable[str]):
+    def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         return LOOP.run(self._table.drop_columns(columns))
 
     def drop_index(self, index_name: str):

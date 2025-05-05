@@ -36,8 +36,10 @@ class Table:
     async def schema(self) -> pa.Schema: ...
     async def add(
         self, data: pa.RecordBatchReader, mode: Literal["append", "overwrite"]
-    ) -> None: ...
-    async def update(self, updates: Dict[str, str], where: Optional[str]) -> None: ...
+    ) -> AddResult: ...
+    async def update(
+        self, updates: Dict[str, str], where: Optional[str]
+    ) -> UpdateResult: ...
     async def count_rows(self, filter: Optional[str]) -> int: ...
     async def create_index(
         self,
@@ -51,10 +53,12 @@ class Table:
     async def checkout_latest(self): ...
     async def restore(self, version: Optional[int] = None): ...
     async def list_indices(self) -> list[IndexConfig]: ...
-    async def delete(self, filter: str): ...
-    async def add_columns(self, columns: list[tuple[str, str]]) -> None: ...
-    async def add_columns_with_schema(self, schema: pa.Schema) -> None: ...
-    async def alter_columns(self, columns: list[dict[str, Any]]) -> None: ...
+    async def delete(self, filter: str) -> DeleteResult: ...
+    async def add_columns(self, columns: list[tuple[str, str]]) -> AddColumnsResult: ...
+    async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
+    async def alter_columns(
+        self, columns: list[dict[str, Any]]
+    ) -> AlterColumnsResult: ...
     async def optimize(
         self,
         *,
@@ -208,3 +212,28 @@ class OptimizeStats:
 class Tag(TypedDict):
     version: int
     manifest_size: int
+
+class AddResult:
+    version: int
+
+class DeleteResult:
+    version: int
+
+class UpdateResult:
+    rows_updated: int
+    version: int
+
+class MergeResult:
+    version: int
+    num_updated_rows: int
+    num_inserted_rows: int
+    num_deleted_rows: int
+
+class AddColumnsResult:
+    version: int
+
+class AlterColumnsResult:
+    version: int
+
+class DropColumnsResult:
+    version: int

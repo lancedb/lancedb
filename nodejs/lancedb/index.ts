@@ -28,7 +28,13 @@ export {
   FragmentSummaryStats,
   Tags,
   TagContents,
-  MergeStats,
+  MergeResult,
+  AddResult,
+  AddColumnsResult,
+  AlterColumnsResult,
+  DeleteResult,
+  DropColumnsResult,
+  UpdateResult,
 } from "./native.js";
 
 export {

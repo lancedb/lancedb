@@ -4,7 +4,14 @@
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
+use crate::table::AddColumnsResult;
+use crate::table::AddResult;
+use crate::table::AlterColumnsResult;
+use crate::table::DeleteResult;
+use crate::table::DropColumnsResult;
+use crate::table::MergeResult;
 use crate::table::Tags;
+use crate::table::UpdateResult;
 use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
@@ -47,7 +54,6 @@ use crate::{
         TableDefinition, UpdateBuilder,
     },
 };
-use lance::dataset::MergeStats;
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 
@@ -735,7 +741,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         add: AddDataBuilder<NoData>,
         data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<()> {
+    ) -> Result<AddResult> {
         self.check_mutable().await?;
         let mut request = self
             .client
@@ -750,9 +756,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
 
         let (request_id, response) = self.send_streaming(request, data, true).await?;
-        self.check_table_response(&request_id, response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
 
-        Ok(())
+        if body.trim().is_empty() || body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(AddResult { version });
+        }
+
+        let add_response: AddResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse add response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+        Ok(add_response)
     }
 
     async fn create_plan(
@@ -885,7 +903,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(final_analyze)
     }
 
-    async fn update(&self, update: UpdateBuilder) -> Result<u64> {
+    async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult> {
         self.check_mutable().await?;
         let request = self
             .client
@@ -902,13 +920,29 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }));
 
         let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
 
-        self.check_table_response(&request_id, response).await?;
+        if body.trim().is_empty() || body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(UpdateResult {
+                rows_updated: 0,
+                version,
+            });
+        }
 
-        Ok(0) // TODO: support returning number of modified rows once supported in SaaS.
+        let update_response: UpdateResult =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse update response: {}", e).into(),
+                request_id,
+                status_code: None,
+            })?;
+
+        Ok(update_response)
     }
 
-    async fn delete(&self, predicate: &str) -> Result<()> {
+    async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
         self.check_mutable().await?;
         let body = serde_json::json!({ "predicate": predicate });
         let request = self
@@ -916,8 +950,22 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .post(&format!("/v1/table/{}/delete/", self.name))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
-        self.check_table_response(&request_id, response).await?;
-        Ok(())
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(DeleteResult { version });
+        }
+
+        let delete_response: DeleteResult =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse delete response: {}", e).into(),
+                request_id,
+                status_code: None,
+            })?;
+        Ok(delete_response)
     }
 
     async fn create_index(&self, mut index: IndexBuilder) -> Result<()> {
@@ -1023,7 +1071,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<MergeStats> {
+    ) -> Result<MergeResult> {
         self.check_mutable().await?;
 
         let query = MergeInsertRequest::try_from(params)?;
@@ -1035,11 +1083,28 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let (request_id, response) = self.send_streaming(request, new_data, true).await?;
 
-        // TODO: server can response with these stats in response body.
-        // We should test that we can handle both empty response from old server
-        // and response with stats from new server.
-        self.check_table_response(&request_id, response).await?;
-        Ok(MergeStats::default())
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body.trim().is_empty() || body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(MergeResult {
+                version,
+                num_deleted_rows: 0,
+                num_inserted_rows: 0,
+                num_updated_rows: 0,
+            });
+        }
+
+        let merge_insert_response: MergeResult =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse merge_insert response: {}", e).into(),
+                request_id,
+                status_code: None,
+            })?;
+
+        Ok(merge_insert_response)
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -1062,7 +1127,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         transforms: NewColumnTransform,
         _read_columns: Option<Vec<String>>,
-    ) -> Result<()> {
+    ) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
         match transforms {
             NewColumnTransform::SqlExpressions(expressions) => {
@@ -1080,9 +1145,24 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     .client
                     .post(&format!("/v1/table/{}/add_columns/", self.name))
                     .json(&body);
-                let (request_id, response) = self.send(request, true).await?; // todo:
-                self.check_table_response(&request_id, response).await?;
-                Ok(())
+                let (request_id, response) = self.send(request, true).await?;
+                let response = self.check_table_response(&request_id, response).await?;
+                let body = response.text().await.err_to_http(request_id.clone())?;
+
+                if body.trim().is_empty() || body == "{}" {
+                    // Backward compatible with old servers
+                    let version = self.version().await?;
+                    return Ok(AddColumnsResult { version });
+                }
+
+                let result: AddColumnsResult =
+                    serde_json::from_str(&body).map_err(|e| Error::Http {
+                        source: format!("Failed to parse add_columns response: {}", e).into(),
+                        request_id,
+                        status_code: None,
+                    })?;
+
+                Ok(result)
             }
             _ => {
                 return Err(Error::NotSupported {
@@ -1092,7 +1172,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
     }
 
-    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()> {
+    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
         self.check_mutable().await?;
         let body = alterations
             .iter()
@@ -1120,11 +1200,25 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .post(&format!("/v1/table/{}/alter_columns/", self.name))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
-        self.check_table_response(&request_id, response).await?;
-        Ok(())
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body.trim().is_empty() || body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(AlterColumnsResult { version });
+        }
+
+        let result: AlterColumnsResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse alter_columns response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        Ok(result)
     }
 
-    async fn drop_columns(&self, columns: &[&str]) -> Result<()> {
+    async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
         self.check_mutable().await?;
         let body = serde_json::json!({ "columns": columns });
         let request = self
@@ -1132,8 +1226,22 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .post(&format!("/v1/table/{}/drop_columns/", self.name))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
-        self.check_table_response(&request_id, response).await?;
-        Ok(())
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        if body.trim().is_empty() || body == "{}" {
+            // Backward compatible with old servers
+            let version = self.version().await?;
+            return Ok(DropColumnsResult { version });
+        }
+
+        let result: DropColumnsResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse drop_columns response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        Ok(result)
     }
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
@@ -1357,16 +1465,20 @@ mod tests {
                     .execute(example_data())
                     .map_ok(|_| ()),
             ),
-            Box::pin(table.delete("false")),
-            Box::pin(table.add_columns(
-                NewColumnTransform::SqlExpressions(vec![("x".into(), "y".into())]),
-                None,
-            )),
+            Box::pin(table.delete("false").map_ok(|_| ())),
+            Box::pin(
+                table
+                    .add_columns(
+                        NewColumnTransform::SqlExpressions(vec![("x".into(), "y".into())]),
+                        None,
+                    )
+                    .map_ok(|_| ()),
+            ),
             Box::pin(async {
                 let alterations = vec![ColumnAlteration::new("x".into()).rename("y".into())];
-                table.alter_columns(&alterations).await
+                table.alter_columns(&alterations).await.map(|_| ())
             }),
-            Box::pin(table.drop_columns(&["a"])),
+            Box::pin(table.drop_columns(&["a"]).map_ok(|_| ())),
             // TODO: other endpoints.
         ];
 
@@ -1498,6 +1610,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_add_append_old_server() {
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table = Table::new_with_handler("my_table", move |mut request| {
+            if request.url().path() == "/v1/table/my_table/insert/" {
+                assert_eq!(request.method(), "POST");
+                assert!(request
+                    .url()
+                    .query_pairs()
+                    .filter(|(k, _)| k == "mode")
+                    .all(|(_, v)| v == "append"));
+
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    ARROW_STREAM_CONTENT_TYPE
+                );
+
+                let mut body_out = reqwest::Body::from(Vec::new());
+                std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+                sender.send(body_out).unwrap();
+
+                // Return empty JSON object for old server behavior
+                http::Response::builder().status(200).body("").unwrap()
+            } else if request.url().path() == "/v1/table/my_table/describe/" {
+                // Handle describe call for backward compatibility
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 42, "schema": { "fields": [] }}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table
+            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 42);
+
+        let body = receiver.recv().unwrap();
+        let body = collect_body(body).await;
+        let expected_body = write_ipc_stream(&data);
+        assert_eq!(&body, &expected_body);
+    }
+
+    #[tokio::test]
     async fn test_add_append() {
         let data = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
@@ -1526,14 +1692,79 @@ mod tests {
             std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
             sender.send(body_out).unwrap();
 
-            http::Response::builder().status(200).body("").unwrap()
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 43}"#)
+                .unwrap()
         });
 
-        table
+        let result = table
             .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
             .execute()
             .await
             .unwrap();
+
+        assert_eq!(result.version, 43);
+
+        let body = receiver.recv().unwrap();
+        let body = collect_body(body).await;
+        let expected_body = write_ipc_stream(&data);
+        assert_eq!(&body, &expected_body);
+    }
+
+    #[tokio::test]
+    async fn test_add_overwrite_old_server() {
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table = Table::new_with_handler("my_table", move |mut request| {
+            if request.url().path() == "/v1/table/my_table/insert/" {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(
+                    request
+                        .url()
+                        .query_pairs()
+                        .find(|(k, _)| k == "mode")
+                        .map(|kv| kv.1)
+                        .as_deref(),
+                    Some("overwrite"),
+                    "Expected mode=overwrite"
+                );
+
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    ARROW_STREAM_CONTENT_TYPE
+                );
+
+                let mut body_out = reqwest::Body::from(Vec::new());
+                std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+                sender.send(body_out).unwrap();
+
+                // Return empty JSON object for old server behavior
+                http::Response::builder().status(200).body("{}").unwrap()
+            } else if request.url().path() == "/v1/table/my_table/describe/" {
+                // Handle describe call for backward compatibility
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 42, "schema": { "fields": [] }}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table
+            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
+            .mode(AddDataMode::Overwrite)
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 42);
 
         let body = receiver.recv().unwrap();
         let body = collect_body(body).await;
@@ -1573,20 +1804,81 @@ mod tests {
             std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
             sender.send(body_out).unwrap();
 
-            http::Response::builder().status(200).body("").unwrap()
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 43}"#)
+                .unwrap()
         });
 
-        table
+        let result = table
             .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
             .mode(AddDataMode::Overwrite)
             .execute()
             .await
             .unwrap();
 
+        assert_eq!(result.version, 43);
+
         let body = receiver.recv().unwrap();
         let body = collect_body(body).await;
         let expected_body = write_ipc_stream(&data);
         assert_eq!(&body, &expected_body);
+    }
+
+    #[tokio::test]
+    async fn test_update_old_server() {
+        let table = Table::new_with_handler("my_table", |request| {
+            if request.url().path() == "/v1/table/my_table/update/" {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    JSON_CONTENT_TYPE
+                );
+
+                if let Some(body) = request.body().unwrap().as_bytes() {
+                    let body = std::str::from_utf8(body).unwrap();
+                    let value: serde_json::Value = serde_json::from_str(body).unwrap();
+                    let updates = value.get("updates").unwrap().as_array().unwrap();
+                    assert!(updates.len() == 2);
+
+                    let col_name = updates[0][0].as_str().unwrap();
+                    let expression = updates[0][1].as_str().unwrap();
+                    assert_eq!(col_name, "a");
+                    assert_eq!(expression, "a + 1");
+
+                    let col_name = updates[1][0].as_str().unwrap();
+                    let expression = updates[1][1].as_str().unwrap();
+                    assert_eq!(col_name, "b");
+                    assert_eq!(expression, "b - 1");
+
+                    let only_if = value.get("predicate").unwrap().as_str().unwrap();
+                    assert_eq!(only_if, "b > 10");
+                }
+
+                // Return empty JSON object (old server behavior)
+                http::Response::builder().status(200).body("{}").unwrap()
+            } else if request.url().path() == "/v1/table/my_table/describe/" {
+                // Handle the describe request for version lookup
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 42, "schema": { "fields": [] }}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table
+            .update()
+            .column("a", "a + 1")
+            .column("b", "b - 1")
+            .only_if("b > 10")
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 42);
+        assert_eq!(result.rows_updated, 0);
     }
 
     #[tokio::test]
@@ -1619,10 +1911,14 @@ mod tests {
                 assert_eq!(only_if, "b > 10");
             }
 
-            http::Response::builder().status(200).body("{}").unwrap()
+            // Return structured response (new server behavior)
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"rows_updated": 5, "version": 43}"#)
+                .unwrap()
         });
 
-        table
+        let result = table
             .update()
             .column("a", "a + 1")
             .column("b", "b - 1")
@@ -1630,6 +1926,157 @@ mod tests {
             .execute()
             .await
             .unwrap();
+
+        // Verify result for new behavior
+        assert_eq!(result.rows_updated, 5); // From structured response
+        assert_eq!(result.version, 43); // From structured response
+    }
+
+    #[tokio::test]
+    async fn test_alter_columns_old_server() {
+        let table = Table::new_with_handler("my_table", |request| {
+            if request.url().path() == "/v1/table/my_table/alter_columns/" {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    JSON_CONTENT_TYPE
+                );
+
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let body = std::str::from_utf8(body).unwrap();
+                let value: serde_json::Value = serde_json::from_str(body).unwrap();
+                let alterations = value.get("alterations").unwrap().as_array().unwrap();
+                assert!(alterations.len() == 2);
+
+                let path = alterations[0]["path"].as_str().unwrap();
+                let data_type = alterations[0]["data_type"]["type"].as_str().unwrap();
+                assert_eq!(path, "b.c");
+                assert_eq!(data_type, "int32");
+
+                let path = alterations[1]["path"].as_str().unwrap();
+                let nullable = alterations[1]["nullable"].as_bool().unwrap();
+                let rename = alterations[1]["rename"].as_str().unwrap();
+                assert_eq!(path, "x");
+                assert!(nullable);
+                assert_eq!(rename, "y");
+
+                http::Response::builder().status(200).body("{}").unwrap()
+            } else if request.url().path() == "/v1/table/my_table/describe/" {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 42, "schema": { "fields": [] }}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table
+            .alter_columns(&[
+                ColumnAlteration::new("b.c".into()).cast_to(DataType::Int32),
+                ColumnAlteration::new("x".into())
+                    .rename("y".into())
+                    .set_nullable(true),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 42);
+    }
+
+    #[tokio::test]
+    async fn test_alter_columns() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/alter_columns/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body = std::str::from_utf8(body).unwrap();
+            let value: serde_json::Value = serde_json::from_str(body).unwrap();
+            let alterations = value.get("alterations").unwrap().as_array().unwrap();
+            assert!(alterations.len() == 2);
+
+            let path = alterations[0]["path"].as_str().unwrap();
+            let data_type = alterations[0]["data_type"]["type"].as_str().unwrap();
+            assert_eq!(path, "b.c");
+            assert_eq!(data_type, "int32");
+
+            let path = alterations[1]["path"].as_str().unwrap();
+            let nullable = alterations[1]["nullable"].as_bool().unwrap();
+            let rename = alterations[1]["rename"].as_str().unwrap();
+            assert_eq!(path, "x");
+            assert!(nullable);
+            assert_eq!(rename, "y");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 43}"#)
+                .unwrap()
+        });
+
+        let result = table
+            .alter_columns(&[
+                ColumnAlteration::new("b.c".into()).cast_to(DataType::Int32),
+                ColumnAlteration::new("x".into())
+                    .rename("y".into())
+                    .set_nullable(true),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 43);
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_old_server() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let data = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        // Default parameters
+        let table = Table::new_with_handler("my_table", |request| {
+            if request.url().path() == "/v1/table/my_table/merge_insert/" {
+                assert_eq!(request.method(), "POST");
+
+                let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+                assert_eq!(params["on"], "some_col");
+                assert_eq!(params["when_matched_update_all"], "false");
+                assert_eq!(params["when_not_matched_insert_all"], "false");
+                assert_eq!(params["when_not_matched_by_source_delete"], "false");
+                assert!(!params.contains_key("when_matched_update_all_filt"));
+                assert!(!params.contains_key("when_not_matched_by_source_delete_filt"));
+
+                http::Response::builder().status(200).body("{}").unwrap()
+            } else if request.url().path() == "/v1/table/my_table/describe/" {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 42, "schema": { "fields": [] }}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table
+            .merge_insert(&["some_col"])
+            .execute(data)
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 42);
+        assert_eq!(result.num_deleted_rows, 0);
+        assert_eq!(result.num_inserted_rows, 0);
+        assert_eq!(result.num_updated_rows, 0);
     }
 
     #[tokio::test]
@@ -1644,7 +2091,7 @@ mod tests {
             batch.schema(),
         ));
 
-        // Default parameters
+        // Default parameters with new server behavior
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
@@ -1657,53 +2104,22 @@ mod tests {
             assert!(!params.contains_key("when_matched_update_all_filt"));
             assert!(!params.contains_key("when_not_matched_by_source_delete_filt"));
 
-            http::Response::builder().status(200).body("").unwrap()
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 43, "num_deleted_rows": 0, "num_inserted_rows": 3, "num_updated_rows": 0}"#)
+                .unwrap()
         });
 
-        table
+        let result = table
             .merge_insert(&["some_col"])
             .execute(data)
             .await
             .unwrap();
 
-        // All parameters specified
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let table = Table::new_with_handler("my_table", move |mut request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
-            assert_eq!(
-                request.headers().get("Content-Type").unwrap(),
-                ARROW_STREAM_CONTENT_TYPE
-            );
-
-            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
-            assert_eq!(params["on"], "some_col");
-            assert_eq!(params["when_matched_update_all"], "true");
-            assert_eq!(params["when_not_matched_insert_all"], "false");
-            assert_eq!(params["when_not_matched_by_source_delete"], "true");
-            assert_eq!(params["when_matched_update_all_filt"], "a = 1");
-            assert_eq!(params["when_not_matched_by_source_delete_filt"], "b = 2");
-
-            let mut body_out = reqwest::Body::from(Vec::new());
-            std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
-            sender.send(body_out).unwrap();
-
-            http::Response::builder().status(200).body("").unwrap()
-        });
-        let mut builder = table.merge_insert(&["some_col"]);
-        builder
-            .when_matched_update_all(Some("a = 1".into()))
-            .when_not_matched_by_source_delete(Some("b = 2".into()));
-        let data = Box::new(RecordBatchIterator::new(
-            [Ok(batch.clone())],
-            batch.schema(),
-        ));
-        builder.execute(data).await.unwrap();
-
-        let body = receiver.recv().unwrap();
-        let body = collect_body(body).await;
-        let expected_body = write_ipc_stream(&batch);
-        assert_eq!(&body, &expected_body);
+        assert_eq!(result.version, 43);
+        assert_eq!(result.num_deleted_rows, 0);
+        assert_eq!(result.num_inserted_rows, 3);
+        assert_eq!(result.num_updated_rows, 0);
     }
 
     #[tokio::test]
@@ -1743,6 +2159,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_delete_old_server() {
+        let table = Table::new_with_handler("my_table", |request| {
+            if request.url().path() == "/v1/table/my_table/delete/" {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    JSON_CONTENT_TYPE
+                );
+
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                let predicate = body.get("predicate").unwrap().as_str().unwrap();
+                assert_eq!(predicate, "id in (1, 2, 3)");
+
+                http::Response::builder().status(200).body("{}").unwrap()
+            } else if request.url().path() == "/v1/table/my_table/describe/" {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 42, "schema": { "fields": [] }}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table.delete("id in (1, 2, 3)").await.unwrap();
+        assert_eq!(result.version, 42);
+    }
+
+    #[tokio::test]
     async fn test_delete() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
@@ -1757,12 +2203,82 @@ mod tests {
             let predicate = body.get("predicate").unwrap().as_str().unwrap();
             assert_eq!(predicate, "id in (1, 2, 3)");
 
-            http::Response::builder().status(200).body("").unwrap()
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 43}"#)
+                .unwrap()
         });
 
-        table.delete("id in (1, 2, 3)").await.unwrap();
+        let result = table.delete("id in (1, 2, 3)").await.unwrap();
+        assert_eq!(result.version, 43);
     }
 
+    #[tokio::test]
+    async fn test_drop_columns_old_server() {
+        let table = Table::new_with_handler("my_table", |request| {
+            if request.url().path() == "/v1/table/my_table/drop_columns/" {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    JSON_CONTENT_TYPE
+                );
+
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let body = std::str::from_utf8(body).unwrap();
+                let value: serde_json::Value = serde_json::from_str(body).unwrap();
+                let columns = value.get("columns").unwrap().as_array().unwrap();
+                assert!(columns.len() == 2);
+
+                let col1 = columns[0].as_str().unwrap();
+                let col2 = columns[1].as_str().unwrap();
+                assert_eq!(col1, "a");
+                assert_eq!(col2, "b");
+
+                http::Response::builder().status(200).body("{}").unwrap()
+            } else if request.url().path() == "/v1/table/my_table/describe/" {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 42, "schema": { "fields": [] }}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table.drop_columns(&["a", "b"]).await.unwrap();
+        assert_eq!(result.version, 42);
+    }
+
+    #[tokio::test]
+    async fn test_drop_columns() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/drop_columns/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body = std::str::from_utf8(body).unwrap();
+            let value: serde_json::Value = serde_json::from_str(body).unwrap();
+            let columns = value.get("columns").unwrap().as_array().unwrap();
+            assert!(columns.len() == 2);
+
+            let col1 = columns[0].as_str().unwrap();
+            let col2 = columns[1].as_str().unwrap();
+            assert_eq!(col1, "a");
+            assert_eq!(col2, "b");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 43}"#)
+                .unwrap()
+        });
+
+        let result = table.drop_columns(&["a", "b"]).await.unwrap();
+        assert_eq!(result.version, 43);
+    }
     #[tokio::test]
     async fn test_query_plain() {
         let expected_data = RecordBatch::try_new(
@@ -2578,6 +3094,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_add_columns_old_server() {
+        let table = Table::new_with_handler("my_table", |request| {
+            if request.url().path() == "/v1/table/my_table/add_columns/" {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    JSON_CONTENT_TYPE
+                );
+
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let body = std::str::from_utf8(body).unwrap();
+                let value: serde_json::Value = serde_json::from_str(body).unwrap();
+                let new_columns = value.get("new_columns").unwrap().as_array().unwrap();
+                assert!(new_columns.len() == 2);
+
+                let col_name = new_columns[0]["name"].as_str().unwrap();
+                let expression = new_columns[0]["expression"].as_str().unwrap();
+                assert_eq!(col_name, "b");
+                assert_eq!(expression, "a + 1");
+
+                let col_name = new_columns[1]["name"].as_str().unwrap();
+                let expression = new_columns[1]["expression"].as_str().unwrap();
+                assert_eq!(col_name, "x");
+                assert_eq!(expression, "cast(NULL as int32)");
+
+                // Return empty JSON object for old server behavior
+                http::Response::builder().status(200).body("{}").unwrap()
+            } else if request.url().path() == "/v1/table/my_table/describe/" {
+                // Handle describe call for backward compatibility
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 42, "schema": { "fields": [] }}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table
+            .add_columns(
+                NewColumnTransform::SqlExpressions(vec![
+                    ("b".into(), "a + 1".into()),
+                    ("x".into(), "cast(NULL as int32)".into()),
+                ]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 42);
+    }
+
+    #[tokio::test]
     async fn test_add_columns() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
@@ -2603,10 +3172,13 @@ mod tests {
             assert_eq!(col_name, "x");
             assert_eq!(expression, "cast(NULL as int32)");
 
-            http::Response::builder().status(200).body("{}").unwrap()
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 43}"#)
+                .unwrap()
         });
 
-        table
+        let result = table
             .add_columns(
                 NewColumnTransform::SqlExpressions(vec![
                     ("b".into(), "a + 1".into()),
@@ -2616,75 +3188,8 @@ mod tests {
             )
             .await
             .unwrap();
-    }
 
-    #[tokio::test]
-    async fn test_alter_columns() {
-        let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/table/my_table/alter_columns/");
-            assert_eq!(
-                request.headers().get("Content-Type").unwrap(),
-                JSON_CONTENT_TYPE
-            );
-
-            let body = request.body().unwrap().as_bytes().unwrap();
-            let body = std::str::from_utf8(body).unwrap();
-            let value: serde_json::Value = serde_json::from_str(body).unwrap();
-            let alterations = value.get("alterations").unwrap().as_array().unwrap();
-            assert!(alterations.len() == 2);
-
-            let path = alterations[0]["path"].as_str().unwrap();
-            let data_type = alterations[0]["data_type"]["type"].as_str().unwrap();
-            assert_eq!(path, "b.c");
-            assert_eq!(data_type, "int32");
-
-            let path = alterations[1]["path"].as_str().unwrap();
-            let nullable = alterations[1]["nullable"].as_bool().unwrap();
-            let rename = alterations[1]["rename"].as_str().unwrap();
-            assert_eq!(path, "x");
-            assert!(nullable);
-            assert_eq!(rename, "y");
-
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-
-        table
-            .alter_columns(&[
-                ColumnAlteration::new("b.c".into()).cast_to(DataType::Int32),
-                ColumnAlteration::new("x".into())
-                    .rename("y".into())
-                    .set_nullable(true),
-            ])
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_drop_columns() {
-        let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/table/my_table/drop_columns/");
-            assert_eq!(
-                request.headers().get("Content-Type").unwrap(),
-                JSON_CONTENT_TYPE
-            );
-
-            let body = request.body().unwrap().as_bytes().unwrap();
-            let body = std::str::from_utf8(body).unwrap();
-            let value: serde_json::Value = serde_json::from_str(body).unwrap();
-            let columns = value.get("columns").unwrap().as_array().unwrap();
-            assert!(columns.len() == 2);
-
-            let col1 = columns[0].as_str().unwrap();
-            let col2 = columns[1].as_str().unwrap();
-            assert_eq!(col1, "a");
-            assert_eq!(col2, "b");
-
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-
-        table.drop_columns(&["a", "b"]).await.unwrap();
+        assert_eq!(result.version, 43);
     }
 
     #[tokio::test]

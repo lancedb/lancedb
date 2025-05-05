@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
     from .common import DATA
+    from ._lancedb import (
+        MergeInsertResult,
+    )
 
 
 class LanceMergeInsertBuilder(object):
@@ -78,7 +81,7 @@ class LanceMergeInsertBuilder(object):
         new_data: DATA,
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-    ):
+    ) -> MergeInsertResult:
         """
         Executes the merge insert operation
 
@@ -95,5 +98,10 @@ class LanceMergeInsertBuilder(object):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+
+        Returns
+        -------
+        MergeInsertResult
+            version: the new version number of the table after doing merge insert.
         """
         return self._table._do_merge(self, new_data, on_bad_vectors, fill_value)

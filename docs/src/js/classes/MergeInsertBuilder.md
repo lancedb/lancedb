@@ -33,7 +33,7 @@ Construct a MergeInsertBuilder. __Internal use only.__
 ### execute()
 
 ```ts
-execute(data): Promise<MergeStats>
+execute(data): Promise<MergeResult>
 ```
 
 Executes the merge insert operation
@@ -44,9 +44,9 @@ Executes the merge insert operation
 
 #### Returns
 
-`Promise`&lt;[`MergeStats`](../interfaces/MergeStats.md)&gt;
+`Promise`&lt;[`MergeResult`](../interfaces/MergeResult.md)&gt;
 
-Statistics about the merge operation: counts of inserted, updated, and deleted rows
+the merge result
 
 ***
 

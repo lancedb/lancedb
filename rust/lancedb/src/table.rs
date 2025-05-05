@@ -20,7 +20,6 @@ use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
 use lance::dataset::scanner::Scanner;
 pub use lance::dataset::ColumnAlteration;
-pub use lance::dataset::MergeStats;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
@@ -312,7 +311,7 @@ impl<T: IntoArrow> AddDataBuilder<T> {
         self
     }
 
-    pub async fn execute(self) -> Result<()> {
+    pub async fn execute(self) -> Result<AddResult> {
         let parent = self.parent.clone();
         let data = self.data.into_arrow()?;
         let without_data = AddDataBuilder::<NoData> {
@@ -380,8 +379,8 @@ impl UpdateBuilder {
     }
 
     /// Executes the update operation.
-    /// Returns the number of rows that were updated.
-    pub async fn execute(self) -> Result<u64> {
+    /// Returns the update result
+    pub async fn execute(self) -> Result<UpdateResult> {
         if self.columns.is_empty() {
             Err(Error::InvalidInput {
                 message: "at least one column must be specified in an update operation".to_string(),
@@ -422,6 +421,50 @@ pub trait Tags: Send + Sync {
 
     /// Update an existing tag to point to a new version of the table.
     async fn update(&mut self, tag: &str, version: u64) -> Result<()>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateResult {
+    pub rows_updated: u64,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddResult {
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteResult {
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeResult {
+    pub version: u64,
+    /// Number of inserted rows (for user statistics)
+    pub num_inserted_rows: u64,
+    /// Number of updated rows (for user statistics)
+    pub num_updated_rows: u64,
+    /// Number of deleted rows (for user statistics)
+    /// Note: This is different from internal references to 'deleted_rows', since we technically "delete" updated rows during processing.
+    /// However those rows are not shared with the user.
+    pub num_deleted_rows: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddColumnsResult {
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlterColumnsResult {
+    pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DropColumnsResult {
+    pub version: u64,
 }
 
 /// A trait for anything "table-like".  This is used for both native tables (which target
@@ -468,11 +511,11 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         add: AddDataBuilder<NoData>,
         data: Box<dyn arrow_array::RecordBatchReader + Send>,
-    ) -> Result<()>;
+    ) -> Result<AddResult>;
     /// Delete rows from the table.
-    async fn delete(&self, predicate: &str) -> Result<()>;
+    async fn delete(&self, predicate: &str) -> Result<DeleteResult>;
     /// Update rows in the table.
-    async fn update(&self, update: UpdateBuilder) -> Result<u64>;
+    async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult>;
     /// Create an index on the provided column(s).
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
     /// List the indices on the table.
@@ -488,7 +531,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<MergeStats>;
+    ) -> Result<MergeResult>;
     /// Gets the table tag manager.
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
@@ -498,11 +541,11 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
-    ) -> Result<()>;
+    ) -> Result<AddColumnsResult>;
     /// Alter columns in the table.
-    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()>;
+    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
     /// Drop columns from the table.
-    async fn drop_columns(&self, columns: &[&str]) -> Result<()>;
+    async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult>;
     /// Get the version of the table.
     async fn version(&self) -> Result<u64>;
     /// Checkout a specific version of the table.
@@ -731,7 +774,7 @@ impl Table {
     /// tbl.delete("id > 5").await.unwrap();
     /// # });
     /// ```
-    pub async fn delete(&self, predicate: &str) -> Result<()> {
+    pub async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
         self.inner.delete(predicate).await
     }
 
@@ -1046,17 +1089,20 @@ impl Table {
         &self,
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
-    ) -> Result<()> {
+    ) -> Result<AddColumnsResult> {
         self.inner.add_columns(transforms, read_columns).await
     }
 
     /// Change a column's name or nullability.
-    pub async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()> {
+    pub async fn alter_columns(
+        &self,
+        alterations: &[ColumnAlteration],
+    ) -> Result<AlterColumnsResult> {
         self.inner.alter_columns(alterations).await
     }
 
     /// Remove columns from the table.
-    pub async fn drop_columns(&self, columns: &[&str]) -> Result<()> {
+    pub async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
         self.inner.drop_columns(columns).await
     }
 
@@ -2089,7 +2135,7 @@ impl BaseTable for NativeTable {
         &self,
         add: AddDataBuilder<NoData>,
         data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<()> {
+    ) -> Result<AddResult> {
         let data = Box::new(MaybeEmbedded::try_new(
             data,
             self.table_definition().await?,
@@ -2112,9 +2158,9 @@ impl BaseTable for NativeTable {
                 .execute_stream(data)
                 .await?
         };
-
+        let version = dataset.manifest().version;
         self.dataset.set_latest(dataset).await;
-        Ok(())
+        Ok(AddResult { version })
     }
 
     async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
@@ -2160,7 +2206,7 @@ impl BaseTable for NativeTable {
         Ok(dataset.prewarm_index(index_name).await?)
     }
 
-    async fn update(&self, update: UpdateBuilder) -> Result<u64> {
+    async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult> {
         let dataset = self.dataset.get().await?.clone();
         let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
         if let Some(predicate) = update.filter {
@@ -2176,7 +2222,10 @@ impl BaseTable for NativeTable {
         self.dataset
             .set_latest(res.new_dataset.as_ref().clone())
             .await;
-        Ok(res.rows_updated)
+        Ok(UpdateResult {
+            rows_updated: res.rows_updated,
+            version: res.new_dataset.version().version,
+        })
     }
 
     async fn create_plan(
@@ -2368,7 +2417,7 @@ impl BaseTable for NativeTable {
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<MergeStats> {
+    ) -> Result<MergeResult> {
         let dataset = Arc::new(self.dataset.get().await?.clone());
         let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
         match (
@@ -2396,14 +2445,23 @@ impl BaseTable for NativeTable {
         }
         let job = builder.try_build()?;
         let (new_dataset, stats) = job.execute_reader(new_data).await?;
+        let version = new_dataset.manifest().version;
         self.dataset.set_latest(new_dataset.as_ref().clone()).await;
-        Ok(stats)
+        Ok(MergeResult {
+            version,
+            num_updated_rows: stats.num_updated_rows,
+            num_inserted_rows: stats.num_inserted_rows,
+            num_deleted_rows: stats.num_deleted_rows,
+        })
     }
 
     /// Delete rows from the table
-    async fn delete(&self, predicate: &str) -> Result<()> {
-        self.dataset.get_mut().await?.delete(predicate).await?;
-        Ok(())
+    async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.delete(predicate).await?;
+        Ok(DeleteResult {
+            version: dataset.version().version,
+        })
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -2470,27 +2528,28 @@ impl BaseTable for NativeTable {
         &self,
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
-    ) -> Result<()> {
-        self.dataset
-            .get_mut()
-            .await?
-            .add_columns(transforms, read_columns, None)
-            .await?;
-        Ok(())
+    ) -> Result<AddColumnsResult> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.add_columns(transforms, read_columns, None).await?;
+        Ok(AddColumnsResult {
+            version: dataset.version().version,
+        })
     }
 
-    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()> {
-        self.dataset
-            .get_mut()
-            .await?
-            .alter_columns(alterations)
-            .await?;
-        Ok(())
+    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.alter_columns(alterations).await?;
+        Ok(AlterColumnsResult {
+            version: dataset.version().version,
+        })
     }
 
-    async fn drop_columns(&self, columns: &[&str]) -> Result<()> {
-        self.dataset.get_mut().await?.drop_columns(columns).await?;
-        Ok(())
+    async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.drop_columns(columns).await?;
+        Ok(DropColumnsResult {
+            version: dataset.version().version,
+        })
     }
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {

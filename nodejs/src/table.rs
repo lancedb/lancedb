@@ -75,7 +75,7 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn add(&self, buf: Buffer, mode: String) -> napi::Result<()> {
+    pub async fn add(&self, buf: Buffer, mode: String) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
         let mut op = self.inner_ref()?.add(batches);
@@ -88,7 +88,8 @@ impl Table {
             return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
         };
 
-        op.execute().await.default_error()
+        let res = op.execute().await.default_error()?;
+        Ok(res.into())
     }
 
     #[napi(catch_unwind)]
@@ -101,8 +102,9 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn delete(&self, predicate: String) -> napi::Result<()> {
-        self.inner_ref()?.delete(&predicate).await.default_error()
+    pub async fn delete(&self, predicate: String) -> napi::Result<DeleteResult> {
+        let res = self.inner_ref()?.delete(&predicate).await.default_error()?;
+        Ok(res.into())
     }
 
     #[napi(catch_unwind)]
@@ -168,7 +170,7 @@ impl Table {
         &self,
         only_if: Option<String>,
         columns: Vec<(String, String)>,
-    ) -> napi::Result<u64> {
+    ) -> napi::Result<UpdateResult> {
         let mut op = self.inner_ref()?.update();
         if let Some(only_if) = only_if {
             op = op.only_if(only_if);
@@ -176,7 +178,8 @@ impl Table {
         for (column_name, value) in columns {
             op = op.column(column_name, value);
         }
-        op.execute().await.default_error()
+        let res = op.execute().await.default_error()?;
+        Ok(res.into())
     }
 
     #[napi(catch_unwind)]
@@ -190,21 +193,28 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn add_columns(&self, transforms: Vec<AddColumnsSql>) -> napi::Result<()> {
+    pub async fn add_columns(
+        &self,
+        transforms: Vec<AddColumnsSql>,
+    ) -> napi::Result<AddColumnsResult> {
         let transforms = transforms
             .into_iter()
             .map(|sql| (sql.name, sql.value_sql))
             .collect::<Vec<_>>();
         let transforms = NewColumnTransform::SqlExpressions(transforms);
-        self.inner_ref()?
+        let res = self
+            .inner_ref()?
             .add_columns(transforms, None)
             .await
             .default_error()?;
-        Ok(())
+        Ok(res.into())
     }
 
     #[napi(catch_unwind)]
-    pub async fn alter_columns(&self, alterations: Vec<ColumnAlteration>) -> napi::Result<()> {
+    pub async fn alter_columns(
+        &self,
+        alterations: Vec<ColumnAlteration>,
+    ) -> napi::Result<AlterColumnsResult> {
         for alteration in &alterations {
             if alteration.rename.is_none()
                 && alteration.nullable.is_none()
@@ -221,21 +231,23 @@ impl Table {
             .collect::<std::result::Result<Vec<_>, String>>()
             .map_err(napi::Error::from_reason)?;
 
-        self.inner_ref()?
+        let res = self
+            .inner_ref()?
             .alter_columns(&alterations)
             .await
             .default_error()?;
-        Ok(())
+        Ok(res.into())
     }
 
     #[napi(catch_unwind)]
-    pub async fn drop_columns(&self, columns: Vec<String>) -> napi::Result<()> {
+    pub async fn drop_columns(&self, columns: Vec<String>) -> napi::Result<DropColumnsResult> {
         let col_refs = columns.iter().map(String::as_str).collect::<Vec<_>>();
-        self.inner_ref()?
+        let res = self
+            .inner_ref()?
             .drop_columns(&col_refs)
             .await
             .default_error()?;
-        Ok(())
+        Ok(res.into())
     }
 
     #[napi(catch_unwind)]
@@ -640,6 +652,105 @@ pub struct Version {
     pub version: i64,
     pub timestamp: i64,
     pub metadata: HashMap<String, String>,
+}
+
+#[napi(object)]
+pub struct UpdateResult {
+    pub rows_updated: i64,
+    pub version: i64,
+}
+
+impl From<lancedb::table::UpdateResult> for UpdateResult {
+    fn from(value: lancedb::table::UpdateResult) -> Self {
+        Self {
+            rows_updated: value.rows_updated as i64,
+            version: value.version as i64,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct AddResult {
+    pub version: i64,
+}
+
+impl From<lancedb::table::AddResult> for AddResult {
+    fn from(value: lancedb::table::AddResult) -> Self {
+        Self {
+            version: value.version as i64,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct DeleteResult {
+    pub version: i64,
+}
+
+impl From<lancedb::table::DeleteResult> for DeleteResult {
+    fn from(value: lancedb::table::DeleteResult) -> Self {
+        Self {
+            version: value.version as i64,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct MergeResult {
+    pub version: i64,
+    pub num_inserted_rows: i64,
+    pub num_updated_rows: i64,
+    pub num_deleted_rows: i64,
+}
+
+impl From<lancedb::table::MergeResult> for MergeResult {
+    fn from(value: lancedb::table::MergeResult) -> Self {
+        Self {
+            version: value.version as i64,
+            num_inserted_rows: value.num_inserted_rows as i64,
+            num_updated_rows: value.num_updated_rows as i64,
+            num_deleted_rows: value.num_deleted_rows as i64,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct AddColumnsResult {
+    pub version: i64,
+}
+
+impl From<lancedb::table::AddColumnsResult> for AddColumnsResult {
+    fn from(value: lancedb::table::AddColumnsResult) -> Self {
+        Self {
+            version: value.version as i64,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct AlterColumnsResult {
+    pub version: i64,
+}
+
+impl From<lancedb::table::AlterColumnsResult> for AlterColumnsResult {
+    fn from(value: lancedb::table::AlterColumnsResult) -> Self {
+        Self {
+            version: value.version as i64,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct DropColumnsResult {
+    pub version: i64,
+}
+
+impl From<lancedb::table::DropColumnsResult> for DropColumnsResult {
+    fn from(value: lancedb::table::DropColumnsResult) -> Self {
+        Self {
+            version: value.version as i64,
+        }
+    }
 }
 
 #[napi]

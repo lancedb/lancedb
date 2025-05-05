@@ -5,7 +5,7 @@ use lancedb::{arrow::IntoArrow, ipc::ipc_file_to_batches, table::merge::MergeIns
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::error::convert_error;
+use crate::{error::convert_error, table::MergeResult};
 
 #[napi]
 #[derive(Clone)]
@@ -37,7 +37,7 @@ impl NativeMergeInsertBuilder {
     }
 
     #[napi(catch_unwind)]
-    pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeStats> {
+    pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeResult> {
         let data = ipc_file_to_batches(buf.to_vec())
             .and_then(IntoArrow::into_arrow)
             .map_err(|e| {
@@ -46,36 +46,18 @@ impl NativeMergeInsertBuilder {
 
         let this = self.clone();
 
-        let stats = this.inner.execute(data).await.map_err(|e| {
+        let res = this.inner.execute(data).await.map_err(|e| {
             napi::Error::from_reason(format!(
                 "Failed to execute merge insert: {}",
                 convert_error(&e)
             ))
         })?;
-
-        Ok(stats.into())
+        Ok(res.into())
     }
 }
 
 impl From<MergeInsertBuilder> for NativeMergeInsertBuilder {
     fn from(inner: MergeInsertBuilder) -> Self {
         Self { inner }
-    }
-}
-
-#[napi(object)]
-pub struct MergeStats {
-    pub num_inserted_rows: BigInt,
-    pub num_updated_rows: BigInt,
-    pub num_deleted_rows: BigInt,
-}
-
-impl From<lancedb::table::MergeStats> for MergeStats {
-    fn from(stats: lancedb::table::MergeStats) -> Self {
-        Self {
-            num_inserted_rows: stats.num_inserted_rows.into(),
-            num_updated_rows: stats.num_updated_rows.into(),
-            num_deleted_rows: stats.num_deleted_rows.into(),
-        }
     }
 }
