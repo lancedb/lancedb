@@ -29,7 +29,7 @@ db = lancedb.connect("./lancedb")
 
 ## 4. Create Sample Data
 
-Add sample text data corresponding 4D vectors:
+Add sample text data and corresponding 4D vectors:
 
 ```python
 data = pd.DataFrame([
