@@ -1617,6 +1617,16 @@ mod tests {
         let table = Table::new_with_handler("my_table", move |mut request| {
             if request.url().path() == "/v1/table/my_table/insert/" {
                 assert_eq!(request.method(), "POST");
+                assert!(request
+                    .url()
+                    .query_pairs()
+                    .filter(|(k, _)| k == "mode")
+                    .all(|(_, v)| v == "append"));
+
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    ARROW_STREAM_CONTENT_TYPE
+                );
 
                 let mut body_out = reqwest::Body::from(Vec::new());
                 std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
@@ -1630,12 +1640,6 @@ mod tests {
                         .body(r#"{"version": 43}"#)
                         .unwrap()
                 }
-            } else if request.url().path() == "/v1/table/my_table/describe/" {
-                // Handle describe call for backward compatibility (only needed for old_server case)
-                http::Response::builder()
-                    .status(200)
-                    .body(r#"{"version": 42, "schema": { "fields": [] }}"#)
-                    .unwrap()
             } else {
                 panic!("Unexpected request path: {}", request.url().path());
             }
@@ -1647,7 +1651,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.version, if old_server { 42 } else { 43 });
+        assert_eq!(result.version, if old_server { 0 } else { 43 });
 
         let body = receiver.recv().unwrap();
         let body = collect_body(body).await;
@@ -1655,68 +1659,11 @@ mod tests {
         assert_eq!(&body, &expected_body);
     }
 
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
     #[tokio::test]
-    async fn test_add_overwrite_old_server() {
-        let data = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
-        )
-        .unwrap();
-
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let table = Table::new_with_handler("my_table", move |mut request| {
-            if request.url().path() == "/v1/table/my_table/insert/" {
-                assert_eq!(request.method(), "POST");
-                assert_eq!(
-                    request
-                        .url()
-                        .query_pairs()
-                        .find(|(k, _)| k == "mode")
-                        .map(|kv| kv.1)
-                        .as_deref(),
-                    Some("overwrite"),
-                    "Expected mode=overwrite"
-                );
-
-                assert_eq!(
-                    request.headers().get("Content-Type").unwrap(),
-                    ARROW_STREAM_CONTENT_TYPE
-                );
-
-                let mut body_out = reqwest::Body::from(Vec::new());
-                std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
-                sender.send(body_out).unwrap();
-
-                // Return empty JSON object for old server behavior
-                http::Response::builder().status(200).body("{}").unwrap()
-            } else if request.url().path() == "/v1/table/my_table/describe/" {
-                // Handle describe call for backward compatibility
-                http::Response::builder()
-                    .status(200)
-                    .body(r#"{"version": 42, "schema": { "fields": [] }}"#)
-                    .unwrap()
-            } else {
-                panic!("Unexpected request path: {}", request.url().path());
-            }
-        });
-
-        let result = table
-            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
-            .mode(AddDataMode::Overwrite)
-            .execute()
-            .await
-            .unwrap();
-
-        assert_eq!(result.version, 42);
-
-        let body = receiver.recv().unwrap();
-        let body = collect_body(body).await;
-        let expected_body = write_ipc_stream(&data);
-        assert_eq!(&body, &expected_body);
-    }
-
-    #[tokio::test]
-    async fn test_add_overwrite() {
+    async fn test_add_overwrite(#[case] old_server: bool) {
         let data = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
@@ -1747,10 +1694,14 @@ mod tests {
             std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
             sender.send(body_out).unwrap();
 
-            http::Response::builder()
-                .status(200)
-                .body(r#"{"version": 43}"#)
-                .unwrap()
+            if old_server {
+                http::Response::builder().status(200).body("").unwrap()
+            } else {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 43}"#)
+                    .unwrap()
+            }
         });
 
         let result = table
@@ -1760,7 +1711,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.version, 43);
+        assert_eq!(result.version, if old_server { 0 } else { 43 });
 
         let body = receiver.recv().unwrap();
         let body = collect_body(body).await;
@@ -2901,11 +2852,6 @@ mod tests {
                         .body(r#"{"version": 43}"#)
                         .unwrap()
                 }
-            } else if request.url().path() == "/v1/table/my_table/describe/" {
-                http::Response::builder()
-                    .status(200)
-                    .body(r#"{"version": 42, "schema": { "fields": [] }}"#)
-                    .unwrap()
             } else {
                 panic!("Unexpected request path: {}", request.url().path());
             }
@@ -2922,7 +2868,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.version, if old_server { 42 } else { 43 });
+        assert_eq!(result.version, if old_server { 0 } else { 43 });
     }
 
     #[tokio::test]
