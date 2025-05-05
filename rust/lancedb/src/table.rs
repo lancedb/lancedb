@@ -426,21 +426,33 @@ pub trait Tags: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateResult {
     pub rows_updated: u64,
+    // The commit version associated with the operation.
+    // A version of `0` indicates compatibility with legacy servers that do not return
+    /// a commit version.
     pub version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddResult {
+    // The commit version associated with the operation.
+    // A version of `0` indicates compatibility with legacy servers that do not return
+    /// a commit version.
     pub version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteResult {
+    // The commit version associated with the operation.
+    // A version of `0` indicates compatibility with legacy servers that do not return
+    /// a commit version.
     pub version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergeResult {
+    // The commit version associated with the operation.
+    // A version of `0` indicates compatibility with legacy servers that do not return
+    /// a commit version.
     pub version: u64,
     /// Number of inserted rows (for user statistics)
     pub num_inserted_rows: u64,
@@ -454,16 +466,25 @@ pub struct MergeResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddColumnsResult {
+    // The commit version associated with the operation.
+    // A version of `0` indicates compatibility with legacy servers that do not return
+    /// a commit version.
     pub version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlterColumnsResult {
+    // The commit version associated with the operation.
+    // A version of `0` indicates compatibility with legacy servers that do not return
+    /// a commit version.
     pub version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DropColumnsResult {
+    // The commit version associated with the operation.
+    // A version of `0` indicates compatibility with legacy servers that do not return
+    /// a commit version.
     pub version: u64,
 }
 
