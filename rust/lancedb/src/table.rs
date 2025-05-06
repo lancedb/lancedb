@@ -423,7 +423,7 @@ pub trait Tags: Send + Sync {
     async fn update(&mut self, tag: &str, version: u64) -> Result<()>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UpdateResult {
     #[serde(default)]
     pub rows_updated: u64,
@@ -434,7 +434,7 @@ pub struct UpdateResult {
     pub version: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AddResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
@@ -443,7 +443,7 @@ pub struct AddResult {
     pub version: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct DeleteResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
@@ -452,7 +452,7 @@ pub struct DeleteResult {
     pub version: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MergeResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
@@ -472,7 +472,7 @@ pub struct MergeResult {
     pub num_deleted_rows: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AddColumnsResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
@@ -481,7 +481,7 @@ pub struct AddColumnsResult {
     pub version: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AlterColumnsResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
@@ -490,7 +490,7 @@ pub struct AlterColumnsResult {
     pub version: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct DropColumnsResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
