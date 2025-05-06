@@ -768,6 +768,28 @@ def test_restore(mem_db: DBConnection):
     with pytest.raises(ValueError):
         table.restore(0)
 
+def test_restore_with_tags(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=[{"vector": [1.1, 0.9], "type": "vector"}],
+    )
+    tag = "tag1"
+    table.tags.create(tag, 1)
+    table.add([{"vector": [0.5, 0.2], "type": "vector"}])
+    table.restore(tag)
+    assert len(table.list_versions()) == 3
+    assert len(table) == 1
+    expected = table.to_arrow()
+
+    table.add([{"vector": [0.3, 0.3], "type": "vector"}])
+    table.checkout("tag1")
+    table.restore()
+    assert len(table.list_versions()) == 5
+    assert table.to_arrow() == expected
+
+    with pytest.raises(ValueError):
+        table.restore("tag_unknown")
+
 
 def test_merge(tmp_db: DBConnection, tmp_path):
     pytest.importorskip("lance")

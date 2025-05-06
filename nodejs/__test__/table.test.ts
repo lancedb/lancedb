@@ -1287,6 +1287,32 @@ describe("when dealing with tags", () => {
     await table.checkoutLatest();
     expect(await table.version()).toBe(4);
   });
+
+  it("can checkout and restore tags", async () => {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    expect(await table.version()).toBe(1);
+    expect(await table.countRows()).toBe(1);
+    const tagsManager = await table.tags();
+    const tag1 = "tag1";
+    await tagsManager.create(tag1, 1);
+    await table.add([{ id: 2n, vector: [0.3, 0.4] }]);
+    const tag2 = "tag2";
+    await tagsManager.create(tag2, 2);
+    expect(await table.version()).toBe(2);
+    await table.checkout(tag1);
+    expect(await table.version()).toBe(1);
+    await table.restore();
+    expect(await table.version()).toBe(3);
+    expect(await table.countRows()).toBe(1);
+    await table.add([{ id: 3n, vector: [0.5, 0.6] }]);
+    expect(await table.countRows()).toBe(2);
+  });
 });
 
 describe("when optimizing a dataset", () => {

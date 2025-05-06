@@ -551,15 +551,37 @@ impl Table {
     }
 
     #[pyo3(signature = (version=None))]
-    pub fn restore(self_: PyRef<'_, Self>, version: Option<u64>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn restore(
+        self_: PyRef<'_, Self>,
+        version: Option<PyObject>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
+        let py = self_.py();
+        if let Some(version) = version {
+            let (is_int, int_value, string_value) =
+                if let Ok(i) = version.downcast_bound::<PyInt>(py) {
+                    let num: u64 = i.extract()?;
+                    (true, num, String::new())
+                } else if let Ok(s) = version.downcast_bound::<PyString>(py) {
+                    let str_value = s.to_string();
+                    (false, 0, str_value)
+                } else {
+                    return Err(PyIOError::new_err(
+                        "version must be an integer or a string.",
+                    ));
+                };
 
-        future_into_py(self_.py(), async move {
-            if let Some(version) = version {
-                inner.checkout(version).await.infer_error()?;
-            }
-            inner.restore().await.infer_error()
-        })
+            future_into_py(py, async move {
+                if is_int {
+                    inner.checkout(int_value).await.infer_error()?;
+                } else {
+                    inner.checkout_tag(&string_value).await.infer_error()?;
+                }
+                inner.restore().await.infer_error()
+            })
+        } else {
+            future_into_py(py, async move { inner.restore().await.infer_error() })
+        }
     }
 
     pub fn query(&self) -> Query {
