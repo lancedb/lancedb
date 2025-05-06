@@ -758,35 +758,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send_streaming(request, data, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
-
-        let add_response: serde_json::Result<AddResult> = serde_json::from_str(&body);
-        match add_response {
-            Ok(result) => Ok(result),
-            Err(_) => {
-                // Try to parse as InsertResponse (old server format)
-                #[derive(Deserialize)]
-                #[allow(dead_code)]
-                struct InsertResponse {
-                    request_id: String,
-                }
-
-                let old_response: serde_json::Result<InsertResponse> = serde_json::from_str(&body);
-                match old_response {
-                    Ok(_) => Ok(AddResult { version: 0 }),
-                    Err(_) => {
-                        if body.trim().is_empty() || body == "{}" {
-                            Ok(AddResult { version: 0 })
-                        } else {
-                            Err(Error::Http {
-                                source: format!("Failed to parse add response: {}", body).into(),
-                                request_id,
-                                status_code: None,
-                            })
-                        }
-                    }
-                }
-            }
+        if body.trim().is_empty() {
+            // Backward compatible with old servers
+            return Ok(AddResult { version: 0 });
         }
+
+        let add_response: AddResult = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse add response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+        Ok(add_response)
     }
 
     async fn create_plan(
@@ -939,7 +921,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
-        if body.trim().is_empty() || body == "{}" {
+        if body.trim().is_empty() {
             // Backward compatible with old servers
             return Ok(UpdateResult {
                 rows_updated: 0,
@@ -967,12 +949,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
-
-        if body == "{}" {
+        if body.trim().is_empty() {
             // Backward compatible with old servers
             return Ok(DeleteResult { version: 0 });
         }
-
         let delete_response: DeleteResult =
             serde_json::from_str(&body).map_err(|e| Error::Http {
                 source: format!("Failed to parse delete response: {}", e).into(),
@@ -1100,7 +1080,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
-        if body.trim().is_empty() || body == "{}" {
+        if body.trim().is_empty() {
             // Backward compatible with old servers
             return Ok(MergeResult {
                 version: 0,
@@ -1162,7 +1142,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 let response = self.check_table_response(&request_id, response).await?;
                 let body = response.text().await.err_to_http(request_id.clone())?;
 
-                if body.trim().is_empty() || body == "{}" {
+                if body.trim().is_empty() {
                     // Backward compatible with old servers
                     return Ok(AddColumnsResult { version: 0 });
                 }
@@ -1215,7 +1195,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
-        if body.trim().is_empty() || body == "{}" {
+        if body.trim().is_empty() {
             // Backward compatible with old servers
             return Ok(AlterColumnsResult { version: 0 });
         }
@@ -1240,7 +1220,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
-        if body.trim().is_empty() || body == "{}" {
+        if body.trim().is_empty() {
             // Backward compatible with old servers
             return Ok(DropColumnsResult { version: 0 });
         }
@@ -1620,10 +1600,10 @@ mod tests {
     }
 
     #[rstest]
-    #[case("", 0)] // Empty response (old server)
-    #[case("{}", 0)] // Empty JSON object (old server)
-    #[case(r#"{"request_id": "test-request-id"}"#, 0)] // Response with request_id (old server)
-    #[case(r#"{"version": 43}"#, 43)] // Response with version (new server)
+    #[case("", 0)]
+    #[case("{}", 0)]
+    #[case(r#"{"request_id": "test-request-id"}"#, 0)]
+    #[case(r#"{"version": 43}"#, 43)]
     #[tokio::test]
     async fn test_add_append(#[case] response_body: &str, #[case] expected_version: u64) {
         let data = RecordBatch::try_new(

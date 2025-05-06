@@ -425,10 +425,12 @@ pub trait Tags: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateResult {
+    #[serde(default)]
     pub rows_updated: u64,
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
+    #[serde(default)]
     pub version: u64,
 }
 
@@ -437,6 +439,7 @@ pub struct AddResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
+    #[serde(default)]
     pub version: u64,
 }
 
@@ -445,6 +448,7 @@ pub struct DeleteResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
+    #[serde(default)]
     pub version: u64,
 }
 
@@ -453,14 +457,18 @@ pub struct MergeResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
+    #[serde(default)]
     pub version: u64,
     /// Number of inserted rows (for user statistics)
+    #[serde(default)]
     pub num_inserted_rows: u64,
     /// Number of updated rows (for user statistics)
+    #[serde(default)]
     pub num_updated_rows: u64,
     /// Number of deleted rows (for user statistics)
     /// Note: This is different from internal references to 'deleted_rows', since we technically "delete" updated rows during processing.
     /// However those rows are not shared with the user.
+    #[serde(default)]
     pub num_deleted_rows: u64,
 }
 
@@ -469,6 +477,7 @@ pub struct AddColumnsResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
+    #[serde(default)]
     pub version: u64,
 }
 
@@ -477,6 +486,7 @@ pub struct AlterColumnsResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
+    #[serde(default)]
     pub version: u64,
 }
 
@@ -485,6 +495,7 @@ pub struct DropColumnsResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
+    #[serde(default)]
     pub version: u64,
 }
 
