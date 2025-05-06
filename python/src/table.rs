@@ -17,10 +17,10 @@ use lancedb::table::{
     Table as LanceDbTable,
 };
 use pyo3::{
-    exceptions::{PyIOError, PyKeyError, PyRuntimeError, PyValueError},
+    exceptions::{PyKeyError, PyRuntimeError, PyValueError},
     pyclass, pymethods,
-    types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods, PyInt, PyString},
-    Bound, FromPyObject, PyAny, PyObject, PyRef, PyResult, Python,
+    types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
+    Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -520,25 +520,15 @@ impl Table {
         })
     }
 
-    pub fn checkout(self_: PyRef<'_, Self>, version: PyObject) -> PyResult<Bound<'_, PyAny>> {
+    pub fn checkout(self_: PyRef<'_, Self>, version: LanceVersion) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let py = self_.py();
-        let (is_int, int_value, string_value) = if let Ok(i) = version.downcast_bound::<PyInt>(py) {
-            let num: u64 = i.extract()?;
-            (true, num, String::new())
-        } else if let Ok(s) = version.downcast_bound::<PyString>(py) {
-            let str_value = s.to_string();
-            (false, 0, str_value)
-        } else {
-            return Err(PyIOError::new_err(
-                "version must be an integer or a string.",
-            ));
-        };
         future_into_py(py, async move {
-            if is_int {
-                inner.checkout(int_value).await.infer_error()
-            } else {
-                inner.checkout_tag(&string_value).await.infer_error()
+            match version {
+                LanceVersion::Version(version_num) => {
+                    inner.checkout(version_num).await.infer_error()
+                }
+                LanceVersion::Tag(tag) => inner.checkout_tag(&tag).await.infer_error(),
             }
         })
     }
@@ -551,12 +541,19 @@ impl Table {
     }
 
     #[pyo3(signature = (version=None))]
-    pub fn restore(self_: PyRef<'_, Self>, version: Option<u64>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn restore(
+        self_: PyRef<'_, Self>,
+        version: Option<LanceVersion>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
+        let py = self_.py();
 
-        future_into_py(self_.py(), async move {
+        future_into_py(py, async move {
             if let Some(version) = version {
-                inner.checkout(version).await.infer_error()?;
+                match version {
+                    LanceVersion::Version(num) => inner.checkout(num).await.infer_error()?,
+                    LanceVersion::Tag(tag) => inner.checkout_tag(&tag).await.infer_error()?,
+                }
             }
             inner.restore().await.infer_error()
         })
@@ -793,6 +790,12 @@ impl Table {
             Ok(())
         })
     }
+}
+
+#[derive(FromPyObject)]
+pub enum LanceVersion {
+    Version(u64),
+    Tag(String),
 }
 
 #[derive(FromPyObject)]

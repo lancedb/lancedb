@@ -100,7 +100,7 @@ class RemoteTable(Table):
     def checkout_latest(self):
         return LOOP.run(self._table.checkout_latest())
 
-    def restore(self, version: Optional[int] = None):
+    def restore(self, version: Optional[Union[int, str]] = None):
         return LOOP.run(self._table.restore(version))
 
     def list_indices(self) -> Iterable[IndexConfig]:

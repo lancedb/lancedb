@@ -1470,7 +1470,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def restore(self, version: Optional[int] = None):
+    def restore(self, version: Optional[Union[int, str]] = None):
         """Restore a version of the table. This is an in-place operation.
 
         This creates a new version where the data is equivalent to the
@@ -1478,9 +1478,10 @@ class Table(ABC):
 
         Parameters
         ----------
-        version : int, default None
-            The version to restore. If unspecified then restores the currently
-            checked out version. If the currently checked out version is the
+        version : int or str, default None
+            The version number or version tag to restore.
+            If unspecified then restores the currently checked out version.
+            If the currently checked out version is the
             latest version then this is a no-op.
         """
 
@@ -1710,7 +1711,7 @@ class LanceTable(Table):
         """
         LOOP.run(self._table.checkout_latest())
 
-    def restore(self, version: Optional[int] = None):
+    def restore(self, version: Optional[Union[int, str]] = None):
         """Restore a version of the table. This is an in-place operation.
 
         This creates a new version where the data is equivalent to the
@@ -1718,9 +1719,10 @@ class LanceTable(Table):
 
         Parameters
         ----------
-        version : int, default None
-            The version to restore. If unspecified then restores the currently
-            checked out version. If the currently checked out version is the
+        version : int or str, default None
+            The version number or version tag to restore.
+            If unspecified then restores the currently checked out version.
+            If the currently checked out version is the
             latest version then this is a no-op.
 
         Examples
@@ -1738,12 +1740,20 @@ class LanceTable(Table):
         AddResult(version=2)
         >>> table.version
         2
+        >>> table.tags.create("v2", 2)
         >>> table.restore(1)
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
         >>> len(table.list_versions())
         3
+        >>> table.restore("v2")
+        >>> table.to_pandas()
+               vector    type
+        0  [1.1, 0.9]  vector
+        1  [0.5, 0.2]  vector
+        >>> len(table.list_versions())
+        4
         """
         if version is not None:
             LOOP.run(self._table.checkout(version))
@@ -3962,7 +3972,7 @@ class AsyncTable:
         """
         await self._inner.checkout_latest()
 
-    async def restore(self, version: Optional[int] = None):
+    async def restore(self, version: Optional[int | str] = None):
         """
         Restore the table to the currently checked out version
 
