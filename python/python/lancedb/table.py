@@ -1751,7 +1751,7 @@ class LanceTable(Table):
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
-        2  [0.5, 0.2]  vector
+        1 [0.5, 0.2]  vector
         >>> len(table.list_versions())
         4
         """
