@@ -1,6 +1,6 @@
 {
   "name": "vectordb",
-  "version": "0.19.1-beta.2",
+  "version": "0.19.1-beta.3",
   "description": " Serverless, low-latency vector database for AI applications",
   "private": false,
   "main": "dist/index.js",
@@ -89,10 +89,10 @@
     }
   },
   "optionalDependencies": {
-    "@lancedb/vectordb-darwin-x64": "0.19.1-beta.2",
-    "@lancedb/vectordb-darwin-arm64": "0.19.1-beta.2",
-    "@lancedb/vectordb-linux-x64-gnu": "0.19.1-beta.2",
-    "@lancedb/vectordb-linux-arm64-gnu": "0.19.1-beta.2",
-    "@lancedb/vectordb-win32-x64-msvc": "0.19.1-beta.2"
+    "@lancedb/vectordb-darwin-x64": "0.19.1-beta.3",
+    "@lancedb/vectordb-darwin-arm64": "0.19.1-beta.3",
+    "@lancedb/vectordb-linux-x64-gnu": "0.19.1-beta.3",
+    "@lancedb/vectordb-linux-arm64-gnu": "0.19.1-beta.3",
+    "@lancedb/vectordb-win32-x64-msvc": "0.19.1-beta.3"
   }
 }
