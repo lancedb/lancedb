@@ -759,17 +759,34 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
-        if body.trim().is_empty() || body == "{}" {
-            // Backward compatible with old servers
-            return Ok(AddResult { version: 0 });
-        }
+        let add_response: serde_json::Result<AddResult> = serde_json::from_str(&body);
+        match add_response {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                // Try to parse as InsertResponse (old server format)
+                #[derive(Deserialize)]
+                #[allow(dead_code)]
+                struct InsertResponse {
+                    request_id: String,
+                }
 
-        let add_response: AddResult = serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse add response: {}", e).into(),
-            request_id,
-            status_code: None,
-        })?;
-        Ok(add_response)
+                let old_response: serde_json::Result<InsertResponse> = serde_json::from_str(&body);
+                match old_response {
+                    Ok(_) => Ok(AddResult { version: 0 }),
+                    Err(_) => {
+                        if body.trim().is_empty() || body == "{}" {
+                            Ok(AddResult { version: 0 })
+                        } else {
+                            Err(Error::Http {
+                                source: format!("Failed to parse add response: {}", body).into(),
+                                request_id,
+                                status_code: None,
+                            })
+                        }
+                    }
+                }
+            }
+        }
     }
 
     async fn create_plan(
@@ -1603,15 +1620,20 @@ mod tests {
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
+    #[case("", 0)] // Empty response (old server)
+    #[case("{}", 0)] // Empty JSON object (old server)
+    #[case(r#"{"request_id": "test-request-id"}"#, 0)] // Response with request_id (old server)
+    #[case(r#"{"version": 43}"#, 43)] // Response with version (new server)
     #[tokio::test]
-    async fn test_add_append(#[case] old_server: bool) {
+    async fn test_add_append(#[case] response_body: &str, #[case] expected_version: u64) {
         let data = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
+
+        // Clone response_body to give it 'static lifetime for the closure
+        let response_body = response_body.to_string();
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let table = Table::new_with_handler("my_table", move |mut request| {
@@ -1622,36 +1644,29 @@ mod tests {
                     .query_pairs()
                     .filter(|(k, _)| k == "mode")
                     .all(|(_, v)| v == "append"));
-
                 assert_eq!(
                     request.headers().get("Content-Type").unwrap(),
                     ARROW_STREAM_CONTENT_TYPE
                 );
-
                 let mut body_out = reqwest::Body::from(Vec::new());
                 std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
                 sender.send(body_out).unwrap();
-
-                if old_server {
-                    http::Response::builder().status(200).body("").unwrap()
-                } else {
-                    http::Response::builder()
-                        .status(200)
-                        .body(r#"{"version": 43}"#)
-                        .unwrap()
-                }
+                http::Response::builder()
+                    .status(200)
+                    .body(response_body.clone())
+                    .unwrap()
             } else {
                 panic!("Unexpected request path: {}", request.url().path());
             }
         });
-
         let result = table
             .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
             .execute()
             .await
             .unwrap();
 
-        assert_eq!(result.version, if old_server { 0 } else { 43 });
+        // Check version matches expected value
+        assert_eq!(result.version, expected_version);
 
         let body = receiver.recv().unwrap();
         let body = collect_body(body).await;
