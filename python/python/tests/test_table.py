@@ -768,6 +768,7 @@ def test_restore(mem_db: DBConnection):
     with pytest.raises(ValueError):
         table.restore(0)
 
+
 def test_restore_with_tags(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
