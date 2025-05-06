@@ -3661,9 +3661,9 @@ checksum = "9028f49264629065d057f340a86acb84867925865f73bbf8d47b4d149a7e88b8"
 
 [[package]]
 name = "jiff"
-version = "0.2.12"
+version = "0.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d07d8d955d798e7a4d6f9c58cd1f1916e790b42b092758a9ef6e16fef9f1b3fd"
+checksum = "f02000660d30638906021176af16b17498bd0d12813dbfe7b276d8bc7f3c0806"
 dependencies = [
  "jiff-static",
  "log",
@@ -3674,9 +3674,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "0.2.12"
+version = "0.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f244cfe006d98d26f859c7abd1318d85327e1882dc9cef80f62daeeb0adcf300"
+checksum = "f3c30758ddd7188629c6713fc45d1188af4f44c90582311d0c8d8c9907f60c48"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4135,7 +4135,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb"
-version = "0.19.1-beta.2"
+version = "0.19.1-beta.3"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4222,7 +4222,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-node"
-version = "0.19.1-beta.2"
+version = "0.19.1-beta.3"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4247,7 +4247,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-nodejs"
-version = "0.19.1-beta.2"
+version = "0.19.1-beta.3"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4266,7 +4266,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-python"
-version = "0.22.1-beta.2"
+version = "0.22.1-beta.3"
 dependencies = [
  "arrow",
  "env_logger",
