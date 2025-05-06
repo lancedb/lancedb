@@ -758,8 +758,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send_streaming(request, data, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
-
-        if body.trim().is_empty() || body == "{}" {
+        if body.trim().is_empty() {
             // Backward compatible with old servers
             return Ok(AddResult { version: 0 });
         }
@@ -922,7 +921,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
-        if body.trim().is_empty() || body == "{}" {
+        if body.trim().is_empty() {
             // Backward compatible with old servers
             return Ok(UpdateResult {
                 rows_updated: 0,
@@ -950,12 +949,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
-
-        if body == "{}" {
+        if body.trim().is_empty() {
             // Backward compatible with old servers
             return Ok(DeleteResult { version: 0 });
         }
-
         let delete_response: DeleteResult =
             serde_json::from_str(&body).map_err(|e| Error::Http {
                 source: format!("Failed to parse delete response: {}", e).into(),
@@ -1083,7 +1080,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
-        if body.trim().is_empty() || body == "{}" {
+        if body.trim().is_empty() {
             // Backward compatible with old servers
             return Ok(MergeResult {
                 version: 0,
@@ -1145,7 +1142,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 let response = self.check_table_response(&request_id, response).await?;
                 let body = response.text().await.err_to_http(request_id.clone())?;
 
-                if body.trim().is_empty() || body == "{}" {
+                if body.trim().is_empty() {
                     // Backward compatible with old servers
                     return Ok(AddColumnsResult { version: 0 });
                 }
@@ -1198,7 +1195,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
-        if body.trim().is_empty() || body == "{}" {
+        if body.trim().is_empty() {
             // Backward compatible with old servers
             return Ok(AlterColumnsResult { version: 0 });
         }
@@ -1223,7 +1220,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
-        if body.trim().is_empty() || body == "{}" {
+        if body.trim().is_empty() {
             // Backward compatible with old servers
             return Ok(DropColumnsResult { version: 0 });
         }
@@ -1603,15 +1600,20 @@ mod tests {
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
+    #[case("", 0)]
+    #[case("{}", 0)]
+    #[case(r#"{"request_id": "test-request-id"}"#, 0)]
+    #[case(r#"{"version": 43}"#, 43)]
     #[tokio::test]
-    async fn test_add_append(#[case] old_server: bool) {
+    async fn test_add_append(#[case] response_body: &str, #[case] expected_version: u64) {
         let data = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
+
+        // Clone response_body to give it 'static lifetime for the closure
+        let response_body = response_body.to_string();
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let table = Table::new_with_handler("my_table", move |mut request| {
@@ -1622,36 +1624,29 @@ mod tests {
                     .query_pairs()
                     .filter(|(k, _)| k == "mode")
                     .all(|(_, v)| v == "append"));
-
                 assert_eq!(
                     request.headers().get("Content-Type").unwrap(),
                     ARROW_STREAM_CONTENT_TYPE
                 );
-
                 let mut body_out = reqwest::Body::from(Vec::new());
                 std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
                 sender.send(body_out).unwrap();
-
-                if old_server {
-                    http::Response::builder().status(200).body("").unwrap()
-                } else {
-                    http::Response::builder()
-                        .status(200)
-                        .body(r#"{"version": 43}"#)
-                        .unwrap()
-                }
+                http::Response::builder()
+                    .status(200)
+                    .body(response_body.clone())
+                    .unwrap()
             } else {
                 panic!("Unexpected request path: {}", request.url().path());
             }
         });
-
         let result = table
             .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
             .execute()
             .await
             .unwrap();
 
-        assert_eq!(result.version, if old_server { 0 } else { 43 });
+        // Check version matches expected value
+        assert_eq!(result.version, expected_version);
 
         let body = receiver.recv().unwrap();
         let body = collect_body(body).await;
