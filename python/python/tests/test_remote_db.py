@@ -149,6 +149,24 @@ async def test_async_checkout():
         assert await table.count_rows() == 300
 
 
+def test_table_len_sync():
+    def handler(request):
+        if request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(1).encode())
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        assert len(table) == 1
+
+
 @pytest.mark.asyncio
 async def test_http_error():
     request_id_holder = {"request_id": None}
