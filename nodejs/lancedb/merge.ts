@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
-import { exec } from "child_process";
 import { Data, Schema, fromDataToBuffer } from "./arrow";
 import { MergeResult, NativeMergeInsertBuilder } from "./native";
 
