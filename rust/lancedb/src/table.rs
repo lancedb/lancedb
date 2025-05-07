@@ -2014,7 +2014,7 @@ impl NativeTable {
     /// more information.
     pub async fn uses_v2_manifest_paths(&self) -> Result<bool> {
         let dataset = self.dataset.get().await?;
-        Ok(dataset.manifest_naming_scheme == ManifestNamingScheme::V2)
+        Ok(dataset.manifest_location().naming_scheme == ManifestNamingScheme::V2)
     }
 
     /// Migrate the table to use the new manifest path scheme.
