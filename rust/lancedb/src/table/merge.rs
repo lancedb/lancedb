@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use arrow_array::RecordBatchReader;
 
@@ -21,6 +21,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_insert_all: bool,
     pub(crate) when_not_matched_by_source_delete: bool,
     pub(crate) when_not_matched_by_source_delete_filt: Option<String>,
+    pub(crate) timeout: Option<Duration>,
 }
 
 impl MergeInsertBuilder {
@@ -33,6 +34,7 @@ impl MergeInsertBuilder {
             when_not_matched_insert_all: false,
             when_not_matched_by_source_delete: false,
             when_not_matched_by_source_delete_filt: None,
+            timeout: None,
         }
     }
 
@@ -81,6 +83,15 @@ impl MergeInsertBuilder {
     pub fn when_not_matched_by_source_delete(&mut self, filter: Option<String>) -> &mut Self {
         self.when_not_matched_by_source_delete = true;
         self.when_not_matched_by_source_delete_filt = filter;
+        self
+    }
+
+    /// Maximum time to run the operation before cancelling it.
+    ///
+    /// Default is no timeout for first attempt, but an overall timeout of 30
+    /// seconds is applied after that.
+    pub fn timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.timeout = Some(timeout);
         self
     }
 

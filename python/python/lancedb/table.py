@@ -3715,6 +3715,7 @@ class AsyncTable:
                 when_not_matched_insert_all=merge._when_not_matched_insert_all,
                 when_not_matched_by_source_delete=merge._when_not_matched_by_source_delete,
                 when_not_matched_by_source_condition=merge._when_not_matched_by_source_condition,
+                timeout=merge._timeout,
             ),
         )
 

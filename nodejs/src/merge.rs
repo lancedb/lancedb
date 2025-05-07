@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::time::Duration;
+
 use lancedb::{arrow::IntoArrow, ipc::ipc_file_to_batches, table::merge::MergeInsertBuilder};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -34,6 +36,11 @@ impl NativeMergeInsertBuilder {
         let mut this = self.clone();
         this.inner.when_not_matched_by_source_delete(filter);
         this
+    }
+
+    #[napi]
+    pub fn set_timeout(&mut self, timeout: u32) {
+        self.inner.timeout(Duration::from_millis(timeout as u64));
     }
 
     #[napi(catch_unwind)]

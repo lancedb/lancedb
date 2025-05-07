@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
+import { exec } from "child_process";
 import { Data, Schema, fromDataToBuffer } from "./arrow";
 import { MergeResult, NativeMergeInsertBuilder } from "./native";
 
@@ -75,7 +76,10 @@ export class MergeInsertBuilder {
    *
    * @returns {Promise<MergeResult>} the merge result
    */
-  async execute(data: Data): Promise<MergeResult> {
+  async execute(
+    data: Data,
+    execOptions?: Partial<WriteExecutionOptions>,
+  ): Promise<MergeResult> {
     let schema: Schema;
     if (this.#schema instanceof Promise) {
       schema = await this.#schema;
@@ -83,7 +87,21 @@ export class MergeInsertBuilder {
     } else {
       schema = this.#schema;
     }
+
+    if (execOptions?.timeoutMs !== undefined) {
+      this.#native.setTimeout(execOptions.timeoutMs);
+    }
+
     const buffer = await fromDataToBuffer(data, undefined, schema);
     return await this.#native.execute(buffer);
   }
+}
+
+export interface WriteExecutionOptions {
+  /**
+   * Maximum time (in milliseconds) to run the operation before cancelling it.
+   * Default is no timeout for first attempt, but an overall timeout of
+   * 30 seconds is applied after that.
+   */
+  timeoutMs?: number;
 }
