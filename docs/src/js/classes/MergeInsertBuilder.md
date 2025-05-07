@@ -33,7 +33,7 @@ Construct a MergeInsertBuilder. __Internal use only.__
 ### execute()
 
 ```ts
-execute(data): Promise<MergeResult>
+execute(data, execOptions?): Promise<MergeResult>
 ```
 
 Executes the merge insert operation
@@ -41,6 +41,8 @@ Executes the merge insert operation
 #### Parameters
 
 * **data**: [`Data`](../type-aliases/Data.md)
+
+* **execOptions?**: `Partial`&lt;[`WriteExecutionOptions`](../interfaces/WriteExecutionOptions.md)&gt;
 
 #### Returns
 
