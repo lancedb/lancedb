@@ -1325,7 +1325,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             self.name, index_name
         ));
         let (request_id, response) = self.send(request, true).await?;
-        self.check_table_response(&request_id, response).await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Error::IndexNotFound {
+                name: index_name.to_string(),
+            });
+        };
+        self.client.check_response(&request_id, response).await?;
         Ok(())
     }
 
@@ -2877,6 +2882,22 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table.drop_index("my_index").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_index_not_exists() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/index/my_index/drop/"
+            );
+            http::Response::builder().status(404).body("{}").unwrap()
+        });
+
+        // Assert that the error is IndexNotFound
+        let e = table.drop_index("my_index").await.unwrap_err();
+        assert!(matches!(e, Error::IndexNotFound { .. }));
     }
 
     #[tokio::test]
