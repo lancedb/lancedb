@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use arrow_array::RecordBatchReader;
 
@@ -21,6 +21,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_insert_all: bool,
     pub(crate) when_not_matched_by_source_delete: bool,
     pub(crate) when_not_matched_by_source_delete_filt: Option<String>,
+    pub(crate) timeout: Option<Duration>,
 }
 
 impl MergeInsertBuilder {
@@ -33,6 +34,7 @@ impl MergeInsertBuilder {
             when_not_matched_insert_all: false,
             when_not_matched_by_source_delete: false,
             when_not_matched_by_source_delete_filt: None,
+            timeout: None,
         }
     }
 
@@ -81,6 +83,21 @@ impl MergeInsertBuilder {
     pub fn when_not_matched_by_source_delete(&mut self, filter: Option<String>) -> &mut Self {
         self.when_not_matched_by_source_delete = true;
         self.when_not_matched_by_source_delete_filt = filter;
+        self
+    }
+
+    /// Maximum time to run the operation before cancelling it.
+    ///
+    /// By default, there is a 30-second timeout that is only enforced after the
+    /// first attempt. This is to prevent spending too long retrying to resolve
+    /// conflicts. For example, if a write attempt takes 20 seconds and fails,
+    /// the second attempt will be cancelled after 10 seconds, hitting the
+    /// 30-second timeout. However, a write that takes one hour and succeeds on the
+    /// first attempt will not be cancelled.
+    ///
+    /// When this is set, the timeout is enforced on all attempts, including the first.
+    pub fn timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.timeout = Some(timeout);
         self
     }
 

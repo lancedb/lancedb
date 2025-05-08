@@ -349,7 +349,7 @@ describe("merge insert", () => {
       .mergeInsert("a")
       .whenMatchedUpdateAll()
       .whenNotMatchedInsertAll()
-      .execute(newData);
+      .execute(newData, { timeoutMs: 10_000 });
     expect(mergeInsertRes).toHaveProperty("version");
     expect(mergeInsertRes.version).toBe(2);
     expect(mergeInsertRes.numInsertedRows).toBe(1);
@@ -462,6 +462,20 @@ describe("merge insert", () => {
     );
     res = res.sort((a, b) => a.a - b.a);
     expect(res).toEqual(expected);
+  });
+
+  test("timeout", async () => {
+    const newData = [
+      { a: 2, b: "x" },
+      { a: 4, b: "z" },
+    ];
+    await expect(
+      table
+        .mergeInsert("a")
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute(newData, { timeoutMs: 0 }),
+    ).rejects.toThrow("merge insert timed out");
   });
 });
 

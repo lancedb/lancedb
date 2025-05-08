@@ -14,7 +14,7 @@ use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
 use datafusion_physical_plan::ExecutionPlan;
-use futures::{StreamExt, TryStreamExt};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
@@ -80,7 +80,7 @@ pub mod merge;
 
 use crate::index::waiter::wait_for_index;
 pub use chrono::Duration;
-use futures::future::join_all;
+use futures::future::{join_all, Either};
 pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
@@ -2014,7 +2014,7 @@ impl NativeTable {
     /// more information.
     pub async fn uses_v2_manifest_paths(&self) -> Result<bool> {
         let dataset = self.dataset.get().await?;
-        Ok(dataset.manifest_naming_scheme == ManifestNamingScheme::V2)
+        Ok(dataset.manifest_location().naming_scheme == ManifestNamingScheme::V2)
     }
 
     /// Migrate the table to use the new manifest path scheme.
@@ -2475,8 +2475,26 @@ impl BaseTable for NativeTable {
         } else {
             builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
         }
-        let job = builder.try_build()?;
-        let (new_dataset, stats) = job.execute_reader(new_data).await?;
+
+        let future = if let Some(timeout) = params.timeout {
+            // The default retry timeout is 30s, so we pass the full timeout down
+            // as well in case it is longer than that.
+            let future = builder
+                .retry_timeout(timeout)
+                .try_build()?
+                .execute_reader(new_data);
+            Either::Left(tokio::time::timeout(timeout, future).map(|res| match res {
+                Ok(Ok((new_dataset, stats))) => Ok((new_dataset, stats)),
+                Ok(Err(e)) => Err(e.into()),
+                Err(_) => Err(Error::Runtime {
+                    message: "merge insert timed out".to_string(),
+                }),
+            }))
+        } else {
+            let job = builder.try_build()?;
+            Either::Right(job.execute_reader(new_data).map_err(|e| e.into()))
+        };
+        let (new_dataset, stats) = future.await?;
         let version = new_dataset.manifest().version;
         self.dataset.set_latest(new_dataset.as_ref().clone()).await;
         Ok(MergeResult {

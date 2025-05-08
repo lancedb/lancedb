@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ class LanceMergeInsertBuilder(object):
         self._when_not_matched_insert_all = False
         self._when_not_matched_by_source_delete = False
         self._when_not_matched_by_source_condition = None
+        self._timeout = None
 
     def when_matched_update_all(
         self, *, where: Optional[str] = None
@@ -81,6 +83,7 @@ class LanceMergeInsertBuilder(object):
         new_data: DATA,
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        timeout: Optional[timedelta] = None,
     ) -> MergeInsertResult:
         """
         Executes the merge insert operation
@@ -98,10 +101,24 @@ class LanceMergeInsertBuilder(object):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        timeout: Optional[timedelta], default None
+            Maximum time to run the operation before cancelling it.
+
+            By default, there is a 30-second timeout that is only enforced after the
+            first attempt. This is to prevent spending too long retrying to resolve
+            conflicts. For example, if a write attempt takes 20 seconds and fails,
+            the second attempt will be cancelled after 10 seconds, hitting the
+            30-second timeout. However, a write that takes one hour and succeeds on the
+            first attempt will not be cancelled.
+
+            When this is set, the timeout is enforced on all attempts, including
+            the first.
 
         Returns
         -------
         MergeInsertResult
             version: the new version number of the table after doing merge insert.
         """
+        if timeout is not None:
+            self._timeout = timeout
         return self._table._do_merge(self, new_data, on_bad_vectors, fill_value)

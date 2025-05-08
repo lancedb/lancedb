@@ -86,7 +86,7 @@ export {
   ColumnAlteration,
 } from "./table";
 
-export { MergeInsertBuilder } from "./merge";
+export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 
 export * as embedding from "./embedding";
 export * as rerankers from "./rerankers";

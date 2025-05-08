@@ -937,7 +937,7 @@ def test_merge_insert(mem_db: DBConnection):
         table.merge_insert("a")
         .when_matched_update_all()
         .when_not_matched_insert_all()
-        .execute(new_data)
+        .execute(new_data, timeout=timedelta(seconds=10))
     )
     assert merge_insert_res.version == 2
     assert merge_insert_res.num_inserted_rows == 1
@@ -1012,6 +1012,12 @@ def test_merge_insert(mem_db: DBConnection):
 
     expected = pa.table({"a": [2, 4], "b": ["x", "z"]})
     assert table.to_arrow().sort_by("a") == expected
+
+    # timeout
+    with pytest.raises(Exception, match="merge insert timed out"):
+        table.merge_insert("a").when_matched_update_all().execute(
+            new_data, timeout=timedelta(0)
+        )
 
 
 # We vary the data format because there are slight differences in how

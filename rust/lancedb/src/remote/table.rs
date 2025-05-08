@@ -1068,12 +1068,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     ) -> Result<MergeResult> {
         self.check_mutable().await?;
 
+        let timeout = params.timeout;
+
         let query = MergeInsertRequest::try_from(params)?;
-        let request = self
+        let mut request = self
             .client
             .post(&format!("/v1/table/{}/merge_insert/", self.name))
             .query(&query)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+
+        if let Some(timeout) = timeout {
+            // (If it doesn't fit into u64, it's not worth sending anyways.)
+            if let Ok(timeout_ms) = u64::try_from(timeout.as_millis()) {
+                request = request.header(REQUEST_TIMEOUT_HEADER, timeout_ms);
+            }
+        }
 
         let (request_id, response) = self.send_streaming(request, new_data, true).await?;
 

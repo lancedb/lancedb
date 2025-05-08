@@ -72,6 +72,7 @@
 - [UpdateOptions](interfaces/UpdateOptions.md)
 - [UpdateResult](interfaces/UpdateResult.md)
 - [Version](interfaces/Version.md)
+- [WriteExecutionOptions](interfaces/WriteExecutionOptions.md)
 
 ## Type Aliases
 
