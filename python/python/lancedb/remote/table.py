@@ -47,9 +47,6 @@ class RemoteTable(Table):
     def __repr__(self) -> str:
         return f"RemoteTable({self.db_name}.{self.name})"
 
-    def __len__(self) -> int:
-        self.count_rows(None)
-
     @property
     def schema(self) -> pa.Schema:
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)

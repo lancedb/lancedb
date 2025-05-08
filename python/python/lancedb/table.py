@@ -620,6 +620,10 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def __len__(self) -> int:
+        """The number of rows in this Table"""
+        return self.count_rows(None)
+
     @property
     @abstractmethod
     def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
@@ -1761,9 +1765,6 @@ class LanceTable(Table):
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
-
-    def __len__(self) -> int:
-        return self.count_rows()
 
     def __repr__(self) -> str:
         val = f"{self.__class__.__name__}(name={self.name!r}, version={self.version}"
