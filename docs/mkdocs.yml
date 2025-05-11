@@ -205,7 +205,6 @@ nav:
           - PromptTools: integrations/prompttools.md
           - dlt: integrations/dlt.md
           - phidata: integrations/phidata.md
-          - Genkit: integrations/genkit.md
       - 🎯 Examples:
           - Overview: examples/index.md
           - 🐍 Python:
@@ -332,7 +331,6 @@ nav:
       - PromptTools: integrations/prompttools.md
       - dlt: integrations/dlt.md
       - phidata: integrations/phidata.md
-      - Genkit: integrations/genkit.md
   - Examples:
       - examples/index.md
       - 🐍 Python:
