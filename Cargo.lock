@@ -2737,8 +2737,8 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "rand 0.8.5",
 ]
@@ -3727,8 +3727,8 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3752,6 +3752,7 @@ dependencies = [
  "datafusion-expr",
  "datafusion-functions",
  "datafusion-physical-expr",
+ "datafusion-physical-plan",
  "deepsize",
  "either",
  "futures",
@@ -3790,8 +3791,8 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3808,8 +3809,8 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3845,8 +3846,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3875,8 +3876,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3891,8 +3892,8 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrayref",
  "arrow",
@@ -3931,8 +3932,8 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -3966,8 +3967,8 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4020,8 +4021,8 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4050,6 +4051,7 @@ dependencies = [
  "pin-project",
  "prost",
  "rand 0.8.5",
+ "serde",
  "shellexpand",
  "snafu",
  "tokio",
@@ -4059,8 +4061,8 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrow-array",
  "arrow-ord",
@@ -4083,8 +4085,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4123,8 +4125,8 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "0.27.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.0-beta.5#80a3f8796aee814c60cbdc94179b4e6231fa54e4"
+version = "0.27.1"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.27.1-beta.1#fe14671f1a5bdca3c135abd1a5d7baa5fe1faeae"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4135,7 +4137,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb"
-version = "0.19.1-beta.3"
+version = "0.19.1-beta.4"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4222,7 +4224,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-node"
-version = "0.19.1-beta.3"
+version = "0.19.1-beta.4"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4247,7 +4249,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-nodejs"
-version = "0.19.1-beta.3"
+version = "0.19.1-beta.4"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4266,7 +4268,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-python"
-version = "0.22.1-beta.3"
+version = "0.22.1-beta.4"
 dependencies = [
  "arrow",
  "env_logger",
