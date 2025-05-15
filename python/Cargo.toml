@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-python"
-version = "0.22.1-beta.4"
+version = "0.22.1-beta.5"
 edition.workspace = true
 description = "Python bindings for LanceDB"
 license.workspace = true
