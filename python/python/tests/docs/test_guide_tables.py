@@ -360,9 +360,7 @@ def test_sql_query():
 
     ctx = SessionContext()
     ffi_lance_table = FFILanceTableProvider(
-        lance_table.to_lance(),
-        with_row_id=True,
-        with_row_addr=True
+        lance_table.to_lance(), with_row_id=True, with_row_addr=True
     )
 
     ctx.register_table_provider("ffi_lance_table", ffi_lance_table)
