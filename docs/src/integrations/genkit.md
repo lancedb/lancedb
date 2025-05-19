@@ -1,6 +1,8 @@
 ### genkitx-lancedb
 This is a lancedb plugin for genkit framework. It allows you to use LanceDB for ingesting and rereiving data using genkit framework.
 
+![integration-banner-genkit](https://github.com/user-attachments/assets/a6cc28af-98e9-4425-b87c-7ab139bd7893)
+
 ### Installation
 ```bash
 pnpm install genkitx-lancedb
