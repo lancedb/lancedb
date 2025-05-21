@@ -40,6 +40,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
@@ -160,8 +163,8 @@ jobs:
     strategy:
       matrix:
         target:
-        - x86_64-pc-windows-msvc
-        - aarch64-pc-windows-msvc
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
     defaults:
       run:
         working-directory: rust/lancedb
