@@ -163,6 +163,7 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         "voyage-3.5-lite",
         "voyage-3",
         "voyage-3-lite",
+        "voyage-multilingual-2",
         "voyage-finance-2",
         "voyage-law-2",
         "voyage-code-2",
