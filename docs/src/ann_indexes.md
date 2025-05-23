@@ -291,7 +291,7 @@ Product quantization can lead to approximately `16 * sizeof(float32) / 1 = 64` t
 
 `num_partitions` is used to decide how many partitions the first level `IVF` index uses.
 Higher number of partitions could lead to more efficient I/O during queries and better accuracy, but it takes much more time to train.
-On `SIFT-1M` dataset, our benchmark shows that keeping each partition 1K-4K rows lead to a good latency / recall.
+On `SIFT-1M` dataset, our benchmark shows that keeping each partition 4K-8K rows lead to a good latency / recall.
 
 `num_sub_vectors` specifies how many Product Quantization (PQ) short codes to generate on each vector. The number should be a factor of the vector dimension. Because
 PQ is a lossy compression of the original vector, a higher `num_sub_vectors` usually results in
