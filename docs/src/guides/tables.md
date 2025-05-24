@@ -601,6 +601,23 @@ After a table has been created, you can always add more data to it using the `ad
     )
     ```
 
+
+## Querying a table with SQL
+
+You can query your Lance tables with SQL with the integration with Datafusion.
+
+=== "Python"
+
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-session-context"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:import-ffi-dataset"
+        --8<-- "python/python/tests/docs/test_guide_tables.py:"lance_sql_basic
+        ```
+
+
 ## Upserting into a table
 
 Upserting lets you insert new rows or update existing rows in a table. To upsert
@@ -765,7 +782,7 @@ This can be used to update zero to all rows depending on how many rows match the
         ];
         const tbl = await db.createTable("my_table", data)
 
-        await tbl.update({ 
+        await tbl.update({
             values: { vector: [10, 10] },
             where: "x = 2"
         });
@@ -787,9 +804,9 @@ This can be used to update zero to all rows depending on how many rows match the
         ];
         const tbl = await db.createTable("my_table", data)
 
-        await tbl.update({ 
-            where: "x = 2", 
-            values: { vector: [10, 10] } 
+        await tbl.update({
+            where: "x = 2",
+            values: { vector: [10, 10] }
         });
         ```
 
