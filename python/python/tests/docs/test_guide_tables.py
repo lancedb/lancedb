@@ -351,22 +351,22 @@ def test_table_with_embedding():
 
 def test_sql_query():
     db = lancedb.connect("data/sample-lancedb")
-    # --8<-- [start:lance_sql_basic]
     data = [
         {"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
         {"vector": [0.2, 1.8], "lat": 40.1, "long": -74.1},
     ]
-    lance_table = db.create_table("lance_table", data)
+    table = db.create_table("lance_table", data)
 
+    # --8<-- [start:lance_sql_basic]
     ctx = SessionContext()
     ffi_lance_table = FFILanceTableProvider(
-        lance_table.to_lance(), with_row_id=True, with_row_addr=True
+        table.to_lance(), with_row_id=False, with_row_addr=False
     )
 
     ctx.register_table_provider("ffi_lance_table", ffi_lance_table)
     ctx.table("ffi_lance_table")
 
-    ctx.sql("SELECT vector FROM ffi_lance_table WHERE lat >= 42")
+    ctx.sql("SELECT vector FROM ffi_lance_table")
     # --8<-- [end:lance_sql_basic]
 
 
