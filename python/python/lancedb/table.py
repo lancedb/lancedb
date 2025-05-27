@@ -829,15 +829,15 @@ class Table(ABC):
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         use_tantivy: bool = True,
         tokenizer_name: Optional[str] = None,
-        with_position: bool = True,
+        with_position: bool = False,
         # tokenizer configs:
         base_tokenizer: BaseTokenizerType = "simple",
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
-        stem: bool = False,
-        remove_stop_words: bool = False,
-        ascii_folding: bool = False,
+        stem: bool = True,
+        remove_stop_words: bool = True,
+        ascii_folding: bool = True,
         wait_timeout: Optional[timedelta] = None,
     ):
         """Create a full-text search index on the table.
@@ -867,7 +867,7 @@ class Table(ABC):
         use_tantivy: bool, default True
             If True, use the legacy full-text search implementation based on tantivy.
             If False, use the new full-text search implementation based on lance-index.
-        with_position: bool, default True
+        with_position: bool, default False
             Only available with use_tantivy=False
             If False, do not store the positions of the terms in the text.
             This can reduce the size of the index and improve indexing speed.
@@ -885,13 +885,13 @@ class Table(ABC):
         lower_case : bool, default True
             Whether to convert the token to lower case. This makes queries
             case-insensitive.
-        stem : bool, default False
+        stem : bool, default True
             Whether to stem the token. Stemming reduces words to their root form.
             For example, in English "running" and "runs" would both be reduced to "run".
-        remove_stop_words : bool, default False
+        remove_stop_words : bool, default True
             Whether to remove stop words. Stop words are common words that are often
             removed from text before indexing. For example, in English "the" and "and".
-        ascii_folding : bool, default False
+        ascii_folding : bool, default True
             Whether to fold ASCII characters. This converts accented characters to
             their ASCII equivalent. For example, "café" would be converted to "cafe".
         wait_timeout: timedelta, optional
@@ -1972,15 +1972,15 @@ class LanceTable(Table):
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         use_tantivy: bool = True,
         tokenizer_name: Optional[str] = None,
-        with_position: bool = True,
+        with_position: bool = False,
         # tokenizer configs:
         base_tokenizer: BaseTokenizerType = "simple",
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
-        stem: bool = False,
-        remove_stop_words: bool = False,
-        ascii_folding: bool = False,
+        stem: bool = True,
+        remove_stop_words: bool = True,
+        ascii_folding: bool = True,
     ):
         if not use_tantivy:
             if not isinstance(field_names, str):
@@ -1990,6 +1990,7 @@ class LanceTable(Table):
                 tokenizer_configs = {
                     "base_tokenizer": base_tokenizer,
                     "language": language,
+                    "with_position": with_position,
                     "max_token_length": max_token_length,
                     "lower_case": lower_case,
                     "stem": stem,
@@ -2000,7 +2001,6 @@ class LanceTable(Table):
                 tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
 
             config = FTS(
-                with_position=with_position,
                 **tokenizer_configs,
             )
 

@@ -389,6 +389,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-channel"
+version = "2.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89b47800b0be77592da0afd425cc03468052844aff33b84e33cc696f64e77b6a"
+dependencies = [
+ "concurrent-queue",
+ "event-listener-strategy",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "async-compression"
 version = "0.4.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2737,8 +2749,8 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "rand 0.8.5",
 ]
@@ -3727,8 +3739,8 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3791,8 +3803,8 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3809,8 +3821,8 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -3846,8 +3858,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3876,8 +3888,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3892,8 +3904,8 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrayref",
  "arrow",
@@ -3932,8 +3944,8 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -3967,16 +3979,18 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrow",
  "arrow-array",
  "arrow-ord",
  "arrow-schema",
  "arrow-select",
+ "async-channel",
  "async-recursion",
  "async-trait",
+ "bitpacking",
  "bitvec",
  "bytes",
  "crossbeam-queue",
@@ -4021,8 +4035,8 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4061,8 +4075,8 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrow-array",
  "arrow-ord",
@@ -4085,8 +4099,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4125,8 +4139,8 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "0.27.3"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.27.3-beta.2#7531cae52d87505cbb20cabc5fa82095c8f6404e"
+version = "0.28.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.28.0#870971d7f8656a09bf5f2abe413d84487d2e90dd"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4137,7 +4151,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb"
-version = "0.19.1"
+version = "0.19.2-beta.0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4224,7 +4238,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-node"
-version = "0.19.1"
+version = "0.19.2-beta.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4249,7 +4263,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-nodejs"
-version = "0.19.1"
+version = "0.19.2-beta.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4268,7 +4282,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-python"
-version = "0.22.1"
+version = "0.22.2-beta.0"
 dependencies = [
  "arrow",
  "env_logger",

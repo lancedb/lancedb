@@ -3,7 +3,7 @@
 
 use lancedb::index::vector::IvfFlatIndexBuilder;
 use lancedb::index::{
-    scalar::{BTreeIndexBuilder, FtsIndexBuilder, TokenizerConfig},
+    scalar::{BTreeIndexBuilder, FtsIndexBuilder},
     vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
     Index as LanceDbIndex,
 };
@@ -38,19 +38,17 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
             "LabelList" => Ok(LanceDbIndex::LabelList(Default::default())),
             "FTS" => {
                 let params = source.extract::<FtsParams>()?;
-                let inner_opts = TokenizerConfig::default()
+                let inner_opts = FtsIndexBuilder::default()
                     .base_tokenizer(params.base_tokenizer)
                     .language(&params.language)
                     .map_err(|_| PyValueError::new_err(format!("LanceDB does not support the requested language: '{}'", params.language)))?
+                    .with_position(params.with_position)
                     .lower_case(params.lower_case)
                     .max_token_length(params.max_token_length)
                     .remove_stop_words(params.remove_stop_words)
                     .stem(params.stem)
                     .ascii_folding(params.ascii_folding);
-                let mut opts = FtsIndexBuilder::default()
-                    .with_position(params.with_position);
-                opts.tokenizer_configs = inner_opts;
-                Ok(LanceDbIndex::FTS(opts))
+                Ok(LanceDbIndex::FTS(inner_opts))
             },
             "IvfFlat" => {
                 let params = source.extract::<IvfFlatParams>()?;

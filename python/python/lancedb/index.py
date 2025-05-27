@@ -102,7 +102,7 @@ class FTS:
 
     Attributes
     ----------
-    with_position : bool, default True
+    with_position : bool, default False
         Whether to store the position of the token in the document. Setting this
         to False can reduce the size of the index and improve indexing speed,
         but it will disable support for phrase queries.
@@ -118,25 +118,25 @@ class FTS:
         ignored.
     lower_case : bool, default True
         Whether to convert the token to lower case. This makes queries case-insensitive.
-    stem : bool, default False
+    stem : bool, default True
         Whether to stem the token. Stemming reduces words to their root form.
         For example, in English "running" and "runs" would both be reduced to "run".
-    remove_stop_words : bool, default False
+    remove_stop_words : bool, default True
         Whether to remove stop words. Stop words are common words that are often
         removed from text before indexing. For example, in English "the" and "and".
-    ascii_folding : bool, default False
+    ascii_folding : bool, default True
         Whether to fold ASCII characters. This converts accented characters to
         their ASCII equivalent. For example, "café" would be converted to "cafe".
     """
 
-    with_position: bool = True
+    with_position: bool = False
     base_tokenizer: Literal["simple", "raw", "whitespace"] = "simple"
     language: str = "English"
     max_token_length: Optional[int] = 40
     lower_case: bool = True
-    stem: bool = False
-    remove_stop_words: bool = False
-    ascii_folding: bool = False
+    stem: bool = True
+    remove_stop_words: bool = True
+    ascii_folding: bool = True
 
 
 @dataclass
