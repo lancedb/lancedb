@@ -1506,7 +1506,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       ];
       const table = await db.createTable("test", data);
       await table.createIndex("text", {
-        config: Index.fts(),
+        config: Index.fts({
+          withPosition: true,
+        }),
       });
 
       const results = await table.search("lance").toArray();
@@ -1559,7 +1561,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       ];
       const table = await db.createTable("test", data);
       await table.createIndex("text", {
-        config: Index.fts(),
+        config: Index.fts({
+          withPosition: true,
+        }),
       });
 
       const results = await table.search("world").toArray();
