@@ -49,7 +49,7 @@ jobs:
         sudo apt install -y protobuf-compiler libssl-dev
     - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        components: rustfmt
+        components: rustfmt, clippy
     - name: Lint
       run: |
         cargo fmt --all -- --check
