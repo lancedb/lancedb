@@ -53,7 +53,7 @@ LanceDB is a central location where developers can build, train and analyze thei
 ### **Ecosystem**:
 - **Columnar Storage**: Built on the Lance columnar format for efficient storage and analytics.
 - **Seamless Integration**: Python, Node.js, Rust, and REST APIs for easy integration. Native Python and Javascript/Typescript support.
-- **Rich Ecosystem**: Integrations with [LangChain 🦜️🔗](https://python.langchain.com/docs/integrations/vectorstores/lancedb/), [LlamaIndex 🦙](https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html), Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
+- **Rich Ecosystem**: Integrations with [**LangChain** 🦜️🔗](https://python.langchain.com/docs/integrations/vectorstores/lancedb/), [**LlamaIndex** 🦙](https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html), Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
 
 ## **How to Install**:
 
@@ -72,9 +72,9 @@ Follow the [Quickstart](https://lancedb.github.io/lancedb/basic/) doc to set up 
 
 We welcome contributions from everyone! Whether you're a developer, researcher, or just someone who wants to help out. 
 
-If you have any suggestions or feature requests, please feel free to open an issue on GitHub or discuss it on our [Discord](https://discord.gg/lancedb) server.
+If you have any suggestions or feature requests, please feel free to open an issue on GitHub or discuss it on our [**Discord**](https://discord.gg/G5DcmnZWKB) server.
 
-Check out the Roadmap if you would like to work on the features that are planned for the future. If you have any suggestions or feature requests, please feel free to open an issue on GitHub. 
+[**Check out the GitHub Issues**](https://github.com/lancedb/lancedb/issues) if you would like to work on the features that are planned for the future. If you have any suggestions or feature requests, please feel free to open an issue on GitHub. 
 
 ## **Contributors**
 
