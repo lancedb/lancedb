@@ -15,14 +15,15 @@ crate-type = ["cdylib"]
 arrow-ipc.workspace = true
 futures.workspace = true
 lancedb = { path = "../rust/lancedb" }
-napi = { version = "2.15", default-features = false, features = [
+napi = { version = "=2.16.1", default-features = false, features = [
     "napi7",
     "async",
 ] }
-napi-derive = "2"
+napi-derive = "=2.16.1"
+napi-build = "=2.1.2"
 
 # Prevent dynamic linking of lzma, which comes from datafusion
 lzma-sys = { version = "*", features = ["static"] }
 
 [build-dependencies]
-napi-build = "2.1"
+napi-build = "=2.1.2"

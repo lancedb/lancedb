@@ -41,5 +41,3 @@ dist
 target
 
 **/sccache.log
-
-Cargo.lock
