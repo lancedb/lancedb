@@ -119,6 +119,8 @@ class Query(pydantic.BaseModel):
 
     fast_search: bool = False
 
+    bypass_vector_index: Optional[bool] = None
+
 
 class LanceQueryBuilder(ABC):
     """An abstract query builder. Subclasses are defined for vector search,
@@ -127,14 +129,15 @@ class LanceQueryBuilder(ABC):
 
     @classmethod
     def create(
-            cls,
-            table: "Table",
-            query: Optional[Union[np.ndarray, str, "PIL.Image.Image", Tuple]],
-            query_type: str,
-            vector_column_name: str,
-            ordering_field_name: Optional[str] = None,
-            fts_columns: Union[str, List[str]] = [],
-            fast_search: bool = False,
+        cls,
+        table: "Table",
+        query: Optional[Union[np.ndarray, str, "PIL.Image.Image", Tuple]],
+        query_type: str,
+        vector_column_name: str,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str]] = [],
+        fast_search: bool = False,
+        bypass_vector_index: Optional[bool] = None,
     ) -> LanceQueryBuilder:
         """
         Create a query builder based on the given query and query type.
@@ -153,6 +156,8 @@ class LanceQueryBuilder(ABC):
             The name of the vector column to use for vector search.
         fast_search: bool
             Skip flat search of unindexed data.
+        bypass_vector_index: Optional[bool]
+            Bypass the vector index and use a brute force search.
         """
         # Check hybrid search first as it supports empty query pattern
         if query_type == "hybrid":
@@ -195,7 +200,12 @@ class LanceQueryBuilder(ABC):
             raise TypeError(f"Unsupported query type: {type(query)}")
 
         return LanceVectorQueryBuilder(
-            table, query, vector_column_name, str_query, fast_search
+            table,
+            query,
+            vector_column_name,
+            str_query,
+            fast_search,
+            bypass_vector_index,
         )
 
     @classmethod
@@ -557,12 +567,13 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     """
 
     def __init__(
-            self,
-            table: "Table",
-            query: Union[np.ndarray, list, "PIL.Image.Image"],
-            vector_column: str,
-            str_query: Optional[str] = None,
-            fast_search: bool = False,
+        self,
+        table: "Table",
+        query: Union[np.ndarray, list, "PIL.Image.Image"],
+        vector_column: str,
+        str_query: Optional[str] = None,
+        fast_search: bool = False,
+        bypass_vector_index: Optional[bool] = None,
     ):
         super().__init__(table)
         self._query = query
@@ -574,6 +585,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._reranker = None
         self._str_query = str_query
         self._fast_search = fast_search
+        self._bypass_vector_index = bypass_vector_index
 
     def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
@@ -697,6 +709,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             with_row_id=self._with_row_id,
             offset=self._offset,
             fast_search=self._fast_search,
+            bypass_vector_index=self._bypass_vector_index,
             ef=self._ef,
         )
         result_set = self._table._execute_query(query, batch_size)
@@ -728,7 +741,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         return self
 
     def rerank(
-            self, reranker: Reranker, query_string: Optional[str] = None
+        self, reranker: Reranker, query_string: Optional[str] = None
     ) -> LanceVectorQueryBuilder:
         """Rerank the results using the specified reranker.
 
@@ -947,7 +960,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def _validate_fts_index(self):
         if self._table._get_fts_index_path() is None:
             raise ValueError(
-                "Please create a full-text search index " "to perform hybrid search."
+                "Please create a full-text search index to perform hybrid search."
             )
 
     def _validate_query(self, query):

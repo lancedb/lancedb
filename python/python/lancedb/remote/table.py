@@ -234,8 +234,11 @@ class RemoteTable(Table):
         query_type: str = "vector",
         vector_column_name: Optional[str] = None,
         fast_search: bool = False,
+        bypass_vector_index: Optional[bool] = None,
     ) -> LanceVectorQueryBuilder:
-        return self.search(query, query_type, vector_column_name, fast_search)
+        return self.search(
+            query, query_type, vector_column_name, fast_search, bypass_vector_index
+        )
 
     def search(
         self,
@@ -243,6 +246,7 @@ class RemoteTable(Table):
         query_type: str = "vector",
         vector_column_name: Optional[str] = None,
         fast_search: bool = False,
+        bypass_vector_index: Optional[bool] = None,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -294,6 +298,15 @@ class RemoteTable(Table):
             search performance but search results will not include unindexed data.
 
             - *default False*.
+
+        bypass_vector_index: bool, optional
+            If True, the query will bypass the vector index and perform a full scan.
+            An exhaustive (flat) search will be performed.  The query vector will
+            be compared to every vector in the table.  At high scales this can be
+            expensive.  However, this is often still useful.  For example, skipping
+            the vector index can give you ground truth results which you can use to
+            calculate your recall to select an appropriate value for nprobes.
+
         Returns
         -------
         LanceQueryBuilder
@@ -316,6 +329,7 @@ class RemoteTable(Table):
             query_type,
             vector_column_name=vector_column_name,
             fast_search=fast_search,
+            bypass_vector_index=bypass_vector_index,
         )
 
     def _execute_query(
@@ -377,9 +391,9 @@ class RemoteTable(Table):
         params["on"] = merge._on[0]
         params["when_matched_update_all"] = str(merge._when_matched_update_all).lower()
         if merge._when_matched_update_all_condition is not None:
-            params[
-                "when_matched_update_all_filt"
-            ] = merge._when_matched_update_all_condition
+            params["when_matched_update_all_filt"] = (
+                merge._when_matched_update_all_condition
+            )
         params["when_not_matched_insert_all"] = str(
             merge._when_not_matched_insert_all
         ).lower()
@@ -387,9 +401,9 @@ class RemoteTable(Table):
             merge._when_not_matched_by_source_delete
         ).lower()
         if merge._when_not_matched_by_source_condition is not None:
-            params[
-                "when_not_matched_by_source_delete_filt"
-            ] = merge._when_not_matched_by_source_condition
+            params["when_not_matched_by_source_delete_filt"] = (
+                merge._when_not_matched_by_source_condition
+            )
 
         self._conn._client.post(
             f"/v1/table/{self._name}/merge_insert/",
