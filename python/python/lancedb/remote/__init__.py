@@ -47,6 +47,8 @@ class VectorQuery(BaseModel):
 
     vector_column: str = VECTOR_COLUMN_NAME
 
+    bypass_vector_index: Optional[bool] = None
+
 
 @attrs.define
 class VectorQueryResult:
