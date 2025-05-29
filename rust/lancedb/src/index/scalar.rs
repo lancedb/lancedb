@@ -51,35 +51,7 @@ pub struct BitmapIndexBuilder {}
 #[derive(Debug, Clone, Default)]
 pub struct LabelListIndexBuilder {}
 
-/// Builder for a full text search index
-///
-/// A full text search index is an index on a string column that allows for full text search
-#[derive(Debug, Clone)]
-pub struct FtsIndexBuilder {
-    /// Whether to store the position of the tokens
-    /// This is used for phrase queries
-    pub with_position: bool,
-
-    pub tokenizer_configs: TokenizerConfig,
-}
-
-impl Default for FtsIndexBuilder {
-    fn default() -> Self {
-        Self {
-            with_position: true,
-            tokenizer_configs: TokenizerConfig::default(),
-        }
-    }
-}
-
-impl FtsIndexBuilder {
-    /// Set the with_position flag
-    pub fn with_position(mut self, with_position: bool) -> Self {
-        self.with_position = with_position;
-        self
-    }
-}
-
 pub use lance_index::scalar::inverted::query::*;
-pub use lance_index::scalar::inverted::TokenizerConfig;
 pub use lance_index::scalar::FullTextSearchQuery;
+pub use lance_index::scalar::InvertedIndexParams as FtsIndexBuilder;
+pub use lance_index::scalar::InvertedIndexParams;

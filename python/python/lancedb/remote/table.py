@@ -149,15 +149,15 @@ class RemoteTable(Table):
         *,
         replace: bool = False,
         wait_timeout: timedelta = None,
-        with_position: bool = True,
+        with_position: bool = False,
         # tokenizer configs:
         base_tokenizer: str = "simple",
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
-        stem: bool = False,
-        remove_stop_words: bool = False,
-        ascii_folding: bool = False,
+        stem: bool = True,
+        remove_stop_words: bool = True,
+        ascii_folding: bool = True,
     ):
         config = FTS(
             with_position=with_position,

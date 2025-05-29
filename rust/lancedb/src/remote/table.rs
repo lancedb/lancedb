@@ -995,16 +995,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             Index::Bitmap(_) => ("BITMAP", None),
             Index::LabelList(_) => ("LABEL_LIST", None),
             Index::FTS(fts) => {
-                let with_position = fts.with_position;
-                let configs = serde_json::to_value(fts.tokenizer_configs).map_err(|e| {
-                    Error::InvalidInput {
-                        message: format!("failed to serialize FTS index params {:?}", e),
-                    }
+                let params = serde_json::to_value(&fts).map_err(|e| Error::InvalidInput {
+                    message: format!("failed to serialize FTS index params {:?}", e),
                 })?;
-                for (key, value) in configs.as_object().unwrap() {
+                for (key, value) in params.as_object().unwrap() {
                     body[key] = value.clone();
                 }
-                body["with_position"] = serde_json::Value::Bool(with_position);
                 ("FTS", None)
             }
             Index::Auto => {
@@ -2460,14 +2456,10 @@ mod tests {
                     expected_body["metric_type"] = distance_type.to_lowercase().into();
                 }
                 if let Index::FTS(fts) = &params {
-                    expected_body["with_position"] = fts.with_position.into();
-                    expected_body["base_tokenizer"] = "simple".into();
-                    expected_body["language"] = "English".into();
-                    expected_body["max_token_length"] = 40.into();
-                    expected_body["lower_case"] = true.into();
-                    expected_body["stem"] = false.into();
-                    expected_body["remove_stop_words"] = false.into();
-                    expected_body["ascii_folding"] = false.into();
+                    let params = serde_json::to_value(fts).unwrap();
+                    for (key, value) in params.as_object().unwrap() {
+                        expected_body[key] = value.clone();
+                    }
                 }
 
                 assert_eq!(body, expected_body);

@@ -1,7 +1,7 @@
 [package]
 name = "lancedb-nodejs"
 edition.workspace = true
-version = "0.19.2-beta.0"
+version = "0.20.0-beta.0"
 license.workspace = true
 description.workspace = true
 repository.workspace = true
@@ -30,6 +30,7 @@ log.workspace = true
 
 # Workaround for build failure until we can fix it.
 aws-lc-sys = "=0.28.0"
+aws-lc-rs = "=1.13.0"
 
 [build-dependencies]
 napi-build = "2.1"

@@ -1977,16 +1977,12 @@ impl NativeTable {
         }
 
         let mut dataset = self.dataset.get_mut().await?;
-        let fts_params = lance_index::scalar::InvertedIndexParams {
-            with_position: fts_opts.with_position,
-            tokenizer_config: fts_opts.tokenizer_configs,
-        };
         dataset
             .create_index(
                 &[field.name()],
                 IndexType::Inverted,
                 None,
-                &fts_params,
+                &fts_opts,
                 replace,
             )
             .await?;

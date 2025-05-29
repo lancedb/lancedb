@@ -35,6 +35,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: java/core/lancedb-jni
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
       - name: Run cargo fmt
         run: cargo fmt --check
         working-directory: ./java/core/lancedb-jni
@@ -68,6 +71,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: java/core/lancedb-jni
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
       - name: Run cargo fmt
         run: cargo fmt --check
         working-directory: ./java/core/lancedb-jni
@@ -110,4 +116,3 @@ jobs:
           -Djdk.reflect.useDirectMethodHandle=false \
           -Dio.netty.tryReflectionSetAccessible=true"
           JAVA_HOME=$JAVA_17 mvn clean test
-  

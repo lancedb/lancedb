@@ -125,32 +125,30 @@ impl Index {
         ascii_folding: Option<bool>,
     ) -> Self {
         let mut opts = FtsIndexBuilder::default();
-        let mut tokenizer_configs = opts.tokenizer_configs.clone();
         if let Some(with_position) = with_position {
             opts = opts.with_position(with_position);
         }
         if let Some(base_tokenizer) = base_tokenizer {
-            tokenizer_configs = tokenizer_configs.base_tokenizer(base_tokenizer);
+            opts = opts.base_tokenizer(base_tokenizer);
         }
         if let Some(language) = language {
-            tokenizer_configs = tokenizer_configs.language(&language).unwrap();
+            opts = opts.language(&language).unwrap();
         }
         if let Some(max_token_length) = max_token_length {
-            tokenizer_configs = tokenizer_configs.max_token_length(Some(max_token_length as usize));
+            opts = opts.max_token_length(Some(max_token_length as usize));
         }
         if let Some(lower_case) = lower_case {
-            tokenizer_configs = tokenizer_configs.lower_case(lower_case);
+            opts = opts.lower_case(lower_case);
         }
         if let Some(stem) = stem {
-            tokenizer_configs = tokenizer_configs.stem(stem);
+            opts = opts.stem(stem);
         }
         if let Some(remove_stop_words) = remove_stop_words {
-            tokenizer_configs = tokenizer_configs.remove_stop_words(remove_stop_words);
+            opts = opts.remove_stop_words(remove_stop_words);
         }
         if let Some(ascii_folding) = ascii_folding {
-            tokenizer_configs = tokenizer_configs.ascii_folding(ascii_folding);
+            opts = opts.ascii_folding(ascii_folding);
         }
-        opts.tokenizer_configs = tokenizer_configs;
 
         Self {
             inner: Mutex::new(Some(LanceDbIndex::FTS(opts))),
