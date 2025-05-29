@@ -192,6 +192,9 @@ def test_fts_fuzzy_query():
     }
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="Need to fix https://github.com/lancedb/lance/issues/3905"
+)
 def test_fts_boost_query():
     uri = "data/boost-example"
     db = lancedb.connect(uri)
