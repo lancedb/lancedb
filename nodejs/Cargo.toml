@@ -30,6 +30,7 @@ log.workspace = true
 
 # Workaround for build failure until we can fix it.
 aws-lc-sys = "=0.28.0"
+aws-lc-rs = "=1.13.0"
 
 [build-dependencies]
 napi-build = "2.1"
