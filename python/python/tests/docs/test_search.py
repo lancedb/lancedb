@@ -156,6 +156,9 @@ async def test_vector_search_async():
     # --8<-- [end:search_result_async_as_list]
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="Need to fix https://github.com/lancedb/lance/issues/3905"
+)
 def test_fts_fuzzy_query():
     uri = "data/fuzzy-example"
     db = lancedb.connect(uri)
