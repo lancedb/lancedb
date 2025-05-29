@@ -649,7 +649,7 @@ def test_fts_on_list(mem_db: DBConnection):
         }
     )
     table = mem_db.create_table("test", data=data)
-    table.create_fts_index("text", use_tantivy=False)
+    table.create_fts_index("text", use_tantivy=False, with_position=True)
 
     res = table.search("lance").limit(5).to_list()
     assert len(res) == 3
