@@ -287,7 +287,7 @@ def test_search_fts_phrase_query(table):
         assert False
     except Exception:
         pass
-    table.create_fts_index("text", use_tantivy=False, replace=True)
+    table.create_fts_index("text", use_tantivy=False, with_position=True, replace=True)
     results = table.search("puppy").limit(100).to_list()
     phrase_results = table.search('"puppy runs"').limit(100).to_list()
     assert len(results) > len(phrase_results)
@@ -312,7 +312,7 @@ async def test_search_fts_phrase_query_async(async_table):
         assert False
     except Exception:
         pass
-    await async_table.create_index("text", config=FTS())
+    await async_table.create_index("text", config=FTS(with_position=True))
     results = await async_table.query().nearest_to_text("puppy").limit(100).to_list()
     phrase_results = (
         await async_table.query().nearest_to_text('"puppy runs"').limit(100).to_list()
