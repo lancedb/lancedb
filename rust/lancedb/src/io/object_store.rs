@@ -197,16 +197,8 @@ mod test {
 
     #[tokio::test]
     async fn test_e2e() {
-        let dir1 = tempfile::tempdir()
-            .unwrap()
-            .into_path()
-            .canonicalize()
-            .unwrap();
-        let dir2 = tempfile::tempdir()
-            .unwrap()
-            .into_path()
-            .canonicalize()
-            .unwrap();
+        let dir1 = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
+        let dir2 = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
 
         let secondary_store = LocalFileSystem::new_with_prefix(dir2.to_str().unwrap()).unwrap();
         let object_store_wrapper = Arc::new(MirroringObjectStoreWrapper {
