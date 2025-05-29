@@ -21,14 +21,14 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.30.0", "features" = ["dynamodb"] }
-lance-io = "=0.30.0"
-lance-index = "=0.30.0"
-lance-linalg = "=0.30.0"
-lance-table = "=0.30.0"
-lance-testing = "=0.30.0"
-lance-datafusion = "=0.30.0"
-lance-encoding = "=0.30.0"
+lance = { path = "../lance/rust/lance", "features" = ["dynamodb"] }
+lance-io = { path = "../lance/rust/lance-io" }
+lance-index = { path = "../lance/rust/lance-index" }
+lance-linalg = { path = "../lance/rust/lance-linalg" }
+lance-table = { path = "../lance/rust/lance-table" }
+lance-testing = { path = "../lance/rust/lance-testing" }
+lance-datafusion = { path = "../lance/rust/lance-datafusion" }
+lance-encoding = { path = "../lance/rust/lance-encoding" }
 # Note that this one does not include pyarrow
 arrow = { version = "55.1", optional = false }
 arrow-array = "55.1"
@@ -52,7 +52,7 @@ half = { "version" = "=2.5.0", default-features = false, features = [
 futures = "0"
 log = "0.4"
 moka = { version = "0.12", features = ["future"] }
-object_store = "0.11.0"
+object_store = "0.12.0"
 pin-project = "1.0.7"
 snafu = "0.8"
 url = "2"
