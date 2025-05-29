@@ -193,6 +193,7 @@ nav:
           - Pandas and PyArrow: python/pandas_and_pyarrow.md
           - Polars: python/polars_arrow.md
           - DuckDB: python/duckdb.md
+          - Datafusion: python/datafusion.md
           - LangChain:
               - LangChain 🔗: integrations/langchain.md
               - LangChain demo: notebooks/langchain_demo.ipynb
@@ -248,6 +249,7 @@ nav:
       - Data management: concepts/data_management.md
   - Guides:
       - Working with tables: guides/tables.md
+      - Working with SQL: guides/sql_querying.md
       - Building an ANN index: ann_indexes.md
       - Vector Search: search.md
       - Full-text search (native): fts.md
@@ -324,6 +326,7 @@ nav:
       - Pandas and PyArrow: python/pandas_and_pyarrow.md
       - Polars: python/polars_arrow.md
       - DuckDB: python/duckdb.md
+      - Datafusion: python/datafusion.md
       - LangChain 🦜️🔗↗: integrations/langchain.md
       - LangChain.js 🦜️🔗↗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
       - LlamaIndex 🦙↗: integrations/llamaIndex.md

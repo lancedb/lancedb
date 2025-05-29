@@ -25,6 +25,10 @@ import numpy as np
 from lancedb.pydantic import Vector, LanceModel
 
 # --8<-- [end:import-lancedb-pydantic]
+# --8<-- [start:import-session-context]
+from datafusion import SessionContext
+
+# --8<-- [end:import-session-context]
 # --8<-- [start:import-datetime]
 from datetime import timedelta
 
@@ -33,6 +37,10 @@ from datetime import timedelta
 from lancedb.embeddings import get_registry
 
 # --8<-- [end:import-embeddings]
+# --8<-- [start:import-ffi-dataset]
+from lance import FFILanceTableProvider
+
+# --8<-- [end:import-ffi-dataset]
 # --8<-- [start:import-pydantic-basemodel]
 from pydantic import BaseModel
 
@@ -339,6 +347,27 @@ def test_table_with_embedding():
     models = [Schema(text="hello"), Schema(text="world")]
     tbl.add(models)
     # --8<-- [end:create_table_with_embedding]
+
+
+def test_sql_query():
+    db = lancedb.connect("data/sample-lancedb")
+    data = [
+        {"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
+        {"vector": [0.2, 1.8], "lat": 40.1, "long": -74.1},
+    ]
+    table = db.create_table("lance_table", data)
+
+    # --8<-- [start:lance_sql_basic]
+    ctx = SessionContext()
+    ffi_lance_table = FFILanceTableProvider(
+        table.to_lance(), with_row_id=False, with_row_addr=False
+    )
+
+    ctx.register_table_provider("ffi_lance_table", ffi_lance_table)
+    ctx.table("ffi_lance_table")
+
+    ctx.sql("SELECT vector FROM ffi_lance_table")
+    # --8<-- [end:lance_sql_basic]
 
 
 @pytest.mark.skip
