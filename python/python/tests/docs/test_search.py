@@ -240,6 +240,9 @@ def test_fts_boost_query():
     )
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="Need to fix https://github.com/lancedb/lance/issues/3905"
+)
 def test_fts_native():
     # --8<-- [start:basic_fts]
     uri = "data/sample-lancedb"
@@ -288,6 +291,9 @@ def test_fts_native():
     # --8<-- [end:fts_incremental_index]
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="Need to fix https://github.com/lancedb/lance/issues/3905"
+)
 @pytest.mark.asyncio
 async def test_fts_native_async():
     # --8<-- [start:basic_fts_async]
