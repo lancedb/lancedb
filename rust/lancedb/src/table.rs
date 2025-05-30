@@ -85,6 +85,7 @@ pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
+use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
 pub use lance_index::optimize::OptimizeOptions;
 use serde_with::skip_serializing_none;
 
@@ -2602,6 +2603,12 @@ impl BaseTable for NativeTable {
         let dataset = self.dataset.get().await?;
         let indices = dataset.load_indices().await?;
         let results = futures::stream::iter(indices.as_slice()).then(|idx| async {
+
+            // skip Lance internal indexes
+            if idx.name == FRAG_REUSE_INDEX_NAME {
+                return None;
+            }
+
             let stats = match dataset.index_statistics(idx.name.as_str()).await {
                 Ok(stats) => stats,
                 Err(e) => {
@@ -2837,7 +2844,7 @@ mod tests {
     use super::*;
     use crate::connect;
     use crate::connection::ConnectBuilder;
-    use crate::index::scalar::BTreeIndexBuilder;
+    use crate::index::scalar::{BTreeIndexBuilder, BitmapIndexBuilder};
     use crate::query::{ExecutableQuery, QueryBase};
 
     #[tokio::test]
@@ -4288,5 +4295,66 @@ mod tests {
                 },
             }
         )
+    }
+
+    #[tokio::test]
+    pub async fn test_list_indices_skip_frag_reuse() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("foo", DataType::Int32, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)),
+                Arc::new(Int32Array::from_iter_values(0..100)),
+            ],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table(
+                "test_list_indices_skip_frag_reuse",
+                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .add(RecordBatchIterator::new(
+                vec![Ok(batch.clone())],
+                batch.schema(),
+            ))
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["id"], Index::Bitmap(BitmapIndexBuilder {}))
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 2_000,
+                    defer_index_remap: true,
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+
+        let result = table.list_indices().await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].index_type, crate::index::IndexType::Bitmap);
     }
 }
