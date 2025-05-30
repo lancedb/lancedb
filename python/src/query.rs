@@ -9,14 +9,16 @@ use arrow::array::Array;
 use arrow::array::ArrayData;
 use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
-use lancedb::index::scalar::{FtsQuery, FullTextSearchQuery, MatchQuery, PhraseQuery};
+use lancedb::index::scalar::{
+    BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
+    Operator, PhraseQuery,
+};
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::QueryFilter;
 use lancedb::query::{
     ExecutableQuery, Query as LanceDbQuery, QueryBase, Select, VectorQuery as LanceDbVectorQuery,
 };
 use lancedb::table::AnyQuery;
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::{PyNotImplementedError, PyValueError};
 use pyo3::prelude::{PyAnyMethods, PyDictMethods};
 use pyo3::pymethods;
@@ -27,31 +29,110 @@ use pyo3::IntoPyObject;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
+use pyo3::{exceptions::PyRuntimeError, types::PyListMethods};
 use pyo3::{pyclass, PyErr};
 use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::arrow::RecordBatchStream;
 use crate::error::PythonErrorExt;
-use crate::util::{parse_distance_type, parse_fts_query};
+use crate::util::parse_distance_type;
 
 // Python representation of full text search parameters
 #[derive(Clone)]
-#[pyclass(get_all)]
+#[pyclass(name = "PyFullTextSearchQuery")]
 pub struct PyFullTextSearchQuery {
-    pub columns: Vec<String>,
-    pub query: String,
-    pub limit: Option<i64>,
-    pub wand_factor: Option<f32>,
+    pub(crate) inner: FtsQuery,
+}
+
+#[pymethods]
+impl PyFullTextSearchQuery {
+    #[staticmethod]
+    #[pyo3(signature = (query, column, boost=1.0, fuzziness=Some(0), max_expansions=50, operator="OR"))]
+    fn match_query(
+        query: String,
+        column: String,
+        boost: f32,
+        fuzziness: Option<u32>,
+        max_expansions: usize,
+        operator: &str,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: MatchQuery::new(query)
+                .with_column(Some(column))
+                .with_boost(boost)
+                .with_fuzziness(fuzziness)
+                .with_max_expansions(max_expansions)
+                .with_operator(
+                    Operator::try_from(operator)
+                        .map_err(|e| PyValueError::new_err(format!("Invalid operator: {}", e)))?,
+                )
+                .into(),
+        })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (query, column, slop))]
+    fn phrase_query(query: String, column: String, slop: u32) -> PyResult<Self> {
+        Ok(Self {
+            inner: PhraseQuery::new(query)
+                .with_column(Some(column))
+                .with_slop(slop)
+                .into(),
+        })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (positive, negative,negative_boost=None))]
+    fn boost_query(positive: Self, negative: Self, negative_boost: Option<f32>) -> PyResult<Self> {
+        Ok(Self {
+            inner: BoostQuery::new(positive.inner, negative.inner, negative_boost).into(),
+        })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (query, columns, boosts=None, operator="OR"))]
+    fn multi_match_query(
+        query: String,
+        columns: Vec<String>,
+        boosts: Option<Vec<f32>>,
+        operator: &str,
+    ) -> PyResult<Self> {
+        let q = MultiMatchQuery::try_new(query, columns)
+            .map_err(|e| PyValueError::new_err(format!("Invalid query: {}", e)))?;
+        let q = if let Some(boosts) = boosts {
+            q.try_with_boosts(boosts)
+                .map_err(|e| PyValueError::new_err(format!("Invalid boosts: {}", e)))?
+        } else {
+            q
+        };
+
+        let op = Operator::try_from(operator)
+            .map_err(|e| PyValueError::new_err(format!("Invalid operator: {}", e)))?;
+
+        Ok(Self {
+            inner: q.with_operator(op).into(),
+        })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (queries))]
+    fn boolean_query(queries: Vec<(String, Self)>) -> PyResult<Self> {
+        let mut sub_queries = Vec::with_capacity(queries.len());
+        for (occur, q) in queries {
+            let occur = Occur::try_from(occur.as_str())
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            sub_queries.push((occur, q.inner));
+        }
+
+        Ok(Self {
+            inner: BooleanQuery::new(sub_queries).into(),
+        })
+    }
 }
 
 impl From<FullTextSearchQuery> for PyFullTextSearchQuery {
     fn from(query: FullTextSearchQuery) -> Self {
-        Self {
-            columns: query.columns().into_iter().collect(),
-            query: query.query.query().to_owned(),
-            limit: query.limit,
-            wand_factor: query.wand_factor,
-        }
+        Self { inner: query.query }
     }
 }
 
@@ -245,10 +326,21 @@ impl Query {
 
         let query = if let Ok(query_text) = fts_query.downcast::<PyString>() {
             let mut query_text = query_text.to_string();
-            let columns = query
-                .get_item("columns")?
-                .map(|columns| columns.extract::<Vec<String>>())
-                .transpose()?;
+            let columns = if let Some(columns) = query.get_item("columns")? {
+                if columns.is_none() {
+                    None
+                } else {
+                    Some(
+                        columns
+                            .downcast::<PyList>()?
+                            .iter()
+                            .map(|c| c.extract::<String>())
+                            .collect::<PyResult<Vec<String>>>()?,
+                    )
+                }
+            } else {
+                None
+            };
 
             let is_phrase =
                 query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
@@ -270,19 +362,14 @@ impl Query {
             };
             let mut query = FullTextSearchQuery::new_query(query);
             if let Some(cols) = columns {
-                if !cols.is_empty() {
-                    query = query.with_columns(&cols).map_err(|e| {
-                        PyValueError::new_err(format!(
-                            "Failed to set full text search columns: {}",
-                            e
-                        ))
-                    })?;
-                }
+                query = query.with_columns(&cols).map_err(|e| {
+                    PyValueError::new_err(format!("Failed to set full text search columns: {}", e))
+                })?;
             }
             query
-        } else if let Ok(query) = fts_query.downcast::<PyDict>() {
-            let query = parse_fts_query(query)?;
-            FullTextSearchQuery::new_query(query)
+        } else if let Ok(query) = fts_query.downcast::<PyFullTextSearchQuery>() {
+            let query = query.borrow();
+            FullTextSearchQuery::new_query(query.inner.clone())
         } else {
             return Err(PyValueError::new_err(
                 "query must be a string or a Query object",
