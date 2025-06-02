@@ -1,11 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
 # This updates the lockfile without building
 cargo metadata > /dev/null
 
-pushd nodejs
+pushd nodejs || exit 1
 npm install --package-lock-only
 popd
-pushd node
+pushd node || exit 1
 npm install --package-lock-only
 popd
 
-git commit --amend --no-edit
+if git diff --quiet --exit-code; then
+  echo "No lockfile changes to commit; skipping amend."
+else
+  git commit --amend --no-edit
+fi
