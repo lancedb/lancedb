@@ -84,6 +84,7 @@ jobs:
         run: |
           pip install bump-my-version PyGithub packaging
           bash ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }} v $COMMIT_BEFORE_BUMP
+          bash ci/update_lockfiles.sh
       - name: Push new version tag
         if: ${{ !inputs.dry_run }}
         uses: ad-m/github-push-action@master
