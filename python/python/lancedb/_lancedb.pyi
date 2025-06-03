@@ -194,6 +194,7 @@ class PyFullTextQuery:
         boosts: Optional[List[float]] = None,
         operator: str = "OR",
     ) -> PyFullTextQuery: ...
+    def query_type(self) -> str: ...
 
 class PyQueryRequest:
     limit: Optional[int]

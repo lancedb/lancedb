@@ -37,22 +37,9 @@ use crate::arrow::RecordBatchStream;
 use crate::error::PythonErrorExt;
 use crate::util::parse_distance_type;
 
-// Python representation of full text search query with parameters
-#[derive(Clone)]
-#[pyclass(get_all)]
-pub struct PyFullTextSearchQuery {
-    pub(crate) inner: PyFullTextQuery,
-    pub limit: Option<i64>,
-    pub wand_factor: Option<f32>,
-}
-
-impl From<FullTextSearchQuery> for PyFullTextSearchQuery {
+impl From<FullTextSearchQuery> for PyFullTextQuery {
     fn from(query: FullTextSearchQuery) -> Self {
-        Self {
-            inner: PyFullTextQuery { inner: query.query },
-            limit: query.limit,
-            wand_factor: query.wand_factor,
-        }
+        Self { inner: query.query }
     }
 }
 
@@ -146,6 +133,16 @@ impl PyFullTextQuery {
             inner: BooleanQuery::new(sub_queries).into(),
         })
     }
+
+    pub fn query_type(&self) -> String {
+        match self.inner {
+            FtsQuery::Match(_) => "match".to_string(),
+            FtsQuery::Phrase(_) => "match_phrase".to_string(),
+            FtsQuery::Boost(_) => "boost".to_string(),
+            FtsQuery::MultiMatch(_) => "multi_match".to_string(),
+            FtsQuery::Boolean(_) => "boolean".to_string(),
+        }
+    }
 }
 
 // Python representation of query vector(s)
@@ -173,7 +170,7 @@ pub struct PyQueryRequest {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
     pub filter: Option<PyQueryFilter>,
-    pub full_text_search: Option<PyFullTextSearchQuery>,
+    pub full_text_search: Option<PyFullTextQuery>,
     pub select: PySelect,
     pub fast_search: Option<bool>,
     pub with_row_id: Option<bool>,
@@ -197,9 +194,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 limit: query_request.limit,
                 offset: query_request.offset,
                 filter: query_request.filter.map(PyQueryFilter),
-                full_text_search: query_request
-                    .full_text_search
-                    .map(PyFullTextSearchQuery::from),
+                full_text_search: query_request.full_text_search.map(PyFullTextQuery::from),
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
                 with_row_id: Some(query_request.with_row_id),

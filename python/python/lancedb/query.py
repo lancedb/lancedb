@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-import abc
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from datetime import timedelta
@@ -107,10 +106,28 @@ class Occur(Enum):
     SHOULD = "SHOULD"
 
 
-class FullTextQuery(abc.ABC, pydantic.BaseModel):
+class FullTextQuery(pydantic.BaseModel):
     _inner: PyFullTextQuery = pydantic.PrivateAttr()
 
-    @abc.abstractmethod
+    @classmethod
+    def from_inner(cls, inner: PyFullTextQuery) -> "FullTextQuery":
+        """
+        Create a FullTextQuery from an inner PyFullTextQuery object.
+
+        Parameters
+        ----------
+        inner : PyFullTextQuery
+            The inner query object to wrap.
+
+        Returns
+        -------
+        FullTextQuery
+            A new FullTextQuery instance wrapping the inner query.
+        """
+        q = cls()
+        q._inner = inner
+        return q
+
     def query_type(self) -> FullTextQueryType:
         """
         Get the query type of the query.
@@ -120,6 +137,7 @@ class FullTextQuery(abc.ABC, pydantic.BaseModel):
         str
             The type of the query.
         """
+        return FullTextQueryType(self._inner.query_type())
 
     def __and__(self, other: "FullTextQuery") -> "FullTextQuery":
         """
@@ -198,9 +216,6 @@ class MatchQuery(FullTextQuery):
             operator=operator.value,
         )
 
-    def query_type(self) -> FullTextQueryType:
-        return FullTextQueryType.MATCH
-
 
 class PhraseQuery(FullTextQuery):
     def __init__(self, query: str, column: str, *, slop: int = 0):
@@ -216,9 +231,6 @@ class PhraseQuery(FullTextQuery):
         """
         super().__init__()
         self._inner = PyFullTextQuery.phrase_query(query, column, slop)
-
-    def query_type(self) -> FullTextQueryType:
-        return FullTextQueryType.MATCH_PHRASE
 
 
 class BoostQuery(FullTextQuery):
@@ -245,9 +257,6 @@ class BoostQuery(FullTextQuery):
         self._inner = PyFullTextQuery.boost_query(
             positive._inner, negative._inner, negative_boost
         )
-
-    def query_type(self) -> FullTextQueryType:
-        return FullTextQueryType.BOOST
 
 
 class MultiMatchQuery(FullTextQuery):
@@ -284,9 +293,6 @@ class MultiMatchQuery(FullTextQuery):
             query, columns, boosts=boosts, operator=operator.value
         )
 
-    def query_type(self) -> FullTextQueryType:
-        return FullTextQueryType.MULTI_MATCH
-
 
 class BooleanQuery(FullTextQuery):
     def __init__(self, queries: list[tuple[Occur, FullTextQuery]]):
@@ -302,9 +308,6 @@ class BooleanQuery(FullTextQuery):
         self._inner = PyFullTextQuery.boolean_query(
             [(occur.value, query._inner) for occur, query in queries]
         )
-
-    def query_type(self) -> FullTextQueryType:
-        return FullTextQueryType.BOOLEAN
 
 
 class FullTextSearchQuery(pydantic.BaseModel):
@@ -505,8 +508,8 @@ class Query(pydantic.BaseModel):
         query.postfilter = req.postfilter
         if req.full_text_search is not None:
             query.full_text_query = FullTextSearchQuery(
-                columns=req.full_text_search.columns,
-                query=req.full_text_search.query,
+                columns=None,
+                query=FullTextQuery.from_inner(req.full_text_search),
             )
         return query
 
