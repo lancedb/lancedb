@@ -51,7 +51,7 @@ fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
                 Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
                 Arc::new(StringArray::from_iter_values((0..TOTAL).map(|_| {
                     (0..n_terms)
-                        .map(|_| words[random::<usize>() % words.len()])
+                        .map(|_| words[random::<u32>() as usize % words.len()])
                         .collect::<Vec<_>>()
                         .join(" ")
                 }))),
