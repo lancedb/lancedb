@@ -214,7 +214,7 @@ impl SentenceTransformersEmbeddings {
 
         let embeddings = self
             .model
-            .forward(&input_ids, &token_type_ids)
+            .forward(&input_ids, &token_type_ids, None)
             // TODO: it'd be nice to support other devices
             .and_then(|output| output.to_device(&Device::Cpu))?;
 
@@ -310,7 +310,7 @@ impl SentenceTransformersEmbeddings {
         let embeddings = Tensor::stack(&tokens, 0)
             .and_then(|tokens| {
                 let token_type_ids = tokens.zeros_like()?;
-                self.model.forward(&tokens, &token_type_ids)
+                self.model.forward(&tokens, &token_type_ids, None)
             })
             // TODO: it'd be nice to support other devices
             .and_then(|tokens| tokens.to_device(&Device::Cpu))
