@@ -46,7 +46,7 @@ datafusion-execution = "47.0"
 datafusion-expr = "47.0"
 datafusion-physical-plan = "47.0"
 env_logger = "0.11"
-half = { "version" = "=2.5.0", default-features = false, features = [
+half = { "version" = "=2.6.0", default-features = false, features = [
     "num-traits",
 ] }
 futures = "0"
@@ -57,7 +57,7 @@ pin-project = "1.0.7"
 snafu = "0.8"
 url = "2"
 num-traits = "0.2"
-rand = "0.8"
+rand = "0.9"
 regex = "1.10"
 lazy_static = "1"
 semver = "1.0.25"
