@@ -37,6 +37,7 @@ from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .util import flatten_columns
+from ._lancedb import PyFullTextQuery
 
 from typing_extensions import Annotated
 
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
     import polars as pl
 
     from ._lancedb import Query as LanceQuery
-    from ._lancedb import FTSQuery as LanceFTSQuery, PyFullTextSearchQuery
+    from ._lancedb import FTSQuery as LanceFTSQuery
     from ._lancedb import HybridQuery as LanceHybridQuery
     from ._lancedb import VectorQuery as LanceVectorQuery
     from ._lancedb import PyQueryRequest
@@ -107,10 +108,10 @@ class Occur(Enum):
 
 
 class FullTextQuery(abc.ABC, pydantic.BaseModel):
-    _inner: PyFullTextSearchQuery
+    _inner: PyFullTextQuery
 
     @property
-    def inner(self) -> PyFullTextSearchQuery:
+    def inner(self) -> PyFullTextQuery:
         """
         Get the inner query object.
 
@@ -199,7 +200,7 @@ class MatchQuery(FullTextQuery):
             The maximum number of terms to consider for fuzzy matching.
             Defaults to 50.
         """
-        self._inner = PyFullTextSearchQuery.match_query(
+        self._inner = PyFullTextQuery.match_query(
             query,
             column,
             boost=boost,
@@ -224,7 +225,7 @@ class PhraseQuery(FullTextQuery):
         column : str
             The name of the column to match against.
         """
-        self._inner = PyFullTextSearchQuery.phrase_query(query, column, slop)
+        self._inner = PyFullTextQuery.phrase_query(query, column, slop)
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH_PHRASE
@@ -250,7 +251,7 @@ class BoostQuery(FullTextQuery):
         negative_boost : float, default 0.5
             The boost factor for the negative query.
         """
-        self._inner = PyFullTextSearchQuery.boost_query(
+        self._inner = PyFullTextQuery.boost_query(
             positive.inner, negative.inner, negative_boost
         )
 
@@ -287,7 +288,7 @@ class MultiMatchQuery(FullTextQuery):
             then the query "hello world" is equal to
             `match("hello AND world", column1) OR match("hello AND world", column2)`.
         """
-        self._inner = PyFullTextSearchQuery.multi_match_query(
+        self._inner = PyFullTextQuery.multi_match_query(
             query, columns, boosts=boosts, operator=operator.value
         )
 
@@ -305,7 +306,7 @@ class BooleanQuery(FullTextQuery):
         queries : list[tuple(Occur, FullTextQuery)]
             The list of queries with their occurrence requirements.
         """
-        self._inner = PyFullTextSearchQuery.boolean_query(
+        self._inner = PyFullTextQuery.boolean_query(
             [(occur.value, query.inner) for occur, query in queries]
         )
 
@@ -2531,7 +2532,7 @@ class AsyncQuery(AsyncQueryBase):
                 self._inner.nearest_to_text({"query": query, "columns": columns})
             )
         # FullTextQuery object
-        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query.to_dict()}))
+        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query.inner}))
 
 
 class AsyncFTSQuery(AsyncQueryBase):
@@ -2853,7 +2854,7 @@ class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
                 self._inner.nearest_to_text({"query": query, "columns": columns})
             )
         # FullTextQuery object
-        return AsyncHybridQuery(self._inner.nearest_to_text({"query": query.to_dict()}))
+        return AsyncHybridQuery(self._inner.nearest_to_text({"query": query.inner}))
 
     async def to_batches(
         self,

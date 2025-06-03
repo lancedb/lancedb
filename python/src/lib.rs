@@ -16,6 +16,8 @@ use table::{
     Table, UpdateResult,
 };
 
+use crate::query::PyFullTextQuery;
+
 pub mod arrow;
 pub mod connection;
 pub mod error;
@@ -45,6 +47,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DeleteResult>()?;
     m.add_class::<DropColumnsResult>()?;
     m.add_class::<UpdateResult>()?;
+    m.add_class::<PyFullTextQuery>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

@@ -19,6 +19,7 @@ use lancedb::query::{
     ExecutableQuery, Query as LanceDbQuery, QueryBase, Select, VectorQuery as LanceDbVectorQuery,
 };
 use lancedb::table::AnyQuery;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::{PyNotImplementedError, PyValueError};
 use pyo3::prelude::{PyAnyMethods, PyDictMethods};
 use pyo3::pymethods;
@@ -29,7 +30,6 @@ use pyo3::IntoPyObject;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
-use pyo3::{exceptions::PyRuntimeError, types::PyListMethods};
 use pyo3::{pyclass, PyErr};
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -39,13 +39,13 @@ use crate::util::parse_distance_type;
 
 // Python representation of full text search parameters
 #[derive(Clone)]
-#[pyclass(name = "PyFullTextSearchQuery")]
-pub struct PyFullTextSearchQuery {
+#[pyclass]
+pub struct PyFullTextQuery {
     pub(crate) inner: FtsQuery,
 }
 
 #[pymethods]
-impl PyFullTextSearchQuery {
+impl PyFullTextQuery {
     #[staticmethod]
     #[pyo3(signature = (query, column, boost=1.0, fuzziness=Some(0), max_expansions=50, operator="OR"))]
     fn match_query(
@@ -130,7 +130,7 @@ impl PyFullTextSearchQuery {
     }
 }
 
-impl From<FullTextSearchQuery> for PyFullTextSearchQuery {
+impl From<FullTextSearchQuery> for PyFullTextQuery {
     fn from(query: FullTextSearchQuery) -> Self {
         Self { inner: query.query }
     }
@@ -161,7 +161,7 @@ pub struct PyQueryRequest {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
     pub filter: Option<PyQueryFilter>,
-    pub full_text_search: Option<PyFullTextSearchQuery>,
+    pub full_text_search: Option<PyFullTextQuery>,
     pub select: PySelect,
     pub fast_search: Option<bool>,
     pub with_row_id: Option<bool>,
@@ -187,7 +187,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 filter: query_request.filter.map(PyQueryFilter),
                 full_text_search: query_request
                     .full_text_search
-                    .map(PyFullTextSearchQuery::from),
+                    .map(PyFullTextQuery::from),
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
                 with_row_id: Some(query_request.with_row_id),
@@ -326,21 +326,10 @@ impl Query {
 
         let query = if let Ok(query_text) = fts_query.downcast::<PyString>() {
             let mut query_text = query_text.to_string();
-            let columns = if let Some(columns) = query.get_item("columns")? {
-                if columns.is_none() {
-                    None
-                } else {
-                    Some(
-                        columns
-                            .downcast::<PyList>()?
-                            .iter()
-                            .map(|c| c.extract::<String>())
-                            .collect::<PyResult<Vec<String>>>()?,
-                    )
-                }
-            } else {
-                None
-            };
+            let columns = query
+                .get_item("columns")?
+                .map(|columns| columns.extract::<Vec<String>>())
+                .transpose()?;
 
             let is_phrase =
                 query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
@@ -361,13 +350,19 @@ impl Query {
                 }
             };
             let mut query = FullTextSearchQuery::new_query(query);
-            if let Some(cols) = columns {
-                query = query.with_columns(&cols).map_err(|e| {
-                    PyValueError::new_err(format!("Failed to set full text search columns: {}", e))
-                })?;
+            match columns {
+                Some(cols) if !cols.is_empty() => {
+                    query = query.with_columns(&cols).map_err(|e| {
+                        PyValueError::new_err(format!(
+                            "Failed to set full text search columns: {}",
+                            e
+                        ))
+                    })?;
+                }
+                _ => {}
             }
             query
-        } else if let Ok(query) = fts_query.downcast::<PyFullTextSearchQuery>() {
+        } else if let Ok(query) = fts_query.downcast::<PyFullTextQuery>() {
             let query = query.borrow();
             FullTextSearchQuery::new_query(query.inner.clone())
         } else {
