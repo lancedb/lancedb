@@ -108,19 +108,7 @@ class Occur(Enum):
 
 
 class FullTextQuery(abc.ABC, pydantic.BaseModel):
-    _inner: PyFullTextQuery
-
-    @property
-    def inner(self) -> PyFullTextQuery:
-        """
-        Get the inner query object.
-
-        Returns
-        -------
-        PyFullTextSearchQuery
-            The inner query object.
-        """
-        return self._inner
+    _inner: PyFullTextQuery = pydantic.PrivateAttr()
 
     @abc.abstractmethod
     def query_type(self) -> FullTextQueryType:
@@ -200,6 +188,7 @@ class MatchQuery(FullTextQuery):
             The maximum number of terms to consider for fuzzy matching.
             Defaults to 50.
         """
+        super().__init__()
         self._inner = PyFullTextQuery.match_query(
             query,
             column,
@@ -225,6 +214,7 @@ class PhraseQuery(FullTextQuery):
         column : str
             The name of the column to match against.
         """
+        super().__init__()
         self._inner = PyFullTextQuery.phrase_query(query, column, slop)
 
     def query_type(self) -> FullTextQueryType:
@@ -251,8 +241,9 @@ class BoostQuery(FullTextQuery):
         negative_boost : float, default 0.5
             The boost factor for the negative query.
         """
+        super().__init__()
         self._inner = PyFullTextQuery.boost_query(
-            positive.inner, negative.inner, negative_boost
+            positive._inner, negative._inner, negative_boost
         )
 
     def query_type(self) -> FullTextQueryType:
@@ -288,6 +279,7 @@ class MultiMatchQuery(FullTextQuery):
             then the query "hello world" is equal to
             `match("hello AND world", column1) OR match("hello AND world", column2)`.
         """
+        super().__init__()
         self._inner = PyFullTextQuery.multi_match_query(
             query, columns, boosts=boosts, operator=operator.value
         )
@@ -306,8 +298,9 @@ class BooleanQuery(FullTextQuery):
         queries : list[tuple(Occur, FullTextQuery)]
             The list of queries with their occurrence requirements.
         """
+        super().__init__()
         self._inner = PyFullTextQuery.boolean_query(
-            [(occur.value, query.inner) for occur, query in queries]
+            [(occur.value, query._inner) for occur, query in queries]
         )
 
     def query_type(self) -> FullTextQueryType:
@@ -514,8 +507,6 @@ class Query(pydantic.BaseModel):
             query.full_text_query = FullTextSearchQuery(
                 columns=req.full_text_search.columns,
                 query=req.full_text_search.query,
-                limit=req.full_text_search.limit,
-                wand_factor=req.full_text_search.wand_factor,
             )
         return query
 
@@ -2532,7 +2523,7 @@ class AsyncQuery(AsyncQueryBase):
                 self._inner.nearest_to_text({"query": query, "columns": columns})
             )
         # FullTextQuery object
-        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query.inner}))
+        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query._inner}))
 
 
 class AsyncFTSQuery(AsyncQueryBase):
@@ -2854,7 +2845,7 @@ class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
                 self._inner.nearest_to_text({"query": query, "columns": columns})
             )
         # FullTextQuery object
-        return AsyncHybridQuery(self._inner.nearest_to_text({"query": query.inner}))
+        return AsyncHybridQuery(self._inner.nearest_to_text({"query": query._inner}))
 
     async def to_batches(
         self,

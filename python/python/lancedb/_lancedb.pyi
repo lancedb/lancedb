@@ -168,8 +168,8 @@ class HybridQuery:
 class PyFullTextQuery:
     @staticmethod
     def match_query(
-        column: str,
         query: str,
+        column: str,
         boost: float = 1.0,
         fuzziness: Optional[int] = 0,
         max_expansions: int = 50,
