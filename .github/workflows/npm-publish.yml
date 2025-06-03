@@ -546,21 +546,3 @@ jobs:
           notification_title: "{workflow} is failing"
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
-
-  update-package-lock:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
-          fetch-depth: 0
-          lfs: true
-      - uses: ./.github/workflows/update_package_lock
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
