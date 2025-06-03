@@ -14,5 +14,6 @@ popd
 if git diff --quiet --exit-code; then
   echo "No lockfile changes to commit; skipping amend."
 else
+  git add Cargo.lock nodejs/package-lock.json node/package-lock.json
   git commit --amend --no-edit
 fi
