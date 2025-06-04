@@ -5,7 +5,7 @@ import json
 
 def run_command(command: str) -> str:
     """
-    Run a shell commend and return stdout as a string.
+    Run a shell command and return stdout as a string.
     If exit code is not 0, raise an exception with the stderr output.
     """
     import subprocess
