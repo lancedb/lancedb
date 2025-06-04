@@ -1,0 +1,43 @@
+# The lance-main branch is a mirror of the LanceDB main branch, where
+# the rust dependencies use local paths instead of git.
+name: Maintain lance-main branch
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  # only run one job at a time for this workflow
+  group: ${{ github.workflow }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout commit branch
+        uses: actions/checkout@v3
+      
+      - name: Checkout lance main branch
+        uses: actions/checkout@v3
+        with:
+          repo: lancedb/lance
+          ref: main
+      
+      - name: Change to local reference
+        run: |
+          python ci/set_lance_version.py local
+          git add Cargo.toml Cargo.lock
+          git commit --amend --no-edit
+
+      - name: Bring commit onto the lance-main branch
+        run: |
+          REF=$(git rev-parse HEAD)
+          git checkout lance-main
+          git cherry-pick $REF || git cherry-pick --abort
+
+      - name: Push changes to lance-main branch
+        run: |
+          git push origin lance-main --force
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
