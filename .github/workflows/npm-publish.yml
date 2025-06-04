@@ -505,6 +505,8 @@ jobs:
     name: vectordb NPM Publish
     needs: [node, node-macos, node-linux-gnu, node-windows]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -537,6 +539,10 @@ jobs:
         # We need to deprecate the old package to avoid confusion.
         # Each time we publish a new version, it gets undeprecated.
         run: npm deprecate vectordb "Use @lancedb/lancedb instead."
+      - name: Update package-lock.json
+        run: bash ci/update_lockfiles.sh
+      - name: Push new commit
+        uses: ad-m/github-push-action@master
       - name: Notify Slack Action
         uses: ravsamhq/notify-slack-action@2.3.0
         if: ${{ always() }}
