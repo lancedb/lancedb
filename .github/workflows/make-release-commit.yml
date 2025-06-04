@@ -93,11 +93,3 @@ jobs:
           github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
           branch: ${{ github.ref }}
           tags: true
-      - uses: ./.github/workflows/update_package_lock
-        if: ${{ !inputs.dry_run && inputs.other }}
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: ./.github/workflows/update_package_lock_nodejs
-        if: ${{ !inputs.dry_run && inputs.other }}
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
