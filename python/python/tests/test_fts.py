@@ -215,6 +215,19 @@ def test_search_fts(table, use_tantivy):
         assert len(results) == 5
         assert len(results[0]) == 3  # id, text, _score
 
+        # Test boolean query
+        results = (
+            table.search(MatchQuery("puppy", "text") & MatchQuery("runs", "text"))
+            .select(["id", "text"])
+            .limit(5)
+            .to_list()
+        )
+        assert len(results) == 5
+        assert len(results[0]) == 3  # id, text, _score
+        for r in results:
+            assert "puppy" in r["text"]
+            assert "runs" in r["text"]
+
 
 @pytest.mark.asyncio
 async def test_fts_select_async(async_table):

@@ -270,6 +270,7 @@ class MultiMatchQuery(FullTextQuery):
         return FullTextQueryType.MULTI_MATCH
 
 
+@pydantic.dataclasses.dataclass
 class BooleanQuery(FullTextQuery):
     """
     Boolean query for full-text search.
