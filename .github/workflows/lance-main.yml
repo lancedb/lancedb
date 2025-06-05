@@ -14,20 +14,33 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout commit branch
         uses: actions/checkout@v3
+        with:
+          path: lancedb
       - name: Checkout lance main branch
         uses: actions/checkout@v3
         with:
           repository: lancedb/lance
+          path: lance
       - name: Catch lance-main up to date
+        working-directory: lancedb
         run: |
           git checkout lance-main
           git fetch origin main
-          git rebase origin/main --exec "python ci/set_lance_version.py local && git add Cargo.toml Cargo.lock && git commit -m 'use local lance'"
+          for commit in $(git rev-list lance-main..main --reverse); do
+            git cherry-pick $commit --strategy-option=theirs
+            python ci/set_lance_version.py local
+            git add Cargo.toml Cargo.lock
+            git commit -m "use local lance" --allow-empty --no-verify
+          done
       - name: Push changes to lance-main branch
-        run: |
-          git push origin lance-main --force
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ad-m/github-push-action@master
+        with:
+          repository: lancedb/lance
+          branch: lance-main
+          force: true
+          directory: lancedb
