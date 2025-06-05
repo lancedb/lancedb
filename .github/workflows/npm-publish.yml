@@ -539,6 +539,8 @@ jobs:
         # We need to deprecate the old package to avoid confusion.
         # Each time we publish a new version, it gets undeprecated.
         run: npm deprecate vectordb "Use @lancedb/lancedb instead."
+      - name: Checkout
+        uses: actions/checkout@v4
       - name: Update package-lock.json
         run: bash ci/update_lockfiles.sh
       - name: Push new commit
