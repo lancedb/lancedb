@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
-from enum import StrEnum
+from enum import Enum
 from datetime import timedelta
 from typing import (
     TYPE_CHECKING,
@@ -87,7 +87,7 @@ def ensure_vector_query(
         return val
 
 
-class FullTextQueryType(StrEnum):
+class FullTextQueryType(str, Enum):
     MATCH = "match"
     MATCH_PHRASE = "match_phrase"
     BOOST = "boost"
@@ -95,12 +95,12 @@ class FullTextQueryType(StrEnum):
     BOOLEAN = "boolean"
 
 
-class FullTextOperator(StrEnum):
+class FullTextOperator(str, Enum):
     AND = "AND"
     OR = "OR"
 
 
-class Occur(StrEnum):
+class Occur(str, Enum):
     MUST = "MUST"
     SHOULD = "SHOULD"
 
