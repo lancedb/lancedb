@@ -19,8 +19,6 @@ use lancedb::query::{
     ExecutableQuery, Query as LanceDbQuery, QueryBase, Select, VectorQuery as LanceDbVectorQuery,
 };
 use lancedb::table::AnyQuery;
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::exceptions::{PyNotImplementedError, PyValueError};
 use pyo3::prelude::{PyAnyMethods, PyDictMethods};
 use pyo3::pymethods;
 use pyo3::types::PyList;
@@ -30,118 +28,179 @@ use pyo3::IntoPyObject;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
+use pyo3::{exceptions::PyRuntimeError, FromPyObject};
+use pyo3::{
+    exceptions::{PyNotImplementedError, PyValueError},
+    intern,
+};
 use pyo3::{pyclass, PyErr};
 use pyo3_async_runtimes::tokio::future_into_py;
 
-use crate::arrow::RecordBatchStream;
-use crate::error::PythonErrorExt;
 use crate::util::parse_distance_type;
+use crate::{arrow::RecordBatchStream, util::PyLanceDB};
+use crate::{error::PythonErrorExt, index::class_name};
 
-impl From<FullTextSearchQuery> for PyFullTextQuery {
-    fn from(query: FullTextSearchQuery) -> Self {
-        Self { inner: query.query }
+impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
+    fn extract_bound(ob: &Bound<'_, PyAny>) -> PyResult<Self> {
+        match class_name(ob)?.as_str() {
+            "MatchQuery" => {
+                let query = ob.getattr("query")?.extract()?;
+                let column = ob.getattr("column")?.extract()?;
+                let boost = ob.getattr("boost")?.extract()?;
+                let fuzziness = ob.getattr("fuzziness")?.extract()?;
+                let max_expansions = ob.getattr("max_expansions")?.extract()?;
+                let operator = ob.getattr("operator")?.extract::<String>()?;
+
+                Ok(PyLanceDB(
+                    MatchQuery::new(query)
+                        .with_column(Some(column))
+                        .with_boost(boost)
+                        .with_fuzziness(fuzziness)
+                        .with_max_expansions(max_expansions)
+                        .with_operator(Operator::try_from(operator.as_str()).map_err(|e| {
+                            PyValueError::new_err(format!("Invalid operator: {}", e))
+                        })?)
+                        .into(),
+                ))
+            }
+            "PhraseQuery" => {
+                let query = ob.getattr("query")?.extract()?;
+                let column = ob.getattr("column")?.extract()?;
+                let slop = ob.getattr("slop")?.extract()?;
+
+                Ok(PyLanceDB(
+                    PhraseQuery::new(query)
+                        .with_column(Some(column))
+                        .with_slop(slop)
+                        .into(),
+                ))
+            }
+            "BoostQuery" => {
+                let positive: PyLanceDB<FtsQuery> = ob.getattr("positive")?.extract()?;
+                let negative: PyLanceDB<FtsQuery> = ob.getattr("negative")?.extract()?;
+                let negative_boost = ob.getattr("negative_boost")?.extract()?;
+                Ok(PyLanceDB(
+                    BoostQuery::new(positive.0, negative.0, negative_boost).into(),
+                ))
+            }
+            "MultiMatchQuery" => {
+                let query = ob.getattr("query")?.extract()?;
+                let columns = ob.getattr("columns")?.extract()?;
+                let boosts: Option<Vec<f32>> = ob.getattr("boosts")?.extract()?;
+                let operator: String = ob.getattr("operator")?.extract()?;
+
+                let q = MultiMatchQuery::try_new(query, columns)
+                    .map_err(|e| PyValueError::new_err(format!("Invalid query: {}", e)))?;
+                let q = if let Some(boosts) = boosts {
+                    q.try_with_boosts(boosts)
+                        .map_err(|e| PyValueError::new_err(format!("Invalid boosts: {}", e)))?
+                } else {
+                    q
+                };
+
+                let op = Operator::try_from(operator.as_str())
+                    .map_err(|e| PyValueError::new_err(format!("Invalid operator: {}", e)))?;
+
+                Ok(PyLanceDB(q.with_operator(op).into()))
+            }
+            "BooleanQuery" => {
+                let queries: Vec<(String, PyLanceDB<FtsQuery>)> =
+                    ob.getattr("queries")?.extract()?;
+                let mut sub_queries = Vec::with_capacity(queries.len());
+                for (occur, q) in queries {
+                    let occur = Occur::try_from(occur.as_str())
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                    sub_queries.push((occur, q.0));
+                }
+                Ok(PyLanceDB(BooleanQuery::new(sub_queries).into()))
+            }
+            name => Err(PyValueError::new_err(format!(
+                "Unsupported FTS query type: {}",
+                name
+            ))),
+        }
     }
 }
 
-#[derive(Clone)]
-#[pyclass]
-pub struct PyFullTextQuery {
-    pub(crate) inner: FtsQuery,
+impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: pyo3::Python<'py>) -> PyResult<Self::Output> {
+        let namespace = py
+            .import(intern!(py, "lancedb"))
+            .and_then(|m| m.getattr(intern!(py, "query")))
+            .expect("Failed to import namespace");
+
+        match self.0 {
+            FtsQuery::Match(query) => {
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("boost", query.boost)?;
+                kwargs.set_item("fuzziness", query.fuzziness)?;
+                kwargs.set_item("max_expansions", query.max_expansions)?;
+                kwargs.set_item("operator", operator_to_str(query.operator))?;
+                namespace
+                    .getattr(intern!(py, "MatchQuery"))?
+                    .call((query.terms, query.column.unwrap()), Some(&kwargs))
+            }
+            FtsQuery::Phrase(query) => {
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("slop", query.slop)?;
+                namespace
+                    .getattr(intern!(py, "PhraseQuery"))?
+                    .call((query.terms, query.column.unwrap()), Some(&kwargs))
+            }
+            FtsQuery::Boost(query) => {
+                let positive = PyLanceDB(query.positive.as_ref().clone()).into_pyobject(py)?;
+                let negative = PyLanceDB(query.negative.as_ref().clone()).into_pyobject(py)?;
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("negative_boost", query.negative_boost)?;
+                namespace
+                    .getattr(intern!(py, "BoostQuery"))?
+                    .call((positive, negative), Some(&kwargs))
+            }
+            FtsQuery::MultiMatch(query) => {
+                let first = &query.match_queries[0];
+                let (columns, boosts): (Vec<_>, Vec<_>) = query
+                    .match_queries
+                    .iter()
+                    .map(|q| (q.column.as_ref().unwrap().clone(), q.boost))
+                    .unzip();
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("boosts", boosts)?;
+                kwargs.set_item("operator", operator_to_str(first.operator))?;
+                namespace
+                    .getattr(intern!(py, "MultiMatchQuery"))?
+                    .call((first.terms.clone(), columns), Some(&kwargs))
+            }
+            FtsQuery::Boolean(query) => {
+                let mut queries = Vec::with_capacity(query.must.len() + query.should.len());
+                for q in query.must {
+                    queries.push((occur_to_str(Occur::Must), PyLanceDB(q).into_pyobject(py)?));
+                }
+                for q in query.should {
+                    queries.push((occur_to_str(Occur::Should), PyLanceDB(q).into_pyobject(py)?));
+                }
+                namespace
+                    .getattr(intern!(py, "BooleanQuery"))?
+                    .call1((queries,))
+            }
+        }
+    }
 }
 
-#[pymethods]
-impl PyFullTextQuery {
-    #[staticmethod]
-    #[pyo3(signature = (query, column, boost=1.0, fuzziness=Some(0), max_expansions=50, operator="OR"))]
-    fn match_query(
-        query: String,
-        column: String,
-        boost: f32,
-        fuzziness: Option<u32>,
-        max_expansions: usize,
-        operator: &str,
-    ) -> PyResult<Self> {
-        Ok(Self {
-            inner: MatchQuery::new(query)
-                .with_column(Some(column))
-                .with_boost(boost)
-                .with_fuzziness(fuzziness)
-                .with_max_expansions(max_expansions)
-                .with_operator(
-                    Operator::try_from(operator)
-                        .map_err(|e| PyValueError::new_err(format!("Invalid operator: {}", e)))?,
-                )
-                .into(),
-        })
+fn operator_to_str(op: Operator) -> &'static str {
+    match op {
+        Operator::And => "AND",
+        Operator::Or => "OR",
     }
+}
 
-    #[staticmethod]
-    #[pyo3(signature = (query, column, slop))]
-    fn phrase_query(query: String, column: String, slop: u32) -> PyResult<Self> {
-        Ok(Self {
-            inner: PhraseQuery::new(query)
-                .with_column(Some(column))
-                .with_slop(slop)
-                .into(),
-        })
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (positive, negative,negative_boost=None))]
-    fn boost_query(positive: Self, negative: Self, negative_boost: Option<f32>) -> PyResult<Self> {
-        Ok(Self {
-            inner: BoostQuery::new(positive.inner, negative.inner, negative_boost).into(),
-        })
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (query, columns, boosts=None, operator="OR"))]
-    fn multi_match_query(
-        query: String,
-        columns: Vec<String>,
-        boosts: Option<Vec<f32>>,
-        operator: &str,
-    ) -> PyResult<Self> {
-        let q = MultiMatchQuery::try_new(query, columns)
-            .map_err(|e| PyValueError::new_err(format!("Invalid query: {}", e)))?;
-        let q = if let Some(boosts) = boosts {
-            q.try_with_boosts(boosts)
-                .map_err(|e| PyValueError::new_err(format!("Invalid boosts: {}", e)))?
-        } else {
-            q
-        };
-
-        let op = Operator::try_from(operator)
-            .map_err(|e| PyValueError::new_err(format!("Invalid operator: {}", e)))?;
-
-        Ok(Self {
-            inner: q.with_operator(op).into(),
-        })
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (queries))]
-    fn boolean_query(queries: Vec<(String, Self)>) -> PyResult<Self> {
-        let mut sub_queries = Vec::with_capacity(queries.len());
-        for (occur, q) in queries {
-            let occur = Occur::try_from(occur.as_str())
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            sub_queries.push((occur, q.inner));
-        }
-
-        Ok(Self {
-            inner: BooleanQuery::new(sub_queries).into(),
-        })
-    }
-
-    pub fn query_type(&self) -> String {
-        match self.inner {
-            FtsQuery::Match(_) => "match".to_string(),
-            FtsQuery::Phrase(_) => "match_phrase".to_string(),
-            FtsQuery::Boost(_) => "boost".to_string(),
-            FtsQuery::MultiMatch(_) => "multi_match".to_string(),
-            FtsQuery::Boolean(_) => "boolean".to_string(),
-        }
+fn occur_to_str(occur: Occur) -> &'static str {
+    match occur {
+        Occur::Must => "MUST",
+        Occur::Should => "SHOULD",
     }
 }
 
@@ -170,7 +229,7 @@ pub struct PyQueryRequest {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
     pub filter: Option<PyQueryFilter>,
-    pub full_text_search: Option<PyFullTextQuery>,
+    pub full_text_search: Option<PyLanceDB<FtsQuery>>,
     pub select: PySelect,
     pub fast_search: Option<bool>,
     pub with_row_id: Option<bool>,
@@ -194,7 +253,9 @@ impl From<AnyQuery> for PyQueryRequest {
                 limit: query_request.limit,
                 offset: query_request.offset,
                 filter: query_request.filter.map(PyQueryFilter),
-                full_text_search: query_request.full_text_search.map(PyFullTextQuery::from),
+                full_text_search: query_request
+                    .full_text_search
+                    .map(|fts| PyLanceDB(fts.query)),
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
                 with_row_id: Some(query_request.with_row_id),
@@ -369,13 +430,9 @@ impl Query {
                 _ => {}
             }
             query
-        } else if let Ok(query) = fts_query.downcast::<PyFullTextQuery>() {
-            let query = query.borrow();
-            FullTextSearchQuery::new_query(query.inner.clone())
         } else {
-            return Err(PyValueError::new_err(
-                "query must be a string or a Query object",
-            ));
+            let query = fts_query.extract::<PyLanceDB<FtsQuery>>()?;
+            FullTextSearchQuery::new_query(query.0)
         };
 
         Ok(FTSQuery {

@@ -165,42 +165,14 @@ class HybridQuery:
     def get_with_row_id(self) -> bool: ...
     def to_query_request(self) -> PyQueryRequest: ...
 
-class PyFullTextQuery:
-    @staticmethod
-    def match_query(
-        query: str,
-        column: str,
-        boost: float = 1.0,
-        fuzziness: Optional[int] = 0,
-        max_expansions: int = 50,
-        operator: str = "OR",
-    ) -> PyFullTextQuery: ...
-    @staticmethod
-    def phrase_query(
-        query: str,
-        column: str,
-        slop: int,
-    ) -> PyFullTextQuery: ...
-    @staticmethod
-    def boost_query(
-        positive: PyFullTextQuery,
-        negative: PyFullTextQuery,
-        negative_boost: Optional[float],
-    ) -> PyFullTextQuery: ...
-    @staticmethod
-    def multi_match_query(
-        query: str,
-        columns: List[str],
-        boosts: Optional[List[float]] = None,
-        operator: str = "OR",
-    ) -> PyFullTextQuery: ...
-    def query_type(self) -> str: ...
+class FullTextQuery:
+    pass
 
 class PyQueryRequest:
     limit: Optional[int]
     offset: Optional[int]
     filter: Optional[Union[str, bytes]]
-    full_text_search: Optional[PyFullTextQuery]
+    full_text_search: Optional[FullTextQuery]
     select: Optional[Union[str, List[str]]]
     fast_search: Optional[bool]
     with_row_id: Optional[bool]

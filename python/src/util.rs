@@ -59,3 +59,7 @@ pub fn validate_table_name(table_name: &str) -> PyResult<()> {
     lancedb::utils::validate_table_name(table_name)
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
+
+/// A wrapper around a LanceDB type to allow it to be used in Python
+#[derive(Debug, Clone)]
+pub struct PyLanceDB<T>(pub T);

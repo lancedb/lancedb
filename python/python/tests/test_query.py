@@ -24,9 +24,9 @@ from lancedb.query import (
     AsyncHybridQuery,
     AsyncQueryBase,
     AsyncVectorQuery,
-    FullTextQuery,
     LanceVectorQueryBuilder,
     MatchQuery,
+    PhraseQuery,
     Query,
     FullTextSearchQuery,
 )
@@ -1067,24 +1067,29 @@ async def test_query_serialization_async(table_async: AsyncTable):
     )
 
     # FTS queries
-    # TODO: FTS query is not a simple string now,
-    # it can be nested, we need to figure out how to represent it with pydantic
-    hack_query = MatchQuery("foo", "text")
-    hack_query = FullTextSearchQuery(
-        columns=None, query=FullTextQuery.from_inner(hack_query._inner)
+    match_query = MatchQuery("foo", "text")
+    q = (await table_async.search(match_query)).limit(10).to_query_object()
+    check_set_props(
+        q,
+        limit=10,
+        full_text_query=FullTextSearchQuery(columns=None, query=match_query),
+        with_row_id=False,
     )
-    q = (await table_async.search("foo")).limit(10).to_query_object()
-    assert q.limit == 10
-    assert q.with_row_id is False
-    assert q.full_text_query.query._inner.query_type() == "match"
 
-    q = (await table_async.search(MatchQuery("foo", "text"))).to_query_object()
-    assert q.with_row_id is False
-    assert q.full_text_query.query._inner.query_type() == "match"
+    q = (await table_async.search(match_query)).to_query_object()
+    check_set_props(
+        q,
+        full_text_query=FullTextSearchQuery(columns=None, query=match_query),
+        with_row_id=False,
+    )
 
-    q = (await table_async.search('"foo"')).to_query_object()
-    assert q.with_row_id is False
-    assert q.full_text_query.query._inner.query_type() == "match_phrase"
+    phrase_query = PhraseQuery("foo", "text", slop=1)
+    q = (await table_async.search(phrase_query)).to_query_object()
+    check_set_props(
+        q,
+        full_text_query=FullTextSearchQuery(columns=None, query=phrase_query),
+        with_row_id=False,
+    )
 
 
 def test_query_timeout(tmp_path):
