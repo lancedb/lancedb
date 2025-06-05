@@ -17,25 +17,15 @@ jobs:
     steps:
       - name: Checkout commit branch
         uses: actions/checkout@v3
-      
       - name: Checkout lance main branch
         uses: actions/checkout@v3
         with:
-          repo: lancedb/lance
-          ref: main
-      
-      - name: Change to local reference
+          repository: lancedb/lance
+      - name: Catch lance-main up to date
         run: |
-          python ci/set_lance_version.py local
-          git add Cargo.toml Cargo.lock
-          git commit --amend --no-edit
-
-      - name: Bring commit onto the lance-main branch
-        run: |
-          REF=$(git rev-parse HEAD)
           git checkout lance-main
-          git cherry-pick $REF || git cherry-pick --abort
-
+          git fetch origin main
+          git rebase origin/main --exec "python ci/set_lance_version.py local && git add Cargo.toml Cargo.lock && git commit -m 'use local lance'"
       - name: Push changes to lance-main branch
         run: |
           git push origin lance-main --force
