@@ -643,8 +643,47 @@ function transposeData(
     const childVectors = childFields.map((child) => {
       return transposeData(data, child, fullPath);
     });
+
+    /**
+     * Compute the validity bitmap for the struct.  According to the Arrow
+     * specification a struct row is considered null iff *all* of its child
+     * fields are null for that row.  If at least one child value is non-null
+     * then the struct row itself is considered valid.  We create a validity
+     * bitmap which marks valid rows with a 1 bit and null rows with a 0 bit.
+     */
+    const numRows = childVectors.length === 0 ? 0 : childVectors[0].length;
+    let nullCount = 0;
+    // Only allocate the bitmap if we discover at least one null row.
+    const validityBitmap = new Uint8Array(Math.ceil(numRows / 8));
+
+    for (let i = 0; i < numRows; i++) {
+      // Determine if every child is null at this row.
+      let allChildrenNull = true;
+      for (const child of childVectors) {
+        // `get` returns undefined for an out-of-range index but that should
+        // not happen here since all child vectors have `numRows` elements.
+        const value = child.get(i);
+        if (value !== null && value !== undefined) {
+          allChildrenNull = false;
+          break;
+        }
+      }
+
+      if (!allChildrenNull) {
+        // Mark this row as valid.
+        validityBitmap[i >> 3] |= 1 << (i & 7);
+      } else {
+        nullCount++;
+      }
+    }
+
     const structData = makeData({
       type: field.type,
+      length: numRows,
+      nullCount,
+      // Only include the bitmap if there are any nulls.  Arrow interprets a
+      // missing bitmap as "no nulls".
+      ...(nullCount > 0 ? { nullBitmap: validityBitmap } : {}),
       children: childVectors as unknown as ArrowData<DataType>[],
     });
     return arrowMakeVector(structData);
