@@ -438,7 +438,17 @@ impl<S: HttpSend> RemoteTable<S> {
 
         // Apply general parameters, before we dispatch based on number of query vectors.
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
-        body["nprobes"] = query.nprobes.into();
+        if let Some(maximum_nprobes) = query.maximum_nprobes {
+            if query.minimum_nprobes == maximum_nprobes {
+                // For backwards compatibility, support older servers that only understand nprobes
+                // if we are able.
+                body["nprobes"] = query.minimum_nprobes.into();
+            }
+            body["minimum_nprobes"] = query.minimum_nprobes.into();
+            body["maximum_nprobes"] = query.maximum_nprobes.into();
+        } else {
+            body["minimum_nprobes"] = query.minimum_nprobes.into();
+        }
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
         body["ef"] = query.ef.into();
