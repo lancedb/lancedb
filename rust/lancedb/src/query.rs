@@ -944,9 +944,9 @@ impl VectorQuery {
     /// If there is no index then this value is ignored.
     ///
     /// See [`VectorQuery::nprobes`] for more details.
-    /// 
+    ///
     /// These partitions will be searched on every indexed vector query.
-    /// 
+    ///
     /// Will return an error if the value is not greater than 0 or if maximum_nprobes
     /// has been set and is less than the minimum_nprobes.
     pub fn minimum_nprobes(mut self, minimum_nprobes: usize) -> Result<Self> {
@@ -978,7 +978,7 @@ impl VectorQuery {
     ///
     /// This can be useful when there is a narrow filter to allow these queries to
     /// spend more time searching and avoid potential false negatives.
-    /// 
+    ///
     /// Set to None to search all partitions, if needed, to satsify the limit
     pub fn maximum_nprobes(mut self, maximum_nprobes: Option<usize>) -> Result<Self> {
         if let Some(maximum_nprobes) = maximum_nprobes {
