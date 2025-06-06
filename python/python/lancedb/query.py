@@ -437,8 +437,18 @@ class Query(pydantic.BaseModel):
     # which columns to return in the results
     columns: Optional[Union[List[str], Dict[str, str]]] = None
 
-    # number of IVF partitions to search
-    nprobes: Optional[int] = None
+    # minimum number of IVF partitions to search
+    #
+    # If None then a default value (20) will be used.
+    minimum_nprobes: Optional[int] = None
+
+    # maximum number of IVF partitions to search
+    #
+    # If None then a default value (20) will be used.
+    #
+    # If 0 then no limit will be applied and all partitions could be searched
+    # if needed to satisfy the limit.
+    maximum_nprobes: Optional[int] = None
 
     # lower bound for distance search
     lower_bound: Optional[float] = None
@@ -476,7 +486,8 @@ class Query(pydantic.BaseModel):
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
-        query.nprobes = req.nprobes
+        query.minimum_nprobes = req.minimum_nprobes
+        query.maximum_nprobes = req.maximum_nprobes
         query.lower_bound = req.lower_bound
         query.upper_bound = req.upper_bound
         query.ef = req.ef
@@ -1037,7 +1048,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._query = query
         self._distance_type = None
-        self._nprobes = None
+        self._minimum_nprobes = None
+        self._maximum_nprobes = None
         self._lower_bound = None
         self._upper_bound = None
         self._refine_factor = None
@@ -1100,6 +1112,10 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         See discussion in [Querying an ANN Index][querying-an-ann-index] for
         tuning advice.
 
+        This method sets both the minimum and maximum number of probes to the same
+        value. See `minimum_nprobes` and `maximum_nprobes` for more fine-grained
+        control.
+
         Parameters
         ----------
         nprobes: int
@@ -1110,7 +1126,36 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._nprobes = nprobes
+        self._minimum_nprobes = nprobes
+        self._maximum_nprobes = nprobes
+        return self
+
+    def minimum_nprobes(self, minimum_nprobes: int) -> LanceVectorQueryBuilder:
+        """Set the minimum number of probes to use.
+
+        See `nprobes` for more details.
+
+        These partitions will be searched on every vector query and will increase recall
+        at the expense of latency.
+        """
+        self._minimum_nprobes = minimum_nprobes
+        return self
+
+    def maximum_nprobes(self, maximum_nprobes: int) -> LanceVectorQueryBuilder:
+        """Set the maximum number of probes to use.
+
+        See `nprobes` for more details.
+
+        If this value is greater than `minimum_nprobes` then the excess partitions
+        will be searched only if we have not found enough results.
+
+        This can be useful when there is a narrow filter to allow these queries to
+        spend more time searching and avoid potential false negatives.
+
+        If this value is 0 then no limit will be applied and all partitions could be
+        searched if needed to satisfy the limit.
+        """
+        self._maximum_nprobes = maximum_nprobes
         return self
 
     def distance_range(
@@ -1214,7 +1259,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             distance_type=self._distance_type,
             columns=self._columns,
-            nprobes=self._nprobes,
+            minimum_nprobes=self._minimum_nprobes,
+            maximum_nprobes=self._maximum_nprobes,
             lower_bound=self._lower_bound,
             upper_bound=self._upper_bound,
             refine_factor=self._refine_factor,
@@ -1578,7 +1624,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._fts_columns = fts_columns
         self._norm = None
         self._reranker = None
-        self._nprobes = None
+        self._minimum_nprobes = None
+        self._maximum_nprobes = None
         self._refine_factor = None
         self._distance_type = None
         self._phrase_query = None
@@ -1810,7 +1857,24 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        self._nprobes = nprobes
+        self._minimum_nprobes = nprobes
+        self._maximum_nprobes = nprobes
+        return self
+
+    def minimum_nprobes(self, minimum_nprobes: int) -> LanceHybridQueryBuilder:
+        """Set the minimum number of probes to use.
+
+        See `nprobes` for more details.
+        """
+        self._minimum_nprobes = minimum_nprobes
+        return self
+
+    def maximum_nprobes(self, maximum_nprobes: int) -> LanceHybridQueryBuilder:
+        """Set the maximum number of probes to use.
+
+        See `nprobes` for more details.
+        """
+        self._maximum_nprobes = maximum_nprobes
         return self
 
     def distance_range(
@@ -2039,8 +2103,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.phrase_query(True)
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
-        if self._nprobes:
-            self._vector_query.nprobes(self._nprobes)
+        if self._minimum_nprobes:
+            self._vector_query.minimum_nprobes(self._minimum_nprobes)
+        if self._maximum_nprobes:
+            self._vector_query.maximum_nprobes(self._maximum_nprobes)
         if self._refine_factor:
             self._vector_query.refine_factor(self._refine_factor)
         if self._ef:
@@ -2649,6 +2715,31 @@ class AsyncVectorQueryBase:
         you the desired recall.
         """
         self._inner.nprobes(nprobes)
+        return self
+
+    def minimum_nprobes(self, minimum_nprobes: int) -> Self:
+        """Set the minimum number of probes to use.
+
+        See `nprobes` for more details.
+
+        These partitions will be searched on every indexed vector query and will
+        increase recall at the expense of latency.
+        """
+        self._inner.minimum_nprobes(minimum_nprobes)
+        return self
+
+    def maximum_nprobes(self, maximum_nprobes: int) -> Self:
+        """Set the maximum number of probes to use.
+
+        See `nprobes` for more details.
+
+        If this value is greater than `minimum_nprobes` then the excess partitions
+        will be searched only if we have not found enough results.
+
+        This can be useful when there is a narrow filter to allow these queries to
+        spend more time searching and avoid potential false negatives.
+        """
+        self._inner.maximum_nprobes(maximum_nprobes)
         return self
 
     def distance_range(

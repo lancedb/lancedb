@@ -3637,8 +3637,10 @@ class AsyncTable:
             )
             if query.distance_type is not None:
                 async_query = async_query.distance_type(query.distance_type)
-            if query.nprobes is not None:
-                async_query = async_query.nprobes(query.nprobes)
+            if query.minimum_nprobes is not None:
+                async_query = async_query.minimum_nprobes(query.minimum_nprobes)
+            if query.maximum_nprobes is not None:
+                async_query = async_query.maximum_nprobes(query.maximum_nprobes)
             if query.refine_factor is not None:
                 async_query = async_query.refine_factor(query.refine_factor)
             if query.vector_column:
