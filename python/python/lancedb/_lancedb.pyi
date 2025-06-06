@@ -165,17 +165,14 @@ class HybridQuery:
     def get_with_row_id(self) -> bool: ...
     def to_query_request(self) -> PyQueryRequest: ...
 
-class PyFullTextSearchQuery:
-    columns: Optional[List[str]]
-    query: str
-    limit: Optional[int]
-    wand_factor: Optional[float]
+class FullTextQuery:
+    pass
 
 class PyQueryRequest:
     limit: Optional[int]
     offset: Optional[int]
     filter: Optional[Union[str, bytes]]
-    full_text_search: Optional[PyFullTextSearchQuery]
+    full_text_search: Optional[FullTextQuery]
     select: Optional[Union[str, List[str]]]
     fast_search: Optional[bool]
     with_row_id: Optional[bool]

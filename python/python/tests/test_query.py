@@ -25,6 +25,8 @@ from lancedb.query import (
     AsyncQueryBase,
     AsyncVectorQuery,
     LanceVectorQueryBuilder,
+    MatchQuery,
+    PhraseQuery,
     Query,
     FullTextSearchQuery,
 )
@@ -1065,18 +1067,27 @@ async def test_query_serialization_async(table_async: AsyncTable):
     )
 
     # FTS queries
-    q = (await table_async.search("foo")).limit(10).to_query_object()
+    match_query = MatchQuery("foo", "text")
+    q = (await table_async.search(match_query)).limit(10).to_query_object()
     check_set_props(
         q,
         limit=10,
-        full_text_query=FullTextSearchQuery(columns=[], query="foo"),
+        full_text_query=FullTextSearchQuery(columns=None, query=match_query),
         with_row_id=False,
     )
 
-    q = (await table_async.search("foo", query_type="fts")).to_query_object()
+    q = (await table_async.search(match_query)).to_query_object()
     check_set_props(
         q,
-        full_text_query=FullTextSearchQuery(columns=[], query="foo"),
+        full_text_query=FullTextSearchQuery(columns=None, query=match_query),
+        with_row_id=False,
+    )
+
+    phrase_query = PhraseQuery("foo", "text", slop=1)
+    q = (await table_async.search(phrase_query)).to_query_object()
+    check_set_props(
+        q,
+        full_text_query=FullTextSearchQuery(columns=None, query=phrase_query),
         with_row_id=False,
     )
 

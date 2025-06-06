@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-import abc
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from datetime import timedelta
@@ -88,15 +87,27 @@ def ensure_vector_query(
         return val
 
 
-class FullTextQueryType(Enum):
+class FullTextQueryType(str, Enum):
     MATCH = "match"
     MATCH_PHRASE = "match_phrase"
     BOOST = "boost"
     MULTI_MATCH = "multi_match"
+    BOOLEAN = "boolean"
 
 
-class FullTextQuery(abc.ABC, pydantic.BaseModel):
-    @abc.abstractmethod
+class FullTextOperator(str, Enum):
+    AND = "AND"
+    OR = "OR"
+
+
+class Occur(str, Enum):
+    MUST = "MUST"
+    SHOULD = "SHOULD"
+
+
+@pydantic.dataclasses.dataclass
+class FullTextQuery(ABC):
+    @abstractmethod
     def query_type(self) -> FullTextQueryType:
         """
         Get the query type of the query.
@@ -106,193 +117,174 @@ class FullTextQuery(abc.ABC, pydantic.BaseModel):
         str
             The type of the query.
         """
+        pass
 
-    @abc.abstractmethod
-    def to_dict(self) -> dict:
+    def __and__(self, other: "FullTextQuery") -> "FullTextQuery":
         """
-        Convert the query to a dictionary.
-
-        Returns
-        -------
-        dict
-            The query as a dictionary.
-        """
-
-
-class MatchQuery(FullTextQuery):
-    query: str
-    column: str
-    boost: float = 1.0
-    fuzziness: int = 0
-    max_expansions: int = 50
-
-    def __init__(
-        self,
-        query: str,
-        column: str,
-        *,
-        boost: float = 1.0,
-        fuzziness: int = 0,
-        max_expansions: int = 50,
-    ):
-        """
-        Match query for full-text search.
+        Combine two queries with a logical AND operation.
 
         Parameters
         ----------
-        query : str
-            The query string to match against.
-        column : str
-            The name of the column to match against.
-        boost : float, default 1.0
-            The boost factor for the query.
-            The score of each matching document is multiplied by this value.
-        fuzziness : int, optional
-            The maximum edit distance for each term in the match query.
-            Defaults to 0 (exact match).
-            If None, fuzziness is applied automatically by the rules:
-                - 0 for terms with length <= 2
-                - 1 for terms with length <= 5
-                - 2 for terms with length > 5
-        max_expansions : int, optional
-            The maximum number of terms to consider for fuzzy matching.
-            Defaults to 50.
+        other : FullTextQuery
+            The other query to combine with.
+
+        Returns
+        -------
+        FullTextQuery
+            A new query that combines both queries with AND.
         """
-        super().__init__(
-            query=query,
-            column=column,
-            boost=boost,
-            fuzziness=fuzziness,
-            max_expansions=max_expansions,
-        )
+        return BooleanQuery([(Occur.MUST, self), (Occur.MUST, other)])
+
+    def __or__(self, other: "FullTextQuery") -> "FullTextQuery":
+        """
+        Combine two queries with a logical OR operation.
+
+        Parameters
+        ----------
+        other : FullTextQuery
+            The other query to combine with.
+
+        Returns
+        -------
+        FullTextQuery
+            A new query that combines both queries with OR.
+        """
+        return BooleanQuery([(Occur.SHOULD, self), (Occur.SHOULD, other)])
+
+
+@pydantic.dataclasses.dataclass
+class MatchQuery(FullTextQuery):
+    """
+    Match query for full-text search.
+
+    Parameters
+    ----------
+    query : str
+        The query string to match against.
+    column : str
+        The name of the column to match against.
+    boost : float, default 1.0
+        The boost factor for the query.
+        The score of each matching document is multiplied by this value.
+    fuzziness : int, optional
+        The maximum edit distance for each term in the match query.
+        Defaults to 0 (exact match).
+        If None, fuzziness is applied automatically by the rules:
+            - 0 for terms with length <= 2
+            - 1 for terms with length <= 5
+            - 2 for terms with length > 5
+    max_expansions : int, optional
+        The maximum number of terms to consider for fuzzy matching.
+        Defaults to 50.
+    operator : FullTextOperator, default OR
+        The operator to use for combining the query results.
+        Can be either `AND` or `OR`.
+        If `AND`, all terms in the query must match.
+        If `OR`, at least one term in the query must match.
+    """
+
+    query: str
+    column: str
+    boost: float = pydantic.Field(1.0, kw_only=True)
+    fuzziness: int = pydantic.Field(0, kw_only=True)
+    max_expansions: int = pydantic.Field(50, kw_only=True)
+    operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH
 
-    def to_dict(self) -> dict:
-        return {
-            "match": {
-                self.column: {
-                    "query": self.query,
-                    "boost": self.boost,
-                    "fuzziness": self.fuzziness,
-                    "max_expansions": self.max_expansions,
-                }
-            }
-        }
 
-
+@pydantic.dataclasses.dataclass
 class PhraseQuery(FullTextQuery):
+    """
+    Phrase query for full-text search.
+
+    Parameters
+    ----------
+    query : str
+        The query string to match against.
+    column : str
+        The name of the column to match against.
+    """
+
     query: str
     column: str
-
-    def __init__(self, query: str, column: str):
-        """
-        Phrase query for full-text search.
-
-        Parameters
-        ----------
-        query : str
-            The query string to match against.
-        column : str
-            The name of the column to match against.
-        """
-        super().__init__(query=query, column=column)
+    slop: int = pydantic.Field(0, kw_only=True)
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH_PHRASE
 
-    def to_dict(self) -> dict:
-        return {
-            "match_phrase": {
-                self.column: self.query,
-            }
-        }
 
-
+@pydantic.dataclasses.dataclass
 class BoostQuery(FullTextQuery):
+    """
+    Boost query for full-text search.
+
+    Parameters
+    ----------
+    positive : dict
+        The positive query object.
+    negative : dict
+        The negative query object.
+    negative_boost : float, default 0.5
+        The boost factor for the negative query.
+    """
+
     positive: FullTextQuery
     negative: FullTextQuery
-    negative_boost: float = 0.5
-
-    def __init__(
-        self,
-        positive: FullTextQuery,
-        negative: FullTextQuery,
-        *,
-        negative_boost: float = 0.5,
-    ):
-        """
-        Boost query for full-text search.
-
-        Parameters
-        ----------
-        positive : dict
-            The positive query object.
-        negative : dict
-            The negative query object.
-        negative_boost : float
-            The boost factor for the negative query.
-        """
-        super().__init__(
-            positive=positive, negative=negative, negative_boost=negative_boost
-        )
+    negative_boost: float = pydantic.Field(0.5, kw_only=True)
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.BOOST
 
-    def to_dict(self) -> dict:
-        return {
-            "boost": {
-                "positive": self.positive.to_dict(),
-                "negative": self.negative.to_dict(),
-                "negative_boost": self.negative_boost,
-            }
-        }
 
-
+@pydantic.dataclasses.dataclass
 class MultiMatchQuery(FullTextQuery):
+    """
+    Multi-match query for full-text search.
+
+    Parameters
+    ----------
+    query : str | list[Query]
+        If a string, the query string to match against.
+    columns : list[str]
+        The list of columns to match against.
+    boosts : list[float], optional
+        The list of boost factors for each column. If not provided,
+        all columns will have the same boost factor.
+    operator : FullTextOperator, default OR
+        The operator to use for combining the query results.
+        Can be either `AND` or `OR`.
+        It would be applied to all columns individually.
+        For example, if the operator is `AND`,
+        then the query "hello world" is equal to
+        `match("hello AND world", column1) OR match("hello AND world", column2)`.
+    """
+
     query: str
     columns: list[str]
-    boosts: list[float]
-
-    def __init__(
-        self,
-        query: str,
-        columns: list[str],
-        *,
-        boosts: Optional[list[float]] = None,
-    ):
-        """
-        Multi-match query for full-text search.
-
-        Parameters
-        ----------
-        query : str
-            The query string to match against.
-
-        columns : list[str]
-            The list of columns to match against.
-
-        boosts : list[float], optional
-            The list of boost factors for each column. If not provided,
-            all columns will have the same boost factor.
-        """
-        if boosts is None:
-            boosts = [1.0] * len(columns)
-        super().__init__(query=query, columns=columns, boosts=boosts)
+    boosts: Optional[list[float]] = pydantic.Field(None, kw_only=True)
+    operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MULTI_MATCH
 
-    def to_dict(self) -> dict:
-        return {
-            "multi_match": {
-                "query": self.query,
-                "columns": self.columns,
-                "boost": self.boosts,
-            }
-        }
+
+@pydantic.dataclasses.dataclass
+class BooleanQuery(FullTextQuery):
+    """
+    Boolean query for full-text search.
+
+    Parameters
+    ----------
+    queries : list[tuple(Occur, FullTextQuery)]
+        The list of queries with their occurrence requirements.
+    """
+
+    queries: list[tuple[Occur, FullTextQuery]]
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.BOOLEAN
 
 
 class FullTextSearchQuery(pydantic.BaseModel):
@@ -493,10 +485,8 @@ class Query(pydantic.BaseModel):
         query.postfilter = req.postfilter
         if req.full_text_search is not None:
             query.full_text_query = FullTextSearchQuery(
-                columns=req.full_text_search.columns,
-                query=req.full_text_search.query,
-                limit=req.full_text_search.limit,
-                wand_factor=req.full_text_search.wand_factor,
+                columns=None,
+                query=req.full_text_search,
             )
         return query
 
@@ -2513,7 +2503,7 @@ class AsyncQuery(AsyncQueryBase):
                 self._inner.nearest_to_text({"query": query, "columns": columns})
             )
         # FullTextQuery object
-        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query.to_dict()}))
+        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query}))
 
 
 class AsyncFTSQuery(AsyncQueryBase):
@@ -2835,7 +2825,7 @@ class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
                 self._inner.nearest_to_text({"query": query, "columns": columns})
             )
         # FullTextQuery object
-        return AsyncHybridQuery(self._inner.nearest_to_text({"query": query.to_dict()}))
+        return AsyncHybridQuery(self._inner.nearest_to_text({"query": query}))
 
     async def to_batches(
         self,
