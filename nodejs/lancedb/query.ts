@@ -467,7 +467,7 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
    * filter.  See `nprobes` for more details.  Higher values will increase recall
    * but will also increase latency.
    */
-  minimumNProbes(minimumNprobes: number): VectorQuery {
+  minimumNprobes(minimumNprobes: number): VectorQuery {
     super.doCall((inner) => inner.minimumNprobes(minimumNprobes));
     return this;
   }
