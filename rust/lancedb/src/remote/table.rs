@@ -32,6 +32,7 @@ use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
+use serde_json::Number;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::pin::Pin;
@@ -438,7 +439,15 @@ impl<S: HttpSend> RemoteTable<S> {
 
         // Apply general parameters, before we dispatch based on number of query vectors.
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
-        body["nprobes"] = query.nprobes.into();
+        // For backwards compatibility, newer clients should ignore this property
+        // as it is less precise.
+        body["nprobes"] = query.minimum_nprobes.into();
+        if let Some(maximum_nprobes) = query.maximum_nprobes {
+            body["maximum_nprobes"] = maximum_nprobes.into();
+        } else {
+            body["maximum_nprobes"] = serde_json::Value::Number(Number::from_u128(0).unwrap())
+        }
+        body["minimum_nprobes"] = query.minimum_nprobes.into();
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
         body["ef"] = query.ef.into();

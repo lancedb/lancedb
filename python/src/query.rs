@@ -235,7 +235,10 @@ pub struct PyQueryRequest {
     pub with_row_id: Option<bool>,
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
-    pub nprobes: Option<usize>,
+    pub minimum_nprobes: Option<usize>,
+    // None means user did not set it and default shoud be used (currenty 20)
+    // Some(0) means user set it to None and there is no limit
+    pub maximum_nprobes: Option<usize>,
     pub lower_bound: Option<f32>,
     pub upper_bound: Option<f32>,
     pub ef: Option<usize>,
@@ -261,7 +264,8 @@ impl From<AnyQuery> for PyQueryRequest {
                 with_row_id: Some(query_request.with_row_id),
                 column: None,
                 query_vector: None,
-                nprobes: None,
+                minimum_nprobes: None,
+                maximum_nprobes: None,
                 lower_bound: None,
                 upper_bound: None,
                 ef: None,
@@ -281,7 +285,11 @@ impl From<AnyQuery> for PyQueryRequest {
                 with_row_id: Some(vector_query.base.with_row_id),
                 column: vector_query.column,
                 query_vector: Some(PyQueryVectors(vector_query.query_vector)),
-                nprobes: Some(vector_query.nprobes),
+                minimum_nprobes: Some(vector_query.minimum_nprobes),
+                maximum_nprobes: match vector_query.maximum_nprobes {
+                    None => Some(0),
+                    Some(value) => Some(value),
+                },
                 lower_bound: vector_query.lower_bound,
                 upper_bound: vector_query.upper_bound,
                 ef: vector_query.ef,
@@ -653,6 +661,29 @@ impl VectorQuery {
 
     pub fn nprobes(&mut self, nprobe: u32) {
         self.inner = self.inner.clone().nprobes(nprobe as usize);
+    }
+
+    pub fn minimum_nprobes(&mut self, minimum_nprobes: u32) -> PyResult<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .minimum_nprobes(minimum_nprobes as usize)
+            .infer_error()?;
+        Ok(())
+    }
+
+    pub fn maximum_nprobes(&mut self, maximum_nprobes: u32) -> PyResult<()> {
+        let maximum_nprobes = if maximum_nprobes == 0 {
+            None
+        } else {
+            Some(maximum_nprobes as usize)
+        };
+        self.inner = self
+            .inner
+            .clone()
+            .maximum_nprobes(maximum_nprobes)
+            .infer_error()?;
+        Ok(())
     }
 
     #[pyo3(signature = (lower_bound=None, upper_bound=None))]

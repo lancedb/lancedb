@@ -2354,12 +2354,15 @@ impl BaseTable for NativeTable {
                     query.base.limit.unwrap_or(DEFAULT_TOP_K),
                 )?;
             }
+            scanner.minimum_nprobes(query.minimum_nprobes);
+            if let Some(maximum_nprobes) = query.maximum_nprobes {
+                scanner.maximum_nprobes(maximum_nprobes);
+            }
         }
         scanner.limit(
             query.base.limit.map(|limit| limit as i64),
             query.base.offset.map(|offset| offset as i64),
         )?;
-        scanner.nprobs(query.nprobes);
         if let Some(ef) = query.ef {
             scanner.ef(ef);
         }
