@@ -664,7 +664,11 @@ impl VectorQuery {
     }
 
     pub fn minimum_nprobes(&mut self, minimum_nprobes: u32) -> PyResult<()> {
-        self.inner = self.inner.clone().minimum_nprobes(minimum_nprobes as usize).infer_error()?;
+        self.inner = self
+            .inner
+            .clone()
+            .minimum_nprobes(minimum_nprobes as usize)
+            .infer_error()?;
         Ok(())
     }
 

@@ -2357,7 +2357,7 @@ impl BaseTable for NativeTable {
             scanner.minimum_nprobes(query.minimum_nprobes);
             if let Some(maximum_nprobes) = query.maximum_nprobes {
                 scanner.maximum_nprobes(maximum_nprobes);
-            }    
+            }
         }
         scanner.limit(
             query.base.limit.map(|limit| limit as i64),
