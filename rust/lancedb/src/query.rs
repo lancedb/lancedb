@@ -981,7 +981,6 @@ impl VectorQuery {
     /// 
     /// Set to None to search all partitions, if needed, to satsify the limit
     pub fn maximum_nprobes(mut self, maximum_nprobes: Option<usize>) -> Result<Self> {
-        println!("Setting max to {:?} min is {}", maximum_nprobes, &self.request.minimum_nprobes);
         if let Some(maximum_nprobes) = maximum_nprobes {
             if maximum_nprobes == 0 {
                 return Err(Error::InvalidInput {
