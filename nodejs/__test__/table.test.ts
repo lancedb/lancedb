@@ -33,7 +33,12 @@ import {
   register,
 } from "../lancedb/embedding";
 import { Index } from "../lancedb/indices";
-import { instanceOfFullTextQuery } from "../lancedb/query";
+import {
+  BooleanQuery,
+  Occur,
+  Operator,
+  instanceOfFullTextQuery,
+} from "../lancedb/query";
 import exp = require("constants");
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
@@ -1531,6 +1536,18 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       const results = await table.search("hello").toArray();
       expect(results[0].text).toBe(data[0].text);
+
+      const results2 = await table
+        .search(new MatchQuery("hello world", "text"))
+        .toArray();
+      expect(results2.length).toBe(2);
+
+      const results3 = await table
+        .search(
+          new MatchQuery("hello world", "text", { operator: Operator.And }),
+        )
+        .toArray();
+      expect(results3.length).toBe(1);
     });
 
     test("full text search without lowercase", async () => {
@@ -1607,6 +1624,38 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(resultSet.has("fob")).toBe(true);
       expect(resultSet.has("fo")).toBe(true);
       expect(resultSet.has("food")).toBe(true);
+    });
+
+    test("full text search boolean query", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ withPosition: false }),
+      });
+
+      const shouldResults = await table
+        .search(
+          new BooleanQuery([
+            [Occur.Should, new MatchQuery("hello", "text")],
+            [Occur.Should, new MatchQuery("goodbye", "text")],
+          ]),
+        )
+        .toArray();
+      expect(shouldResults.length).toBe(2);
+
+      const mustResults = await table
+        .search(
+          new BooleanQuery([
+            [Occur.Must, new MatchQuery("hello", "text")],
+            [Occur.Must, new MatchQuery("world", "text")],
+          ]),
+        )
+        .toArray();
+      expect(mustResults.length).toBe(1);
     });
 
     test.each([

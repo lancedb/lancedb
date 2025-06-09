@@ -762,6 +762,17 @@ export enum FullTextQueryType {
   MatchPhrase = "match_phrase",
   Boost = "boost",
   MultiMatch = "multi_match",
+  Boolean = "boolean",
+}
+
+export enum Operator {
+  And = "AND",
+  Or = "OR",
+}
+
+export enum Occur {
+  Must = "MUST",
+  Should = "SHOULD",
 }
 
 /**
@@ -800,6 +811,7 @@ export class MatchQuery implements FullTextQuery {
    *   - `boost`: The boost factor for the query (default is 1.0).
    *   - `fuzziness`: The fuzziness level for the query (default is 0).
    *   - `maxExpansions`: The maximum number of terms to consider for fuzzy matching (default is 50).
+   *   - `operator`: The logical operator to use for combining terms in the query (default is "OR").
    */
   constructor(
     query: string,
@@ -808,6 +820,7 @@ export class MatchQuery implements FullTextQuery {
       boost?: number;
       fuzziness?: number;
       maxExpansions?: number;
+      operator?: Operator;
     },
   ) {
     let fuzziness = options?.fuzziness;
@@ -820,6 +833,7 @@ export class MatchQuery implements FullTextQuery {
       options?.boost ?? 1.0,
       fuzziness,
       options?.maxExpansions ?? 50,
+      options?.operator ?? Operator.Or,
     );
   }
 
@@ -836,9 +850,11 @@ export class PhraseQuery implements FullTextQuery {
    *
    * @param query - The phrase to search for in the specified column.
    * @param column - The name of the column to search within.
+   * @param options - Optional parameters for the phrase query.
+   *   - `slop`: The maximum number of intervening unmatched positions allowed between words in the phrase (default is 0).
    */
-  constructor(query: string, column: string) {
-    this.inner = JsFullTextQuery.phraseQuery(query, column);
+  constructor(query: string, column: string, options?: { slop?: number }) {
+    this.inner = JsFullTextQuery.phraseQuery(query, column, options?.slop ?? 0);
   }
 
   queryType(): FullTextQueryType {
@@ -889,22 +905,45 @@ export class MultiMatchQuery implements FullTextQuery {
    * @param columns - An array of column names to search within.
    * @param options - Optional parameters for the multi-match query.
    *  - `boosts`: An array of boost factors for each column (default is 1.0 for all).
+   *  - `operator`: The logical operator to use for combining terms in the query (default is "OR").
    */
   constructor(
     query: string,
     columns: string[],
     options?: {
       boosts?: number[];
+      operator?: Operator;
     },
   ) {
     this.inner = JsFullTextQuery.multiMatchQuery(
       query,
       columns,
       options?.boosts,
+      options?.operator ?? Operator.Or,
     );
   }
 
   queryType(): FullTextQueryType {
     return FullTextQueryType.MultiMatch;
+  }
+}
+
+export class BooleanQuery implements FullTextQuery {
+  /** @ignore */
+  public readonly inner: JsFullTextQuery;
+  /**
+   * Creates an instance of BooleanQuery.
+   *
+   * @param queries - An array of (Occur, FullTextQuery objects) to combine.
+   * Occur specifies whether the query must match, or should match.
+   */
+  constructor(queries: [Occur, FullTextQuery][]) {
+    this.inner = JsFullTextQuery.booleanQuery(
+      queries.map(([occur, query]) => [occur, query.inner]),
+    );
+  }
+
+  queryType(): FullTextQueryType {
+    return FullTextQueryType.Boolean;
   }
 }
