@@ -765,11 +765,23 @@ export enum FullTextQueryType {
   Boolean = "boolean",
 }
 
+/**
+ * Enum representing the logical operators used in full-text queries.
+ *
+ * - `And`: All terms must match.
+ * - `Or`: At least one term must match.
+ */
 export enum Operator {
   And = "AND",
   Or = "OR",
 }
 
+/**
+ * Enum representing the occurrence of terms in full-text queries.
+ *
+ * - `Must`: The term must be present in the document.
+ * - `Should`: The term should contribute to the document score, but is not required.
+ */
 export enum Occur {
   Must = "MUST",
   Should = "SHOULD",
