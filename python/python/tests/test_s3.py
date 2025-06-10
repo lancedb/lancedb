@@ -245,7 +245,7 @@ def test_s3_dynamodb_sync(s3_bucket: str, commit_table: str, monkeypatch):
         NotImplementedError,
         match="Full-text search is only supported on the local filesystem",
     ):
-        table.create_fts_index("x")
+        table.create_fts_index("x", use_tantivy=True)
 
     # make sure list tables still works
     assert db.table_names() == ["test_ddb_sync"]
