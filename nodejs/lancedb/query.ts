@@ -814,7 +814,6 @@ export function instanceOfFullTextQuery(obj: any): obj is FullTextQuery {
 export class MatchQuery implements FullTextQuery {
   /** @ignore */
   public readonly inner: JsFullTextQuery;
-  public readonly _queryType: FullTextQueryType = FullTextQueryType.Match;
 
   /**
    * Creates an instance of MatchQuery.
@@ -859,8 +858,6 @@ export class MatchQuery implements FullTextQuery {
 export class PhraseQuery implements FullTextQuery {
   /** @ignore */
   public readonly inner: JsFullTextQuery;
-  private readonly _queryType: FullTextQueryType =
-    FullTextQueryType.MatchPhrase;
   /**
    * Creates an instance of `PhraseQuery`.
    *
@@ -881,7 +878,6 @@ export class PhraseQuery implements FullTextQuery {
 export class BoostQuery implements FullTextQuery {
   /** @ignore */
   public readonly inner: JsFullTextQuery;
-  private readonly _queryType: FullTextQueryType = FullTextQueryType.Boost;
   /**
    * Creates an instance of BoostQuery.
    * The boost returns documents that match the positive query,
@@ -915,7 +911,6 @@ export class BoostQuery implements FullTextQuery {
 export class MultiMatchQuery implements FullTextQuery {
   /** @ignore */
   public readonly inner: JsFullTextQuery;
-  private readonly _queryType: FullTextQueryType = FullTextQueryType.MultiMatch;
   /**
    * Creates an instance of MultiMatchQuery.
    *
@@ -949,7 +944,6 @@ export class MultiMatchQuery implements FullTextQuery {
 export class BooleanQuery implements FullTextQuery {
   /** @ignore */
   public readonly inner: JsFullTextQuery;
-  private readonly _queryType: FullTextQueryType = FullTextQueryType.Boolean;
   /**
    * Creates an instance of BooleanQuery.
    *

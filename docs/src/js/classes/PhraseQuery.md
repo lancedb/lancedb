@@ -19,7 +19,10 @@ including methods to retrieve the query type and convert the query to a dictiona
 ### new PhraseQuery()
 
 ```ts
-new PhraseQuery(query, column): PhraseQuery
+new PhraseQuery(
+   query,
+   column,
+   options?): PhraseQuery
 ```
 
 Creates an instance of `PhraseQuery`.
@@ -31,6 +34,12 @@ Creates an instance of `PhraseQuery`.
 
 * **column**: `string`
     The name of the column to search within.
+
+* **options?**
+    Optional parameters for the phrase query.
+    - `slop`: The maximum number of intervening unmatched positions allowed between words in the phrase (default is 0).
+
+* **options.slop?**: `number`
 
 #### Returns
 

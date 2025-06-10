@@ -15,6 +15,14 @@ Enum representing the types of full-text queries supported.
 
 ## Enumeration Members
 
+### Boolean
+
+```ts
+Boolean: "boolean";
+```
+
+***
+
 ### Boost
 
 ```ts

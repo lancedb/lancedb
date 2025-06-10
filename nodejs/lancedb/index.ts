@@ -64,7 +64,10 @@ export {
   PhraseQuery,
   BoostQuery,
   MultiMatchQuery,
+  BooleanQuery,
   FullTextQueryType,
+  Operator,
+  Occur,
 } from "./query";
 
 export {

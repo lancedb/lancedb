@@ -12,9 +12,12 @@
 ## Enumerations
 
 - [FullTextQueryType](enumerations/FullTextQueryType.md)
+- [Occur](enumerations/Occur.md)
+- [Operator](enumerations/Operator.md)
 
 ## Classes
 
+- [BooleanQuery](classes/BooleanQuery.md)
 - [BoostQuery](classes/BoostQuery.md)
 - [Connection](classes/Connection.md)
 - [Index](classes/Index.md)
