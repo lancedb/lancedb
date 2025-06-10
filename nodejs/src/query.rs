@@ -41,11 +41,9 @@ impl Query {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: JsFullTextQuery) -> napi::Result<()> {
-        self.inner = self
-            .inner
-            .clone()
-            .full_text_search(FullTextSearchQuery::new_query(query.inner));
+    pub fn full_text_search(&mut self, query: napi::JsObject) -> napi::Result<()> {
+        let query = parse_fts_query(query)?;
+        self.inner = self.inner.clone().full_text_search(query);
         Ok(())
     }
 
@@ -205,11 +203,9 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: JsFullTextQuery) -> napi::Result<()> {
-        self.inner = self
-            .inner
-            .clone()
-            .full_text_search(FullTextSearchQuery::new_query(query.inner));
+    pub fn full_text_search(&mut self, query: napi::JsObject) -> napi::Result<()> {
+        let query = parse_fts_query(query)?;
+        self.inner = self.inner.clone().full_text_search(query);
         Ok(())
     }
 
@@ -304,14 +300,6 @@ pub struct JsFullTextQuery {
     pub(crate) inner: FtsQuery,
 }
 
-impl FromNapiValue for JsFullTextQuery {
-    unsafe fn from_napi_value(env: sys::napi_env, napi_val: sys::napi_value) -> Result<Self> {
-        let obj = napi::JsObject::from_napi_value(env, napi_val)?;
-        let query = parse_fts_query(obj)?;
-        Ok(Self { inner: query.query })
-    }
-}
-
 #[napi]
 impl JsFullTextQuery {
     #[napi(factory)]
@@ -391,16 +379,27 @@ impl JsFullTextQuery {
     }
 
     #[napi(factory)]
-    pub fn boolean_query(queries: Vec<(String, JsFullTextQuery)>) -> napi::Result<Self> {
+    pub fn boolean_query(queries: Vec<(String, &JsFullTextQuery)>) -> napi::Result<Self> {
         let mut sub_queries = Vec::with_capacity(queries.len());
         for (occur, q) in queries {
             let occur = Occur::try_from(occur.as_str())
                 .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            sub_queries.push((occur, q.inner));
+            sub_queries.push((occur, q.inner.clone()));
         }
         Ok(Self {
             inner: BooleanQuery::new(sub_queries).into(),
         })
+    }
+
+    #[napi(getter)]
+    pub fn query_type(&self) -> String {
+        match self.inner {
+            FtsQuery::Match(_) => "match".to_string(),
+            FtsQuery::Phrase(_) => "phrase".to_string(),
+            FtsQuery::Boost(_) => "boost".to_string(),
+            FtsQuery::MultiMatch(_) => "multi_match".to_string(),
+            FtsQuery::Boolean(_) => "boolean".to_string(),
+        }
     }
 }
 
