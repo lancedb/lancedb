@@ -417,7 +417,9 @@ function inferSchema(
         } else {
           const inferredType = inferType(value, path, opts);
           if (inferredType === undefined) {
-            throw new Error(`Failed to infer data type for field ${path.join(".")} at row ${rowI}. \
+            throw new Error(`Failed to infer data type for field ${path.join(
+              ".",
+            )} at row ${rowI}. \
                              Consider providing an explicit schema.`);
           }
           pathTree.set(path, inferredType);
@@ -799,11 +801,17 @@ async function applyEmbeddingsFromMetadata(
         `Cannot apply embedding function because the source column '${functionEntry.sourceColumn}' was not present in the data`,
       );
     }
+
+    // Check if destination column exists and handle accordingly
     if (columns[destColumn] !== undefined) {
-      throw new Error(
-        `Attempt to apply embeddings to table failed because column ${destColumn} already existed`,
-      );
+      const existingColumn = columns[destColumn];
+      // If the column exists but is all null, we can fill it with embeddings
+      if (existingColumn.nullCount !== existingColumn.length) {
+        // Column has non-null values, skip embedding application
+        continue;
+      }
     }
+
     if (table.batches.length > 1) {
       throw new Error(
         "Internal error: `makeArrowTable` unexpectedly created a table with more than one batch",
@@ -903,11 +911,23 @@ async function applyEmbeddings<T>(
       );
     }
   } else {
+    // Check if destination column exists and handle accordingly
     if (Object.prototype.hasOwnProperty.call(newColumns, destColumn)) {
-      throw new Error(
-        `Attempt to apply embeddings to table failed because column ${destColumn} already existed`,
-      );
+      const existingColumn = newColumns[destColumn];
+      // If the column exists but is all null, we can fill it with embeddings
+      if (existingColumn.nullCount !== existingColumn.length) {
+        // Column has non-null values, skip embedding application and return table as-is
+        let newTable = new ArrowTable(newColumns);
+        if (schema != null) {
+          newTable = alignTable(newTable, schema as Schema);
+        }
+        return new ArrowTable(
+          new Schema(newTable.schema.fields, schemaMetadata),
+          newTable.batches,
+        );
+      }
     }
+
     if (table.batches.length > 1) {
       throw new Error(
         "Internal error: `makeArrowTable` unexpectedly created a table with more than one batch",
