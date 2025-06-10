@@ -42,6 +42,7 @@ duckdb.query("SELECT * FROM arrow_table")
 Have the required imports before doing any querying.
 
 === "Python"
+
     ```python
     --8<-- "python/python/tests/docs/test_guide_tables.py:import-lancedb"
     --8<-- "python/python/tests/docs/test_guide_tables.py:import-session-context"
@@ -51,6 +52,7 @@ Have the required imports before doing any querying.
 Register the table created with the Datafusion session context.
 
 === "Python"
+
     ```python
     --8<-- "python/python/tests/docs/test_guide_tables.py:lance_sql_basic"
     ```
