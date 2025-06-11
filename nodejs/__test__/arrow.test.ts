@@ -592,14 +592,14 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         ).rejects.toThrow("column vector was missing");
       });
 
-      it("will provide a nice error if run twice", async function () {
+      it("will skip embedding application if already applied", async function () {
         const records = sampleRecords();
         const table = await convertToTable(records, dummyEmbeddingConfig);
 
         // fromTableToBuffer will try and apply the embeddings again
-        await expect(
-          fromTableToBuffer(table, dummyEmbeddingConfig),
-        ).rejects.toThrow("already existed");
+        // but should skip since the column already has non-null values
+        const result = await fromTableToBuffer(table, dummyEmbeddingConfig);
+        expect(result.byteLength).toBeGreaterThan(0);
       });
     });
 
