@@ -617,7 +617,7 @@ async def test_query_async(table_async: AsyncTable):
         expected_num_rows=2,
     )
     await check_query(
-        table_async.query().nearest_to(pa.array([1, 2])).maximum_nprobes(10),
+        table_async.query().nearest_to(pa.array([1, 2])).maximum_nprobes(30),
         expected_num_rows=2,
     )
     await check_query(

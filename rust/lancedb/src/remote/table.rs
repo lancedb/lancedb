@@ -439,15 +439,18 @@ impl<S: HttpSend> RemoteTable<S> {
 
         // Apply general parameters, before we dispatch based on number of query vectors.
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
-        // For backwards compatibility, newer clients should ignore this property
-        // as it is less precise.
+        // In 0.23.1 we migrated from `nprobes` to `minimum_nprobes` and `maximum_nprobes`.
+        // Old client / new server: since minimum_nprobes is missing, fallback to nprobes
+        // New client / old server: old server will only see nprobes, make sure to set both
+        //                          nprobes and minimum_nprobes
+        // New client / new server: since minimum_nprobes is present, server can ignore nprobes
         body["nprobes"] = query.minimum_nprobes.into();
+        body["minimum_nprobes"] = query.minimum_nprobes.into();
         if let Some(maximum_nprobes) = query.maximum_nprobes {
             body["maximum_nprobes"] = maximum_nprobes.into();
         } else {
             body["maximum_nprobes"] = serde_json::Value::Number(Number::from_u128(0).unwrap())
         }
-        body["minimum_nprobes"] = query.minimum_nprobes.into();
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
         body["ef"] = query.ef.into();
