@@ -2327,6 +2327,28 @@ class AsyncQueryBase(object):
 
         return pl.from_arrow(await self.to_arrow(timeout=timeout))
 
+    async def to_pydantic(
+        self, model: Type[LanceModel], *, timeout: Optional[timedelta] = None
+    ) -> List[LanceModel]:
+        """
+        Convert results to a list of pydantic models.
+
+        Parameters
+        ----------
+        model : Type[LanceModel]
+            The pydantic model to use.
+        timeout : timedelta, optional
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
+
+        Returns
+        -------
+        list[LanceModel]
+        """
+        return [
+            model(**row) for row in (await self.to_arrow(timeout=timeout)).to_pylist()
+        ]
+
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
 
