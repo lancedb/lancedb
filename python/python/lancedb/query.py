@@ -2105,7 +2105,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.metric(self._distance_type)
         if self._minimum_nprobes:
             self._vector_query.minimum_nprobes(self._minimum_nprobes)
-        if self._maximum_nprobes:
+        if self._maximum_nprobes is not None:
             self._vector_query.maximum_nprobes(self._maximum_nprobes)
         if self._refine_factor:
             self._vector_query.refine_factor(self._refine_factor)
@@ -2738,6 +2738,9 @@ class AsyncVectorQueryBase:
 
         This can be useful when there is a narrow filter to allow these queries to
         spend more time searching and avoid potential false negatives.
+
+        If this value is 0 then no limit will be applied and all partitions could be
+        searched if needed to satisfy the limit.
         """
         self._inner.maximum_nprobes(maximum_nprobes)
         return self

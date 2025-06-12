@@ -562,13 +562,28 @@ describe("When creating an index", () => {
     // test nprobes
     rst = await tbl.query().nearestTo(queryVec).limit(2).nprobes(50).toArrow();
     expect(rst.numRows).toBe(2);
-    rst = await tbl.query().nearestTo(queryVec).limit(2).minimumNprobes(15).toArrow();
+    rst = await tbl
+      .query()
+      .nearestTo(queryVec)
+      .limit(2)
+      .minimumNprobes(15)
+      .toArrow();
     expect(rst.numRows).toBe(2);
-    rst = await tbl.query().nearestTo(queryVec).limit(2).minimumNprobes(10).maximumNprobes(20).toArrow();
+    rst = await tbl
+      .query()
+      .nearestTo(queryVec)
+      .limit(2)
+      .minimumNprobes(10)
+      .maximumNprobes(20)
+      .toArrow();
     expect(rst.numRows).toBe(2);
 
-    expect(() => tbl.query().nearestTo(queryVec).minimumNprobes(0)).toThrow("Invalid input, minimum_nprobes must be greater than 0");
-    expect(() => tbl.query().nearestTo(queryVec).maximumNprobes(5)).toThrow("Invalid input, maximum_nprobes must be greater than minimum_nprobes");
+    expect(() => tbl.query().nearestTo(queryVec).minimumNprobes(0)).toThrow(
+      "Invalid input, minimum_nprobes must be greater than 0",
+    );
+    expect(() => tbl.query().nearestTo(queryVec).maximumNprobes(5)).toThrow(
+      "Invalid input, maximum_nprobes must be greater than minimum_nprobes",
+    );
 
     await tbl.dropIndex("vec_idx");
     const indices2 = await tbl.listIndices();
