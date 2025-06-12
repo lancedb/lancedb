@@ -746,10 +746,7 @@ class LanceQueryBuilder(ABC):
         -------
         List[LanceModel]
         """
-        return [
-            model(**{k: v for k, v in row.items() if k in model.field_names()})
-            for row in self.to_arrow(timeout=timeout).to_pylist()
-        ]
+        return [model(**row) for row in self.to_arrow(timeout=timeout).to_pylist()]
 
     def to_polars(self, *, timeout: Optional[timedelta] = None) -> "pl.DataFrame":
         """
