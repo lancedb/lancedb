@@ -827,7 +827,7 @@ class Table(ABC):
         ordering_field_names: Optional[Union[str, List[str]]] = None,
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
-        use_tantivy: bool = True,
+        use_tantivy: bool = False,
         tokenizer_name: Optional[str] = None,
         with_position: bool = False,
         # tokenizer configs:
@@ -864,7 +864,7 @@ class Table(ABC):
             The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
             language code followed by "_stem". So for english it would be "en_stem".
             For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
-        use_tantivy: bool, default True
+        use_tantivy: bool, default False
             If True, use the legacy full-text search implementation based on tantivy.
             If False, use the new full-text search implementation based on lance-index.
         with_position: bool, default False
@@ -1970,7 +1970,7 @@ class LanceTable(Table):
         ordering_field_names: Optional[Union[str, List[str]]] = None,
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
-        use_tantivy: bool = True,
+        use_tantivy: bool = False,
         tokenizer_name: Optional[str] = None,
         with_position: bool = False,
         # tokenizer configs:
