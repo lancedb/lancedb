@@ -2,9 +2,9 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / PhraseQuery
+[@lancedb/lancedb](../globals.md) / BooleanQuery
 
-# Class: PhraseQuery
+# Class: BooleanQuery
 
 Represents a full-text query interface.
 This interface defines the structure and behavior for full-text queries,
@@ -16,34 +16,23 @@ including methods to retrieve the query type and convert the query to a dictiona
 
 ## Constructors
 
-### new PhraseQuery()
+### new BooleanQuery()
 
 ```ts
-new PhraseQuery(
-   query,
-   column,
-   options?): PhraseQuery
+new BooleanQuery(queries): BooleanQuery
 ```
 
-Creates an instance of `PhraseQuery`.
+Creates an instance of BooleanQuery.
 
 #### Parameters
 
-* **query**: `string`
-    The phrase to search for in the specified column.
-
-* **column**: `string`
-    The name of the column to search within.
-
-* **options?**
-    Optional parameters for the phrase query.
-    - `slop`: The maximum number of intervening unmatched positions allowed between words in the phrase (default is 0).
-
-* **options.slop?**: `number`
+* **queries**: [[`Occur`](../enumerations/Occur.md), [`FullTextQuery`](../interfaces/FullTextQuery.md)][]
+    An array of (Occur, FullTextQuery objects) to combine.
+    Occur specifies whether the query must match, or should match.
 
 #### Returns
 
-[`PhraseQuery`](PhraseQuery.md)
+[`BooleanQuery`](BooleanQuery.md)
 
 ## Methods
 

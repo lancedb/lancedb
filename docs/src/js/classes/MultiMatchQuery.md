@@ -38,8 +38,11 @@ Creates an instance of MultiMatchQuery.
 * **options?**
     Optional parameters for the multi-match query.
     - `boosts`: An array of boost factors for each column (default is 1.0 for all).
+    - `operator`: The logical operator to use for combining terms in the query (default is "OR").
 
 * **options.boosts?**: `number`[]
+
+* **options.operator?**: [`Operator`](../enumerations/Operator.md)
 
 #### Returns
 

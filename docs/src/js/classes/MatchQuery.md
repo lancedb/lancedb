@@ -40,12 +40,15 @@ Creates an instance of MatchQuery.
     - `boost`: The boost factor for the query (default is 1.0).
     - `fuzziness`: The fuzziness level for the query (default is 0).
     - `maxExpansions`: The maximum number of terms to consider for fuzzy matching (default is 50).
+    - `operator`: The logical operator to use for combining terms in the query (default is "OR").
 
 * **options.boost?**: `number`
 
 * **options.fuzziness?**: `number`
 
 * **options.maxExpansions?**: `number`
+
+* **options.operator?**: [`Operator`](../enumerations/Operator.md)
 
 #### Returns
 

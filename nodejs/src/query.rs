@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use lancedb::index::scalar::{
-    BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, PhraseQuery,
+    BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
+    Operator, PhraseQuery,
 };
 use lancedb::query::ExecutableQuery;
 use lancedb::query::Query as LanceDbQuery;
@@ -308,6 +309,7 @@ impl JsFullTextQuery {
         boost: f64,
         fuzziness: Option<u32>,
         max_expansions: u32,
+        operator: String,
     ) -> napi::Result<Self> {
         Ok(Self {
             inner: MatchQuery::new(query)
@@ -315,14 +317,22 @@ impl JsFullTextQuery {
                 .with_boost(boost as f32)
                 .with_fuzziness(fuzziness)
                 .with_max_expansions(max_expansions as usize)
+                .with_operator(
+                    Operator::try_from(operator.as_str()).map_err(|e| {
+                        napi::Error::from_reason(format!("Invalid operator: {}", e))
+                    })?,
+                )
                 .into(),
         })
     }
 
     #[napi(factory)]
-    pub fn phrase_query(query: String, column: String) -> napi::Result<Self> {
+    pub fn phrase_query(query: String, column: String, slop: u32) -> napi::Result<Self> {
         Ok(Self {
-            inner: PhraseQuery::new(query).with_column(Some(column)).into(),
+            inner: PhraseQuery::new(query)
+                .with_column(Some(column))
+                .with_slop(slop)
+                .into(),
         })
     }
 
@@ -348,6 +358,7 @@ impl JsFullTextQuery {
         query: String,
         columns: Vec<String>,
         boosts: Option<Vec<f64>>,
+        operator: String,
     ) -> napi::Result<Self> {
         let q = match boosts {
             Some(boosts) => MultiMatchQuery::try_new(query, columns)
@@ -358,7 +369,37 @@ impl JsFullTextQuery {
             napi::Error::from_reason(format!("Failed to create multi match query: {}", e))
         })?;
 
-        Ok(Self { inner: q.into() })
+        let operator = Operator::try_from(operator.as_str()).map_err(|e| {
+            napi::Error::from_reason(format!("Invalid operator for multi match query: {}", e))
+        })?;
+
+        Ok(Self {
+            inner: q.with_operator(operator).into(),
+        })
+    }
+
+    #[napi(factory)]
+    pub fn boolean_query(queries: Vec<(String, &JsFullTextQuery)>) -> napi::Result<Self> {
+        let mut sub_queries = Vec::with_capacity(queries.len());
+        for (occur, q) in queries {
+            let occur = Occur::try_from(occur.as_str())
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            sub_queries.push((occur, q.inner.clone()));
+        }
+        Ok(Self {
+            inner: BooleanQuery::new(sub_queries).into(),
+        })
+    }
+
+    #[napi(getter)]
+    pub fn query_type(&self) -> String {
+        match self.inner {
+            FtsQuery::Match(_) => "match".to_string(),
+            FtsQuery::Phrase(_) => "phrase".to_string(),
+            FtsQuery::Boost(_) => "boost".to_string(),
+            FtsQuery::MultiMatch(_) => "multi_match".to_string(),
+            FtsQuery::Boolean(_) => "boolean".to_string(),
+        }
     }
 }
 
