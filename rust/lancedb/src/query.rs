@@ -796,8 +796,10 @@ pub struct VectorQueryRequest {
     pub column: Option<String>,
     /// The vector(s) to search for
     pub query_vector: Vec<Arc<dyn Array>>,
-    /// The number of partitions to search
-    pub nprobes: usize,
+    /// The minimum number of partitions to search
+    pub minimum_nprobes: usize,
+    /// The maximum number of partitions to search
+    pub maximum_nprobes: Option<usize>,
     /// The lower bound (inclusive) of the distance to search for.
     pub lower_bound: Option<f32>,
     /// The upper bound (exclusive) of the distance to search for.
@@ -819,7 +821,8 @@ impl Default for VectorQueryRequest {
             base: QueryRequest::default(),
             column: None,
             query_vector: Vec::new(),
-            nprobes: 20,
+            minimum_nprobes: 20,
+            maximum_nprobes: Some(20),
             lower_bound: None,
             upper_bound: None,
             ef: None,
@@ -925,9 +928,73 @@ impl VectorQuery {
     /// For best results we recommend tuning this parameter with a benchmark against
     /// your actual data to find the smallest possible value that will still give
     /// you the desired recall.
+    ///
+    /// This method sets both the minimum and maximum number of partitions to search.
+    /// For more fine-grained control see [`VectorQuery::minimum_nprobes`] and
+    /// [`VectorQuery::maximum_nprobes`].
     pub fn nprobes(mut self, nprobes: usize) -> Self {
-        self.request.nprobes = nprobes;
+        self.request.minimum_nprobes = nprobes;
+        self.request.maximum_nprobes = Some(nprobes);
         self
+    }
+
+    /// Set the minimum number of partitions to search
+    ///
+    /// This argument is only used when the vector column has an IVF PQ index.
+    /// If there is no index then this value is ignored.
+    ///
+    /// See [`VectorQuery::nprobes`] for more details.
+    ///
+    /// These partitions will be searched on every indexed vector query.
+    ///
+    /// Will return an error if the value is not greater than 0 or if maximum_nprobes
+    /// has been set and is less than the minimum_nprobes.
+    pub fn minimum_nprobes(mut self, minimum_nprobes: usize) -> Result<Self> {
+        if minimum_nprobes == 0 {
+            return Err(Error::InvalidInput {
+                message: "minimum_nprobes must be greater than 0".to_string(),
+            });
+        }
+        if let Some(maximum_nprobes) = self.request.maximum_nprobes {
+            if minimum_nprobes > maximum_nprobes {
+                return Err(Error::InvalidInput {
+                    message: "minimum_nprobes must be less or equal to maximum_nprobes".to_string(),
+                });
+            }
+        }
+        self.request.minimum_nprobes = minimum_nprobes;
+        Ok(self)
+    }
+
+    /// Set the maximum number of partitions to search
+    ///
+    /// This argument is only used when the vector column has an IVF PQ index.
+    /// If there is no index then this value is ignored.
+    ///
+    /// See [`VectorQuery::nprobes`] for more details.
+    ///
+    /// If this value is greater than minimum_nprobes then the excess partitions will
+    /// only be searched if the initial search does not return enough results.
+    ///
+    /// This can be useful when there is a narrow filter to allow these queries to
+    /// spend more time searching and avoid potential false negatives.
+    ///
+    /// Set to None to search all partitions, if needed, to satsify the limit
+    pub fn maximum_nprobes(mut self, maximum_nprobes: Option<usize>) -> Result<Self> {
+        if let Some(maximum_nprobes) = maximum_nprobes {
+            if maximum_nprobes == 0 {
+                return Err(Error::InvalidInput {
+                    message: "maximum_nprobes must be greater than 0".to_string(),
+                });
+            }
+            if maximum_nprobes < self.request.minimum_nprobes {
+                return Err(Error::InvalidInput {
+                    message: "maximum_nprobes must be greater than minimum_nprobes".to_string(),
+                });
+            }
+        }
+        self.request.maximum_nprobes = maximum_nprobes;
+        Ok(self)
     }
 
     /// Set the distance range for vector search,
@@ -1208,7 +1275,8 @@ mod tests {
         );
         assert_eq!(query.request.base.limit.unwrap(), 100);
         assert_eq!(query.request.base.offset.unwrap(), 1);
-        assert_eq!(query.request.nprobes, 1000);
+        assert_eq!(query.request.minimum_nprobes, 1000);
+        assert_eq!(query.request.maximum_nprobes, Some(1000));
         assert!(query.request.use_index);
         assert_eq!(query.request.distance_type, Some(DistanceType::Cosine));
         assert_eq!(query.request.refine_factor, Some(999));

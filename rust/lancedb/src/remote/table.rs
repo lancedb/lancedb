@@ -32,6 +32,7 @@ use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
+use serde_json::Number;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::pin::Pin;
@@ -438,7 +439,18 @@ impl<S: HttpSend> RemoteTable<S> {
 
         // Apply general parameters, before we dispatch based on number of query vectors.
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
-        body["nprobes"] = query.nprobes.into();
+        // In 0.23.1 we migrated from `nprobes` to `minimum_nprobes` and `maximum_nprobes`.
+        // Old client / new server: since minimum_nprobes is missing, fallback to nprobes
+        // New client / old server: old server will only see nprobes, make sure to set both
+        //                          nprobes and minimum_nprobes
+        // New client / new server: since minimum_nprobes is present, server can ignore nprobes
+        body["nprobes"] = query.minimum_nprobes.into();
+        body["minimum_nprobes"] = query.minimum_nprobes.into();
+        if let Some(maximum_nprobes) = query.maximum_nprobes {
+            body["maximum_nprobes"] = maximum_nprobes.into();
+        } else {
+            body["maximum_nprobes"] = serde_json::Value::Number(Number::from_u128(0).unwrap())
+        }
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
         body["ef"] = query.ef.into();
@@ -2075,6 +2087,8 @@ mod tests {
                 "prefilter": true,
                 "distance_type": "l2",
                 "nprobes": 20,
+                "minimum_nprobes": 20,
+                "maximum_nprobes": 20,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "k": 10,
@@ -2175,6 +2189,8 @@ mod tests {
                 "bypass_vector_index": true,
                 "columns": ["a", "b"],
                 "nprobes": 12,
+                "minimum_nprobes": 12,
+                "maximum_nprobes": 12,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "ef": Option::<usize>::None,
