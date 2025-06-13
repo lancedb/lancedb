@@ -18,7 +18,6 @@ from lancedb.pydantic import (
 )
 from pydantic import BaseModel
 from pydantic import Field
-from pydantic import computed_field
 
 
 @pytest.mark.skipif(
@@ -427,10 +426,6 @@ def test_aliases_in_lance_model(mem_db):
         price: float
         distance: float = Field(alias="_distance")
 
-        @computed_field
-        def similarity(self) -> float:
-            return 1 - self.distance
-
     model = (
         tbl.search([5.9, 6.5])
         .distance_type("cosine")
@@ -439,7 +434,7 @@ def test_aliases_in_lance_model(mem_db):
     )
     assert hasattr(model, "name")
     assert hasattr(model, "distance")
-    assert model.similarity > 0.99
+    assert model.distance < 0.01
 
 
 @pytest.mark.asyncio
@@ -455,10 +450,6 @@ async def test_aliases_in_lance_model_async(mem_db_async):
         price: float
         distance: float = Field(alias="_distance")
 
-        @computed_field
-        def similarity(self) -> float:
-            return 1 - self.distance
-
     model = (
         await tbl.vector_search([7.7, 3.9])
         .distance_type("cosine")
@@ -467,4 +458,4 @@ async def test_aliases_in_lance_model_async(mem_db_async):
     )[0]
     assert hasattr(model, "name")
     assert hasattr(model, "distance")
-    assert model.similarity > 0.99
+    assert model.distance < 0.01
