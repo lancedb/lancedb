@@ -201,6 +201,7 @@ fn occur_to_str(occur: Occur) -> &'static str {
     match occur {
         Occur::Must => "MUST",
         Occur::Should => "SHOULD",
+        Occur::MustNot => "MUST NOT",
     }
 }
 

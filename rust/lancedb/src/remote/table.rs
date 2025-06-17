@@ -2318,6 +2318,7 @@ mod tests {
                                 "fuzziness": 0,
                                 "max_expansions": 50,
                                 "operator": "Or",
+                                "prefix_length": 0,
                             },
                         }
                     },
