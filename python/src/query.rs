@@ -50,6 +50,7 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                 let fuzziness = ob.getattr("fuzziness")?.extract()?;
                 let max_expansions = ob.getattr("max_expansions")?.extract()?;
                 let operator = ob.getattr("operator")?.extract::<String>()?;
+                let prefix_length = ob.getattr("prefix_length")?.extract()?;
 
                 Ok(PyLanceDB(
                     MatchQuery::new(query)
@@ -60,6 +61,7 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                         .with_operator(Operator::try_from(operator.as_str()).map_err(|e| {
                             PyValueError::new_err(format!("Invalid operator: {}", e))
                         })?)
+                        .with_prefix_length(prefix_length)
                         .into(),
                 ))
             }

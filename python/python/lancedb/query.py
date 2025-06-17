@@ -101,8 +101,9 @@ class FullTextOperator(str, Enum):
 
 
 class Occur(str, Enum):
-    MUST = "MUST"
     SHOULD = "SHOULD"
+    MUST = "MUST"
+    MUST_NOT = "MUST_NOT"
 
 
 @pydantic.dataclasses.dataclass
@@ -181,6 +182,9 @@ class MatchQuery(FullTextQuery):
         Can be either `AND` or `OR`.
         If `AND`, all terms in the query must match.
         If `OR`, at least one term in the query must match.
+    prefix_length : int, optional
+        The number of beginning characters being unchanged for fuzzy matching.
+        This is useful to achieve prefix matching.
     """
 
     query: str
@@ -189,6 +193,7 @@ class MatchQuery(FullTextQuery):
     fuzziness: int = pydantic.Field(0, kw_only=True)
     max_expansions: int = pydantic.Field(50, kw_only=True)
     operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
+    prefix_length: int = pydantic.Field(0, kw_only=True)
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH
