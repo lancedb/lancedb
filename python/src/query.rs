@@ -178,8 +178,9 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                     .call((first.terms.clone(), columns), Some(&kwargs))
             }
             FtsQuery::Boolean(query) => {
-                let mut queries: Vec<(&str, Bound<'py, PyAny>)> =
-                    Vec::with_capacity(query.must.len() + query.should.len());
+                let mut queries: Vec<(&str, Bound<'py, PyAny>)> = Vec::with_capacity(
+                    query.should.len() + query.must.len() + query.must_not.len(),
+                );
                 for q in query.should {
                     queries.push((Occur::Should.into(), PyLanceDB(q).into_pyobject(py)?));
                 }
