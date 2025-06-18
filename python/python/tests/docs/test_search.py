@@ -252,8 +252,8 @@ def test_fts_boost_query():
 @pytest.mark.skipif(
     os.name == "nt", reason="Need to fix https://github.com/lancedb/lance/issues/3905"
 )
-def test_fts_boolean_query():
-    uri = "data/boolean-example"
+def test_fts_boolean_query(tmp_path):
+    uri = tmp_path / "boolean-example"
     db = lancedb.connect(uri)
     table = db.create_table(
         "my_table_fts_boolean",

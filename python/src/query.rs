@@ -142,6 +142,7 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 kwargs.set_item("fuzziness", query.fuzziness)?;
                 kwargs.set_item("max_expansions", query.max_expansions)?;
                 kwargs.set_item::<_, &str>("operator", query.operator.into())?;
+                kwargs.set_item("prefix_length", query.prefix_length)?;
                 namespace
                     .getattr(intern!(py, "MatchQuery"))?
                     .call((query.terms, query.column.unwrap()), Some(&kwargs))
@@ -179,12 +180,16 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
             FtsQuery::Boolean(query) => {
                 let mut queries: Vec<(&str, Bound<'py, PyAny>)> =
                     Vec::with_capacity(query.must.len() + query.should.len());
-                for q in query.must {
-                    queries.push((Occur::Must.into(), PyLanceDB(q).into_pyobject(py)?));
-                }
                 for q in query.should {
                     queries.push((Occur::Should.into(), PyLanceDB(q).into_pyobject(py)?));
                 }
+                for q in query.must {
+                    queries.push((Occur::Must.into(), PyLanceDB(q).into_pyobject(py)?));
+                }
+                for q in query.must_not {
+                    queries.push((Occur::MustNot.into(), PyLanceDB(q).into_pyobject(py)?));
+                }
+
                 namespace
                     .getattr(intern!(py, "BooleanQuery"))?
                     .call1((queries,))
