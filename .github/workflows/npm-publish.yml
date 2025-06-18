@@ -541,6 +541,8 @@ jobs:
         run: npm deprecate vectordb "Use @lancedb/lancedb instead."
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
       - name: Update package-lock.json
         run: |
           git config user.name 'Lance Release'
