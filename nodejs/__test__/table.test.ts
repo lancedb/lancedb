@@ -1650,13 +1650,25 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(resultSet.has("fob")).toBe(true);
       expect(resultSet.has("fo")).toBe(true);
       expect(resultSet.has("food")).toBe(true);
+
+      const prefixResults = await table
+        .search(
+          new MatchQuery("foo", "text", { fuzziness: 3, prefixLength: 3 }),
+        )
+        .toArray();
+      expect(prefixResults.length).toBe(2);
+      const resultSet2 = new Set(prefixResults.map((r) => r.text));
+      expect(resultSet2.has("foo")).toBe(true);
+      expect(resultSet2.has("food")).toBe(true);
     });
 
     test("full text search boolean query", async () => {
       const db = await connect(tmpDir.name);
       const data = [
-        { text: "hello world", vector: [0.1, 0.2, 0.3] },
-        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+        { text: "The cat and dog are playing" },
+        { text: "The cat is sleeping" },
+        { text: "The dog is barking" },
+        { text: "The dog chases the cat" },
       ];
       const table = await db.createTable("test", data);
       await table.createIndex("text", {
@@ -1666,22 +1678,32 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const shouldResults = await table
         .search(
           new BooleanQuery([
-            [Occur.Should, new MatchQuery("hello", "text")],
-            [Occur.Should, new MatchQuery("goodbye", "text")],
+            [Occur.Should, new MatchQuery("cat", "text")],
+            [Occur.Should, new MatchQuery("dog", "text")],
           ]),
         )
         .toArray();
-      expect(shouldResults.length).toBe(2);
+      expect(shouldResults.length).toBe(4);
 
       const mustResults = await table
         .search(
           new BooleanQuery([
-            [Occur.Must, new MatchQuery("hello", "text")],
-            [Occur.Must, new MatchQuery("world", "text")],
+            [Occur.Must, new MatchQuery("cat", "text")],
+            [Occur.Must, new MatchQuery("dog", "text")],
           ]),
         )
         .toArray();
-      expect(mustResults.length).toBe(1);
+      expect(mustResults.length).toBe(2);
+
+      const mustNotResults = await table
+        .search(
+          new BooleanQuery([
+            [Occur.Must, new MatchQuery("cat", "text")],
+            [Occur.MustNot, new MatchQuery("dog", "text")],
+          ]),
+        )
+        .toArray();
+      expect(mustNotResults.length).toBe(1);
     });
 
     test.each([
