@@ -141,7 +141,7 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 kwargs.set_item("boost", query.boost)?;
                 kwargs.set_item("fuzziness", query.fuzziness)?;
                 kwargs.set_item("max_expansions", query.max_expansions)?;
-                kwargs.set_item("operator", operator_to_str(query.operator))?;
+                kwargs.set_item::<_, &str>("operator", query.operator.into())?;
                 namespace
                     .getattr(intern!(py, "MatchQuery"))?
                     .call((query.terms, query.column.unwrap()), Some(&kwargs))
@@ -171,38 +171,25 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                     .unzip();
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("boosts", boosts)?;
-                kwargs.set_item("operator", operator_to_str(first.operator))?;
+                kwargs.set_item::<_, &str>("operator", first.operator.into())?;
                 namespace
                     .getattr(intern!(py, "MultiMatchQuery"))?
                     .call((first.terms.clone(), columns), Some(&kwargs))
             }
             FtsQuery::Boolean(query) => {
-                let mut queries = Vec::with_capacity(query.must.len() + query.should.len());
+                let mut queries: Vec<(&str, Bound<'py, PyAny>)> =
+                    Vec::with_capacity(query.must.len() + query.should.len());
                 for q in query.must {
-                    queries.push((occur_to_str(Occur::Must), PyLanceDB(q).into_pyobject(py)?));
+                    queries.push((Occur::Must.into(), PyLanceDB(q).into_pyobject(py)?));
                 }
                 for q in query.should {
-                    queries.push((occur_to_str(Occur::Should), PyLanceDB(q).into_pyobject(py)?));
+                    queries.push((Occur::Should.into(), PyLanceDB(q).into_pyobject(py)?));
                 }
                 namespace
                     .getattr(intern!(py, "BooleanQuery"))?
                     .call1((queries,))
             }
         }
-    }
-}
-
-fn operator_to_str(op: Operator) -> &'static str {
-    match op {
-        Operator::And => "AND",
-        Operator::Or => "OR",
-    }
-}
-
-fn occur_to_str(occur: Occur) -> &'static str {
-    match occur {
-        Occur::Must => "MUST",
-        Occur::Should => "SHOULD",
     }
 }
 
