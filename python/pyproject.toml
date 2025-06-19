@@ -107,6 +107,7 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "asyncio",
     "s3_test",
+    "weekly",
 ]
 
 [tool.pyright]

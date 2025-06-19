@@ -1,0 +1,62 @@
+name: Weekly Tests
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Runs at 00:00 UTC every Sunday
+  workflow_dispatch:
+
+jobs:
+  get-lancedb-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Fetch latest 2 stable and 1 pre-release lancedb versions
+        id: set-matrix
+        run: |
+          # Get all versions from PyPI
+          all_versions=$(curl -s https://pypi.org/pypi/lancedb/json | jq -r '.releases | keys_unsorted | .[]')
+          # Get latest 2 stable versions
+          stable_versions=$(echo "$all_versions" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 2 | jq -R . | jq -s .)
+          # Get latest pre-release version
+          pre_version=$(echo "$all_versions" | grep -E -i '(a|b|rc|dev|alpha|beta)' | sort -V | tail -n 1)
+          if [ -n "$pre_version" ]; then
+            matrix=$(jq -n --argjson stable "$stable_versions" --arg pre "$pre_version" '{lancedb-version: ($stable + [$pre])}')
+          else
+            matrix=$(jq -n --argjson stable "$stable_versions" '{lancedb-version: $stable}')
+          fi
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+
+  weekly-linux:
+    needs: get-lancedb-versions
+    name: "Weekly: Linux Python 3.12 (LanceDB ${{ matrix.lancedb-version }})"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      matrix: ${{ fromJson(needs.get-lancedb-versions.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Install protobuf
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
+      - name: Install dependencies
+        run: |
+          pip install --extra-index-url https://pypi.fury.io/lancedb/ lancedb==${{ matrix.lancedb-version }}
+          pip install -e .[tests]
+      - name: Run weekly tests
+        run: pytest -m "weekly" -svv --durations=300 python/tests
