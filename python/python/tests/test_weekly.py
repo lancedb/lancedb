@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 # Weekly tests that runs all operations on a large dataset,
 # these operations are ran in random order repeated 10 times
 
