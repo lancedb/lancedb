@@ -812,10 +812,12 @@ export enum Operator {
  *
  * - `Must`: The term must be present in the document.
  * - `Should`: The term should contribute to the document score, but is not required.
+ * - `MustNot`: The term must not be present in the document.
  */
 export enum Occur {
-  Must = "MUST",
   Should = "SHOULD",
+  Must = "MUST",
+  MustNot = "MUST_NOT",
 }
 
 /**
@@ -856,6 +858,7 @@ export class MatchQuery implements FullTextQuery {
    *   - `fuzziness`: The fuzziness level for the query (default is 0).
    *   - `maxExpansions`: The maximum number of terms to consider for fuzzy matching (default is 50).
    *   - `operator`: The logical operator to use for combining terms in the query (default is "OR").
+   *   - `prefixLength`: The number of beginning characters being unchanged for fuzzy matching.
    */
   constructor(
     query: string,
@@ -865,6 +868,7 @@ export class MatchQuery implements FullTextQuery {
       fuzziness?: number;
       maxExpansions?: number;
       operator?: Operator;
+      prefixLength?: number;
     },
   ) {
     let fuzziness = options?.fuzziness;
@@ -878,6 +882,7 @@ export class MatchQuery implements FullTextQuery {
       fuzziness,
       options?.maxExpansions ?? 50,
       options?.operator ?? Operator.Or,
+      options?.prefixLength ?? 0,
     );
   }
 

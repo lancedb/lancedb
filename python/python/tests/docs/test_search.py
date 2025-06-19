@@ -6,7 +6,7 @@ import lancedb
 
 # --8<-- [end:import-lancedb]
 # --8<-- [start:import-numpy]
-from lancedb.query import BoostQuery, MatchQuery
+from lancedb.query import BooleanQuery, BoostQuery, MatchQuery, Occur
 import numpy as np
 import pyarrow as pa
 
@@ -191,6 +191,15 @@ def test_fts_fuzzy_query():
         "food",  # 1 insertion
     }
 
+    results = table.search(
+        MatchQuery("foo", "text", fuzziness=1, prefix_length=3)
+    ).to_pandas()
+    assert len(results) == 2
+    assert set(results["text"].to_list()) == {
+        "foo",
+        "food",
+    }
+
 
 @pytest.mark.skipif(
     os.name == "nt", reason="Need to fix https://github.com/lancedb/lance/issues/3905"
@@ -238,6 +247,60 @@ def test_fts_boost_query():
         results["desc"].to_list()[2]
         == "Beautiful landscapes but overpriced tourist spots."
     )
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="Need to fix https://github.com/lancedb/lance/issues/3905"
+)
+def test_fts_boolean_query(tmp_path):
+    uri = tmp_path / "boolean-example"
+    db = lancedb.connect(uri)
+    table = db.create_table(
+        "my_table_fts_boolean",
+        data=[
+            {"text": "The cat and dog are playing"},
+            {"text": "The cat is sleeping"},
+            {"text": "The dog is barking"},
+            {"text": "The dog chases the cat"},
+        ],
+        mode="overwrite",
+    )
+    table.create_fts_index("text", use_tantivy=False, replace=True)
+
+    # SHOULD
+    results = table.search(
+        MatchQuery("cat", "text") | MatchQuery("dog", "text")
+    ).to_pandas()
+    assert len(results) == 4
+    assert set(results["text"].to_list()) == {
+        "The cat and dog are playing",
+        "The cat is sleeping",
+        "The dog is barking",
+        "The dog chases the cat",
+    }
+    # MUST
+    results = table.search(
+        MatchQuery("cat", "text") & MatchQuery("dog", "text")
+    ).to_pandas()
+    assert len(results) == 2
+    assert set(results["text"].to_list()) == {
+        "The cat and dog are playing",
+        "The dog chases the cat",
+    }
+
+    # MUST NOT
+    results = table.search(
+        BooleanQuery(
+            [
+                (Occur.MUST, MatchQuery("cat", "text")),
+                (Occur.MUST_NOT, MatchQuery("dog", "text")),
+            ]
+        )
+    ).to_pandas()
+    assert len(results) == 1
+    assert set(results["text"].to_list()) == {
+        "The cat is sleeping",
+    }
 
 
 @pytest.mark.skipif(

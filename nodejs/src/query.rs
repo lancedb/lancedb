@@ -335,6 +335,7 @@ impl JsFullTextQuery {
         fuzziness: Option<u32>,
         max_expansions: u32,
         operator: String,
+        prefix_length: u32,
     ) -> napi::Result<Self> {
         Ok(Self {
             inner: MatchQuery::new(query)
@@ -347,6 +348,7 @@ impl JsFullTextQuery {
                         napi::Error::from_reason(format!("Invalid operator: {}", e))
                     })?,
                 )
+                .with_prefix_length(prefix_length)
                 .into(),
         })
     }
