@@ -1451,10 +1451,13 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         query = self._query
         if self._phrase_query:
-            raise NotImplementedError(
-                "Phrase query is not yet supported in Lance FTS. "
-                "Use tantivy-based index instead for now."
-            )
+            if isinstance(query, str):
+                if not query.startswith('"') or not query.endswith('"'):
+                    query = f'"{query}"'
+            elif isinstance(query, FullTextQuery) and not isinstance(
+                query, PhraseQuery
+            ):
+                raise TypeError("Please use PhraseQuery for phrase queries.")
         query = self.to_query_object()
         results = self._table._execute_query(query, timeout=timeout)
         results = results.read_all()
