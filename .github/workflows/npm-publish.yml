@@ -550,6 +550,9 @@ jobs:
           bash ci/update_lockfiles.sh
       - name: Push new commit
         uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          branch: main
       - name: Notify Slack Action
         uses: ravsamhq/notify-slack-action@2.3.0
         if: ${{ always() }}
