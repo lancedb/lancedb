@@ -31,6 +31,12 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.table.Table
 
+::: lancedb.table.FragmentStatistics
+
+::: lancedb.table.FragmentSummaryStats
+
+::: lancedb.table.Tags
+
 ## Querying (Synchronous)
 
 ::: lancedb.query.Query
@@ -58,6 +64,14 @@ is also an [asynchronous API client](#connections-asynchronous).
 ::: lancedb.embeddings.openai.OpenAIEmbeddings
 
 ::: lancedb.embeddings.open_clip.OpenClipEmbeddings
+
+## Remote configuration
+
+::: lancedb.remote.ClientConfig
+
+::: lancedb.remote.TimeoutConfig
+
+::: lancedb.remote.RetryConfig
 
 ## Context
 
@@ -116,6 +130,8 @@ Table hold your actual data as a collection of records / rows.
 
 ::: lancedb.table.AsyncTable
 
+::: lancedb.table.AsyncTags
+
 ## Indices (Asynchronous)
 
 Indices can be created on a table to speed up queries. This section
@@ -136,6 +152,8 @@ lists the indices that LanceDb supports.
 ::: lancedb.index.HnswSq
 
 ::: lancedb.index.IvfFlat
+
+::: lancedb.table.IndexStatistics
 
 ## Querying (Asynchronous)
 
