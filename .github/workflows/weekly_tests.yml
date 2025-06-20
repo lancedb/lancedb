@@ -50,6 +50,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     strategy:
+      fail-fast: false
       matrix: ${{ fromJson(needs.get-lancedb-versions.outputs.matrix) }}
     defaults:
       run:
@@ -76,7 +77,10 @@ jobs:
           pip install --extra-index-url https://pypi.fury.io/lancedb/ lancedb==${{ matrix.lancedb-version }}
       - name: Run weekly tests
         run: |
-          for f in python/tests/weekly/*.py; do python "$f"; done
+          for f in python/tests/weekly/*.py; do
+            echo "===== Running $f ====="
+            python "$f"
+          done
       - name: Upgrade LanceDB
         run: |
           pip install -e .
