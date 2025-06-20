@@ -21,9 +21,9 @@ jobs:
           # Get latest pre-release version
           pre_version=$(echo "$all_versions" | grep -E -i '(a|b|rc|dev|alpha|beta)' | sort -V | tail -n 1)
           if [ -n "$pre_version" ]; then
-            matrix=$(jq -n --argjson stable "$stable_versions" --arg pre "$pre_version" '{lancedb-version: ($stable + [$pre])}')
+            matrix=$(jq -n --argjson stable "$stable_versions" --arg pre "$pre_version" '{"lancedb-version": ($stable + [$pre])}')
           else
-            matrix=$(jq -n --argjson stable "$stable_versions" '{lancedb-version: $stable}')
+            matrix=$(jq -n --argjson stable "$stable_versions" '{"lancedb-version": $stable}')
           fi
           echo "matrix=$matrix" >> $GITHUB_OUTPUT
 
