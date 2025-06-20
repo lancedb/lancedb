@@ -2,7 +2,7 @@ name: Weekly Tests
 
 on:
   schedule:
-    - cron: '0 0 * * 0'  # Runs at 00:00 UTC every Sunday
+    - cron: "0 0 * * 0" # Runs at 00:00 UTC every Sunday
   workflow_dispatch:
 
 jobs:
@@ -18,8 +18,8 @@ jobs:
           all_versions=$(curl -s https://pypi.org/pypi/lancedb/json | jq -r '.releases | keys_unsorted | .[]')
           # Get latest 2 stable versions
           stable_versions=$(echo "$all_versions" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 2)
-          # Get latest pre-release version
-          pre_version=$(echo "$all_versions" | grep -E -i '(a|b|rc|dev|alpha|beta)' | sort -V | tail -n 1)
+          # Get latest pre-release version (more specific pattern and better sorting)
+          pre_version=$(echo "$all_versions" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(a|b|rc|dev|alpha|beta)[0-9]*$' | sort -V | tail -n 1)
 
           # Create matrix array
           matrix_versions=()
