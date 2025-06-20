@@ -44,6 +44,8 @@ jobs:
           matrix="{\"lancedb-version\": $json_array}"
           echo "matrix=$matrix" >> $GITHUB_OUTPUT
 
+  # This job is used to test the weekly tests on the latest 2 stable versions of LanceDB,
+  # and the back-compat of the weekly tests.
   weekly-linux:
     needs: get-lancedb-versions
     name: "Weekly: Linux Python 3.12 (LanceDB ${{ matrix.lancedb-version }})"
@@ -76,13 +78,56 @@ jobs:
         run: |
           pip install --extra-index-url https://pypi.fury.io/lancedb/ lancedb==${{ matrix.lancedb-version }}
       - name: Run weekly tests
+        id: run_weekly_tests
+        run: |
+          set +e
+          for f in python/tests/weekly/*.py; do
+            echo "===== Running $f ====="
+            python "$f"
+          done
+          echo "WEEKLY_TESTS_EXIT_CODE=$?" >> $GITHUB_ENV
+      - name: Upgrade LanceDB
+        run: pip install -e .
+      - name: Run weekly tests again
         run: |
           for f in python/tests/weekly/*.py; do
             echo "===== Running $f ====="
             python "$f"
           done
-      - name: Upgrade LanceDB
+      - name: Fail if weekly tests failed
+        if: env.WEEKLY_TESTS_EXIT_CODE != '0'
+        run: exit 1
+
+  # This job is used to test the weekly tests on the main branch.
+  weekly-linux-fresh-main:
+    name: "Weekly: Linux Python 3.12 (main)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Install protobuf
         run: |
-          pip install -e .
-      - name: Run weekly tests again
-        run: pytest -m "weekly" -svv --durations=300 python/tests
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
+      - name: Install LanceDB
+        run: pip install -e .
+      - name: Run weekly tests
+        run: |
+          for f in python/tests/weekly/*.py; do
+            echo "===== Running $f ====="
+            python "$f"
+          done

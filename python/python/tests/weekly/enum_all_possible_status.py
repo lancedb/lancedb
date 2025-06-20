@@ -46,15 +46,15 @@ def random_batch(start_id: int, batch_size: int) -> pa.Table:
     )
 
 
-async def create_or_load_table():
+async def create_or_load_table(name: str, kwargs: dict):
     db = await lancedb.connect_async("tests/weekly_test_db")
     table_names = await db.table_names()
-    if "test_table" in table_names:
+    if name in table_names:
         print("Loading existing test table")
-        table = await db.open_table("test_table")
+        table = await db.open_table(name)
     else:
         print("Creating new test table")
-        table = await db.create_table("test_table", schema=schema)
+        table = await db.create_table(name, schema=schema)
         for i in range(0, NUM_ROWS, BATCH_SIZE):
             batch = random_batch(i, BATCH_SIZE)
             await table.add(batch)
@@ -66,7 +66,11 @@ async def create_or_load_table():
             ),
             replace=True,
         )
-        await table.create_index("text", config=FTS(), replace=True)
+        await table.create_index(
+            "text",
+            config=FTS(with_position=kwargs.get("with_position", False)),
+            replace=True,
+        )
 
     return table
 
@@ -125,7 +129,8 @@ class VectorSearch(ReadOnlyOperation):
 
 
 class FullTextSearch(ReadOnlyOperation):
-    def __init__(self, filter: Optional[str] = None):
+    def __init__(self, has_position: bool, filter: Optional[str] = None):
+        self.has_position = has_position
         self.filter = filter
 
     async def run(self, table: AsyncTable):
@@ -134,26 +139,39 @@ class FullTextSearch(ReadOnlyOperation):
             print("No text index found")
             return
         query_text = random_text(np.random.randint(1, 10))
+        await self.do_query(table, query_text)
+
+        if self.has_position:
+            query_text = f'"{query_text}"'
+            await self.do_query(table, query_text)
+
+    async def do_query(self, table: AsyncTable, query_text: str):
         query = (await table.search(query_text)).limit(10)
         if self.filter:
             query = query.where(self.filter)
         print(await query.analyze_plan())
 
 
-async def main():
-    table = await create_or_load_table()
+async def run(name: str, kwargs: dict):
+    table = await create_or_load_table(name, kwargs)
 
+    # duplicate each operation for testing idempotence
     write_operations = [
         Append(),
+        Append(),
+        Delete(),
         Delete(),
         Optimize(),
+        Optimize(),
     ]
+
+    has_position = kwargs.get("with_position", False)
     read_only_operations = [
         # Read only operations
         VectorSearch(),
         VectorSearch(filter="id > 1_000"),
-        FullTextSearch(),
-        FullTextSearch(filter="id > 1_000"),
+        FullTextSearch(has_position=has_position),
+        FullTextSearch(has_position=has_position, filter="id > 1_000"),
     ]
 
     # iterate on all permutations of write operations
@@ -169,6 +187,11 @@ async def main():
             for read_only_operation in read_only_operations:
                 print(f"Running {read_only_operation.__class__.__name__}")
                 await read_only_operation.run(table)
+
+
+async def main():
+    await run("test_table", {"with_position": False})
+    await run("test_table_with_position", {"with_position": True})
 
 
 if __name__ == "__main__":
