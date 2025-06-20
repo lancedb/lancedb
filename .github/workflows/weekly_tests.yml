@@ -11,23 +11,27 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: Fetch latest 2 stable and 1 pre-release lancedb versions
+      - name: Fetch latest stable and 1 pre-release lancedb versions
         id: set-matrix
         run: |
           # Get all versions from PyPI
-          all_versions=$(curl -s https://pypi.org/pypi/lancedb/json | jq -r '.releases | keys_unsorted | .[]')
-          # Get latest 2 stable versions
-          stable_versions=$(echo "$all_versions" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 2)
+          pypi_versions=$(curl -s https://pypi.org/pypi/lancedb/json | jq -r '.releases | keys_unsorted | .[]')
+          # Get all versions from Fury repository
+          fury_versions=$(curl -s https://pypi.fury.io/lancedb/simple/lancedb/ | grep -o 'href="[^"]*"' | sed 's/href="//g' | sed 's/"//g' | grep -E '^lancedb-[0-9]+\.[0-9]+\.[0-9]+.*\.tar\.gz$' | sed 's/lancedb-//g' | sed 's/\.tar\.gz//g')
+
+          # Combine and deduplicate versions
+          all_versions=$(echo -e "$pypi_versions\n$fury_versions" | sort -u -V)
+
+          # Get latest stable version
+          stable_version=$(echo "$all_versions" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
           # Get latest pre-release version (more specific pattern and better sorting)
           pre_version=$(echo "$all_versions" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(a|b|rc|dev|alpha|beta)[0-9]*$' | sort -V | tail -n 1)
 
           # Create matrix array
           matrix_versions=()
-          while IFS= read -r version; do
-            if [ -n "$version" ]; then
-              matrix_versions+=("$version")
-            fi
-          done <<< "$stable_versions"
+          if [ -n "$stable_version" ]; then
+            matrix_versions+=("$stable_version")
+          fi
 
           if [ -n "$pre_version" ]; then
             matrix_versions+=("$pre_version")
@@ -73,9 +77,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: python
-      - name: Install dependencies
+      - name: Install LanceDB
         run: |
           pip install --extra-index-url https://pypi.fury.io/lancedb/ lancedb==${{ matrix.lancedb-version }}
-          pip install -e .[tests]
       - name: Run weekly tests
+        run: pytest -m "weekly" -svv --durations=300 python/tests
+      - name: Upgrade LanceDB
+        run: |
+          pip install -e .[tests]
+      - name: Run weekly tests again
         run: pytest -m "weekly" -svv --durations=300 python/tests
