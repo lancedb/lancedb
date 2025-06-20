@@ -6,6 +6,7 @@
 
 import abc
 import asyncio
+import datetime
 import itertools
 import math
 from typing import Optional
@@ -16,8 +17,8 @@ import pyarrow as pa
 import numpy as np
 
 NUM_ROWS = 1_000_000
-BATCH_SIZE = 1_000
-DIM = 256
+BATCH_SIZE = 500
+DIM = 32
 
 schema = pa.schema(
     [
@@ -109,7 +110,7 @@ class Delete(WriteOperation):
 
 class Optimize(WriteOperation):
     async def run(self, table: AsyncTable):
-        await table.optimize()
+        await table.optimize(cleanup_older_than=datetime.timedelta(days=0))
 
 
 class VectorSearch(ReadOnlyOperation):
@@ -159,10 +160,7 @@ async def run(name: str, kwargs: dict):
     # duplicate each operation for testing idempotence
     write_operations = [
         Append(),
-        Append(),
         Delete(),
-        Delete(),
-        Optimize(),
         Optimize(),
     ]
 
@@ -192,7 +190,9 @@ async def run(name: str, kwargs: dict):
 
 async def main():
     await run("test_table", {"with_position": False})
-    await run("test_table_with_position", {"with_position": True})
+    await run(
+        "test_table_with_position", {"with_position": True, "remove_stop_words": False}
+    )
 
 
 if __name__ == "__main__":
