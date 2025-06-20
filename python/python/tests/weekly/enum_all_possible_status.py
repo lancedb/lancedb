@@ -157,7 +157,6 @@ async def run(name: str, kwargs: dict):
     print(f"Running {name} with kwargs: {kwargs}")
     table = await create_or_load_table(name, kwargs)
 
-    # duplicate each operation for testing idempotence
     write_operations = [
         Append(),
         Delete(),
