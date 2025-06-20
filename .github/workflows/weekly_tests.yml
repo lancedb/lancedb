@@ -33,9 +33,17 @@ jobs:
             matrix_versions+=("$pre_version")
           fi
 
-          # Convert to JSON array format expected by GitHub Actions
-          matrix_json=$(printf '%s\n' "${matrix_versions[@]}" | jq -R . | jq -s .)
-          matrix=$(jq -n --argjson versions "$matrix_json" '{"lancedb-version": $versions}')
+          # Create JSON array manually
+          json_array="["
+          for i in "${!matrix_versions[@]}"; do
+            if [ $i -gt 0 ]; then
+              json_array="$json_array,"
+            fi
+            json_array="$json_array\"${matrix_versions[$i]}\""
+          done
+          json_array="$json_array]"
+
+          matrix="{\"lancedb-version\": $json_array}"
           echo "matrix=$matrix" >> $GITHUB_OUTPUT
 
   weekly-linux:
