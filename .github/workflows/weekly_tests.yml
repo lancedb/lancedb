@@ -79,6 +79,9 @@ jobs:
           workspaces: python
       - name: Install LanceDB
         run: |
+          pip install "pydantic<2"
+          pip install pyarrow==16
+          pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests]
           pip install --extra-index-url https://pypi.fury.io/lancedb/ lancedb==${{ matrix.lancedb-version }}
       - name: Run weekly tests
         run: pytest -m "weekly" -svv --durations=300 python/tests
