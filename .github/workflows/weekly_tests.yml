@@ -79,18 +79,11 @@ jobs:
           pip install --extra-index-url https://pypi.fury.io/lancedb/ lancedb==${{ matrix.lancedb-version }}
       - name: Run weekly tests
         id: run_weekly_tests
-        continue-on-error: true
         run: |
-          set +e
           for f in python/tests/weekly/*.py; do
             echo "===== Running $f ====="
             python "$f"
           done
-          echo "WEEKLY_TESTS_EXIT_CODE=$?" >> $GITHUB_ENV
-          if [ "$WEEKLY_TESTS_EXIT_CODE" -ne "0" ]; then
-            echo "Weekly tests failed before upgrade"
-            exit 1
-          fi
       - name: Upgrade LanceDB
         run: pip install -e .
       - name: Run weekly tests again
@@ -99,9 +92,6 @@ jobs:
             echo "===== Running $f ====="
             python "$f"
           done
-      - name: Fail if weekly tests failed
-        if: env.WEEKLY_TESTS_EXIT_CODE != '0'
-        run: exit 1
 
   # This job is used to test the weekly tests on the main branch.
   weekly-linux-fresh-main:
