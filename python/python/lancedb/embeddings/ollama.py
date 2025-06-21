@@ -54,7 +54,7 @@ class OllamaEmbeddings(TextEmbeddingFunction):
         """
         # TODO retry, rate limit, token limit
         embeddings = self._compute_embedding(texts)
-        return embeddings
+        return list(embeddings)
 
     @cached_property
     def _ollama_client(self) -> "ollama.Client":
