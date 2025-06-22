@@ -61,19 +61,10 @@ pub extern "system" fn Java_com_lancedb_lancedb_Connection_connectNative<'local>
       
     if !options_obj.is_null() {  
         // Extract API key  
-        if let Ok(api_key_obj) = env.call_method(&options_obj, "getApiKey", "()Ljava/util/Optional;", &[]) {  
-            if let Ok(api_key_opt) = api_key_obj.l() {  
-                if let Ok(is_present) = env.call_method(&api_key_opt, "isPresent", "()Z", &[]) {  
-                    if is_present.z().unwrap_or(false) {  
-                        if let Ok(api_key_val) = env.call_method(&api_key_opt, "get", "()Ljava/lang/Object;", &[]) {  
-                            if let Ok(api_key_str) = env.get_string(&JString::from(api_key_val.l().unwrap())) {  
-                                builder = builder.api_key(&String::from(api_key_str));  
-                            }  
-                        }  
-                    }  
-                }  
-            }  
-        }  
+        // Extract API key
+        if let Some(api_key) = extract_optional_string(&mut env, &options_obj, "getApiKey")? {
+           builder = builder.api_key(&api_key);
+        }
           
         // Extract region  
         if let Ok(region_obj) = env.call_method(&options_obj, "getRegion", "()Ljava/lang/String;", &[]) {  
@@ -156,7 +147,21 @@ fn convert_java_list_to_rust(
     }  
       
     Ok(result)  
-}  
+}
+
+fn extract_optional_string(env: &mut JNIEnv, obj: &JObject, method: &str) -> Result<Option<String>> {
+    let optional = env.call_method(obj, method, "()Ljava/util/Optional;", &[])?;
+    let optional_obj = optional.l()?;
+
+    let is_present = env.call_method(&optional_obj, "isPresent", "()Z", &[])?.z()?;
+    if !is_present {
+        return Ok(None);
+    }
+
+    let value = env.call_method(&optional_obj, "get", "()Ljava/lang/Object;", &[])?.l()?;
+    let string = env.get_string(&JString::from(value))?.into();
+    Ok(Some(string))
+}
   
 fn convert_java_object_to_json(  
     env: &mut JNIEnv,  
