@@ -1,133 +1,226 @@
-// SPDX-License-Identifier: Apache-2.0
-// SPDX-FileCopyrightText: Copyright The LanceDB Authors
-
-use crate::ffi::JNIEnvExt;
-use crate::traits::IntoJava;
-use crate::{Error, RT};
-use jni::objects::{JObject, JString, JValue};
-use jni::JNIEnv;
-pub const NATIVE_CONNECTION: &str = "nativeConnectionHandle";
-use crate::Result;
-use lancedb::connection::{connect, Connection};
-
-#[derive(Clone)]
-pub struct BlockingConnection {
-    pub(crate) inner: Connection,
-}
-
-impl BlockingConnection {
-    pub fn create(dataset_uri: &str) -> Result<Self> {
-        let inner = RT.block_on(connect(dataset_uri).execute())?;
-        Ok(Self { inner })
+use jni::objects::{JObject, JString, JValue, JList, JMap};  
+use jni::sys::{jobject, jlong};  
+use jni::JNIEnv;  
+use std::collections::HashMap;  
+use crate::{ok_or_throw, RT, BlockingConnection, NATIVE_CONNECTION};  
+  
+impl BlockingConnection {  
+    pub fn create_table_with_data(  
+        &self,  
+        name: &str,  
+        data: Vec<HashMap<String, serde_json::Value>>,  
+        mode: &str,  
+    ) -> Result<BlockingTable> {  
+        let records: Vec<_> = data.into_iter()  
+            .map(|map| serde_json::Value::Object(map.into_iter().collect()))  
+            .collect();  
+          
+        let json_data = serde_json::Value::Array(records);  
+        let reader = lance::io::RecordBatchReader::from_json(&json_data.to_string())?;  
+          
+        let create_mode = match mode {  
+            "create" => lance::dataset::CreateMode::Create,  
+            "overwrite" => lance::dataset::CreateMode::Overwrite,  
+            "exist_ok" => lance::dataset::CreateMode::ExistOk,  
+            _ => return Err(lance::Error::InvalidInput("Invalid create mode".into())),  
+        };  
+  
+        let table = RT.block_on(  
+            self.inner.create_table(name, reader).mode(create_mode).execute()  
+        )?;  
+          
+        Ok(BlockingTable { inner: table })  
+    }  
+  
+    pub fn open_table(&self, name: &str) -> Result<BlockingTable> {  
+        let table = RT.block_on(self.inner.open_table(name))?;  
+        Ok(BlockingTable { inner: table })  
+    }  
+  
+    pub fn drop_table(&self, name: &str) -> Result<()> {  
+        RT.block_on(self.inner.drop_table(name))  
+    }  
+}  
+  
+#[no_mangle]  
+pub extern "system" fn Java_com_lancedb_lancedb_Connection_connectNative<'local>(  
+    mut env: JNIEnv<'local>,  
+    _obj: JObject,  
+    uri_obj: JString,  
+    options_obj: JObject,  
+) -> JObject<'local> {  
+    let uri: String = ok_or_throw!(env, env.get_string(&uri_obj)).into();  
+      
+    // Parse connection options  
+    let mut builder = lancedb::connect(&uri);  
+      
+    if !options_obj.is_null() {  
+        // Extract API key  
+        if let Ok(api_key_obj) = env.call_method(&options_obj, "getApiKey", "()Ljava/util/Optional;", &[]) {  
+            if let Ok(api_key_opt) = api_key_obj.l() {  
+                if let Ok(is_present) = env.call_method(&api_key_opt, "isPresent", "()Z", &[]) {  
+                    if is_present.z().unwrap_or(false) {  
+                        if let Ok(api_key_val) = env.call_method(&api_key_opt, "get", "()Ljava/lang/Object;", &[]) {  
+                            if let Ok(api_key_str) = env.get_string(&JString::from(api_key_val.l().unwrap())) {  
+                                builder = builder.api_key(&String::from(api_key_str));  
+                            }  
+                        }  
+                    }  
+                }  
+            }  
+        }  
+          
+        // Extract region  
+        if let Ok(region_obj) = env.call_method(&options_obj, "getRegion", "()Ljava/lang/String;", &[]) {  
+            if let Ok(region_str) = env.get_string(&JString::from(region_obj.l().unwrap())) {  
+                builder = builder.region(&String::from(region_str));  
+            }  
+        }  
+    }  
+  
+    let blocking_connection = ok_or_throw!(env, RT.block_on(builder.execute()).map(|conn| BlockingConnection { inner: conn }));  
+    blocking_connection.into_java(&mut env)  
+}  
+  
+#[no_mangle]  
+pub extern "system" fn Java_com_lancedb_lancedb_Connection_createTableNative<'local>(  
+    mut env: JNIEnv<'local>,  
+    j_connection: JObject,  
+    name_obj: JString,  
+    data_obj: JObject, // List<Map<String, Object>>  
+    mode_obj: JString,  
+) -> JObject<'local> {  
+    let connection: &BlockingConnection = unsafe {  
+        env.get_rust_field(j_connection, NATIVE_CONNECTION)  
+            .expect("Failed to get native Connection handle")  
+    };  
+  
+    let name: String = ok_or_throw!(env, env.get_string(&name_obj)).into();  
+    let mode: String = ok_or_throw!(env, env.get_string(&mode_obj)).into();  
+      
+    // Convert Java List<Map<String, Object>> to Rust data structure  
+    let data = ok_or_throw!(env, convert_java_list_to_rust(&mut env, data_obj));  
+      
+    let table = ok_or_throw!(env, connection.create_table_with_data(&name, data, &mode));  
+    table.into_java(&mut env)  
+}  
+  
+#[no_mangle]  
+pub extern "system" fn Java_com_lancedb_lancedb_Connection_openTableNative<'local>(  
+    mut env: JNIEnv<'local>,  
+    j_connection: JObject,  
+    name_obj: JString,  
+) -> JObject<'local> {  
+    let connection: &BlockingConnection = unsafe {  
+        env.get_rust_field(j_connection, NATIVE_CONNECTION)  
+            .expect("Failed to get native Connection handle")  
+    };  
+  
+    let name: String = ok_or_throw!(env, env.get_string(&name_obj)).into();  
+    let table = ok_or_throw!(env, connection.open_table(&name));  
+    table.into_java(&mut env)  
+}  
+  
+fn convert_java_list_to_rust(  
+    env: &mut JNIEnv,  
+    list_obj: JObject,  
+) -> Result<Vec<HashMap<String, serde_json::Value>>, Box<dyn std::error::Error>> {  
+    let list = JList::from_env(env, &list_obj)?;  
+    let mut result = Vec::new();  
+      
+    let size = list.size(env)?;  
+    for i in 0..size {  
+        let map_obj = list.get(env, i)?;  
+        let map = JMap::from_env(env, &map_obj)?;  
+        let mut record = HashMap::new();  
+          
+        let key_set = map.key_set(env)?;  
+        let key_list = JList::from_env(env, &key_set)?;  
+        let key_count = key_list.size(env)?;  
+          
+        for j in 0..key_count {  
+            let key_obj = key_list.get(env, j)?;  
+            let key_str = env.get_string(&JString::from(key_obj))?.into();  
+              
+            let value_obj = map.get(env, &key_obj)?;  
+            let value = convert_java_object_to_json(env, value_obj)?;  
+            record.insert(key_str, value);  
+        }  
+          
+        result.push(record);  
+    }  
+      
+    Ok(result)  
+}  
+  
+fn convert_java_object_to_json(  
+    env: &mut JNIEnv,  
+    obj: JObject,  
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {  
+    if obj.is_null() {  
+        return Ok(serde_json::Value::Null);  
+    }  
+      
+    // Check if it's a String
+    if env.is_instance_of(&obj, "java/lang/String")? {
+        let jstr = JString::from(obj);
+        let val = env.get_string(&jstr)?;
+        return Ok(serde_json::Value::String(val.to_str()?.to_string()));
     }
 
-    pub fn table_names(
-        &self,
-        start_after: Option<String>,
-        limit: Option<i32>,
-    ) -> Result<Vec<String>> {
-        let mut op = self.inner.table_names();
-        if let Some(start_after) = start_after {
-            op = op.start_after(start_after);
+    // Check if it's an Integer
+    if env.is_instance_of(&obj, "java/lang/Integer")? {
+        let int_obj = env.call_method(obj, "intValue", "()I", &[])?;
+        let int_value = int_obj.i()?;
+        return Ok(serde_json::Value::Number(serde_json::Number::from(int_value)));
+    }
+
+    // Check if it's a Long
+    if env.is_instance_of(&obj, "java/lang/Long")? {
+        let long_obj = env.call_method(obj, "longValue", "()J", &[])?;
+        let long_value = long_obj.j()?;
+        return Ok(serde_json::Value::Number(serde_json::Number::from(long_value)));
+    }
+
+    // Check if it's a Float
+    if env.is_instance_of(&obj, "java/lang/Float")? {
+        let float_obj = env.call_method(obj, "floatValue", "()F", &[])?;
+        let float_value = float_obj.f()?;
+        return Ok(serde_json::Value::Number(serde_json::Number::from_f64(float_value as f64).unwrap()));
+    }
+
+    // Check if it's a Double
+    if env.is_instance_of(&obj, "java/lang/Double")? {
+        let double_obj = env.call_method(obj, "doubleValue", "()D", &[])?;
+        let double_value = double_obj.d()?;
+        return Ok(serde_json::Value::Number(serde_json::Number::from_f64(double_value).unwrap()));
+    }
+
+    // Check if it's a Boolean
+    if env.is_instance_of(&obj, "java/lang/Boolean")? {
+        let bool_obj = env.call_method(obj, "booleanValue", "()Z", &[])?;
+        let bool_value = bool_obj.z()?;
+        return Ok(serde_json::Value::Bool(bool_value));
+    }
+
+    // Check if it's a List (for vectors)
+    if env.is_instance_of(&obj, "java/util/List")? {
+        let list = JList::from_env(env, &obj)?;
+        let mut vec_values = Vec::new();
+        let size = list.size(env)?;
+
+        for i in 0..size {
+            let item = list.get(env, i)?;
+            let item_value = convert_java_object_to_json(env, item)?;
+            vec_values.push(item_value);
         }
-        if let Some(limit) = limit {
-            op = op.limit(limit as u32);
-        }
-        Ok(RT.block_on(op.execute())?)
+
+        return Ok(serde_json::Value::Array(vec_values));
     }
-}
 
-impl IntoJava for BlockingConnection {
-    fn into_java<'a>(self, env: &mut JNIEnv<'a>) -> JObject<'a> {
-        attach_native_connection(env, self)
-    }
-}
-
-fn attach_native_connection<'local>(
-    env: &mut JNIEnv<'local>,
-    connection: BlockingConnection,
-) -> JObject<'local> {
-    let j_connection = create_java_connection_object(env);
-    // This block sets a native Rust object (Connection) as a field in the Java object (j_Connection).
-    // Caution: This creates a potential for memory leaks. The Rust object (Connection) is not
-    // automatically garbage-collected by Java, and its memory will not be freed unless
-    // explicitly handled.
-    //
-    // To prevent memory leaks, ensure the following:
-    // 1. The Java object (`j_Connection`) should implement the `java.io.Closeable` interface.
-    // 2. Users of this Java object should be instructed to always use it within a try-with-resources
-    //    statement (or manually call the `close()` method) to ensure that `self.close()` is invoked.
-    match unsafe { env.set_rust_field(&j_connection, NATIVE_CONNECTION, connection) } {
-        Ok(_) => j_connection,
-        Err(err) => {
-            env.throw_new(
-                "java/lang/RuntimeException",
-                format!("Failed to set native handle for Connection: {}", err),
-            )
-            .expect("Error throwing exception");
-            JObject::null()
-        }
-    }
-}
-
-fn create_java_connection_object<'a>(env: &mut JNIEnv<'a>) -> JObject<'a> {
-    env.new_object("com/lancedb/lancedb/Connection", "()V", &[])
-        .expect("Failed to create Java Lance Connection instance")
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_lancedb_lancedb_Connection_releaseNativeConnection(
-    mut env: JNIEnv,
-    j_connection: JObject,
-) {
-    let _: BlockingConnection = unsafe {
-        env.take_rust_field(j_connection, NATIVE_CONNECTION)
-            .expect("Failed to take native Connection handle")
-    };
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_lancedb_lancedb_Connection_connect<'local>(
-    mut env: JNIEnv<'local>,
-    _obj: JObject,
-    dataset_uri_object: JString,
-) -> JObject<'local> {
-    let dataset_uri: String = ok_or_throw!(env, env.get_string(&dataset_uri_object)).into();
-    let blocking_connection = ok_or_throw!(env, BlockingConnection::create(&dataset_uri));
-    blocking_connection.into_java(&mut env)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_lancedb_lancedb_Connection_tableNames<'local>(
-    mut env: JNIEnv<'local>,
-    j_connection: JObject,
-    start_after_obj: JObject, // Optional<String>
-    limit_obj: JObject,       // Optional<Integer>
-) -> JObject<'local> {
-    ok_or_throw!(
-        env,
-        inner_table_names(&mut env, j_connection, start_after_obj, limit_obj)
-    )
-}
-
-fn inner_table_names<'local>(
-    env: &mut JNIEnv<'local>,
-    j_connection: JObject,
-    start_after_obj: JObject, // Optional<String>
-    limit_obj: JObject,       // Optional<Integer>
-) -> Result<JObject<'local>> {
-    let start_after = env.get_string_opt(&start_after_obj)?;
-    let limit = env.get_int_opt(&limit_obj)?;
-    let conn =
-        unsafe { env.get_rust_field::<_, _, BlockingConnection>(j_connection, NATIVE_CONNECTION) }?;
-    let table_names = conn.table_names(start_after, limit)?;
-    drop(conn);
-    let j_names = env.new_object("java/util/ArrayList", "()V", &[])?;
-    for item in table_names {
-        let jstr_item = env.new_string(item)?;
-        let item_jobj = JObject::from(jstr_item);
-        let item_gen = JValue::Object(&item_jobj);
-        env.call_method(&j_names, "add", "(Ljava/lang/Object;)Z", &[item_gen])?;
-    }
-    Ok(j_names)
+    // Default case - try to convert to string
+    let string_obj = env.call_method(obj, "toString", "()Ljava/lang/String;", &[])?;
+    let jstr = JString::from(string_obj.l()?);
+    let val = env.get_string(&jstr)?;
+    Ok(serde_json::Value::String(val.to_str()?.to_string()))
 }
