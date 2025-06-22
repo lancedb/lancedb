@@ -3,7 +3,12 @@ use jni::sys::{jobject, jlong};
 use jni::JNIEnv;  
 use std::collections::HashMap;  
 use crate::{ok_or_throw, RT, BlockingConnection, NATIVE_CONNECTION};  
-  
+
+#[derive(Clone)]
+pub struct BlockingConnection {
+    pub(crate) inner: Connection,
+}
+
 impl BlockingConnection {  
     pub fn create_table_with_data(  
         &self,  
