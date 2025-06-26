@@ -563,7 +563,10 @@ impl FTSQuery {
     }
 
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner.clone();
+        let inner = self_
+            .inner
+            .clone()
+            .full_text_search(self_.fts_query.clone());
         future_into_py(self_.py(), async move {
             inner
                 .explain_plan(verbose)
@@ -573,7 +576,10 @@ impl FTSQuery {
     }
 
     pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner.clone();
+        let inner = self_
+            .inner
+            .clone()
+            .full_text_search(self_.fts_query.clone());
         future_into_py(self_.py(), async move {
             inner
                 .analyze_plan()

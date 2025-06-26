@@ -786,24 +786,25 @@ async def test_explain_plan_fts(table_async: AsyncTable):
     # Test pure FTS query
     query = await table_async.search("dog", query_type="fts", fts_columns="text")
     plan = await query.explain_plan()
-    # Currently this shows only LanceScan (issue #2465), but should show FTS details
-    assert "LanceScan" in plan
+    # Should show FTS details (issue #2465 is now fixed)
+    assert "MatchQuery: query=dog" in plan
+    assert "GlobalLimitExec" in plan  # Default limit
 
     # Test FTS query with limit
     query_with_limit = await table_async.search(
         "dog", query_type="fts", fts_columns="text"
     )
     plan_with_limit = await query_with_limit.limit(1).explain_plan()
-    assert "LanceScan" in plan_with_limit
-    # TODO: Should also assert limit is shown in plan once issue is fixed
+    assert "MatchQuery: query=dog" in plan_with_limit
+    assert "GlobalLimitExec: skip=0, fetch=1" in plan_with_limit
 
     # Test FTS query with offset and limit
     query_with_offset = await table_async.search(
         "dog", query_type="fts", fts_columns="text"
     )
     plan_with_offset = await query_with_offset.offset(1).limit(1).explain_plan()
-    assert "LanceScan" in plan_with_offset
-    # TODO: Should also assert offset/limit are shown in plan once issue is fixed
+    assert "MatchQuery: query=dog" in plan_with_offset
+    assert "GlobalLimitExec: skip=1, fetch=1" in plan_with_offset
 
 
 @pytest.mark.asyncio
@@ -846,8 +847,8 @@ async def test_explain_plan_with_filters(table_async: AsyncTable):
         "dog", query_type="fts", fts_columns="text"
     )
     plan_fts_filter = await query_fts_filter.where("id = 1").explain_plan()
-    assert "LanceScan" in plan_fts_filter
-    # TODO: Should show filter details once FTS explain plan is fixed
+    assert "MatchQuery: query=dog" in plan_fts_filter
+    assert "FilterExec: id@" in plan_fts_filter  # Should show filter details
 
 
 @pytest.mark.asyncio
