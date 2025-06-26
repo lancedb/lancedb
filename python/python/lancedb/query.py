@@ -3042,15 +3042,21 @@ class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         Vector Search Plan:
         ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
-            Take: columns="vector, _rowid, _distance, (text)"
-                CoalesceBatchesExec: target_batch_size=1024
-                GlobalLimitExec: skip=0, fetch=10
-                    FilterExec: _distance@2 IS NOT NULL
-                    SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
-                        KNNVectorDistance: metric=l2
-                        LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+          Take: columns="vector, _rowid, _distance, (text)"
+            CoalesceBatchesExec: target_batch_size=1024
+              GlobalLimitExec: skip=0, fetch=10
+                FilterExec: _distance@2 IS NOT NULL
+                  SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+                    KNNVectorDistance: metric=l2
+                      LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+        <BLANKLINE>
         FTS Search Plan:
-        LanceScan: uri=..., projection=[vector, text], row_id=false, row_addr=false, ordered=true
+        ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
+          Take: columns="_rowid, _score, (vector), (text)"
+            CoalesceBatchesExec: target_batch_size=1024
+              GlobalLimitExec: skip=0, fetch=10
+                MatchQuery: query=hello
+        <BLANKLINE>
 
         Parameters
         ----------
