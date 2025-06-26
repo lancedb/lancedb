@@ -776,6 +776,81 @@ async def test_explain_plan_async(table_async: AsyncTable):
 
 
 @pytest.mark.asyncio
+async def test_explain_plan_fts(table_async: AsyncTable):
+    """Test explain plan for FTS queries"""
+    # Create FTS index
+    from lancedb.index import FTS
+
+    await table_async.create_index("text", config=FTS())
+
+    # Test pure FTS query
+    query = await table_async.search("dog", query_type="fts", fts_columns="text")
+    plan = await query.explain_plan()
+    # Currently this shows only LanceScan (issue #2465), but should show FTS details
+    assert "LanceScan" in plan
+
+    # Test FTS query with limit
+    query_with_limit = await table_async.search(
+        "dog", query_type="fts", fts_columns="text"
+    )
+    plan_with_limit = await query_with_limit.limit(1).explain_plan()
+    assert "LanceScan" in plan_with_limit
+    # TODO: Should also assert limit is shown in plan once issue is fixed
+
+    # Test FTS query with offset and limit
+    query_with_offset = await table_async.search(
+        "dog", query_type="fts", fts_columns="text"
+    )
+    plan_with_offset = await query_with_offset.offset(1).limit(1).explain_plan()
+    assert "LanceScan" in plan_with_offset
+    # TODO: Should also assert offset/limit are shown in plan once issue is fixed
+
+
+@pytest.mark.asyncio
+async def test_explain_plan_vector_with_limit_offset(table_async: AsyncTable):
+    """Test explain plan for vector queries with limit and offset"""
+    # Test vector query with limit
+    plan_with_limit = await (
+        table_async.query().nearest_to(pa.array([1, 2])).limit(1).explain_plan()
+    )
+    assert "KNN" in plan_with_limit
+    assert "GlobalLimitExec: skip=0, fetch=1" in plan_with_limit
+
+    # Test vector query with offset and limit
+    plan_with_offset = await (
+        table_async.query()
+        .nearest_to(pa.array([1, 2]))
+        .offset(1)
+        .limit(1)
+        .explain_plan()
+    )
+    assert "KNN" in plan_with_offset
+    assert "GlobalLimitExec: skip=1, fetch=1" in plan_with_offset
+
+
+@pytest.mark.asyncio
+async def test_explain_plan_with_filters(table_async: AsyncTable):
+    """Test explain plan for queries with filters"""
+    # Test vector query with filter
+    plan_with_filter = await (
+        table_async.query().nearest_to(pa.array([1, 2])).where("id = 1").explain_plan()
+    )
+    assert "KNN" in plan_with_filter
+    assert "FilterExec" in plan_with_filter
+
+    # Test FTS query with filter
+    from lancedb.index import FTS
+
+    await table_async.create_index("text", config=FTS())
+    query_fts_filter = await table_async.search(
+        "dog", query_type="fts", fts_columns="text"
+    )
+    plan_fts_filter = await query_fts_filter.where("id = 1").explain_plan()
+    assert "LanceScan" in plan_fts_filter
+    # TODO: Should show filter details once FTS explain plan is fixed
+
+
+@pytest.mark.asyncio
 async def test_query_camelcase_async(tmp_path):
     db = await lancedb.connect_async(tmp_path)
     table = await db.create_table("test", pa.table({"camelCase": pa.array([1, 2])}))
