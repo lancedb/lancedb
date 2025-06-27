@@ -106,8 +106,7 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                 Ok(Self(q.with_operator(op).into()))
             }
             "BooleanQuery" => {
-                let queries: Vec<(String, Self)> =
-                    ob.getattr("queries")?.extract()?;
+                let queries: Vec<(String, Self)> = ob.getattr("queries")?.extract()?;
                 let mut sub_queries = Vec::with_capacity(queries.len());
                 for (occur, q) in queries {
                     let occur = Occur::try_from(occur.as_str())
