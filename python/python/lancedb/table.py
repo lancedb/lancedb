@@ -3772,10 +3772,7 @@ class AsyncTable:
            x      vector
         0  3  [5.0, 6.0]
         """
-
         existing_indices = await self.list_indices()
-        print("🛠 Before delete, found indices:", existing_indices)
-
         saved_index_info = []
         for idx in existing_indices:
             print("🛠 Saving index:", idx.columns, idx.index_type)
@@ -3784,19 +3781,23 @@ class AsyncTable:
                 "config": idx.config,
                 "name": idx.name,
             })
-
         result = await self._inner.delete(where)
 
         for idx in saved_index_info:
             column = idx["columns"][0]
             config = idx["config"]
             name = idx.get("name")
-            print(f"🛠 Recreating index on {column} with config={config} and name={name}")
             await self.create_index(column=column, config=config, name=name)
-
+            try:
+                if len(idx["columns"]) == 1:
+                    await self.create_index(column=idx["columns"][0], config=idx["config"])
+                else:
+                    for column in idx["columns"]:
+                        await self.create_index(column=column, config=idx["config"])
+            except Exception as e:
+                print(f"Warning: Failed to recreate index on {idx['columns']}: {e}")
         return result
-
-
+        
     async def update(
         self,
         updates: Optional[Dict[str, Any]] = None,
