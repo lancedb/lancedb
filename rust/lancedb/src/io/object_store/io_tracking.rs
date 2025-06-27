@@ -133,7 +133,7 @@ impl ObjectStore for IoTrackingStore {
         result
     }
 
-    async fn get_range(&self, location: &Path, range: std::ops::Range<usize>) -> OSResult<Bytes> {
+    async fn get_range(&self, location: &Path, range: std::ops::Range<u64>) -> OSResult<Bytes> {
         let result = self.target.get_range(location, range).await;
         if let Ok(result) = &result {
             self.record_read(result.len() as u64);
@@ -144,7 +144,7 @@ impl ObjectStore for IoTrackingStore {
     async fn get_ranges(
         &self,
         location: &Path,
-        ranges: &[std::ops::Range<usize>],
+        ranges: &[std::ops::Range<u64>],
     ) -> OSResult<Vec<Bytes>> {
         let result = self.target.get_ranges(location, ranges).await;
         if let Ok(result) = &result {
@@ -170,7 +170,7 @@ impl ObjectStore for IoTrackingStore {
         self.target.delete_stream(locations)
     }
 
-    fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, OSResult<ObjectMeta>> {
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, OSResult<ObjectMeta>> {
         self.record_read(0);
         self.target.list(prefix)
     }
@@ -179,7 +179,7 @@ impl ObjectStore for IoTrackingStore {
         &self,
         prefix: Option<&Path>,
         offset: &Path,
-    ) -> BoxStream<'_, OSResult<ObjectMeta>> {
+    ) -> BoxStream<'static, OSResult<ObjectMeta>> {
         self.record_read(0);
         self.target.list_with_offset(prefix, offset)
     }
