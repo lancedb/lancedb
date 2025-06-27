@@ -3772,7 +3772,30 @@ class AsyncTable:
            x      vector
         0  3  [5.0, 6.0]
         """
-        return await self._inner.delete(where)
+
+        existing_indices = await self.list_indices()
+        print("🛠 Before delete, found indices:", existing_indices)
+
+        saved_index_info = []
+        for idx in existing_indices:
+            print("🛠 Saving index:", idx.columns, idx.index_type)
+            saved_index_info.append({
+                "columns": idx.columns,
+                "config": idx.config,
+                "name": idx.name,
+            })
+
+        result = await self._inner.delete(where)
+
+        for idx in saved_index_info:
+            column = idx["columns"][0]
+            config = idx["config"]
+            name = idx.get("name")
+            print(f"🛠 Recreating index on {column} with config={config} and name={name}")
+            await self.create_index(column=column, config=config, name=name)
+
+        return result
+
 
     async def update(
         self,
