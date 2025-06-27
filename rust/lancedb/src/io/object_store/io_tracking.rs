@@ -119,7 +119,7 @@ impl ObjectStore for IoTrackingStore {
         let result = self.target.get(location).await;
         if let Ok(result) = &result {
             let num_bytes = result.range.end - result.range.start;
-            self.record_read(num_bytes as u64);
+            self.record_read(num_bytes);
         }
         result
     }
@@ -128,7 +128,7 @@ impl ObjectStore for IoTrackingStore {
         let result = self.target.get_opts(location, options).await;
         if let Ok(result) = &result {
             let num_bytes = result.range.end - result.range.start;
-            self.record_read(num_bytes as u64);
+            self.record_read(num_bytes);
         }
         result
     }
