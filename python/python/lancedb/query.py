@@ -1745,6 +1745,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
                 LanceHybridQueryBuilder._normalize_scores(original_scores),
             )
 
+        if vector_results.num_rows == 0 and fts_results.num_rows == 0:
+            return pa.table({})
+
         results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
 
         check_reranker_result(results)
