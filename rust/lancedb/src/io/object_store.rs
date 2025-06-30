@@ -107,7 +107,7 @@ impl ObjectStore for MirroringObjectStore {
         self.primary.delete(location).await
     }
 
-    fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, Result<ObjectMeta>> {
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
         self.primary.list(prefix)
     }
 

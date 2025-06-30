@@ -52,7 +52,7 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                 let operator = ob.getattr("operator")?.extract::<String>()?;
                 let prefix_length = ob.getattr("prefix_length")?.extract()?;
 
-                Ok(PyLanceDB(
+                Ok(Self(
                     MatchQuery::new(query)
                         .with_column(Some(column))
                         .with_boost(boost)
@@ -70,7 +70,7 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                 let column = ob.getattr("column")?.extract()?;
                 let slop = ob.getattr("slop")?.extract()?;
 
-                Ok(PyLanceDB(
+                Ok(Self(
                     PhraseQuery::new(query)
                         .with_column(Some(column))
                         .with_slop(slop)
@@ -78,10 +78,10 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                 ))
             }
             "BoostQuery" => {
-                let positive: PyLanceDB<FtsQuery> = ob.getattr("positive")?.extract()?;
-                let negative: PyLanceDB<FtsQuery> = ob.getattr("negative")?.extract()?;
+                let positive: Self = ob.getattr("positive")?.extract()?;
+                let negative: Self = ob.getattr("negative")?.extract()?;
                 let negative_boost = ob.getattr("negative_boost")?.extract()?;
-                Ok(PyLanceDB(
+                Ok(Self(
                     BoostQuery::new(positive.0, negative.0, negative_boost).into(),
                 ))
             }
@@ -103,18 +103,17 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                 let op = Operator::try_from(operator.as_str())
                     .map_err(|e| PyValueError::new_err(format!("Invalid operator: {}", e)))?;
 
-                Ok(PyLanceDB(q.with_operator(op).into()))
+                Ok(Self(q.with_operator(op).into()))
             }
             "BooleanQuery" => {
-                let queries: Vec<(String, PyLanceDB<FtsQuery>)> =
-                    ob.getattr("queries")?.extract()?;
+                let queries: Vec<(String, Self)> = ob.getattr("queries")?.extract()?;
                 let mut sub_queries = Vec::with_capacity(queries.len());
                 for (occur, q) in queries {
                     let occur = Occur::try_from(occur.as_str())
                         .map_err(|e| PyValueError::new_err(e.to_string()))?;
                     sub_queries.push((occur, q.0));
                 }
-                Ok(PyLanceDB(BooleanQuery::new(sub_queries).into()))
+                Ok(Self(BooleanQuery::new(sub_queries).into()))
             }
             name => Err(PyValueError::new_err(format!(
                 "Unsupported FTS query type: {}",
@@ -155,8 +154,8 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                     .call((query.terms, query.column.unwrap()), Some(&kwargs))
             }
             FtsQuery::Boost(query) => {
-                let positive = PyLanceDB(query.positive.as_ref().clone()).into_pyobject(py)?;
-                let negative = PyLanceDB(query.negative.as_ref().clone()).into_pyobject(py)?;
+                let positive = Self(query.positive.as_ref().clone()).into_pyobject(py)?;
+                let negative = Self(query.negative.as_ref().clone()).into_pyobject(py)?;
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("negative_boost", query.negative_boost)?;
                 namespace
@@ -182,13 +181,13 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                     query.should.len() + query.must.len() + query.must_not.len(),
                 );
                 for q in query.should {
-                    queries.push((Occur::Should.into(), PyLanceDB(q).into_pyobject(py)?));
+                    queries.push((Occur::Should.into(), Self(q).into_pyobject(py)?));
                 }
                 for q in query.must {
-                    queries.push((Occur::Must.into(), PyLanceDB(q).into_pyobject(py)?));
+                    queries.push((Occur::Must.into(), Self(q).into_pyobject(py)?));
                 }
                 for q in query.must_not {
-                    queries.push((Occur::MustNot.into(), PyLanceDB(q).into_pyobject(py)?));
+                    queries.push((Occur::MustNot.into(), Self(q).into_pyobject(py)?));
                 }
 
                 namespace
