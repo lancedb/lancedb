@@ -129,7 +129,9 @@ impl DatasetRef {
                 dataset: ref mut ds,
                 ..
             } => {
-                *ds = dataset;
+                if dataset.manifest().version > ds.manifest().version {
+                    *ds = dataset;
+                }
             }
             _ => unreachable!("Dataset should be in latest mode at this point"),
         }
