@@ -4,14 +4,17 @@ import pytest
 from lancedb.query import LanceHybridQueryBuilder
 from lancedb.rerankers.answerdotai import AnswerDotAIReranker
 
+
 @pytest.mark.asyncio
 async def test_combine_hybrid_results_empty():
-    schema = pa.schema([
-        pa.field("_rowid", pa.int64()),
-        pa.field("_distance", pa.float32()),
-        pa.field("_score", pa.float32()),
-        pa.field("content", pa.string())
-    ])
+    schema = pa.schema(
+        [
+            pa.field("_rowid", pa.int64()),
+            pa.field("_distance", pa.float32()),
+            pa.field("_score", pa.float32()),
+            pa.field("content", pa.string()),
+        ]
+    )
 
     empty_vector_results = pa.Table.from_batches([], schema=schema)
     empty_fts_results = pa.Table.from_batches([], schema=schema)
