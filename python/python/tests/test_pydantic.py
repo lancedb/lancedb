@@ -412,3 +412,50 @@ def test_multi_vector_in_lance_model():
 
     t = TestModel(id=1)
     assert t.vectors == [[0.0] * 16]
+
+
+def test_aliases_in_lance_model(mem_db):
+    data = [
+        {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+        {"vector": [5.9, 6.5], "item": "bar", "price": 20.0},
+    ]
+    tbl = mem_db.create_table("items", data=data)
+
+    class TestModel(LanceModel):
+        name: str = Field(alias="item")
+        price: float
+        distance: float = Field(alias="_distance")
+
+    model = (
+        tbl.search([5.9, 6.5])
+        .distance_type("cosine")
+        .limit(1)
+        .to_pydantic(TestModel)[0]
+    )
+    assert hasattr(model, "name")
+    assert hasattr(model, "distance")
+    assert model.distance < 0.01
+
+
+@pytest.mark.asyncio
+async def test_aliases_in_lance_model_async(mem_db_async):
+    data = [
+        {"vector": [8.3, 2.5], "item": "foo", "price": 12.0},
+        {"vector": [7.7, 3.9], "item": "bar", "price": 11.2},
+    ]
+    tbl = await mem_db_async.create_table("items", data=data)
+
+    class TestModel(LanceModel):
+        name: str = Field(alias="item")
+        price: float
+        distance: float = Field(alias="_distance")
+
+    model = (
+        await tbl.vector_search([7.7, 3.9])
+        .distance_type("cosine")
+        .limit(1)
+        .to_pydantic(TestModel)
+    )[0]
+    assert hasattr(model, "name")
+    assert hasattr(model, "distance")
+    assert model.distance < 0.01
