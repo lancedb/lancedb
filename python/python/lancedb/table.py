@@ -4162,7 +4162,7 @@ class IndexStatistics:
     num_indices: Optional[int]
         The number of parts the index is split into.
     loss: Optional[float]
-        The KMeans loss for the index, for only vector indices.
+        The K-means loss for the index, for only vector indices.
     """
 
     num_indexed_rows: int
