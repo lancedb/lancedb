@@ -82,10 +82,10 @@ export interface IvfPqOptions {
   distanceType?: "l2" | "cosine" | "dot";
 
   /**
-   * Max iteration to train IVF kmeans.
+   * Max iteration to train IVF k-means.
    *
-   * When training an IVF PQ index we use kmeans to calculate the partitions.  This parameter
-   * controls how many iterations of kmeans to run.
+   * When training an IVF PQ index we use k-means to calculate the partitions.  This parameter
+   * controls how many iterations of k-means to run.
    *
    * Increasing this might improve the quality of the index but in most cases these extra
    * iterations have diminishing returns.
@@ -95,12 +95,12 @@ export interface IvfPqOptions {
   maxIterations?: number;
 
   /**
-   * The number of vectors, per partition, to sample when training IVF kmeans.
+   * The number of vectors, per partition, to sample when training IVF k-means.
    *
    * When an IVF PQ index is trained, we need to calculate partitions.  These are groups
-   * of vectors that are similar to each other.  To do this we use an algorithm called kmeans.
+   * of vectors that are similar to each other.  To do this we use an algorithm called k-means.
    *
-   * Running kmeans on a large dataset can be slow.  To speed this up we run kmeans on a
+   * Running k-means on a large dataset can be slow.  To speed this up we run k-means on a
    * random sample of the data.  This parameter controls the size of the sample.  The total
    * number of vectors used to train the index is `sample_rate * num_partitions`.
    *
@@ -169,30 +169,30 @@ export interface HnswPqOptions {
   numSubVectors?: number;
 
   /**
-   * Max iterations to train kmeans.
+   * Max iterations to train k-means.
    *
    * The default value is 50.
    *
-   * When training an IVF index we use kmeans to calculate the partitions.  This parameter
-   * controls how many iterations of kmeans to run.
+   * When training an IVF index we use k-means to calculate the partitions.  This parameter
+   * controls how many iterations of k-means to run.
    *
    * Increasing this might improve the quality of the index but in most cases the parameter
-   * is unused because kmeans will converge with fewer iterations.  The parameter is only
-   * used in cases where kmeans does not appear to converge.  In those cases it is unlikely
+   * is unused because k-means will converge with fewer iterations.  The parameter is only
+   * used in cases where k-means does not appear to converge.  In those cases it is unlikely
    * that setting this larger will lead to the index converging anyways.
    *
    */
   maxIterations?: number;
 
   /**
-   * The rate used to calculate the number of training vectors for kmeans.
+   * The rate used to calculate the number of training vectors for k-means.
    *
    * Default value is 256.
    *
    * When an IVF index is trained, we need to calculate partitions.  These are groups
-   * of vectors that are similar to each other.  To do this we use an algorithm called kmeans.
+   * of vectors that are similar to each other.  To do this we use an algorithm called k-means.
    *
-   * Running kmeans on a large dataset can be slow.  To speed this up we run kmeans on a
+   * Running k-means on a large dataset can be slow.  To speed this up we run k-means on a
    * random sample of the data.  This parameter controls the size of the sample.  The total
    * number of vectors used to train the index is `sample_rate * num_partitions`.
    *
@@ -268,30 +268,30 @@ export interface HnswSqOptions {
   numPartitions?: number;
 
   /**
-   * Max iterations to train kmeans.
+   * Max iterations to train k-means.
    *
    * The default value is 50.
    *
-   * When training an IVF index we use kmeans to calculate the partitions.  This parameter
-   * controls how many iterations of kmeans to run.
+   * When training an IVF index we use k-means to calculate the partitions.  This parameter
+   * controls how many iterations of k-means to run.
    *
    * Increasing this might improve the quality of the index but in most cases the parameter
-   * is unused because kmeans will converge with fewer iterations.  The parameter is only
-   * used in cases where kmeans does not appear to converge.  In those cases it is unlikely
+   * is unused because k-means will converge with fewer iterations.  The parameter is only
+   * used in cases where k-means does not appear to converge.  In those cases it is unlikely
    * that setting this larger will lead to the index converging anyways.
    *
    */
   maxIterations?: number;
 
   /**
-   * The rate used to calculate the number of training vectors for kmeans.
+   * The rate used to calculate the number of training vectors for k-means.
    *
    * Default value is 256.
    *
    * When an IVF index is trained, we need to calculate partitions.  These are groups
-   * of vectors that are similar to each other.  To do this we use an algorithm called kmeans.
+   * of vectors that are similar to each other.  To do this we use an algorithm called k-means.
    *
-   * Running kmeans on a large dataset can be slow.  To speed this up we run kmeans on a
+   * Running k-means on a large dataset can be slow.  To speed this up we run k-means on a
    * random sample of the data.  This parameter controls the size of the sample.  The total
    * number of vectors used to train the index is `sample_rate * num_partitions`.
    *
@@ -385,10 +385,10 @@ export interface IvfFlatOptions {
   distanceType?: "l2" | "cosine" | "dot" | "hamming";
 
   /**
-   * Max iteration to train IVF kmeans.
+   * Max iteration to train IVF k-means.
    *
-   * When training an IVF FLAT index we use kmeans to calculate the partitions.  This parameter
-   * controls how many iterations of kmeans to run.
+   * When training an IVF FLAT index we use k-means to calculate the partitions.  This parameter
+   * controls how many iterations of k-means to run.
    *
    * Increasing this might improve the quality of the index but in most cases these extra
    * iterations have diminishing returns.
@@ -398,12 +398,12 @@ export interface IvfFlatOptions {
   maxIterations?: number;
 
   /**
-   * The number of vectors, per partition, to sample when training IVF kmeans.
+   * The number of vectors, per partition, to sample when training IVF k-means.
    *
    * When an IVF FLAT index is trained, we need to calculate partitions.  These are groups
-   * of vectors that are similar to each other.  To do this we use an algorithm called kmeans.
+   * of vectors that are similar to each other.  To do this we use an algorithm called k-means.
    *
-   * Running kmeans on a large dataset can be slow.  To speed this up we run kmeans on a
+   * Running k-means on a large dataset can be slow.  To speed this up we run k-means on a
    * random sample of the data.  This parameter controls the size of the sample.  The total
    * number of vectors used to train the index is `sample_rate * num_partitions`.
    *
