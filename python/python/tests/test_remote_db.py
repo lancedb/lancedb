@@ -209,6 +209,25 @@ async def test_retry_error():
         assert cause.request_id == request_id_holder["request_id"]
         assert cause.status_code == 429
 
+def test_table_unimplemented_functions():
+    def handler(request):
+        if request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        with pytest.raises(NotImplementedError):
+            table.to_arrow()
+        with pytest.raises(NotImplementedError):
+            table.to_pandas()
+
+
 
 def test_table_add_in_threadpool():
     def handler(request):

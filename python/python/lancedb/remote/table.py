@@ -89,7 +89,7 @@ class RemoteTable(Table):
 
     def to_pandas(self):
         """to_pandas() is not yet supported on LanceDB cloud."""
-        return NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
+        raise NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
     def checkout(self, version: Union[int, str]):
         return LOOP.run(self._table.checkout(version))
