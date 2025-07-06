@@ -12,6 +12,7 @@ pip install lancedb
 
 Stable releases are created about every 2 weeks. For the latest features and bug fixes, you can install the preview release. These releases receive the same level of testing as stable releases, but are not guaranteed to be available for more than 6 months after they are released. Once your application is stable, we recommend switching to stable releases.
 
+
 ```bash
 pip install --pre --extra-index-url https://pypi.fury.io/lancedb/ lancedb
 ```
