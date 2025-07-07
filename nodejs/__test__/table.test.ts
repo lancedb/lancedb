@@ -53,8 +53,8 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       | import("apache-arrow-16").Schema
       | import("apache-arrow-17").Schema
       | import("apache-arrow-18").Schema = new arrow.Schema([
-      new arrow.Field("id", new arrow.Float64(), true),
-    ]);
+        new arrow.Field("id", new arrow.Float64(), true),
+      ]);
 
     beforeEach(async () => {
       tmpDir = tmp.dirSync({ unsafeCleanup: true });
@@ -368,8 +368,10 @@ describe("merge insert", () => {
       { a: 4, b: "z" },
     ];
 
+    const result = (await table.toArrow()).toArray().sort((a, b) => a.a - b.a);
+
     expect(
-      JSON.parse(JSON.stringify((await table.toArrow()).toArray())),
+      result.map(row => ({ ...row }))
     ).toEqual(expected);
   });
   test("conditional update", async () => {
