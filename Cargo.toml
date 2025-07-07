@@ -21,16 +21,14 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git", features = [
-    "dynamodb",
-] }
-lance-io = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
-lance-index = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
-lance-linalg = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
-lance-table = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
-lance-testing = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
-lance-datafusion = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
-lance-encoding = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance = { "version" = "=0.31.1", tag="v0.31.1-beta.2", git="https://github.com/lancedb/lance.git", features = ["dynamodb"] }
+lance-io = { "version" = "=0.31.1", tag="v0.31.1-beta.2", git="https://github.com/lancedb/lance.git" }
+lance-index = { "version" = "=0.31.1", tag="v0.31.1-beta.2", git="https://github.com/lancedb/lance.git" }
+lance-linalg = { "version" = "=0.31.1", tag="v0.31.1-beta.2", git="https://github.com/lancedb/lance.git" }
+lance-table = { "version" = "=0.31.1", tag="v0.31.1-beta.2", git="https://github.com/lancedb/lance.git" }
+lance-testing = { "version" = "=0.31.1", tag="v0.31.1-beta.2", git="https://github.com/lancedb/lance.git" }
+lance-datafusion = { "version" = "=0.31.1", tag="v0.31.1-beta.2", git="https://github.com/lancedb/lance.git" }
+lance-encoding = { "version" = "=0.31.1", tag="v0.31.1-beta.2", git="https://github.com/lancedb/lance.git" }
 # Note that this one does not include pyarrow
 arrow = { version = "55.1", optional = false }
 arrow-array = "55.1"

@@ -368,9 +368,9 @@ describe("merge insert", () => {
       { a: 4, b: "z" },
     ];
 
-    expect(
-      JSON.parse(JSON.stringify((await table.toArrow()).toArray())),
-    ).toEqual(expected);
+    const result = (await table.toArrow()).toArray().sort((a, b) => a.a - b.a);
+
+    expect(result.map((row) => ({ ...row }))).toEqual(expected);
   });
   test("conditional update", async () => {
     const newData = [
