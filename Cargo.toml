@@ -21,7 +21,9 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git", features = [
+    "dynamodb",
+] }
 lance-io = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
 lance-index = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
 lance-linalg = { "version" = "=0.31.1", "tag" = "v0.31.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
