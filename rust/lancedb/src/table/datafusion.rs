@@ -392,9 +392,18 @@ pub mod tests {
                 } else {
                     expected_line.trim()
                 };
-                assert_eq!(&actual_trimmed[..expected_trimmed.len()], expected_trimmed);
+                assert_eq!(
+                    &actual_trimmed[..expected_trimmed.len()],
+                    expected_trimmed,
+                    "\nactual:\n{physical_plan}\nexpected:\n{expected}"
+                );
             }
-            assert_eq!(lines_checked, expected.lines().count());
+            assert_eq!(
+                lines_checked,
+                expected.lines().count(),
+                "\nlines_checked:\n{lines_checked}\nexpected:\n{}",
+                expected.lines().count()
+            );
         }
     }
 
@@ -477,9 +486,9 @@ pub mod tests {
         TestFixture::check_plan(
             plan,
             "MetadataEraserExec
-             RepartitionExec:...
              CoalesceBatchesExec:...
              FilterExec: i@0 >= 5
+             RepartitionExec:...
              ProjectionExec:...
              LanceScan:...",
         )
