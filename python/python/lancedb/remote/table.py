@@ -187,7 +187,7 @@ class RemoteTable(Table):
         index_type="vector",
         wait_timeout: Optional[timedelta] = None,
         *,
-        num_bits: Optional[int] = None,
+        num_bits: int = 8,
     ):
         """Create an index on the table.
         Currently, the only parameters that matter are
