@@ -209,6 +209,7 @@ async def test_retry_error():
         assert cause.request_id == request_id_holder["request_id"]
         assert cause.status_code == 429
 
+
 def test_table_unimplemented_functions():
     def handler(request):
         if request.path == "/v1/table/test/create/?mode=create":
@@ -226,7 +227,6 @@ def test_table_unimplemented_functions():
             table.to_arrow()
         with pytest.raises(NotImplementedError):
             table.to_pandas()
-
 
 
 def test_table_add_in_threadpool():
