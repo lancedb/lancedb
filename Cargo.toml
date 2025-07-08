@@ -46,7 +46,7 @@ datafusion-execution = "48.0"
 datafusion-expr = "48.0"
 datafusion-physical-plan = "48.0"
 env_logger = "0.11"
-half = { "version" = "=2.6.0", default-features = false, features = [
+half = { "version" = "2.6.0", default-features = false, features = [
     "num-traits",
 ] }
 futures = "0"
