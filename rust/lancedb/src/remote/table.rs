@@ -57,6 +57,8 @@ use crate::{
 };
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
+const METRIC_TYPE_KEY: &str = "metric_type";
+const INDEX_TYPE_KEY: &str = "index_type";
 
 pub struct RemoteTags<'a, S: HttpSend = Sender> {
     inner: &'a RemoteTable<S>,
@@ -1001,16 +1003,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             // TODO: Should we pass the actual index parameters? SaaS does not
             // yet support them.
             Index::IvfFlat(index) => {
-                body["index_type"] = serde_json::Value::String("IVF_FLAT".to_string());
-                body["metric_type"] =
+                body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_FLAT".to_string());
+                body[METRIC_TYPE_KEY] =
                     serde_json::Value::String(index.distance_type.to_string().to_lowercase());
                 if let Some(num_partitions) = index.num_partitions {
                     body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
                 }
             }
             Index::IvfPq(index) => {
-                body["index_type"] = serde_json::Value::String("IVF_PQ".to_string());
-                body["metric_type"] =
+                body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_PQ".to_string());
+                body[METRIC_TYPE_KEY] =
                     serde_json::Value::String(index.distance_type.to_string().to_lowercase());
                 if let Some(num_partitions) = index.num_partitions {
                     body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
@@ -1020,24 +1022,24 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 }
             }
             Index::IvfHnswSq(index) => {
-                body["index_type"] = serde_json::Value::String("IVF_HNSW_SQ".to_string());
-                body["metric_type"] =
+                body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_HNSW_SQ".to_string());
+                body[METRIC_TYPE_KEY] =
                     serde_json::Value::String(index.distance_type.to_string().to_lowercase());
                 if let Some(num_partitions) = index.num_partitions {
                     body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
                 }
             }
             Index::BTree(_) => {
-                body["index_type"] = serde_json::Value::String("BTREE".to_string());
+                body[INDEX_TYPE_KEY] = serde_json::Value::String("BTREE".to_string());
             }
             Index::Bitmap(_) => {
-                body["index_type"] = serde_json::Value::String("BITMAP".to_string());
+                body[INDEX_TYPE_KEY] = serde_json::Value::String("BITMAP".to_string());
             }
             Index::LabelList(_) => {
-                body["index_type"] = serde_json::Value::String("LABEL_LIST".to_string());
+                body[INDEX_TYPE_KEY] = serde_json::Value::String("LABEL_LIST".to_string());
             }
             Index::FTS(fts) => {
-                body["index_type"] = serde_json::Value::String("FTS".to_string());
+                body[INDEX_TYPE_KEY] = serde_json::Value::String("FTS".to_string());
                 let params = serde_json::to_value(&fts).map_err(|e| Error::InvalidInput {
                     message: format!("failed to serialize FTS index params {:?}", e),
                 })?;
@@ -1053,11 +1055,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         message: format!("Column {} not found in schema", column),
                     })?;
                 if supported_vector_data_type(field.data_type()) {
-                    body["index_type"] = serde_json::Value::String("IVF_PQ".to_string());
-                    body["metric_type"] =
+                    body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_PQ".to_string());
+                    body[METRIC_TYPE_KEY] =
                         serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());
                 } else if supported_btree_data_type(field.data_type()) {
-                    body["index_type"] = serde_json::Value::String("BTREE".to_string());
+                    body[INDEX_TYPE_KEY] = serde_json::Value::String("BTREE".to_string());
                 } else {
                     return Err(Error::NotSupported {
                         message: format!(
@@ -2544,7 +2546,7 @@ mod tests {
                 let body: serde_json::Value = serde_json::from_slice(body).unwrap();
                 let mut expected_body = expected_body.clone();
                 expected_body["column"] = "a".into();
-                expected_body["index_type"] = index_type.into();
+                expected_body[INDEX_TYPE_KEY] = index_type.into();
 
                 assert_eq!(body, expected_body);
 
