@@ -15,7 +15,7 @@ description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
 license = { file = "LICENSE" }
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.13"
 keywords = [
     "data-format",
     "data-science",
@@ -66,10 +66,11 @@ dev = [
     "ruff",
     "pre-commit",
     "pyright",
-    'typing-extensions>=4.0.0; python_version < "3.11"',
+    'typing-extensions>=4.0.0; python_version < "3.13"',
 ]
-docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
+docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings-python"]
 clip = ["torch", "pillow", "open-clip-torch"]
+siglip = ["torch", "pillow", "transformers>=4.41.0"]
 embeddings = [
     "requests>=2.31.0",
     "openai>=1.6.1",
@@ -87,6 +88,9 @@ embeddings = [
     "botocore>=1.31.57",
     "ollama>=0.3.0",
     "ibm-watsonx-ai>=1.1.2",
+    "transformers>=4.41.0",
+    "sentencepiece",
+
 ]
 azure = ["adlfs>=2024.2.0"]
 
@@ -113,7 +117,7 @@ markers = [
 include = [
     "python/lancedb/index.py",
     "python/lancedb/rerankers/util.py",
-    "python/lancedb/rerankers/__init__.py",
+    "python/lancedb/rerankers/_init_.py",
     "python/lancedb/rerankers/voyageai.py",
     "python/lancedb/rerankers/jinaai.py",
     "python/lancedb/rerankers/openai.py",
@@ -122,15 +126,15 @@ include = [
     "python/lancedb/rerankers/answerdotai.py",
     "python/lancedb/rerankers/cohere.py",
     "python/lancedb/arrow.py",
-    "python/lancedb/__init__.py",
+    "python/lancedb/_init_.py",
     "python/lancedb/types.py",
-    "python/lancedb/integrations/__init__.py",
+    "python/lancedb/integrations/_init_.py",
     "python/lancedb/exceptions.py",
     "python/lancedb/background_loop.py",
     "python/lancedb/schema.py",
-    "python/lancedb/remote/__init__.py",
+    "python/lancedb/remote/_init_.py",
     "python/lancedb/remote/errors.py",
-    "python/lancedb/embeddings/__init__.py",
+    "python/lancedb/embeddings/_init_.py",
     "python/lancedb/_lancedb.pyi",
 ]
 exclude = ["python/tests/"]
