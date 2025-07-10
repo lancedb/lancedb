@@ -71,6 +71,45 @@ with merge insert, enable both `when_matched_update_all()` and
     If a column is nullable, it can be omitted from input data and it will be
     considered `null`. Columns can also be provided in any order.
 
+### Conditional Updates
+
+You can add a `where` clause to `when_matched_update_all()` to only update rows 
+that meet certain conditions. When using the `where` parameter, you must prefix 
+column names with either `source.` (for the new data) or `target.` (for the 
+existing data) to specify which table you're referencing.
+
+=== "Python"
+
+    ```python
+    # Only update rows where the target's status is 'active'
+    table.merge_insert("id")
+        .when_matched_update_all(where="target.status = 'active'")
+        .when_not_matched_insert_all()
+        .execute(new_data)
+
+    # Only update if the new price is higher than the existing price
+    table.merge_insert("product_id")
+        .when_matched_update_all(where="source.price > target.price")
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    ```
+
+=== "Typescript"
+
+    ```typescript
+    // Only update rows where the target's status is 'active'
+    await table.mergeInsert("id")
+        .whenMatchedUpdateAll({ where: "target.status = 'active'" })
+        .whenNotMatchedInsertAll()
+        .execute(newData);
+
+    // Only update if the new price is higher than the existing price
+    await table.mergeInsert("product_id")
+        .whenMatchedUpdateAll({ where: "source.price > target.price" })
+        .whenNotMatchedInsertAll()
+        .execute(newData);
+    ```
+
 ## Insert-if-not-exists
 
 To avoid inserting duplicate rows, you can use the insert-if-not-exists command.

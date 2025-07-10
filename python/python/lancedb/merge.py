@@ -45,6 +45,16 @@ class LanceMergeInsertBuilder(object):
         If there are multiple matches then the behavior is undefined.
         Currently this causes multiple copies of the row to be created
         but that behavior is subject to change.
+
+        Parameters
+        ----------
+        where : Optional[str], default None
+            A SQL filter expression to apply to matched rows. The filter must
+            specify whether you are referencing the source table (new data) or
+            the target table (existing data) by prefixing column names with
+            "source." or "target." respectively.
+            
+            Example: "target.status = 'active'" or "source.price > target.price"
         """
         self._when_matched_update_all = True
         self._when_matched_update_all_condition = where
