@@ -53,7 +53,7 @@ class LanceMergeInsertBuilder(object):
             specify whether you are referencing the source table (new data) or
             the target table (existing data) by prefixing column names with
             "source." or "target." respectively.
-            
+
             Example: "target.status = 'active'" or "source.price > target.price"
         """
         self._when_matched_update_all = True
