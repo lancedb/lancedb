@@ -1309,7 +1309,7 @@ export interface IvfPQIndexConfig {
   num_partitions?: number
 
   /**
-   * The max number of iterations for kmeans training.
+   * The max number of iterations for k-means training.
    */
   max_iters?: number
 

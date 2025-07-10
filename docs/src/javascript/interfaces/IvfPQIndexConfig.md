@@ -61,7 +61,7 @@ ___
 
 • `Optional` **max\_iters**: `number`
 
-The max number of iterations for kmeans training.
+The max number of iterations for k-means training.
 
 #### Defined in
 
