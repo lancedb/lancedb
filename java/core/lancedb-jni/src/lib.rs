@@ -45,6 +45,7 @@ macro_rules! ok_or_throw_with_return {
 mod connection;
 pub mod error;
 mod ffi;
+mod table;
 mod traits;
 
 pub use error::{Error, Result};

@@ -14,8 +14,15 @@
 package com.lancedb.lancedb;
 
 import io.questdb.jar.jni.JarJniLoader;
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.ipc.ArrowStreamWriter;
+import org.apache.arrow.vector.types.pojo.Schema;
 
+import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
+import java.io.IOException;
+import java.nio.channels.Channels;
 import java.util.List;
 import java.util.Optional;
 
@@ -84,6 +91,44 @@ public class Connection implements Closeable {
    * @return the table names
    */
   public native List<String> tableNames(Optional<String> startAfter, Optional<Integer> limit);
+
+  public Table createTable(String tableName, VectorSchemaRoot initialData) throws IOException {
+    try (ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ArrowStreamWriter writer =
+            new ArrowStreamWriter(initialData, null, Channels.newChannel(out))) {
+      writer.start();
+      writer.end();
+      return createTable(tableName, out.toByteArray());
+    }
+  }
+
+  private native Table createTable(String tableName, byte[] initialData);
+
+  /**
+   * Create a new table in the LanceDB database.
+   *
+   * @param tableName The name of the table to create.
+   * @param schema The schema of the table to create, which defines the structure of the data.
+   * @return A new {@link Table} instance representing the created table.
+   */
+  public Table createEmptyTable(String tableName, Schema schema) throws IOException {
+    try (VectorSchemaRoot root = VectorSchemaRoot.create(schema, new RootAllocator());
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ArrowStreamWriter writer = new ArrowStreamWriter(root, null, Channels.newChannel(out))) {
+      writer.start();
+      writer.end();
+      return createEmptyTable(tableName, out.toByteArray());
+    }
+  }
+
+  private native Table createEmptyTable(String tableName, byte[] schema);
+
+  /**
+   * Drop a table from the LanceDB database.
+   *
+   * @param tableName The name of the table to drop.
+   */
+  public native void dropTable(String tableName);
 
   /**
    * Closes this connection and releases any system resources associated with it. If the connection
