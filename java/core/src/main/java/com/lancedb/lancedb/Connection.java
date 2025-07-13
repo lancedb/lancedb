@@ -92,6 +92,14 @@ public class Connection implements Closeable {
    */
   public native List<String> tableNames(Optional<String> startAfter, Optional<Integer> limit);
 
+  /**
+   * Create a new table in the LanceDB database with initial data.
+   *
+   * @param tableName The name of the table to create.
+   * @param initialData The initial data to populate the table, represented as an Arrow
+   *     VectorSchemaRoot.
+   * @return A new {@link Table} instance representing the created table.
+   */
   public Table createTable(String tableName, VectorSchemaRoot initialData) throws IOException {
     try (ByteArrayOutputStream out = new ByteArrayOutputStream();
         ArrowStreamWriter writer =
