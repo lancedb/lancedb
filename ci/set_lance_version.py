@@ -47,10 +47,10 @@ def extract_features(line: str) -> list:
     """
     import re
 
-    match = re.search(r'"features"\s*=\s*\[(.*?)\]', line)
+    match = re.search(r'"features"\s*=\s*\[\s*(.*?)\s*\]', line, re.DOTALL)
     if match:
         features_str = match.group(1)
-        return [f.strip('"') for f in features_str.split(",")]
+        return [f.strip('"') for f in features_str.split(",") if len(f) > 0]
     return []
 
 
@@ -63,10 +63,24 @@ def update_cargo_toml(line_updater):
         lines = f.readlines()
 
     new_lines = []
+    lance_line = ""
+    is_parsing_lance_line = False
     for line in lines:
         if line.startswith("lance"):
             # Update the line using the provided function
-            new_lines.append(line_updater(line))
+            if line.strip().endswith("}"):
+                new_lines.append(line_updater(line))
+            else:
+                lance_line = line
+                is_parsing_lance_line = True
+        elif is_parsing_lance_line:
+            lance_line += line
+            if line.strip().endswith("}"):
+                new_lines.append(line_updater(lance_line))
+                lance_line = ""
+                is_parsing_lance_line = False
+            else:
+                print("doesn't end with }:", line)
         else:
             # Keep the line unchanged
             new_lines.append(line)
