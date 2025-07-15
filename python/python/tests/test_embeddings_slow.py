@@ -16,6 +16,8 @@ import requests
 import time
 from collections import defaultdict
 from sklearn.metrics import average_precision_score
+
+from python.python.tests.utils import compute_average_precision, compute_recall_at_k
 # These are integration tests for embedding functions.
 # They are slow because they require downloading models
 # or connection to external api
@@ -644,7 +646,6 @@ def test_colpali(tmp_path):
 
 
 @pytest.mark.slow
-@pytest.mark.slow
 def test_siglip(tmp_path):
     import requests
     from PIL import Image
@@ -721,16 +722,6 @@ def test_siglip(tmp_path):
         arrow_table["vec_from_bytes"].combine_chunks().values.to_numpy(),
     )
 
-
-
-def compute_recall_at_k(retrieved_labels, true_label, k):
-    top_k = retrieved_labels[:k]
-    return 1 if true_label in top_k else 0
-
-def compute_average_precision(retrieved_labels, true_label):
-    y_true = [1 if lbl == true_label else 0 for lbl in retrieved_labels]
-    y_score = [1.0 / (i + 1) for i in range(len(y_true))]  # Higher rank = higher score
-    return average_precision_score(y_true, y_score)
 
 @pytest.mark.slow
 def test_siglip_vs_openclip_vs_imagebind_benchmark_full(tmp_path):
