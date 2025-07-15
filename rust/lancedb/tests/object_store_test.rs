@@ -281,6 +281,46 @@ async fn test_encryption() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_table_storage_options_override() -> Result<()> {
+    // Test that table-level storage options override connection-level options
+    let bucket = S3Bucket::new("test-override").await;
+    let key1 = KMSKey::new().await;
+    let key2 = KMSKey::new().await;
+
+    let uri = format!("s3://{}", bucket.0);
+
+    // Create connection with key1 encryption
+    let db = lancedb::connect(&uri)
+        .storage_options(CONFIG.iter().cloned())
+        .storage_option("aws_server_side_encryption", "aws:kms")
+        .storage_option("aws_sse_kms_key_id", &key1.0)
+        .execute()
+        .await?;
+
+    // Create table overriding with key2 encryption
+    let data = test_data();
+    let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
+    let _table = db
+        .create_table("test_override", data)
+        .storage_option("aws_sse_kms_key_id", &key2.0)
+        .execute()
+        .await?;
+
+    // Verify objects are encrypted with key2, not key1
+    validate_objects_encrypted(&bucket.0, "test_override", &key2.0).await;
+
+    // Also test that a table created without override uses connection settings
+    let data = test_data();
+    let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
+    let _table2 = db.create_table("test_inherit", data).execute().await?;
+
+    // Verify this table uses key1 from connection
+    validate_objects_encrypted(&bucket.0, "test_inherit", &key1.0).await;
+
+    Ok(())
+}
+
 struct DynamoDBCommitTable(String);
 
 impl DynamoDBCommitTable {
