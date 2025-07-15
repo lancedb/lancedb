@@ -235,7 +235,8 @@ class Reranker(ABC):
     def _merge_and_keep_scores(self, vector_results: pa.Table, fts_results: pa.Table):
         """
         Merge the results from the vector and FTS search and keep the scores.
-        This op is slower than just keeping relevance score but can be useful for debugging.
+        This op is slower than just keeping relevance score but can be useful
+        for debugging.
         """
         # add nulls to fts results for _distance
         if "_distance" not in fts_results.column_names:
