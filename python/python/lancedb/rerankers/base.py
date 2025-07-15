@@ -232,6 +232,42 @@ class Reranker(ABC):
 
         return deduped_table
 
+    def _merge_and_keep_scores(self, vector_results: pa.Table, fts_results: pa.Table):
+        """
+        Merge the results from the vector and FTS search and keep the scores.
+        This op is slower than just keeping relevance score but can be useful for debugging.
+        """
+        # add nulls to fts results for _distance
+        if "_distance" not in fts_results.column_names:
+            fts_results = fts_results.append_column(
+                "_distance",
+                pa.array([None] * len(fts_results), type=pa.float32()),
+            )
+        # add nulls to vector results for _score
+        if "_score" not in vector_results.column_names:
+            vector_results = vector_results.append_column(
+                "_score",
+                pa.array([None] * len(vector_results), type=pa.float32()),
+            )
+
+        # combine them and fill the scores
+        vector_results_dict = {
+            row["_rowid"]: row for row in vector_results.to_pylist()
+        }
+        fts_results_dict = {
+            row["_rowid"]: row for row in fts_results.to_pylist()
+        }
+
+        # merge them into vector_results
+        for key, value in fts_results_dict.items():
+            if key in vector_results_dict:
+                vector_results_dict[key]["_score"] = value["_score"]
+            else:
+                vector_results_dict[key] = value
+
+        combined = pa.Table.from_pylist(list(vector_results_dict.values()))
+        return combined
+
     def _keep_relevance_score(self, combined_results: pa.Table):
         if self.score == "relevance":
             if "_score" in combined_results.column_names:

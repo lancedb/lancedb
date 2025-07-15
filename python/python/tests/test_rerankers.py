@@ -499,3 +499,19 @@ def test_empty_result_reranker():
             .rerank(reranker)
             .to_arrow()
         )
+
+
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_cross_encoder_reranker_return_all(tmp_path, use_tantivy):
+    pytest.importorskip("sentence_transformers")
+    reranker = CrossEncoderReranker(return_score="all")
+    table, schema = get_test_table(tmp_path, use_tantivy)
+    query = "single player experience"
+    result = (
+        table.search(query, query_type="hybrid", vector_column_name="vector")
+        .rerank(reranker=reranker)
+        .to_arrow()
+    )
+    assert "_relevance_score" in result.column_names
+    assert "_score" in result.column_names
+    assert "_distance" in result.column_names
