@@ -70,4 +70,4 @@ base64ct = "=1.6.0"
 crunchy = "=0.2.2"
 # Workaround for: https://github.com/Lokathor/bytemuck/issues/306
 bytemuck_derive = ">=1.8.1, <1.9.0"
-utoipa = { version = "5.4.0", features = ["axum_extras", "chrono", "uuid"] }
+utoipa = { version = "5.4.0" }
