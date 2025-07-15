@@ -98,9 +98,7 @@ class JinaReranker(Reranker):
         fts_results: pa.Table,
     ):
         if self.score == "all":
-            combined_results = self._merge_and_keep_scores(
-                vector_results, fts_results
-            )
+            combined_results = self._merge_and_keep_scores(vector_results, fts_results)
         else:
             combined_results = self.merge_results(vector_results, fts_results)
         combined_results = self._rerank(combined_results, query)

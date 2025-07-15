@@ -251,12 +251,8 @@ class Reranker(ABC):
             )
 
         # combine them and fill the scores
-        vector_results_dict = {
-            row["_rowid"]: row for row in vector_results.to_pylist()
-        }
-        fts_results_dict = {
-            row["_rowid"]: row for row in fts_results.to_pylist()
-        }
+        vector_results_dict = {row["_rowid"]: row for row in vector_results.to_pylist()}
+        fts_results_dict = {row["_rowid"]: row for row in fts_results.to_pylist()}
 
         # merge them into vector_results
         for key, value in fts_results_dict.items():
