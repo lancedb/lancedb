@@ -158,6 +158,9 @@ class RemoteTable(Table):
         stem: bool = True,
         remove_stop_words: bool = True,
         ascii_folding: bool = True,
+        ngram_min_length: int = 3,
+        ngram_max_length: int = 3,
+        prefix_only: bool = False,
     ):
         config = FTS(
             with_position=with_position,
@@ -168,6 +171,9 @@ class RemoteTable(Table):
             stem=stem,
             remove_stop_words=remove_stop_words,
             ascii_folding=ascii_folding,
+            ngram_min_length=ngram_min_length,
+            ngram_max_length=ngram_max_length,
+            prefix_only=prefix_only,
         )
         LOOP.run(
             self._table.create_index(

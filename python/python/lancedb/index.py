@@ -137,6 +137,9 @@ class FTS:
     stem: bool = True
     remove_stop_words: bool = True
     ascii_folding: bool = True
+    ngram_min_length: int = 3
+    ngram_max_length: int = 3
+    prefix_only: bool = False
 
 
 @dataclass
