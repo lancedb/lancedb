@@ -25,4 +25,4 @@ IndexType = Literal[
 ]
 
 # Tokenizer literals
-BaseTokenizerType = Literal["simple", "raw", "whitespace"]
+BaseTokenizerType = Literal["simple", "raw", "whitespace", "ngram"]

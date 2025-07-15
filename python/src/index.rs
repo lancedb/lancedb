@@ -47,7 +47,10 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .max_token_length(params.max_token_length)
                     .remove_stop_words(params.remove_stop_words)
                     .stem(params.stem)
-                    .ascii_folding(params.ascii_folding);
+                    .ascii_folding(params.ascii_folding)
+                    .ngram_min_length(params.ngram_min_length)
+                    .ngram_max_length(params.ngram_max_length)
+                    .ngram_prefix_only(params.prefix_only);
                 Ok(LanceDbIndex::FTS(inner_opts))
             },
             "IvfFlat" => {
@@ -130,6 +133,9 @@ struct FtsParams {
     stem: bool,
     remove_stop_words: bool,
     ascii_folding: bool,
+    ngram_min_length: u32,
+    ngram_max_length: u32,
+    prefix_only: bool,
 }
 
 #[derive(FromPyObject)]

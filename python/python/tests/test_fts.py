@@ -669,3 +669,46 @@ def test_fts_on_list(mem_db: DBConnection):
 
     res = table.search(PhraseQuery("lance database", "text")).limit(5).to_list()
     assert len(res) == 2
+
+
+def test_fts_ngram(mem_db: DBConnection):
+    data = pa.table({"text": ["hello world", "lance database", "lance is cool"]})
+    table = mem_db.create_table("test", data=data)
+    table.create_fts_index("text", use_tantivy=False, base_tokenizer="ngram")
+
+    results = table.search("lan", query_type="fts").limit(10).to_list()
+    assert len(results) == 2
+    assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
+
+    results = (
+        table.search("nce", query_type="fts").limit(10).to_list()
+    )  # spellchecker:disable-line
+    assert len(results) == 2
+    assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
+
+    # the default min_ngram_length is 3, so "la" should not match
+    results = table.search("la", query_type="fts").limit(10).to_list()
+    assert len(results) == 0
+
+    # test setting min_ngram_length and prefix_only
+    table.create_fts_index(
+        "text",
+        use_tantivy=False,
+        base_tokenizer="ngram",
+        replace=True,
+        ngram_min_length=2,
+        prefix_only=True,
+    )
+
+    results = table.search("lan", query_type="fts").limit(10).to_list()
+    assert len(results) == 2
+    assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
+
+    results = (
+        table.search("nce", query_type="fts").limit(10).to_list()
+    )  # spellchecker:disable-line
+    assert len(results) == 0
+
+    results = table.search("la", query_type="fts").limit(10).to_list()
+    assert len(results) == 2
+    assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
