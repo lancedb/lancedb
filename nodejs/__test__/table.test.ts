@@ -1706,6 +1706,60 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(mustNotResults.length).toBe(1);
     });
 
+    test("full text search ngram", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "lance database", vector: [0.4, 0.5, 0.6] },
+        { text: "lance is cool", vector: [0.7, 0.8, 0.9] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ baseTokenizer: "ngram" }),
+      });
+
+      const results = await table.search("lan").toArray();
+      expect(results.length).toBe(2);
+      const resultSet = new Set(results.map((r) => r.text));
+      expect(resultSet.has("lance database")).toBe(true);
+      expect(resultSet.has("lance is cool")).toBe(true);
+
+      const results2 = await table.search("nce").toArray(); // spellchecker:disable-line
+      expect(results2.length).toBe(2);
+      const resultSet2 = new Set(results2.map((r) => r.text));
+      expect(resultSet2.has("lance database")).toBe(true);
+      expect(resultSet2.has("lance is cool")).toBe(true);
+
+      // the default min_ngram_length is 3, so "la" should not match
+      const results3 = await table.search("la").toArray();
+      expect(results3.length).toBe(0);
+
+      // test setting min_ngram_length and prefix_only
+      await table.createIndex("text", {
+        config: Index.fts({
+          baseTokenizer: "ngram",
+          ngramMinLength: 2,
+          prefixOnly: true,
+        }),
+        replace: true,
+      });
+
+      const results4 = await table.search("lan").toArray();
+      expect(results4.length).toBe(2);
+      const resultSet4 = new Set(results4.map((r) => r.text));
+      expect(resultSet4.has("lance database")).toBe(true);
+      expect(resultSet4.has("lance is cool")).toBe(true);
+
+      const results5 = await table.search("nce").toArray(); // spellchecker:disable-line
+      expect(results5.length).toBe(0);
+
+      const results6 = await table.search("la").toArray();
+      expect(results6.length).toBe(2);
+      const resultSet6 = new Set(results6.map((r) => r.text));
+      expect(resultSet6.has("lance database")).toBe(true);
+      expect(resultSet6.has("lance is cool")).toBe(true);
+    });
+
     test.each([
       [0.4, 0.5, 0.599], // number[]
       Float32Array.of(0.4, 0.5, 0.599), // Float32Array
