@@ -676,8 +676,7 @@ impl Database for ListingDatabase {
             }
             default_params
         });
-
-        read_params.session = Some(self.session.clone());
+        read_params.session(self.session.clone());
 
         let native_table = Arc::new(
             NativeTable::open_with_params(
