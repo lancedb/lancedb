@@ -98,6 +98,30 @@ public class Table implements Closeable {
         return new VectorQueryBuilder(this, vector);
     }
 
+    /**
+     * Create a merge insert builder for this table.
+     * 
+     * Merge insert操作允许你根据指定的键列来合并新数据到现有表中。
+     * 当新数据中的行与现有表中的行匹配时，可以选择更新现有行；
+     * 当新数据中的行在现有表中不存在时，可以选择插入新行；
+     * 当现有表中的行在新数据中不存在时，可以选择删除这些行。
+     * 
+     * @param onColumns 用于匹配的列名数组
+     * @return MergeBuilder实例
+     */
+    public MergeBuilder mergeInsert(String... onColumns) {
+        return new MergeBuilder(this, onColumns);
+    }
+
+    /**
+     * 获取表的本地句柄，供内部使用
+     * 
+     * @return 表的本地句柄
+     */
+    long getNativeHandle() {
+        return nativeTableHandle;
+    }
+
     // Native method declarations
     private native Schema getSchemaNative();
     private native void addNative(List<Map<String, Object>> data);

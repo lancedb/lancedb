@@ -1,5 +1,6 @@
 use jni::objects::{JObject, JValue};  
 use jni::JNIEnv;  
+use jni::sys::jlong;
 use crate::{BlockingConnection, BlockingTable, NATIVE_CONNECTION, NATIVE_TABLE};  
   
 pub trait IntoJava<'local> {  
@@ -34,7 +35,7 @@ impl<'local> IntoJava<'local> for BlockingTable {
             .expect("Failed to allocate Table object");  
           
         // Store the native handle  
-        let boxed_table = Box::new(self);  
+        let boxed_table = Box::new(self.clone());  
         let handle = Box::into_raw(boxed_table) as jlong;  
           
         env.set_field(&table_obj, NATIVE_TABLE, "J", JValue::Long(handle))  

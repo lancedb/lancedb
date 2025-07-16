@@ -33,6 +33,7 @@ macro_rules! ok_or_throw_without_return {
   
 mod connection;  
 mod table;  
+mod merge;
 pub mod error;  
 mod ffi;  
 mod traits;  
@@ -40,6 +41,7 @@ mod traits;
 pub use error::{Error, Result};  
 pub use connection::BlockingConnection;  
 pub use table::BlockingTable;  
+pub use merge::BlockingMergeBuilder;  
   
 lazy_static! {  
     static ref RT: tokio::runtime::Runtime = tokio::runtime::Builder::new_multi_thread()  

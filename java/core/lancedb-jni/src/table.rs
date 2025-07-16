@@ -2,7 +2,8 @@ use jni::objects::{JObject, JString, JValue, JList, JMap};
 use jni::sys::{jobject, jlong};
 use jni::JNIEnv;
 use std::collections::HashMap;
-use crate::{ok_or_throw, RT, BlockingTable, NATIVE_TABLE};
+use crate::{ok_or_throw, RT, NATIVE_TABLE, Error};
+use crate::connection::BlockingTable;
 
 #[derive(Clone)]
 pub struct BlockingTable {
@@ -10,7 +11,7 @@ pub struct BlockingTable {
 }
 
 impl BlockingTable {
-    pub fn add_data(&self, data: Vec<HashMap<String, serde_json::Value>>) -> Result<()> {
+    pub fn add_data(&self, data: Vec<HashMap<String, serde_json::Value>>) -> Result<(), Error> {
         let records: Vec<_> = data.into_iter()
             .map(|map| serde_json::Value::Object(map.into_iter().collect()))
             .collect();
@@ -22,16 +23,16 @@ impl BlockingTable {
         Ok(())
     }
 
-    pub fn delete_rows(&self, condition: &str) -> Result<u64> {
+    pub fn delete_rows(&self, condition: &str) -> Result<u64, Error> {
         let result = RT.block_on(self.inner.delete(condition).execute())?;
         Ok(result)
     }
 
-    pub fn count_rows(&self) -> Result<u64> {
+    pub fn count_rows(&self) -> Result<u64, Error> {
         RT.block_on(self.inner.count_rows(None))
     }
 
-    pub fn get_schema(&self) -> Result<arrow::datatypes::Schema> {
+    pub fn get_schema(&self) -> Result<arrow::datatypes::Schema, Error> {
         Ok(self.inner.schema().clone())
     }
 }
@@ -43,7 +44,7 @@ pub extern "system" fn Java_com_lancedb_lancedb_Table_addNative<'local>(
     data_obj: JObject, // List<Map<String, Object>>
 ) {
     let table: &BlockingTable = unsafe {
-        env.get_rust_field(j_table, NATIVE_TABLE)
+        &*env.get_rust_field(j_table, NATIVE_TABLE)
             .expect("Failed to get native Table handle")
     };
 
@@ -58,7 +59,7 @@ pub extern "system" fn Java_com_lancedb_lancedb_Table_deleteNative<'local>(
     condition_obj: JString,
 ) -> jlong {
     let table: &BlockingTable = unsafe {
-        env.get_rust_field(j_table, NATIVE_TABLE)
+        &*env.get_rust_field(j_table, NATIVE_TABLE)
             .expect("Failed to get native Table handle")
     };
 
@@ -73,7 +74,7 @@ pub extern "system" fn Java_com_lancedb_lancedb_Table_countRowsNative<'local>(
     j_table: JObject,
 ) -> jlong {
     let table: &BlockingTable = unsafe {
-        env.get_rust_field(j_table, NATIVE_TABLE)
+        &*env.get_rust_field(j_table, NATIVE_TABLE)
             .expect("Failed to get native Table handle")
     };
 
@@ -87,7 +88,7 @@ pub extern "system" fn Java_com_lancedb_lancedb_Table_getSchemaNative<'local>(
     j_table: JObject,
 ) -> JObject<'local> {
     let table: &BlockingTable = unsafe {
-        env.get_rust_field(j_table, NATIVE_TABLE)
+        &*env.get_rust_field(j_table, NATIVE_TABLE)
             .expect("Failed to get native Table handle")
     };
 

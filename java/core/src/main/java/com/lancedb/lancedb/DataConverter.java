@@ -94,8 +94,7 @@ public class DataConverter {
             return Field.nullable(name, new ArrowType.Bool());
         } else if (value instanceof List) {
             // Assume float vector for now
-            Field elementField = Field.nullable("item", new ArrowType.FloatingPoint(FloatingPointPrecision.SINGLE));
-            return Field.nullable(name, new ArrowType.List(), elementField);
+            return Field.nullable(name, new ArrowType.List());
         } else {
             throw new IllegalArgumentException("Unsupported data type: " + value.getClass());
         }
@@ -125,7 +124,7 @@ public class DataConverter {
             List<Float> list = (List<Float>) value;
             listVector.startNewValue(index);
             for (int i = 0; i < list.size(); i++) {
-                ((Float4Vector) listVector.getDataVector()).setSafe(listVector.getElementCount() + i, list.get(i));
+                ((Float4Vector) listVector.getDataVector()).setSafe(listVector.getOffsetBuffer().getInt(index * 4) + i, list.get(i));
             }
             listVector.endValue(index, list.size());
         }
