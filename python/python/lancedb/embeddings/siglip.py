@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""
-SigLIP Embedding support for LanceDB.
-
-Uses google/siglip-base-patch16-224 for text/image embeddings.
-"""
 
 import io
 import os
