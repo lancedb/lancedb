@@ -104,7 +104,7 @@ class SigLipEmbeddings(EmbeddingFunction):
             image_features = self._model.get_image_features(**inputs)
 
             if self.normalize:
-               image_features = image_features / image_features.norm(
+                image_features = image_features / image_features.norm(
                 dim=-1,
                 keepdim=True
             )
