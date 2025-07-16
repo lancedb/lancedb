@@ -73,7 +73,7 @@ impl JNIEnvExt for JNIEnv<'_> {
         while let Some(elem) = iter.next(self)? {
             let jstr = JString::from(elem);
             let val = self.get_string(&jstr)?;
-            results.push(val.to_str()?.to_string())
+            results.push(val.to_str().map_err(|e| Error::Arrow(format!("UTF-8 error: {}", e)))?.to_string())
         }
         Ok(results)
     }
@@ -95,7 +95,7 @@ impl JNIEnvExt for JNIEnv<'_> {
             let java_string_obj = java_obj_gen.l()?;
             let jstr = JString::from(java_string_obj);
             let val = env.get_string(&jstr)?;
-            Ok(val.to_str()?.to_string())
+            Ok(val.to_str().map_err(|e| Error::Arrow(format!("UTF-8 error: {}", e)))?.to_string())
         })
     }
 

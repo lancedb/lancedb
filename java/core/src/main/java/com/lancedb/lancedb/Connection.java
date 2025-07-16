@@ -1,94 +1,113 @@
-/*
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package com.lancedb.lancedb;
 
 import io.questdb.jar.jni.JarJniLoader;
+import org.apache.arrow.vector.VectorSchemaRoot;
 
 import java.io.Closeable;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
-/** Represents LanceDB database. */
+/** Represents LanceDB database connection with enhanced functionality. */
 public class Connection implements Closeable {
   static {
     JarJniLoader.loadLib(Connection.class, "/nativelib", "lancedb_jni");
   }
 
   private long nativeConnectionHandle;
+  private String uri;
 
-  /** Connect to a LanceDB instance. */
-  public static native Connection connect(String uri);
+  /** Connect to a LanceDB instance with default options. */
+  public static Connection connect(String uri) {
+    return connect(uri, new ConnectionOptions());
+  }
+
+  /** Connect to a LanceDB instance with custom options. */
+  public static Connection connect(String uri, ConnectionOptions options) {
+    return connectNative(uri, options);
+  }
+
+  /** Native method to create connection with options */
+  private static native Connection connectNative(String uri, ConnectionOptions options);
 
   /**
-   * Get the names of all tables in the database. The names are sorted in ascending order.
+   * Create a table with data from a list of maps.
    *
-   * @return the table names
+   * @param name The table name
+   * @param data List of maps representing records
+   * @return The created table
    */
+  public Table createTable(String name, List<Map<String, Object>> data) {
+    return createTable(name, data, CreateTableMode.CREATE);
+  }
+
+  /**
+   * Create a table with specified mode.
+   *
+   * @param name The table name
+   * @param data List of maps representing records
+   * @param mode Creation mode (CREATE, OVERWRITE, EXIST_OK)
+   * @return The created table
+   */
+  public Table createTable(String name, List<Map<String, Object>> data, CreateTableMode mode) {
+    return createTableNative(name, data, mode.toString());
+  }
+
+  /**
+   * Create an empty table with Arrow schema.
+   *
+   * @param name The table name
+   * @param schema Arrow schema
+   * @return The created table
+   */
+  public Table createEmptyTable(String name, org.apache.arrow.vector.types.pojo.Schema schema) {
+    return createEmptyTableNative(name, schema);
+  }
+
+  /**
+   * Open an existing table.
+   *
+   * @param name The table name
+   * @return The opened table
+   */
+  public Table openTable(String name) {
+    return openTableNative(name);
+  }
+
+  /**
+   * Drop a table.
+   *
+   * @param name The table name to drop
+   */
+  public void dropTable(String name) {
+    dropTableNative(name);
+  }
+
+  // Native method declarations
+  private native Table createTableNative(String name, List<Map<String, Object>> data, String mode);
+  private native Table createEmptyTableNative(String name, org.apache.arrow.vector.types.pojo.Schema schema);
+  private native Table openTableNative(String name);
+  private native void dropTableNative(String name);
+
+  // Existing methods from the original Connection class
   public List<String> tableNames() {
     return tableNames(Optional.empty(), Optional.empty());
   }
 
-  /**
-   * Get the names of filtered tables in the database. The names are sorted in ascending order.
-   *
-   * @param limit The number of results to return.
-   * @return the table names
-   */
   public List<String> tableNames(int limit) {
     return tableNames(Optional.empty(), Optional.of(limit));
   }
 
-  /**
-   * Get the names of filtered tables in the database. The names are sorted in ascending order.
-   *
-   * @param startAfter If present, only return names that come lexicographically after the supplied
-   *     value. This can be combined with limit to implement pagination by setting this to the last
-   *     table name from the previous page.
-   * @return the table names
-   */
   public List<String> tableNames(String startAfter) {
     return tableNames(Optional.of(startAfter), Optional.empty());
   }
 
-  /**
-   * Get the names of filtered tables in the database. The names are sorted in ascending order.
-   *
-   * @param startAfter If present, only return names that come lexicographically after the supplied
-   *     value. This can be combined with limit to implement pagination by setting this to the last
-   *     table name from the previous page.
-   * @param limit The number of results to return.
-   * @return the table names
-   */
   public List<String> tableNames(String startAfter, int limit) {
     return tableNames(Optional.of(startAfter), Optional.of(limit));
   }
 
-  /**
-   * Get the names of filtered tables in the database. The names are sorted in ascending order.
-   *
-   * @param startAfter If present, only return names that come lexicographically after the supplied
-   *     value. This can be combined with limit to implement pagination by setting this to the last
-   *     table name from the previous page.
-   * @param limit The number of results to return.
-   * @return the table names
-   */
   public native List<String> tableNames(Optional<String> startAfter, Optional<Integer> limit);
 
-  /**
-   * Closes this connection and releases any system resources associated with it. If the connection
-   * is already closed, then invoking this method has no effect.
-   */
   @Override
   public void close() {
     if (nativeConnectionHandle != 0) {
@@ -97,12 +116,10 @@ public class Connection implements Closeable {
     }
   }
 
-  /**
-   * Native method to release the Lance connection resources associated with the given handle.
-   *
-   * @param handle The native handle to the connection resource.
-   */
   private native void releaseNativeConnection(long handle);
 
   private Connection() {}
+
+  // Getters
+  public String getUri() { return uri; }
 }
