@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
+use futures::TryFutureExt;
 use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, StatusCode};
@@ -38,7 +39,7 @@ use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
@@ -249,9 +250,15 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
-    fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
+    fn reader_as_body(
+        data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<(reqwest::Body, mpsc::Receiver<Error>)> {
         // TODO: Once Phalanx supports compression, we should use it here.
         let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
+
+        // Create a channel to capture stream errors. We need to pass a tx to each
+        // batch, so we use mpsc even if it is just going to be sent once.
+        let (error_tx, error_rx) = mpsc::channel::<Error>(1);
 
         //  Mutex is just here to make it sync. We shouldn't have any contention.
         let mut data = Mutex::new(data);
@@ -261,7 +268,16 @@ impl<S: HttpSend> RemoteTable<S> {
                 let buffer = std::mem::take(writer.get_mut());
                 Some(Ok(buffer))
             }
-            Some(Err(e)) => Some(Err(e)),
+            Some(Err(e)) => {
+                // Send the actual error through the channel. Ignore the error;
+                // if the receiver is dropped, we don't care if there is a failure.
+                let _ = error_tx.send(e.into());
+                // Return a generic error for the stream
+                Some(Err(Error::Runtime {
+                    message: "stream error sent by user: unexpected internal error encountered"
+                        .to_string(),
+                }))
+            }
             None => {
                 writer.finish().ok()?;
                 let buffer = std::mem::take(writer.get_mut());
@@ -269,7 +285,7 @@ impl<S: HttpSend> RemoteTable<S> {
             }
         });
         let body_stream = futures::stream::iter(body_iter);
-        Ok(reqwest::Body::wrap_stream(body_stream))
+        Ok((reqwest::Body::wrap_stream(body_stream), error_rx))
     }
 
     /// Buffer the reader into memory
@@ -309,22 +325,29 @@ impl<S: HttpSend> RemoteTable<S> {
         with_retry: bool,
     ) -> Result<(String, Response)> {
         if !with_retry || self.client.retry_config.retries == 0 {
-            let body = Self::reader_as_body(data)?;
-            return self.client.send(req.body(body)).await;
+            let (body, mut error_rx) = Self::reader_as_body(data)?;
+            return self.client.send(req.body(body)).await.map_err(|e| {
+                if let Ok(error) = error_rx.try_recv() {
+                    error
+                } else {
+                    e.into()
+                }
+            });
+        } else {
+            // to support retries, buffer into memory and clone the batches on each retry
+            let (schema, batches) = Self::buffer_reader(&mut *data).await?;
+            let make_body = Box::new(move || {
+                let reader = Self::make_reader(schema.clone(), batches.clone());
+                // TODO: how to handle this one?
+                Self::reader_as_body(Box::new(reader))
+            });
+            let res = self
+                .client
+                .send_with_retry(req, Some(make_body), false)
+                .await?;
+
+            Ok(res)
         }
-
-        // to support retries, buffer into memory and clone the batches on each retry
-        let (schema, batches) = Self::buffer_reader(&mut *data).await?;
-        let make_body = Box::new(move || {
-            let reader = Self::make_reader(schema.clone(), batches.clone());
-            Self::reader_as_body(Box::new(reader))
-        });
-        let res = self
-            .client
-            .send_with_retry(req, Some(make_body), false)
-            .await?;
-
-        Ok(res)
     }
 
     async fn check_table_response(
@@ -3069,5 +3092,64 @@ mod tests {
             http::Response::builder().status(status).body(body).unwrap()
         });
         table
+    }
+
+    #[tokio::test]
+    async fn test_reader_as_body_error_channel() {
+        // Create a RecordBatch with schema
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        // Create a failing reader that will return an error on the second next() call
+        struct FailingReader {
+            schema: SchemaRef,
+            call_count: usize,
+            batch: RecordBatch,
+        }
+
+        impl RecordBatchReader for FailingReader {
+            fn schema(&self) -> SchemaRef {
+                self.schema.clone()
+            }
+        }
+
+        impl Iterator for FailingReader {
+            type Item = Result<RecordBatch, arrow_schema::ArrowError>;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                self.call_count += 1;
+                match self.call_count {
+                    1 => Some(Ok(self.batch.clone())),
+                    2 => Some(Err(arrow_schema::ArrowError::InvalidArgumentError(
+                        "Test error for HTTP/2 masking".to_string(),
+                    ))),
+                    _ => None,
+                }
+            }
+        }
+
+        let failing_reader = FailingReader {
+            schema: schema.clone(),
+            call_count: 0,
+            batch,
+        };
+
+        // Test that the error channel captures the actual error
+        let (body, mut error_rx) =
+            RemoteTable::<Sender>::reader_as_body(Box::new(failing_reader)).unwrap();
+
+        // Consume the body to trigger the error
+        let body_bytes = collect_body(body).await;
+
+        // The body should contain the first successful batch
+        assert!(!body_bytes.is_empty());
+
+        // Check that we received the actual error through the channel
+        let error = error_rx.recv().await.unwrap();
+        assert!(error.to_string().contains("Test error for HTTP/2 masking"));
     }
 }
