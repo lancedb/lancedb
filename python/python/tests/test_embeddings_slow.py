@@ -4,7 +4,6 @@
 import importlib
 import io
 import os
-from PIL import Image
 import lancedb
 import numpy as np
 import pandas as pd
@@ -12,7 +11,6 @@ import pyarrow as pa
 import pytest
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector, MultiVector
-import requests
 import time
 from collections import defaultdict
 from tests.utils import compute_average_precision, compute_recall_at_k
@@ -528,6 +526,8 @@ def test_voyageai_embedding_function():
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
 def test_voyageai_multimodal_embedding_function():
+    import requests
+
     voyageai = (
         get_registry().get("voyageai").create(name="voyage-multimodal-3", max_retries=0)
     )
@@ -731,6 +731,9 @@ def test_siglip_vs_openclip_vs_imagebind_benchmark(tmp_path):
     - mAP
     - Embedding and retrieval latency
     """
+    import requests
+    from PIL import Image
+
     registry = get_registry()
     db = lancedb.connect(tmp_path)
 
