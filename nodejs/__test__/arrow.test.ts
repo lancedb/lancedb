@@ -11,6 +11,7 @@ import * as arrow18 from "apache-arrow-18";
 import {
   convertToTable,
   fromBufferToRecordBatch,
+  fromDataToBuffer,
   fromRecordBatchToBuffer,
   fromTableToBuffer,
   makeArrowTable,
@@ -673,6 +674,52 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(firstRow.metadata.startLine).toBe(10);
         expect(firstRow.metadata.endLine).toBe(20);
         expect(firstRow.metadata.text).toBe("function test() { return true; }");
+      });
+
+      it("will handle missing columns in Arrow table input when using embeddings", async function () {
+        // Create a table with missing columns
+        const incompleteTable = makeArrowTable([
+          { domain: "google.com", name: "Google" },
+          { domain: "facebook.com", name: "Facebook" },
+        ]);
+
+        // Create a schema with embedding metadata that includes the missing column
+        const schema = new Schema(
+          [
+            new Field("domain", new Utf8(), true),
+            new Field("name", new Utf8(), true),
+            new Field("description", new Utf8(), true), // This column is missing from the table
+          ],
+          new Map([["embedding_functions", JSON.stringify([])]]),
+        );
+
+        // This should NOT throw an error when using fromDataToBuffer with an Arrow table
+        // that has missing columns and a schema with embedding functions
+        const buf = await fromDataToBuffer(incompleteTable, undefined, schema);
+
+        // Should successfully create a buffer
+        expect(buf.byteLength).toBeGreaterThan(0);
+
+        // Convert back to table and verify all columns are present
+        const retrievedTable = tableFromIPC(buf);
+        expect(retrievedTable.numCols).toBe(3);
+        expect(retrievedTable.numRows).toBe(2);
+
+        // Check that the missing column was filled with nulls
+        const descriptionColumn = retrievedTable.getChild("description");
+        expect(descriptionColumn).toBeDefined();
+        expect(descriptionColumn?.nullCount).toBe(2); // All values are null
+        expect(descriptionColumn?.toArray()).toEqual([null, null]);
+
+        // Check that existing columns have correct values
+        expect(retrievedTable.getChild("domain")?.toArray()).toEqual([
+          "google.com",
+          "facebook.com",
+        ]);
+        expect(retrievedTable.getChild("name")?.toArray()).toEqual([
+          "Google",
+          "Facebook",
+        ]);
       });
     });
 

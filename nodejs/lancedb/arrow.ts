@@ -1103,7 +1103,16 @@ export async function fromDataToBuffer(
     schema = sanitizeSchema(schema);
   }
   if (isArrowTable(data)) {
-    return fromTableToBuffer(sanitizeTable(data), embeddings, schema);
+    const table = sanitizeTable(data);
+    // If we have a schema with embedding functions, we need to ensure all columns exist
+    // before applying embeddings, since applyEmbeddingsFromMetadata expects all columns
+    // to be present in the table
+    if (schema && schema.metadata?.has("embedding_functions")) {
+      const alignedTable = alignTableToSchema(table, schema);
+      return fromTableToBuffer(alignedTable, embeddings, schema);
+    } else {
+      return fromTableToBuffer(table, embeddings, schema);
+    }
   } else {
     const table = await convertToTable(data, embeddings, { schema });
     return fromTableToBuffer(table);
@@ -1449,4 +1458,65 @@ function fieldToJson(field: Field): JsonField {
     nullable: field.nullable,
     metadata: field.metadata,
   };
+}
+
+function alignTableToSchema(
+  table: ArrowTable,
+  targetSchema: Schema,
+): ArrowTable {
+  const existingColumns = new Map<string, Vector>();
+
+  // Map existing columns
+  for (const field of table.schema.fields) {
+    existingColumns.set(field.name, table.getChild(field.name)!);
+  }
+
+  // Create vectors for all fields in target schema
+  const alignedColumns: Record<string, Vector> = {};
+
+  for (const field of targetSchema.fields) {
+    if (existingColumns.has(field.name)) {
+      // Column exists, use it
+      alignedColumns[field.name] = existingColumns.get(field.name)!;
+    } else {
+      // Column missing, create null vector
+      alignedColumns[field.name] = createNullVector(field, table.numRows);
+    }
+  }
+
+  // Create new table with aligned schema and columns
+  return new ArrowTable(targetSchema, alignedColumns);
+}
+
+function createNullVector(field: Field, numRows: number): Vector {
+  if (field.type.constructor.name === "Struct") {
+    // For struct types, create a struct with null fields
+    const structType = field.type as Struct;
+    const childVectors = structType.children.map((childField) =>
+      createNullVector(childField, numRows),
+    );
+
+    // Create struct data
+    const structData = makeData({
+      type: structType,
+      length: numRows,
+      nullCount: 0,
+      children: childVectors.map((v) => v.data[0]),
+    });
+
+    return arrowMakeVector(structData);
+  } else {
+    // For other types, create a vector of nulls
+    const nullBitmap = new Uint8Array(Math.ceil(numRows / 8));
+    // All bits are 0, meaning all values are null
+
+    const data = makeData({
+      type: field.type,
+      length: numRows,
+      nullCount: numRows,
+      nullBitmap,
+    });
+
+    return arrowMakeVector(data);
+  }
 }
