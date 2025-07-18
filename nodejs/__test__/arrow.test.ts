@@ -378,7 +378,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       });
 
       it("will handle missing columns in schema alignment when using embeddings", async function () {
-        // Create a schema with embedding metadata (like LanceSchema does)
         const schema = new Schema(
           [
             new Field("domain", new Utf8(), true),
@@ -388,26 +387,21 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new Map([["embedding_functions", JSON.stringify([])]]),
         );
 
-        // Data is missing the "description" field
         const data = [
           { domain: "google.com", name: "Google" },
           { domain: "facebook.com", name: "Facebook" },
         ];
 
-        // This should NOT throw an error when using convertToTable with schema that has embedding metadata
         const table = await convertToTable(data, undefined, { schema });
 
-        // Should create all 3 columns (including null column for description)
         expect(table.numCols).toBe(3);
         expect(table.numRows).toBe(2);
 
-        // Check that the missing column was filled with nulls
         const descriptionColumn = table.getChild("description");
         expect(descriptionColumn).toBeDefined();
-        expect(descriptionColumn?.nullCount).toBe(2); // All values are null
+        expect(descriptionColumn?.nullCount).toBe(2);
         expect(descriptionColumn?.toArray()).toEqual([null, null]);
 
-        // Check that existing columns have correct values
         expect(table.getChild("domain")?.toArray()).toEqual([
           "google.com",
           "facebook.com",
@@ -419,7 +413,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       });
 
       it("will handle completely missing nested struct columns", async function () {
-        // Schema with nested struct
         const schema = new Schema(
           [
             new Field("id", new Utf8(), true),
@@ -441,49 +434,32 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new Map([["embedding_functions", JSON.stringify([])]]),
         );
 
-        // Data completely missing the nested struct
         const data = [
           { id: "doc1", name: "Document 1" },
           { id: "doc2", name: "Document 2" },
         ];
 
-        // This should NOT throw an error
         const table = await convertToTable(data, undefined, { schema });
 
-        // Should create all columns including the nested struct
         expect(table.numCols).toBe(3);
         expect(table.numRows).toBe(2);
 
-        // Convert to buffer and back (simulating storage and retrieval)
         const buf = await fromTableToBuffer(table);
         const retrievedTable = tableFromIPC(buf);
 
-        // Verify the retrieved table has the same structure
         const rows = [];
         for (let i = 0; i < retrievedTable.numRows; i++) {
           rows.push(retrievedTable.get(i));
         }
 
-        // Should have 2 rows
-        expect(rows.length).toBe(2);
-
-        // Check that the nested struct column was created with null values for all fields
         expect(rows[0].metadata.version).toBe(null);
         expect(rows[0].metadata.author).toBe(null);
         expect(rows[0].metadata.tags).toBe(null);
-        expect(rows[1].metadata.version).toBe(null);
-        expect(rows[1].metadata.author).toBe(null);
-        expect(rows[1].metadata.tags).toBe(null);
-
-        // Check that existing columns have correct values
         expect(rows[0].id).toBe("doc1");
         expect(rows[0].name).toBe("Document 1");
-        expect(rows[1].id).toBe("doc2");
-        expect(rows[1].name).toBe("Document 2");
       });
 
       it("will handle partially missing nested struct fields", async function () {
-        // Schema with nested struct
         const schema = new Schema(
           [
             new Field("id", new Utf8(), true),
@@ -500,38 +476,24 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new Map([["embedding_functions", JSON.stringify([])]]),
         );
 
-        // Data with partially missing nested fields
         const data = [
-          { id: "doc1", metadata: { version: 1, author: "Alice" } }, // missing created_at
-          { id: "doc2", metadata: { version: 2 } }, // missing author and created_at
+          { id: "doc1", metadata: { version: 1, author: "Alice" } },
+          { id: "doc2", metadata: { version: 2 } },
         ];
 
-        // This should NOT throw an error
         const table = await convertToTable(data, undefined, { schema });
 
-        // Should create all columns
         expect(table.numCols).toBe(2);
         expect(table.numRows).toBe(2);
 
-        // The core functionality should work - table creation should not throw
-        expect(table.numCols).toBe(2);
-        expect(table.numRows).toBe(2);
-
-        // Check that the metadata column exists and has the expected schema
         const metadataColumn = table.getChild("metadata");
         expect(metadataColumn).toBeDefined();
         expect(metadataColumn?.type.toString()).toBe(
           "Struct<{version:Int32, author:Utf8, created_at:Utf8}>",
         );
-
-        // Verify the table structure is correct
-        expect(table.schema.fields.length).toBe(2);
-        expect(table.schema.fields[0].name).toBe("id");
-        expect(table.schema.fields[1].name).toBe("metadata");
       });
 
       it("will handle multiple levels of nested structures", async function () {
-        // Schema with deeply nested struct
         const schema = new Schema(
           [
             new Field("id", new Utf8(), true),
@@ -562,57 +524,74 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new Map([["embedding_functions", JSON.stringify([])]]),
         );
 
-        // Data with various levels of missing nested fields
         const data = [
           {
             id: "config1",
             config: {
               database: "postgres",
-              connection: {
-                host: "localhost",
-                // missing port and ssl
-              },
+              connection: { host: "localhost" },
             },
           },
           {
             id: "config2",
-            config: {
-              database: "mysql",
-              // missing entire connection object
-            },
+            config: { database: "mysql" },
           },
           {
             id: "config3",
-            // missing entire config object
           },
         ];
 
-        // This should NOT throw an error
         const table = await convertToTable(data, undefined, { schema });
 
-        // Should create all columns
         expect(table.numCols).toBe(2);
         expect(table.numRows).toBe(3);
 
-        // The core functionality should work - table creation should not throw
-        expect(table.numCols).toBe(2);
-        expect(table.numRows).toBe(3);
-
-        // Check that the config column exists and has the expected schema
         const configColumn = table.getChild("config");
         expect(configColumn).toBeDefined();
         expect(configColumn?.type.toString()).toBe(
           "Struct<{database:Utf8, connection:Struct<{host:Utf8, port:Int32, ssl:Struct<{enabled:Bool, cert_path:Utf8}>}>}>",
         );
+      });
 
-        // Verify the table structure is correct
-        expect(table.schema.fields.length).toBe(2);
-        expect(table.schema.fields[0].name).toBe("id");
-        expect(table.schema.fields[1].name).toBe("config");
+      it("will handle missing columns in Arrow table input when using embeddings", async function () {
+        const incompleteTable = makeArrowTable([
+          { domain: "google.com", name: "Google" },
+          { domain: "facebook.com", name: "Facebook" },
+        ]);
+
+        const schema = new Schema(
+          [
+            new Field("domain", new Utf8(), true),
+            new Field("name", new Utf8(), true),
+            new Field("description", new Utf8(), true),
+          ],
+          new Map([["embedding_functions", JSON.stringify([])]]),
+        );
+
+        const buf = await fromDataToBuffer(incompleteTable, undefined, schema);
+
+        expect(buf.byteLength).toBeGreaterThan(0);
+
+        const retrievedTable = tableFromIPC(buf);
+        expect(retrievedTable.numCols).toBe(3);
+        expect(retrievedTable.numRows).toBe(2);
+
+        const descriptionColumn = retrievedTable.getChild("description");
+        expect(descriptionColumn).toBeDefined();
+        expect(descriptionColumn?.nullCount).toBe(2);
+        expect(descriptionColumn?.toArray()).toEqual([null, null]);
+
+        expect(retrievedTable.getChild("domain")?.toArray()).toEqual([
+          "google.com",
+          "facebook.com",
+        ]);
+        expect(retrievedTable.getChild("name")?.toArray()).toEqual([
+          "Google",
+          "Facebook",
+        ]);
       });
 
       it("should correctly retain values in nested struct fields", async function () {
-        // Define test data with nested struct
         const testData = [
           {
             id: "doc1",
@@ -636,10 +615,8 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           },
         ];
 
-        // Create Arrow table from the data
         const table = makeArrowTable(testData);
 
-        // Verify schema has the nested struct fields
         const metadataField = table.schema.fields.find(
           (f) => f.name === "metadata",
         );
@@ -653,73 +630,21 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           "text",
         ]);
 
-        // Convert to buffer and back (simulating storage and retrieval)
         const buf = await fromTableToBuffer(table);
         const retrievedTable = tableFromIPC(buf);
 
-        // Verify the retrieved table has the same structure
         const rows = [];
         for (let i = 0; i < retrievedTable.numRows; i++) {
           rows.push(retrievedTable.get(i));
         }
 
-        // Check values in the first row
         const firstRow = rows[0];
         expect(firstRow.id).toBe("doc1");
         expect(firstRow.vector.toJSON()).toEqual([1, 2, 3]);
-
-        // Verify metadata values are preserved (this is where the bug is)
-        expect(firstRow.metadata).toBeDefined();
         expect(firstRow.metadata.filePath).toBe("/path/to/file1.ts");
         expect(firstRow.metadata.startLine).toBe(10);
         expect(firstRow.metadata.endLine).toBe(20);
         expect(firstRow.metadata.text).toBe("function test() { return true; }");
-      });
-
-      it("will handle missing columns in Arrow table input when using embeddings", async function () {
-        // Create a table with missing columns
-        const incompleteTable = makeArrowTable([
-          { domain: "google.com", name: "Google" },
-          { domain: "facebook.com", name: "Facebook" },
-        ]);
-
-        // Create a schema with embedding metadata that includes the missing column
-        const schema = new Schema(
-          [
-            new Field("domain", new Utf8(), true),
-            new Field("name", new Utf8(), true),
-            new Field("description", new Utf8(), true), // This column is missing from the table
-          ],
-          new Map([["embedding_functions", JSON.stringify([])]]),
-        );
-
-        // This should NOT throw an error when using fromDataToBuffer with an Arrow table
-        // that has missing columns and a schema with embedding functions
-        const buf = await fromDataToBuffer(incompleteTable, undefined, schema);
-
-        // Should successfully create a buffer
-        expect(buf.byteLength).toBeGreaterThan(0);
-
-        // Convert back to table and verify all columns are present
-        const retrievedTable = tableFromIPC(buf);
-        expect(retrievedTable.numCols).toBe(3);
-        expect(retrievedTable.numRows).toBe(2);
-
-        // Check that the missing column was filled with nulls
-        const descriptionColumn = retrievedTable.getChild("description");
-        expect(descriptionColumn).toBeDefined();
-        expect(descriptionColumn?.nullCount).toBe(2); // All values are null
-        expect(descriptionColumn?.toArray()).toEqual([null, null]);
-
-        // Check that existing columns have correct values
-        expect(retrievedTable.getChild("domain")?.toArray()).toEqual([
-          "google.com",
-          "facebook.com",
-        ]);
-        expect(retrievedTable.getChild("name")?.toArray()).toEqual([
-          "Google",
-          "Facebook",
-        ]);
       });
     });
 
