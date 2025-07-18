@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { Schema } from "apache-arrow";
+import { Bool, Field, Int32, List, Schema, Struct, Utf8 } from "apache-arrow";
 
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
@@ -15,6 +15,7 @@ import {
   fromTableToBuffer,
   makeArrowTable,
   makeEmptyTable,
+  tableFromIPC,
 } from "../lancedb/arrow";
 import {
   EmbeddingFunction,
@@ -414,6 +415,199 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           "Google",
           "Facebook",
         ]);
+      });
+
+      it("will handle completely missing nested struct columns", async function () {
+        // Schema with nested struct
+        const schema = new Schema(
+          [
+            new Field("id", new Utf8(), true),
+            new Field("name", new Utf8(), true),
+            new Field(
+              "metadata",
+              new Struct([
+                new Field("version", new Int32(), true),
+                new Field("author", new Utf8(), true),
+                new Field(
+                  "tags",
+                  new List(new Field("item", new Utf8(), true)),
+                  true,
+                ),
+              ]),
+              true,
+            ),
+          ],
+          new Map([["embedding_functions", JSON.stringify([])]]),
+        );
+
+        // Data completely missing the nested struct
+        const data = [
+          { id: "doc1", name: "Document 1" },
+          { id: "doc2", name: "Document 2" },
+        ];
+
+        // This should NOT throw an error
+        const table = await convertToTable(data, undefined, { schema });
+
+        // Should create all columns including the nested struct
+        expect(table.numCols).toBe(3);
+        expect(table.numRows).toBe(2);
+
+        // Convert to buffer and back (simulating storage and retrieval)
+        const buf = await fromTableToBuffer(table);
+        const retrievedTable = tableFromIPC(buf);
+
+        // Verify the retrieved table has the same structure
+        const rows = [];
+        for (let i = 0; i < retrievedTable.numRows; i++) {
+          rows.push(retrievedTable.get(i));
+        }
+
+        // Should have 2 rows
+        expect(rows.length).toBe(2);
+
+        // Check that the nested struct column was created with null values for all fields
+        expect(rows[0].metadata.version).toBe(null);
+        expect(rows[0].metadata.author).toBe(null);
+        expect(rows[0].metadata.tags).toBe(null);
+        expect(rows[1].metadata.version).toBe(null);
+        expect(rows[1].metadata.author).toBe(null);
+        expect(rows[1].metadata.tags).toBe(null);
+
+        // Check that existing columns have correct values
+        expect(rows[0].id).toBe("doc1");
+        expect(rows[0].name).toBe("Document 1");
+        expect(rows[1].id).toBe("doc2");
+        expect(rows[1].name).toBe("Document 2");
+      });
+
+      it("will handle partially missing nested struct fields", async function () {
+        // Schema with nested struct
+        const schema = new Schema(
+          [
+            new Field("id", new Utf8(), true),
+            new Field(
+              "metadata",
+              new Struct([
+                new Field("version", new Int32(), true),
+                new Field("author", new Utf8(), true),
+                new Field("created_at", new Utf8(), true),
+              ]),
+              true,
+            ),
+          ],
+          new Map([["embedding_functions", JSON.stringify([])]]),
+        );
+
+        // Data with partially missing nested fields
+        const data = [
+          { id: "doc1", metadata: { version: 1, author: "Alice" } }, // missing created_at
+          { id: "doc2", metadata: { version: 2 } }, // missing author and created_at
+        ];
+
+        // This should NOT throw an error
+        const table = await convertToTable(data, undefined, { schema });
+
+        // Should create all columns
+        expect(table.numCols).toBe(2);
+        expect(table.numRows).toBe(2);
+
+        // The core functionality should work - table creation should not throw
+        expect(table.numCols).toBe(2);
+        expect(table.numRows).toBe(2);
+
+        // Check that the metadata column exists and has the expected schema
+        const metadataColumn = table.getChild("metadata");
+        expect(metadataColumn).toBeDefined();
+        expect(metadataColumn?.type.toString()).toBe(
+          "Struct<{version:Int32, author:Utf8, created_at:Utf8}>",
+        );
+
+        // Verify the table structure is correct
+        expect(table.schema.fields.length).toBe(2);
+        expect(table.schema.fields[0].name).toBe("id");
+        expect(table.schema.fields[1].name).toBe("metadata");
+      });
+
+      it("will handle multiple levels of nested structures", async function () {
+        // Schema with deeply nested struct
+        const schema = new Schema(
+          [
+            new Field("id", new Utf8(), true),
+            new Field(
+              "config",
+              new Struct([
+                new Field("database", new Utf8(), true),
+                new Field(
+                  "connection",
+                  new Struct([
+                    new Field("host", new Utf8(), true),
+                    new Field("port", new Int32(), true),
+                    new Field(
+                      "ssl",
+                      new Struct([
+                        new Field("enabled", new Bool(), true),
+                        new Field("cert_path", new Utf8(), true),
+                      ]),
+                      true,
+                    ),
+                  ]),
+                  true,
+                ),
+              ]),
+              true,
+            ),
+          ],
+          new Map([["embedding_functions", JSON.stringify([])]]),
+        );
+
+        // Data with various levels of missing nested fields
+        const data = [
+          {
+            id: "config1",
+            config: {
+              database: "postgres",
+              connection: {
+                host: "localhost",
+                // missing port and ssl
+              },
+            },
+          },
+          {
+            id: "config2",
+            config: {
+              database: "mysql",
+              // missing entire connection object
+            },
+          },
+          {
+            id: "config3",
+            // missing entire config object
+          },
+        ];
+
+        // This should NOT throw an error
+        const table = await convertToTable(data, undefined, { schema });
+
+        // Should create all columns
+        expect(table.numCols).toBe(2);
+        expect(table.numRows).toBe(3);
+
+        // The core functionality should work - table creation should not throw
+        expect(table.numCols).toBe(2);
+        expect(table.numRows).toBe(3);
+
+        // Check that the config column exists and has the expected schema
+        const configColumn = table.getChild("config");
+        expect(configColumn).toBeDefined();
+        expect(configColumn?.type.toString()).toBe(
+          "Struct<{database:Utf8, connection:Struct<{host:Utf8, port:Int32, ssl:Struct<{enabled:Bool, cert_path:Utf8}>}>}>",
+        );
+
+        // Verify the table structure is correct
+        expect(table.schema.fields.length).toBe(2);
+        expect(table.schema.fields[0].name).toBe("id");
+        expect(table.schema.fields[1].name).toBe("config");
       });
 
       it("should correctly retain values in nested struct fields", async function () {

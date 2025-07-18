@@ -996,7 +996,21 @@ export async function convertToTable(
   embeddings?: EmbeddingFunctionConfig,
   makeTableOptions?: Partial<MakeArrowTableOptions>,
 ): Promise<ArrowTable> {
-  const table = makeArrowTable(data, makeTableOptions);
+  let processedData = data;
+
+  // If we have a schema with embedding metadata, we need to preprocess the data
+  // to ensure all nested fields are present
+  if (
+    makeTableOptions?.schema &&
+    makeTableOptions.schema.metadata?.has("embedding_functions")
+  ) {
+    processedData = ensureNestedFieldsExist(
+      data,
+      makeTableOptions.schema as Schema,
+    );
+  }
+
+  const table = makeArrowTable(processedData, makeTableOptions);
   return await applyEmbeddings(table, embeddings, makeTableOptions?.schema);
 }
 
@@ -1228,6 +1242,79 @@ function validateSchemaEmbeddings(
   }
 
   return new Schema(fields, schema.metadata);
+}
+
+/**
+ * Ensures that all nested fields defined in the schema exist in the data,
+ * filling missing fields with null values.
+ */
+export function ensureNestedFieldsExist(
+  data: Array<Record<string, unknown>>,
+  schema: Schema,
+): Array<Record<string, unknown>> {
+  return data.map((row) => {
+    const completeRow: Record<string, unknown> = {};
+
+    for (const field of schema.fields) {
+      if (field.name in row) {
+        if (
+          field.type.constructor.name === "Struct" &&
+          row[field.name] !== null &&
+          row[field.name] !== undefined
+        ) {
+          // Handle nested struct
+          const nestedValue = row[field.name] as Record<string, unknown>;
+          completeRow[field.name] = ensureStructFieldsExist(
+            nestedValue,
+            field.type,
+          );
+        } else {
+          // Non-struct field or null struct value
+          completeRow[field.name] = row[field.name];
+        }
+      } else {
+        // Field is missing from the data - set to null
+        completeRow[field.name] = null;
+      }
+    }
+
+    return completeRow;
+  });
+}
+
+/**
+ * Recursively ensures that all fields in a struct type exist in the data,
+ * filling missing fields with null values.
+ */
+function ensureStructFieldsExist(
+  data: Record<string, unknown>,
+  structType: Struct,
+): Record<string, unknown> {
+  const completeStruct: Record<string, unknown> = {};
+
+  for (const childField of structType.children) {
+    if (childField.name in data) {
+      if (
+        childField.type.constructor.name === "Struct" &&
+        data[childField.name] !== null &&
+        data[childField.name] !== undefined
+      ) {
+        // Recursively handle nested struct
+        completeStruct[childField.name] = ensureStructFieldsExist(
+          data[childField.name] as Record<string, unknown>,
+          childField.type,
+        );
+      } else {
+        // Non-struct field or null struct value
+        completeStruct[childField.name] = data[childField.name];
+      }
+    } else {
+      // Field is missing - set to null
+      completeStruct[childField.name] = null;
+    }
+  }
+
+  return completeStruct;
 }
 
 interface JsonDataType {
