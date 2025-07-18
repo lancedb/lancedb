@@ -81,15 +81,15 @@ class CrossEncoderReranker(Reranker):
         vector_results: pa.Table,
         fts_results: pa.Table,
     ):
-        combined_results = self.merge_results(vector_results, fts_results)
+        if self.score == "all":
+            combined_results = self._merge_and_keep_scores(vector_results, fts_results)
+        else:
+            combined_results = self.merge_results(vector_results, fts_results)
         combined_results = self._rerank(combined_results, query)
         # sort the results by _score
         if self.score == "relevance":
             combined_results = self._keep_relevance_score(combined_results)
-        elif self.score == "all":
-            raise NotImplementedError(
-                "return_score='all' not implemented for CrossEncoderReranker"
-            )
+
         combined_results = combined_results.sort_by(
             [("_relevance_score", "descending")]
         )

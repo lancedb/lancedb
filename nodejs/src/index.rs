@@ -123,6 +123,9 @@ impl Index {
         stem: Option<bool>,
         remove_stop_words: Option<bool>,
         ascii_folding: Option<bool>,
+        ngram_min_length: Option<u32>,
+        ngram_max_length: Option<u32>,
+        prefix_only: Option<bool>,
     ) -> Self {
         let mut opts = FtsIndexBuilder::default();
         if let Some(with_position) = with_position {
@@ -148,6 +151,15 @@ impl Index {
         }
         if let Some(ascii_folding) = ascii_folding {
             opts = opts.ascii_folding(ascii_folding);
+        }
+        if let Some(ngram_min_length) = ngram_min_length {
+            opts = opts.ngram_min_length(ngram_min_length);
+        }
+        if let Some(ngram_max_length) = ngram_max_length {
+            opts = opts.ngram_max_length(ngram_max_length);
+        }
+        if let Some(prefix_only) = prefix_only {
+            opts = opts.ngram_prefix_only(prefix_only);
         }
 
         Self {

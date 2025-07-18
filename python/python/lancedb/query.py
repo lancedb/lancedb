@@ -1374,6 +1374,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         if query_string is not None and not isinstance(query_string, str):
             raise ValueError("Reranking currently only supports string queries")
         self._str_query = query_string if query_string is not None else self._str_query
+        if reranker.score == "all":
+            self.with_row_id(True)
         return self
 
     def bypass_vector_index(self) -> LanceVectorQueryBuilder:
@@ -1569,6 +1571,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             The LanceQueryBuilder object.
         """
         self._reranker = reranker
+        if reranker.score == "all":
+            self.with_row_id(True)
         return self
 
 
@@ -1845,6 +1849,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         self._norm = normalize
         self._reranker = reranker
+        if reranker.score == "all":
+            self.with_row_id(True)
 
         return self
 

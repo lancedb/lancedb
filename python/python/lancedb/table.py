@@ -838,6 +838,9 @@ class Table(ABC):
         stem: bool = True,
         remove_stop_words: bool = True,
         ascii_folding: bool = True,
+        ngram_min_length: int = 3,
+        ngram_max_length: int = 3,
+        prefix_only: bool = False,
         wait_timeout: Optional[timedelta] = None,
     ):
         """Create a full-text search index on the table.
@@ -877,6 +880,7 @@ class Table(ABC):
             - "simple": Splits text by whitespace and punctuation.
             - "whitespace": Split text by whitespace, but not punctuation.
             - "raw": No tokenization. The entire text is treated as a single token.
+            - "ngram": N-Gram tokenizer.
         language : str, default "English"
             The language to use for tokenization.
         max_token_length : int, default 40
@@ -894,6 +898,12 @@ class Table(ABC):
         ascii_folding : bool, default True
             Whether to fold ASCII characters. This converts accented characters to
             their ASCII equivalent. For example, "café" would be converted to "cafe".
+        ngram_min_length: int, default 3
+            The minimum length of an n-gram.
+        ngram_max_length: int, default 3
+            The maximum length of an n-gram.
+        prefix_only: bool, default False
+            Whether to only index the prefix of the token for ngram tokenizer.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
         """
@@ -1981,6 +1991,9 @@ class LanceTable(Table):
         stem: bool = True,
         remove_stop_words: bool = True,
         ascii_folding: bool = True,
+        ngram_min_length: int = 3,
+        ngram_max_length: int = 3,
+        prefix_only: bool = False,
     ):
         if not use_tantivy:
             if not isinstance(field_names, str):
@@ -1996,6 +2009,9 @@ class LanceTable(Table):
                     "stem": stem,
                     "remove_stop_words": remove_stop_words,
                     "ascii_folding": ascii_folding,
+                    "ngram_min_length": ngram_min_length,
+                    "ngram_max_length": ngram_max_length,
+                    "prefix_only": prefix_only,
                 }
             else:
                 tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
@@ -2065,6 +2081,9 @@ class LanceTable(Table):
                 "stem": False,
                 "remove_stop_words": False,
                 "ascii_folding": False,
+                "ngram_min_length": 3,
+                "ngram_max_length": 3,
+                "prefix_only": False,
             }
         elif tokenizer_name == "raw":
             return {
@@ -2075,6 +2094,9 @@ class LanceTable(Table):
                 "stem": False,
                 "remove_stop_words": False,
                 "ascii_folding": False,
+                "ngram_min_length": 3,
+                "ngram_max_length": 3,
+                "prefix_only": False,
             }
         elif tokenizer_name == "whitespace":
             return {
@@ -2085,6 +2107,9 @@ class LanceTable(Table):
                 "stem": False,
                 "remove_stop_words": False,
                 "ascii_folding": False,
+                "ngram_min_length": 3,
+                "ngram_max_length": 3,
+                "prefix_only": False,
             }
 
         # or it's with language stemming with pattern like "en_stem"
@@ -2103,6 +2128,9 @@ class LanceTable(Table):
             "stem": True,
             "remove_stop_words": False,
             "ascii_folding": False,
+            "ngram_min_length": 3,
+            "ngram_max_length": 3,
+            "prefix_only": False,
         }
 
     def add(

@@ -74,9 +74,7 @@ class AnswerdotaiRerankers(Reranker):
         if self.score == "relevance":
             combined_results = self._keep_relevance_score(combined_results)
         elif self.score == "all":
-            raise NotImplementedError(
-                "Answerdotai Reranker does not support score='all' yet"
-            )
+            combined_results = self._merge_and_keep_scores(vector_results, fts_results)
         combined_results = combined_results.sort_by(
             [("_relevance_score", "descending")]
         )
