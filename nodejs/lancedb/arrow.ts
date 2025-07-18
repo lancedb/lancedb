@@ -839,6 +839,15 @@ async function applyEmbeddingsFromMetadata(
     const vector = makeVector(vectors, destType);
     columns[destColumn] = vector;
   }
+
+  // Add any missing columns from the schema as null vectors
+  for (const field of schema.fields) {
+    if (!(field.name in columns)) {
+      const nullValues = new Array(table.numRows).fill(null);
+      columns[field.name] = makeVector(nullValues, field.type);
+    }
+  }
+
   const newTable = new ArrowTable(columns);
   return alignTable(newTable, schema);
 }
@@ -1149,7 +1158,7 @@ function alignBatch(batch: RecordBatch, schema: Schema): RecordBatch {
     type: new Struct(schema.fields),
     length: batch.numRows,
     nullCount: batch.nullCount,
-    children: alignedChildren,
+    children: alignedChildren as unknown as ArrowData<DataType>[],
   });
   return new RecordBatch(schema, newData);
 }

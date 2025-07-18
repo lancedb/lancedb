@@ -375,6 +375,47 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(table2.schema).toEqual(schema);
       });
 
+      it("will handle missing columns in schema alignment when using embeddings", async function () {
+        // Create a schema with embedding metadata (like LanceSchema does)
+        const schema = new Schema(
+          [
+            new Field("domain", new Utf8(), true),
+            new Field("name", new Utf8(), true),
+            new Field("description", new Utf8(), true),
+          ],
+          new Map([["embedding_functions", JSON.stringify([])]]),
+        );
+
+        // Data is missing the "description" field
+        const data = [
+          { domain: "google.com", name: "Google" },
+          { domain: "facebook.com", name: "Facebook" },
+        ];
+
+        // This should NOT throw an error when using convertToTable with schema that has embedding metadata
+        const table = await convertToTable(data, undefined, { schema });
+
+        // Should create all 3 columns (including null column for description)
+        expect(table.numCols).toBe(3);
+        expect(table.numRows).toBe(2);
+
+        // Check that the missing column was filled with nulls
+        const descriptionColumn = table.getChild("description");
+        expect(descriptionColumn).toBeDefined();
+        expect(descriptionColumn?.nullCount).toBe(2); // All values are null
+        expect(descriptionColumn?.toArray()).toEqual([null, null]);
+
+        // Check that existing columns have correct values
+        expect(table.getChild("domain")?.toArray()).toEqual([
+          "google.com",
+          "facebook.com",
+        ]);
+        expect(table.getChild("name")?.toArray()).toEqual([
+          "Google",
+          "Facebook",
+        ]);
+      });
+
       it("should correctly retain values in nested struct fields", async function () {
         // Define test data with nested struct
         const testData = [
