@@ -272,7 +272,9 @@ async def test_distance_range_with_new_rows_async():
     # append more rows so that execution plan would be mixed with ANN & Flat KNN
     new_data = pa.table(
         {
-            "vector": pa.FixedShapeTensorArray.from_numpy_ndarray(np.random.rand(4, 2)),
+            "vector": pa.FixedShapeTensorArray.from_numpy_ndarray(
+                np.random.rand(4, 2) + 1
+            ),
         }
     )
     await table.add(new_data)
