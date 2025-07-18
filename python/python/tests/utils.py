@@ -11,9 +11,11 @@ def exception_output(e_info: pytest.ExceptionInfo):
     lines = traceback.format_exception_only(e_info.type, e_info.value)
     return "".join(lines).strip()
 
+
 def compute_recall_at_k(retrieved_labels, true_label, k):
     top_k = retrieved_labels[:k]
     return 1 if true_label in top_k else 0
+
 
 def compute_average_precision(retrieved_labels, true_label):
     y_true = [1 if lbl == true_label else 0 for lbl in retrieved_labels]

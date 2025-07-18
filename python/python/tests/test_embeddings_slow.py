@@ -15,9 +15,9 @@ from lancedb.pydantic import LanceModel, Vector, MultiVector
 import requests
 import time
 from collections import defaultdict
-from sklearn.metrics import average_precision_score
+from tests.utils import compute_average_precision, compute_recall_at_k
 
-from python.python.tests.utils import compute_average_precision, compute_recall_at_k
+
 # These are integration tests for embedding functions.
 # They are slow because they require downloading models
 # or connection to external api
@@ -672,12 +672,12 @@ def test_siglip(tmp_path):
         "http://farm6.staticflickr.com/5142/5835678453_4f3a4edb45_z.jpg",
     ]
     headers = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/114.0.0.0 Safari/537.36"
-    )
-}
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/114.0.0.0 Safari/537.36"
+        )
+    }
     image_bytes = [requests.get(uri, headers=headers).content for uri in uris]
 
     table.add(
@@ -701,7 +701,7 @@ def test_siglip(tmp_path):
 
     # image search
     query_image_uri = "http://farm1.staticflickr.com/200/467715466_ed4a31801f_z.jpg"
-    image_bytes = requests.get(query_image_uri,headers=headers).content
+    image_bytes = requests.get(query_image_uri, headers=headers).content
     query_image = Image.open(io.BytesIO(image_bytes))
     actual = (
         table.search(query_image, vector_column_name="vector")
@@ -724,7 +724,7 @@ def test_siglip(tmp_path):
 
 
 @pytest.mark.slow
-def test_siglip_vs_openclip_vs_imagebind_benchmark_full(tmp_path):
+def test_siglip_vs_openclip_vs_imagebind_benchmark(tmp_path):
     """
     Benchmarks SigLIP vs OpenCLIP vs ImageBind on image-text retrieval using:
     - Recall@1/5/10
@@ -772,11 +772,11 @@ def test_siglip_vs_openclip_vs_imagebind_benchmark_full(tmp_path):
 
         # Create table
         table = db.create_table(f"benchmark_{name.lower()}", schema=Images)
-        table.add(pd.DataFrame({
-            "label": labels,
-            "image_uri": uris,
-            "image_bytes": image_bytes
-        }))
+        table.add(
+            pd.DataFrame(
+                {"label": labels, "image_uri": uris, "image_bytes": image_bytes}
+            )
+        )
 
         recalls = defaultdict(list)
         aps = []
@@ -801,7 +801,6 @@ def test_siglip_vs_openclip_vs_imagebind_benchmark_full(tmp_path):
             for k in [1, 5, 10]:
                 recall = compute_recall_at_k(retrieved_labels, query_label, k)
                 recalls[f"R@{k}"].append(recall)
-
 
             aps.append(compute_average_precision(retrieved_labels, query_label))
 
