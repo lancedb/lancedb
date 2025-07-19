@@ -4,7 +4,6 @@
 import importlib
 import io
 import os
-
 import lancedb
 import numpy as np
 import pandas as pd
@@ -12,7 +11,10 @@ import pyarrow as pa
 import pytest
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector, MultiVector
-import requests
+import time
+from collections import defaultdict
+from tests.utils import compute_average_precision, compute_recall_at_k
+
 
 # These are integration tests for embedding functions.
 # They are slow because they require downloading models
@@ -524,6 +526,8 @@ def test_voyageai_embedding_function():
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
 def test_voyageai_multimodal_embedding_function():
+    import requests
+
     voyageai = (
         get_registry().get("voyageai").create(name="voyage-multimodal-3", max_retries=0)
     )
@@ -639,3 +643,177 @@ def test_colpali(tmp_path):
     assert len(first_row["image_vectors"][0]) == func.ndims(), (
         "Vector dimension mismatch"
     )
+
+
+@pytest.mark.slow
+def test_siglip(tmp_path):
+    import requests
+    from PIL import Image
+
+    db = lancedb.connect(tmp_path)
+    registry = get_registry()
+    func = registry.get("siglip").create(max_retries=0)
+
+    class Images(LanceModel):
+        label: str
+        image_uri: str = func.SourceField()
+        image_bytes: bytes = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+        vec_from_bytes: Vector(func.ndims()) = func.VectorField()
+
+    table = db.create_table("images", schema=Images)
+    labels = ["cat", "cat", "dog", "dog", "horse", "horse"]
+    uris = [
+        "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
+        "http://farm1.staticflickr.com/134/332220238_da527d8140_z.jpg",
+        "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",
+        "http://farm5.staticflickr.com/4092/5017326486_1f46057f5f_z.jpg",
+        "http://farm9.staticflickr.com/8216/8434969557_d37882c42d_z.jpg",
+        "http://farm6.staticflickr.com/5142/5835678453_4f3a4edb45_z.jpg",
+    ]
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/114.0.0.0 Safari/537.36"
+        )
+    }
+    image_bytes = [requests.get(uri, headers=headers).content for uri in uris]
+
+    table.add(
+        pd.DataFrame({"label": labels, "image_uri": uris, "image_bytes": image_bytes})
+    )
+
+    # text search
+    actual = (
+        table.search("man's best friend", vector_column_name="vector")
+        .limit(1)
+        .to_pydantic(Images)[0]
+    )
+    assert actual.label == "dog"
+    frombytes = (
+        table.search("man's best friend", vector_column_name="vec_from_bytes")
+        .limit(1)
+        .to_pydantic(Images)[0]
+    )
+    assert actual.label == frombytes.label
+    assert np.allclose(actual.vector, frombytes.vector)
+
+    # image search
+    query_image_uri = "http://farm1.staticflickr.com/200/467715466_ed4a31801f_z.jpg"
+    image_bytes = requests.get(query_image_uri, headers=headers).content
+    query_image = Image.open(io.BytesIO(image_bytes))
+    actual = (
+        table.search(query_image, vector_column_name="vector")
+        .limit(1)
+        .to_pydantic(Images)[0]
+    )
+    assert actual.label == "dog"
+    other = (
+        table.search(query_image, vector_column_name="vec_from_bytes")
+        .limit(1)
+        .to_pydantic(Images)[0]
+    )
+    assert actual.label == other.label
+
+    arrow_table = table.search().select(["vector", "vec_from_bytes"]).to_arrow()
+    assert np.allclose(
+        arrow_table["vector"].combine_chunks().values.to_numpy(),
+        arrow_table["vec_from_bytes"].combine_chunks().values.to_numpy(),
+    )
+
+
+@pytest.mark.slow
+def test_siglip_vs_openclip_vs_imagebind_benchmark(tmp_path):
+    """
+    Benchmarks SigLIP vs OpenCLIP vs ImageBind on image-text retrieval using:
+    - Recall@1/5/10
+    - mAP
+    - Embedding and retrieval latency
+    """
+    import requests
+    from PIL import Image
+
+    registry = get_registry()
+    db = lancedb.connect(tmp_path)
+
+    models = {
+        "SigLIP": registry.get("siglip").create(max_retries=0),
+        "OpenCLIP": registry.get("open-clip").create(max_retries=0),
+    }
+
+    # Optional: Include ImageBind if available
+    if importlib.util.find_spec("imagebind"):
+        models["ImageBind"] = registry.get("imagebind").create(max_retries=0)
+
+    labels = ["cat", "cat", "dog", "dog", "horse", "horse"]
+    uris = [
+        "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
+        "http://farm1.staticflickr.com/134/332220238_da527d8140_z.jpg",
+        "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",
+        "http://farm5.staticflickr.com/4092/5017326486_1f46057f5f_z.jpg",
+        "http://farm9.staticflickr.com/8216/8434969557_d37882c42d_z.jpg",
+        "http://farm6.staticflickr.com/5142/5835678453_4f3a4edb45_z.jpg",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "image/*,*/*;q=0.8"}
+
+    image_bytes = []
+    for uri in uris:
+        resp = requests.get(uri, headers=headers)
+        Image.open(io.BytesIO(resp.content)).verify()
+        image_bytes.append(resp.content)
+
+    for name, model in models.items():
+        print(f"\nEvaluating model: {name}")
+        dims = model.ndims()
+
+        class Images(LanceModel):
+            label: str
+            image_uri: str = model.SourceField()
+            image_bytes: bytes = model.SourceField()
+            vector: Vector(dims) = model.VectorField()
+
+        # Create table
+        table = db.create_table(f"benchmark_{name.lower()}", schema=Images)
+        table.add(
+            pd.DataFrame(
+                {"label": labels, "image_uri": uris, "image_bytes": image_bytes}
+            )
+        )
+
+        recalls = defaultdict(list)
+        aps = []
+        embed_times = []
+        retrieval_times = []
+
+        for query_label, query_img_bytes in zip(labels, image_bytes):
+            # --- Embedding ---
+            t0 = time.perf_counter()
+            image = Image.open(io.BytesIO(query_img_bytes))
+            vec = model.compute_query_embeddings(image)[0]
+
+            embed_times.append(time.perf_counter() - t0)
+
+            # --- Retrieval ---
+            t0 = time.perf_counter()
+            results = table.search(vec).limit(10).to_pandas()
+            retrieval_times.append(time.perf_counter() - t0)
+
+            retrieved_labels = results["label"].tolist()
+            # --- Metrics ---
+            for k in [1, 5, 10]:
+                recall = compute_recall_at_k(retrieved_labels, query_label, k)
+                recalls[f"R@{k}"].append(recall)
+
+            aps.append(compute_average_precision(retrieved_labels, query_label))
+
+        recall_str = " | ".join(
+            [f"{k}: {np.mean(recalls[k]):.2f}" for k in ["R@1", "R@5", "R@10"]]
+        )
+        print(
+            f"{name:>9} | {recall_str} | "
+            f"mAP: {np.mean(aps):.3f} | "
+            f"Embed Lat: {np.mean(embed_times):.3f}s | "
+            f"Search Lat: {np.mean(retrieval_times):.3f}s | "
+            f"Dim: {dims}"
+        )
