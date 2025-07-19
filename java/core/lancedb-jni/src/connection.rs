@@ -4,9 +4,14 @@
 use crate::ffi::JNIEnvExt;
 use crate::traits::IntoJava;
 use crate::{Error, RT};
-use jni::objects::{JObject, JString, JValue};
+use arrow::ipc::reader::StreamReader;
+use jni::objects::{JByteArray, JObject, JString, JValue};
+use std::io::Cursor;
+
 use jni::JNIEnv;
+
 pub const NATIVE_CONNECTION: &str = "nativeConnectionHandle";
+use crate::table::BlockingTable;
 use crate::Result;
 use lancedb::connection::{connect, Connection};
 
@@ -108,6 +113,89 @@ pub extern "system" fn Java_com_lancedb_lancedb_Connection_tableNames<'local>(
         env,
         inner_table_names(&mut env, j_connection, start_after_obj, limit_obj)
     )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_lancedb_lancedb_Connection_createTable<'local>(
+    mut env: JNIEnv<'local>,
+    j_connection: JObject,
+    table_name: JString,
+    initial_data: JByteArray,
+) -> JObject<'local> {
+    ok_or_throw!(
+        env,
+        inner_create_table(&mut env, j_connection, table_name, initial_data)
+    )
+}
+
+fn inner_create_table<'local>(
+    env: &mut JNIEnv<'local>,
+    j_connection: JObject,
+    table_name: JString,
+    initial_data: JByteArray,
+) -> Result<JObject<'local>> {
+    let table_name: String = env.get_string(&table_name)?.into();
+    let bytes: Vec<u8> = env.convert_byte_array(initial_data)?;
+
+    let conn =
+        unsafe { env.get_rust_field::<_, _, BlockingConnection>(j_connection, NATIVE_CONNECTION) }?;
+    let reader = StreamReader::try_new(Cursor::new(bytes), None)?;
+    let table = RT.block_on(conn.inner.create_table(&table_name, reader).execute())?;
+    drop(conn);
+    Ok(BlockingTable { inner: table }.into_java(env))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_lancedb_lancedb_Connection_createEmptyTable<'local>(
+    mut env: JNIEnv<'local>,
+    j_connection: JObject,
+    table_name: JString,
+    schema_bytes: JByteArray,
+) -> JObject<'local> {
+    ok_or_throw!(
+        env,
+        inner_create_empty_table(&mut env, j_connection, table_name, schema_bytes)
+    )
+}
+
+fn inner_create_empty_table<'local>(
+    env: &mut JNIEnv<'local>,
+    j_connection: JObject,
+    table_name: JString,
+    schema_bytes: JByteArray,
+) -> Result<JObject<'local>> {
+    let table_name: String = env.get_string(&table_name)?.into();
+    let bytes: Vec<u8> = env.convert_byte_array(schema_bytes)?;
+
+    let conn =
+        unsafe { env.get_rust_field::<_, _, BlockingConnection>(j_connection, NATIVE_CONNECTION) }?;
+    let reader = StreamReader::try_new(Cursor::new(&bytes), None)?;
+    let schema = reader.schema();
+    let table = RT.block_on(conn.inner.create_empty_table(&table_name, schema).execute())?;
+    drop(conn);
+    Ok(BlockingTable { inner: table }.into_java(env))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_lancedb_lancedb_Connection_dropTable(
+    mut env: JNIEnv,
+    j_connection: JObject,
+    table_name: JString,
+) {
+    ok_or_throw_without_return!(env, inner_drop_table(&mut env, j_connection, table_name))
+}
+
+fn inner_drop_table<'local>(
+    env: &mut JNIEnv<'local>,
+    j_connection: JObject,
+    table_name: JString,
+) -> Result<()> {
+    let table_name: String = env.get_string(&table_name)?.into();
+    let conn =
+        unsafe { env.get_rust_field::<_, _, BlockingConnection>(j_connection, NATIVE_CONNECTION) }?;
+    RT.block_on(conn.inner.drop_table(&table_name))?;
+    drop(conn);
+    Ok(())
 }
 
 fn inner_table_names<'local>(
