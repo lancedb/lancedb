@@ -273,9 +273,10 @@ def url_retrieve(url: str):
         raise ConnectionError("could not download {} due to {}".format(url, err))
 
 
-def api_key_not_found_help(provider):
+def api_key_not_found_help(provider, key_postfix="API_KEY"):
     logging.error("Could not find API key for %s", provider)
-    raise ValueError(f"Please set the {provider.upper()}_API_KEY environment variable.")
+    expected_api_key = f"{provider.upper()}_{key_postfix}"
+    raise ValueError(f"Please set the {expected_api_key} environment variable.")
 
 
 def is_flash_attn_2_available():
