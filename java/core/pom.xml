@@ -13,7 +13,8 @@
     </parent>
 
     <artifactId>lancedb-core</artifactId>
-    <name>LanceDB Core</name>
+    <name>${project.artifactId}</name>
+    <description>LanceDB Core</description>
     <packaging>jar</packaging>
     <properties>
         <rust.release.build>false</rust.release.build>
