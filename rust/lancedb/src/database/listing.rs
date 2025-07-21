@@ -265,6 +265,7 @@ impl ListingDatabase {
                     uri,
                     request.read_consistency_interval,
                     options.new_table_config,
+                    request.session.clone(),
                 )
                 .await
             }
@@ -316,7 +317,10 @@ impl ListingDatabase {
 
                 let plain_uri = url.to_string();
 
-                let session = Arc::new(lance::session::Session::default());
+                let session = request
+                    .session
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
                 let os_params = ObjectStoreParams {
                     storage_options: Some(options.storage_options.clone()),
                     ..Default::default()
@@ -357,6 +361,7 @@ impl ListingDatabase {
                     uri,
                     request.read_consistency_interval,
                     options.new_table_config,
+                    request.session.clone(),
                 )
                 .await
             }
@@ -367,8 +372,9 @@ impl ListingDatabase {
         path: &str,
         read_consistency_interval: Option<std::time::Duration>,
         new_table_config: NewTableConfig,
+        session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
-        let session = Arc::new(lance::session::Session::default());
+        let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
         let (object_store, base_path) = ObjectStore::from_uri_and_params(
             session.store_registry(),
             path,
