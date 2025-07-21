@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 import os
-from typing import ClassVar, TYPE_CHECKING, List, Union
-from urllib.parse import urlparse
+from typing import ClassVar, List, Union
 import numpy as np
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
 from .registry import register
-from .utils import api_key_not_found_help, IMAGES, TEXT
+from .utils import api_key_not_found_help, TEXT
+
 
 @register("azure-ai-text")
 class AzureAITextEmbeddingFunction(TextEmbeddingFunction):
@@ -16,7 +16,7 @@ class AzureAITextEmbeddingFunction(TextEmbeddingFunction):
     An embedding function that uses the AzureAI API
 
     https://learn.microsoft.com/en-us/python/api/overview/azure/ai-inference-readme?view=azure-python-preview
-    
+
     - AZURE_AI_ENDPOINT: The endpoint URL for the AzureAI service.
     - AZURE_AI_API_KEY: The API key for the AzureAI service.
 
@@ -66,7 +66,6 @@ class AzureAITextEmbeddingFunction(TextEmbeddingFunction):
 
     def ndims(self):
         return self._ndims
-        
 
     def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
         return self.compute_source_embeddings(query, input_type="query")
@@ -106,20 +105,22 @@ class AzureAITextEmbeddingFunction(TextEmbeddingFunction):
         embeddings = []
         for i in range(0, len(texts), batch_size):
             rs = AzureAITextEmbeddingFunction.client.embed(
-                input=texts[i:i + batch_size], model=self.name, dimensions=self._ndims, **kwargs
+                input=texts[i : i + batch_size],
+                model=self.name,
+                dimensions=self._ndims,
+                **kwargs,
             )
             embeddings.extend(emb.embedding for emb in rs.data)
         return embeddings
-
 
     @staticmethod
     def _init_client():
         if AzureAITextEmbeddingFunction.client is None:
             if os.environ.get("AZURE_AI_API_KEY") is None:
                 api_key_not_found_help("AZURE_AI")
-            if os.environ.get('AZURE_AI_ENDPOINT') is None:
+            if os.environ.get("AZURE_AI_ENDPOINT") is None:
                 api_key_not_found_help("AZURE_AI", "ENDPOINT")
-            
+
             inference = attempt_import_or_raise(
                 "azure.ai.inference", "azure-ai-inference"
             )
@@ -130,6 +131,7 @@ class AzureAITextEmbeddingFunction(TextEmbeddingFunction):
 
             AzureAITextEmbeddingFunction.client = inference.EmbeddingsClient(
                 endpoint=os.environ["AZURE_AI_ENDPOINT"],
-                credential=credentials.AzureKeyCredential(os.environ["AZURE_AI_API_KEY"]),
+                credential=credentials.AzureKeyCredential(
+                    os.environ["AZURE_AI_API_KEY"]
+                ),
             )
-
