@@ -4,6 +4,7 @@
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
+use crate::remote::client::StreamingBody;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::AlterColumnsResult;
@@ -15,14 +16,14 @@ use crate::table::UpdateResult;
 use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
-use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
+use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
-use futures::TryFutureExt;
+use futures::StreamExt;
 use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, StatusCode};
@@ -31,6 +32,8 @@ use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
+use lance_datafusion::spill::create_replay_spill;
+use lance_datafusion::spill::SpillReceiver;
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
@@ -39,7 +42,7 @@ use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
@@ -192,6 +195,83 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
     }
 }
 
+struct StreamingBodyGenerator {
+    read_task: tokio::task::JoinHandle<()>,
+    path: std::path::PathBuf,
+    receiver: SpillReceiver,
+}
+
+impl Drop for StreamingBodyGenerator {
+    fn drop(&mut self) {
+        // Ensure the read task is cancelled when the generator is dropped.
+        self.read_task.abort();
+        // Clean up the temporary file.
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+impl StreamingBodyGenerator {
+    fn new(reader: Box<dyn RecordBatchReader + Send>) -> Self {
+        static TMP_DIR: std::sync::LazyLock<std::path::PathBuf> =
+            std::sync::LazyLock::new(std::env::temp_dir);
+        let filename = format!("lancedb-remote-spill-{}.arrow", uuid::Uuid::new_v4());
+        let path = TMP_DIR.join(filename);
+
+        // Buffer the stream to a replay spill. Inputs < 20MB will be buffered in memory.
+        // If the stream is larger, it will be spilled to the temporary file.
+        let (mut tx, receiver) =
+            create_replay_spill(path.clone(), reader.schema().clone(), 20 * 1024 * 1024);
+
+        let read_task = tokio::task::spawn(async move {
+            for batch in reader {
+                match batch {
+                    Ok(batch) => {
+                        if let Err(err) = tx.write(batch).await {
+                            tx.send_error(err);
+                        }
+                    }
+                    Err(e) => {
+                        tx.send_error(e.into());
+                        return;
+                    }
+                }
+            }
+        });
+
+        Self {
+            path,
+            receiver,
+            read_task,
+        }
+    }
+
+    fn read(&self) -> Result<StreamingBody> {
+        let inner = self.receiver.read();
+        let writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &inner.schema())?;
+
+        let body_stream =
+            futures::stream::unfold((inner, writer), |(mut inner, mut writer)| async move {
+                match inner.next().await {
+                    Some(Ok(batch)) => {
+                        writer.write(&batch).ok()?;
+                        let buffer = std::mem::take(writer.get_mut());
+                        Some((Ok(buffer), (inner, writer)))
+                    }
+                    Some(Err(e)) => {
+                        let error = Error::Lance { source: e.into() };
+                        Some((Err(error), (inner, writer)))
+                    }
+                    None => {
+                        writer.finish().ok()?;
+                        let buffer = std::mem::take(writer.get_mut());
+                        Some((Ok(buffer), (inner, writer)))
+                    }
+                }
+            });
+        Ok(StreamingBody::from(body_stream))
+    }
+}
+
 #[derive(Debug)]
 pub struct RemoteTable<S: HttpSend = Sender> {
     #[allow(dead_code)]
@@ -250,15 +330,9 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
-    fn reader_as_body(
-        data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<(reqwest::Body, mpsc::Receiver<Error>)> {
+    fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<StreamingBody> {
         // TODO: Once Phalanx supports compression, we should use it here.
         let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
-
-        // Create a channel to capture stream errors. We need to pass a tx to each
-        // batch, so we use mpsc even if it is just going to be sent once.
-        let (error_tx, error_rx) = mpsc::channel::<Error>(1);
 
         //  Mutex is just here to make it sync. We shouldn't have any contention.
         let mut data = Mutex::new(data);
@@ -268,16 +342,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 let buffer = std::mem::take(writer.get_mut());
                 Some(Ok(buffer))
             }
-            Some(Err(e)) => {
-                // Send the actual error through the channel. Ignore the error;
-                // if the receiver is dropped, we don't care if there is a failure.
-                let _ = error_tx.send(e.into());
-                // Return a generic error for the stream
-                Some(Err(Error::Runtime {
-                    message: "stream error sent by user: unexpected internal error encountered"
-                        .to_string(),
-                }))
-            }
+            Some(Err(e)) => Some(Err(e)),
             None => {
                 writer.finish().ok()?;
                 let buffer = std::mem::take(writer.get_mut());
@@ -285,25 +350,7 @@ impl<S: HttpSend> RemoteTable<S> {
             }
         });
         let body_stream = futures::stream::iter(body_iter);
-        Ok((reqwest::Body::wrap_stream(body_stream), error_rx))
-    }
-
-    /// Buffer the reader into memory
-    async fn buffer_reader<R: RecordBatchReader + ?Sized>(
-        reader: &mut R,
-    ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
-        let schema = reader.schema();
-        let mut batches = Vec::new();
-        for batch in reader {
-            batches.push(batch?);
-        }
-        Ok((schema, batches))
-    }
-
-    /// Create a new RecordBatchReader from buffered data
-    fn make_reader(schema: SchemaRef, batches: Vec<RecordBatch>) -> impl RecordBatchReader {
-        let iter = batches.into_iter().map(Ok);
-        RecordBatchIterator::new(iter, schema)
+        Ok(StreamingBody::from(body_stream))
     }
 
     async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<(String, Response)> {
@@ -321,26 +368,26 @@ impl<S: HttpSend> RemoteTable<S> {
     async fn send_streaming(
         &self,
         req: RequestBuilder,
-        mut data: Box<dyn RecordBatchReader + Send>,
+        data: Box<dyn RecordBatchReader + Send>,
         with_retry: bool,
     ) -> Result<(String, Response)> {
         if !with_retry || self.client.retry_config.retries == 0 {
-            let (body, mut error_rx) = Self::reader_as_body(data)?;
-            return self.client.send(req.body(body)).await.map_err(|e| {
-                if let Ok(error) = error_rx.try_recv() {
-                    error
-                } else {
-                    e.into()
-                }
-            });
+            let streaming_body = Self::reader_as_body(data)?;
+            return self
+                .client
+                .send(req.body(streaming_body.body))
+                .await
+                .map_err(|e| {
+                    if let Ok(error) = streaming_body.error_rx.try_recv() {
+                        error
+                    } else {
+                        e
+                    }
+                });
         } else {
-            // to support retries, buffer into memory and clone the batches on each retry
-            let (schema, batches) = Self::buffer_reader(&mut *data).await?;
-            let make_body = Box::new(move || {
-                let reader = Self::make_reader(schema.clone(), batches.clone());
-                // TODO: how to handle this one?
-                Self::reader_as_body(Box::new(reader))
-            });
+            // to support retries, we need to buffer the stream.
+            let body_generator = StreamingBodyGenerator::new(data);
+            let make_body = Box::new(move || body_generator.read());
             let res = self
                 .client
                 .send_with_retry(req, Some(make_body), false)
@@ -3092,64 +3139,5 @@ mod tests {
             http::Response::builder().status(status).body(body).unwrap()
         });
         table
-    }
-
-    #[tokio::test]
-    async fn test_reader_as_body_error_channel() {
-        // Create a RecordBatch with schema
-        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
-        )
-        .unwrap();
-
-        // Create a failing reader that will return an error on the second next() call
-        struct FailingReader {
-            schema: SchemaRef,
-            call_count: usize,
-            batch: RecordBatch,
-        }
-
-        impl RecordBatchReader for FailingReader {
-            fn schema(&self) -> SchemaRef {
-                self.schema.clone()
-            }
-        }
-
-        impl Iterator for FailingReader {
-            type Item = Result<RecordBatch, arrow_schema::ArrowError>;
-
-            fn next(&mut self) -> Option<Self::Item> {
-                self.call_count += 1;
-                match self.call_count {
-                    1 => Some(Ok(self.batch.clone())),
-                    2 => Some(Err(arrow_schema::ArrowError::InvalidArgumentError(
-                        "Test error for HTTP/2 masking".to_string(),
-                    ))),
-                    _ => None,
-                }
-            }
-        }
-
-        let failing_reader = FailingReader {
-            schema: schema.clone(),
-            call_count: 0,
-            batch,
-        };
-
-        // Test that the error channel captures the actual error
-        let (body, mut error_rx) =
-            RemoteTable::<Sender>::reader_as_body(Box::new(failing_reader)).unwrap();
-
-        // Consume the body to trigger the error
-        let body_bytes = collect_body(body).await;
-
-        // The body should contain the first successful batch
-        assert!(!body_bytes.is_empty());
-
-        // Check that we received the actual error through the channel
-        let error = error_rx.recv().await.unwrap();
-        assert!(error.to_string().contains("Test error for HTTP/2 masking"));
     }
 }

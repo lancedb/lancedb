@@ -4,7 +4,6 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    iter::repeat,
     sync::Arc,
 };
 
@@ -268,9 +267,10 @@ fn create_some_records() -> Result<impl IntoArrow> {
             schema.clone(),
             vec![
                 Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
-                Arc::new(StringArray::from_iter(
-                    repeat(Some("hello world".to_string())).take(TOTAL),
-                )),
+                Arc::new(StringArray::from_iter(std::iter::repeat_n(
+                    Some("hello world".to_string()),
+                    TOTAL,
+                ))),
             ],
         )
         .unwrap()]
