@@ -20,7 +20,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-public class LanceDBRestNamespaces {
+/** Util class to help construct a {@link LanceRestNamespace} for LanceDB. */
+public class LanceDbRestNamespaces {
   private static final String DEFAULT_REGION = "us-east-1";
   private static final String CLOUD_URL_PATTERN = "https://%s.%s.api.lancedb.com";
 
@@ -30,15 +31,15 @@ public class LanceDBRestNamespaces {
   private Optional<String> region = Optional.empty();
   private Map<String, String> additionalConfig = new HashMap<>();
 
-  private LanceDBRestNamespaces() {}
+  private LanceDbRestNamespaces() {}
 
   /**
    * Create a new builder instance.
    *
    * @return A new LanceRestNamespaceBuilder
    */
-  public static LanceDBRestNamespaces builder() {
-    return new LanceDBRestNamespaces();
+  public static LanceDbRestNamespaces builder() {
+    return new LanceDbRestNamespaces();
   }
 
   /**
@@ -47,7 +48,7 @@ public class LanceDBRestNamespaces {
    * @param apiKey The LanceDB API key
    * @return This builder
    */
-  public LanceDBRestNamespaces apiKey(String apiKey) {
+  public LanceDbRestNamespaces apiKey(String apiKey) {
     if (apiKey == null || apiKey.trim().isEmpty()) {
       throw new IllegalArgumentException("API key cannot be null or empty");
     }
@@ -61,7 +62,7 @@ public class LanceDBRestNamespaces {
    * @param database The database name
    * @return This builder
    */
-  public LanceDBRestNamespaces database(String database) {
+  public LanceDbRestNamespaces database(String database) {
     if (database == null || database.trim().isEmpty()) {
       throw new IllegalArgumentException("Database cannot be null or empty");
     }
@@ -76,7 +77,7 @@ public class LanceDBRestNamespaces {
    * @param hostOverride The complete base URL (e.g., "http://your-vpc-endpoint:80")
    * @return This builder
    */
-  public LanceDBRestNamespaces hostOverride(String hostOverride) {
+  public LanceDbRestNamespaces hostOverride(String hostOverride) {
     this.hostOverride = Optional.ofNullable(hostOverride);
     return this;
   }
@@ -88,7 +89,7 @@ public class LanceDBRestNamespaces {
    * @param region The AWS region (e.g., "us-east-1", "eu-west-1")
    * @return This builder
    */
-  public LanceDBRestNamespaces region(String region) {
+  public LanceDbRestNamespaces region(String region) {
     this.region = Optional.ofNullable(region);
     return this;
   }
@@ -100,7 +101,7 @@ public class LanceDBRestNamespaces {
    * @param value The configuration value
    * @return This builder
    */
-  public LanceDBRestNamespaces config(String key, String value) {
+  public LanceDbRestNamespaces config(String key, String value) {
     this.additionalConfig.put(key, value);
     return this;
   }
