@@ -51,6 +51,8 @@ jobs:
           distribution: temurin
           java-version: 11
           cache: "maven"
+      - name: Install parent POM
+        run: mvn install -N
       - name: Java Style Check
         run: mvn checkstyle:check
       # Disable because of issues in lancedb rust core code
