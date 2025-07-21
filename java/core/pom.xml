@@ -21,6 +21,11 @@
 
     <dependencies>
         <dependency>
+            <groupId>com.lancedb</groupId>
+            <artifactId>lance-namespace-core</artifactId>
+            <version>0.0.1</version>
+        </dependency>
+        <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-vector</artifactId>
         </dependency>
