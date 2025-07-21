@@ -10,7 +10,7 @@ For LanceDB Cloud, use the simplified builder API:
 import com.lancedb.lance.namespace.LanceRestNamespace;
 
 // If your DB url is db://example-db, then your database here is example-db
-LanceRestNamespace namespace = LanceDBRestNamespaceBuilder.builder()
+LanceRestNamespace namespace = LanceDBRestNamespaces.builder()
     .apiKey("your_lancedb_cloud_api_key")
     .database("your_database_name")
     .build();
@@ -21,7 +21,7 @@ LanceRestNamespace namespace = LanceDBRestNamespaceBuilder.builder()
 For Enterprise deployments, use your VPC endpoint:
 
 ```java
-LanceRestNamespace namespace = LanceDBRestNamespaceBuilder.builder()
+LanceRestNamespace namespace = LanceDBRestNamespaces.builder()
     .apiKey("your_lancedb_enterprise_api_key")
     .database("your-top-dir") // Your top level folder under your cloud bucket, e.g. s3://your-bucket/your-top-dir/
     .hostOverride("http://<vpc_endpoint_dns_name>:80")

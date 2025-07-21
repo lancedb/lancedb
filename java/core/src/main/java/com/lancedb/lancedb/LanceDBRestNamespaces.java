@@ -20,30 +20,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-/**
- * Builder for creating LanceRestNamespace instances with simplified configuration.
- *
- * <p>Example usage for LanceDB Cloud:
- *
- * <pre>{@code
- * LanceRestNamespace namespace = LanceRestNamespaceBuilder.builder()
- *     .apiKey("your_api_key")
- *     .database("your_database")
- *     .region("us-east-1") // optional, defaults to us-east-1
- *     .build();
- * }</pre>
- *
- * <p>Example usage for LanceDB Enterprise (with host override):
- *
- * <pre>{@code
- * LanceRestNamespace namespace = LanceRestNamespaceBuilder.builder()
- *     .apiKey("your_api_key")
- *     .database("your_database")
- *     .hostOverride("http://your-vpc-endpoint:80")
- *     .build();
- * }</pre>
- */
-public class LanceDBRestNamespaceBuilder {
+public class LanceDBRestNamespaces {
   private static final String DEFAULT_REGION = "us-east-1";
   private static final String CLOUD_URL_PATTERN = "https://%s.%s.api.lancedb.com";
 
@@ -53,15 +30,15 @@ public class LanceDBRestNamespaceBuilder {
   private Optional<String> region = Optional.empty();
   private Map<String, String> additionalConfig = new HashMap<>();
 
-  private LanceDBRestNamespaceBuilder() {}
+  private LanceDBRestNamespaces() {}
 
   /**
    * Create a new builder instance.
    *
    * @return A new LanceRestNamespaceBuilder
    */
-  public static LanceDBRestNamespaceBuilder builder() {
-    return new LanceDBRestNamespaceBuilder();
+  public static LanceDBRestNamespaces builder() {
+    return new LanceDBRestNamespaces();
   }
 
   /**
@@ -70,7 +47,7 @@ public class LanceDBRestNamespaceBuilder {
    * @param apiKey The LanceDB API key
    * @return This builder
    */
-  public LanceDBRestNamespaceBuilder apiKey(String apiKey) {
+  public LanceDBRestNamespaces apiKey(String apiKey) {
     if (apiKey == null || apiKey.trim().isEmpty()) {
       throw new IllegalArgumentException("API key cannot be null or empty");
     }
@@ -84,7 +61,7 @@ public class LanceDBRestNamespaceBuilder {
    * @param database The database name
    * @return This builder
    */
-  public LanceDBRestNamespaceBuilder database(String database) {
+  public LanceDBRestNamespaces database(String database) {
     if (database == null || database.trim().isEmpty()) {
       throw new IllegalArgumentException("Database cannot be null or empty");
     }
@@ -99,7 +76,7 @@ public class LanceDBRestNamespaceBuilder {
    * @param hostOverride The complete base URL (e.g., "http://your-vpc-endpoint:80")
    * @return This builder
    */
-  public LanceDBRestNamespaceBuilder hostOverride(String hostOverride) {
+  public LanceDBRestNamespaces hostOverride(String hostOverride) {
     this.hostOverride = Optional.ofNullable(hostOverride);
     return this;
   }
@@ -111,7 +88,7 @@ public class LanceDBRestNamespaceBuilder {
    * @param region The AWS region (e.g., "us-east-1", "eu-west-1")
    * @return This builder
    */
-  public LanceDBRestNamespaceBuilder region(String region) {
+  public LanceDBRestNamespaces region(String region) {
     this.region = Optional.ofNullable(region);
     return this;
   }
@@ -123,7 +100,7 @@ public class LanceDBRestNamespaceBuilder {
    * @param value The configuration value
    * @return This builder
    */
-  public LanceDBRestNamespaceBuilder config(String key, String value) {
+  public LanceDBRestNamespaces config(String key, String value) {
     this.additionalConfig.put(key, value);
     return this;
   }
