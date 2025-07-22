@@ -1893,7 +1893,7 @@ describe("column name options", () => {
     expect(results.length).toBe(10);
 
     await table.createIndex("multivector", {
-      config: Index.ivfPq({ numPartitions: 2 }),
+      config: Index.ivfPq({ numPartitions: 2, distanceType: "cosine" }),
     });
 
     const results2 = await table
