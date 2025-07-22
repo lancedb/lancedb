@@ -196,12 +196,18 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
 }
 
 struct StreamingBodyGenerator {
-    read_task: tokio::task::JoinHandle<SpillSender>,
-    path: std::path::PathBuf,
+    handle: Arc<SpillHandle>,
     receiver: SpillReceiver,
 }
 
-impl Drop for StreamingBodyGenerator {
+/// A handle that keeps the reading task and the path alive.
+/// When it is dropped, it will cancel the reading task and clean up the temporary file.
+struct SpillHandle {
+    read_task: tokio::task::JoinHandle<SpillSender>,
+    path: std::path::PathBuf,
+}
+
+impl Drop for SpillHandle {
     fn drop(&mut self) {
         // Ensure the read task is cancelled when the generator is dropped.
         self.read_task.abort();
@@ -242,37 +248,40 @@ impl StreamingBodyGenerator {
             }
             tx
         });
+        let handle = Arc::new(SpillHandle { read_task, path });
 
-        Self {
-            path,
-            receiver,
-            read_task,
-        }
+        Self { handle, receiver }
     }
 
     fn read(&self) -> Result<StreamingBody> {
         let inner = self.receiver.read();
         let writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &inner.schema())?;
 
-        let body_stream =
-            futures::stream::unfold((inner, writer), |(mut inner, mut writer)| async move {
+        // To associate the spill lifetime with this stream, we pass a clone
+        // of the handle in. This way, even if the generator is dropped, as
+        // long as there is a stream reading from it, the handle will keep
+        // the reading task and the temporary file alive.
+        let body_stream = futures::stream::unfold(
+            (inner, writer, self.handle.clone()),
+            |(mut inner, mut writer, handle)| async move {
                 match inner.next().await {
                     Some(Ok(batch)) => {
                         writer.write(&batch).ok()?;
                         let buffer = std::mem::take(writer.get_mut());
-                        Some((Ok(buffer), (inner, writer)))
+                        Some((Ok(buffer), (inner, writer, handle)))
                     }
                     Some(Err(e)) => {
                         let error = Error::Lance { source: e.into() };
-                        Some((Err(error), (inner, writer)))
+                        Some((Err(error), (inner, writer, handle)))
                     }
                     None => {
                         writer.finish().ok()?;
                         let buffer = std::mem::take(writer.get_mut());
-                        Some((Ok(buffer), (inner, writer)))
+                        Some((Ok(buffer), (inner, writer, handle)))
                     }
                 }
-            });
+            },
+        );
         Ok(StreamingBody::from(body_stream))
     }
 }
