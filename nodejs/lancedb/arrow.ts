@@ -107,6 +107,20 @@ export type IntoVector =
   | number[]
   | Promise<Float32Array | Float64Array | number[]>;
 
+export type MultiVector = IntoVector[];
+
+export function isMultiVector(value: unknown): value is MultiVector {
+  return Array.isArray(value) && isIntoVector(value[0]);
+}
+
+export function isIntoVector(value: unknown): value is IntoVector {
+  return (
+    value instanceof Float32Array ||
+    value instanceof Float64Array ||
+    (Array.isArray(value) && !Array.isArray(value[0]))
+  );
+}
+
 export function isArrowTable(value: object): value is TableLike {
   if (value instanceof ArrowTable) return true;
   return "schema" in value && "batches" in value;
