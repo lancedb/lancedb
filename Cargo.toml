@@ -24,6 +24,9 @@ rust-version = "1.78.0"
 lance = { "version" = "=0.32.1", "features" = [
     "dynamodb",
 ], "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
+lance-core = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
+lance-datagen = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
+lance-file = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
 lance-io = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
 lance-index = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
 lance-linalg = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
@@ -40,6 +43,7 @@ arrow-ord = "55.1"
 arrow-schema = "55.1"
 arrow-arith = "55.1"
 arrow-cast = "55.1"
+ahash = "0.8"
 async-trait = "0"
 datafusion = { version = "48.0", default-features = false }
 datafusion-catalog = "48.0"
@@ -60,6 +64,7 @@ snafu = "0.8"
 url = "2"
 num-traits = "0.2"
 rand = "0.9"
+rand_xoshiro = "0.7"
 regex = "1.10"
 lazy_static = "1"
 semver = "1.0.25"
