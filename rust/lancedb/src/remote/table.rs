@@ -32,6 +32,7 @@ use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
+use lance_datafusion::spill::SpillSender;
 use lance_datafusion::spill::{create_replay_spill, SpillReceiver};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
@@ -195,7 +196,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
 }
 
 struct StreamingBodyGenerator {
-    read_task: tokio::task::JoinHandle<()>,
+    read_task: tokio::task::JoinHandle<SpillSender>,
     path: std::path::PathBuf,
     receiver: SpillReceiver,
 }
@@ -227,14 +228,19 @@ impl StreamingBodyGenerator {
                     Ok(batch) => {
                         if let Err(err) = tx.write(batch).await {
                             tx.send_error(err);
+                            return tx;
                         }
                     }
                     Err(e) => {
                         tx.send_error(e.into());
-                        return;
+                        return tx;
                     }
                 }
             }
+            if let Err(err) = tx.finish().await {
+                tx.send_error(err);
+            }
+            tx
         });
 
         Self {
