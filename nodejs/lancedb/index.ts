@@ -100,6 +100,7 @@ export {
   RecordBatchLike,
   DataLike,
   IntoVector,
+  MultiVector,
 } from "./arrow";
 export { IntoSql, packBits } from "./util";
 
