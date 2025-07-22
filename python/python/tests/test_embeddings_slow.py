@@ -13,7 +13,7 @@ from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector, MultiVector
 import time
 from collections import defaultdict
-from tests.utils import compute_average_precision, compute_recall_at_k
+from utils import compute_average_precision, compute_recall_at_k
 
 
 # These are integration tests for embedding functions.

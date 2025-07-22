@@ -61,6 +61,7 @@ tests = [
     "pylance>=0.25",
     "requests",
     "datafusion",
+    "scikit-learn"
 ]
 dev = [
     "ruff",

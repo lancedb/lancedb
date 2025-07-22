@@ -223,4 +223,4 @@ def __warn_on_fork():
 
 
 if hasattr(os, "register_at_fork"):
-    os.register_at_fork(before=__warn_on_fork)
+    os.register_at_fork(before=__warn_on_fork)  # type: ignore[attr-defined]
