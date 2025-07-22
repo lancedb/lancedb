@@ -4087,7 +4087,7 @@ dependencies = [
  "futures",
  "hex",
  "rand 0.8.5",
- "rand_xoshiro",
+ "rand_xoshiro 0.6.0",
  "random_word 0.5.0",
 ]
 
@@ -4339,6 +4339,7 @@ dependencies = [
 name = "lancedb"
 version = "0.21.2-beta.0"
 dependencies = [
+ "ahash",
  "arrow",
  "arrow-array",
  "arrow-cast",
@@ -4373,8 +4374,11 @@ dependencies = [
  "http 1.3.1",
  "http-body 1.0.1",
  "lance",
+ "lance-core",
  "lance-datafusion",
+ "lance-datagen",
  "lance-encoding",
+ "lance-file",
  "lance-index",
  "lance-io",
  "lance-linalg",
@@ -4389,6 +4393,7 @@ dependencies = [
  "polars",
  "polars-arrow",
  "rand 0.9.1",
+ "rand_xoshiro 0.7.0",
  "random_word 0.4.3",
  "regex",
  "reqwest",
@@ -4399,6 +4404,7 @@ dependencies = [
  "serde_with",
  "snafu",
  "tempfile",
+ "test-log",
  "tokenizers",
  "tokio",
  "url",
@@ -6256,6 +6262,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_xoshiro"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
+dependencies = [
+ "rand_core 0.9.3",
+]
+
+[[package]]
 name = "random_word"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7582,6 +7597,28 @@ dependencies = [
  "once_cell",
  "rustix 1.0.7",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "test-log"
+version = "0.2.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e33b98a582ea0be1168eba097538ee8dd4bbe0f2b01b22ac92ea30054e5be7b"
+dependencies = [
+ "env_logger",
+ "test-log-macros",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "test-log-macros"
+version = "0.2.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "451b374529930d7601b1eef8d32bc79ae870b6079b069401709c2a8bf9e75f36"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.103",
 ]
 
 [[package]]
