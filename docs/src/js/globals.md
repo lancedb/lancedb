@@ -84,6 +84,7 @@
 - [FieldLike](type-aliases/FieldLike.md)
 - [IntoSql](type-aliases/IntoSql.md)
 - [IntoVector](type-aliases/IntoVector.md)
+- [MultiVector](type-aliases/MultiVector.md)
 - [RecordBatchLike](type-aliases/RecordBatchLike.md)
 - [SchemaLike](type-aliases/SchemaLike.md)
 - [TableLike](type-aliases/TableLike.md)

@@ -24,10 +24,10 @@ The default is 7 days
 // Delete all versions older than 1 day
 const olderThan = new Date();
 olderThan.setDate(olderThan.getDate() - 1));
-tbl.cleanupOlderVersions(olderThan);
+tbl.optimize({cleanupOlderThan: olderThan});
 
 // Delete all versions except the current version
-tbl.cleanupOlderVersions(new Date());
+tbl.optimize({cleanupOlderThan: new Date()});
 ```
 
 ***
