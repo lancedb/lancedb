@@ -1875,7 +1875,19 @@ describe("column name options", () => {
         ),
       });
     }
-    const table = await db.createTable("multivectors", data);
+    const table = await db.createTable("multivectors", data, {
+      schema: new Schema([
+        new Field(
+          "multivector",
+          new List(
+            new Field(
+              "item",
+              new FixedSizeList(2, new Field("item", new Float32())),
+            ),
+          ),
+        ),
+      ]),
+    });
 
     const results = await table.search(data[0].multivector).limit(10).toArray();
     expect(results.length).toBe(10);
