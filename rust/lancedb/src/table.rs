@@ -611,7 +611,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
 /// A Table is a collection of strong typed Rows.
 ///
 /// The type of the each row is defined in Apache Arrow [Schema].
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Table {
     inner: Arc<dyn BaseTable>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
