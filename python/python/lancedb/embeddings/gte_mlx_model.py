@@ -9,6 +9,10 @@ from huggingface_hub import snapshot_download
 from pydantic import BaseModel
 from transformers import BertTokenizer
 
+# Ensure doctests don't fail if mlx is not installed
+import pytest
+pytest.importorskip("mlx")
+
 try:
     import mlx.core as mx
     import mlx.nn as nn
