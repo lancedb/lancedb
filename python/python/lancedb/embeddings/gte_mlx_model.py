@@ -11,6 +11,7 @@ from transformers import BertTokenizer
 
 # Ensure doctests don't fail if mlx is not installed
 import pytest
+
 pytest.importorskip("mlx")
 
 try:
