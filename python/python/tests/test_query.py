@@ -850,7 +850,8 @@ async def test_explain_plan_with_filters(table_async: AsyncTable):
     )
     plan_fts_filter = await query_fts_filter.where("id = 1").explain_plan()
     assert "MatchQuery: query=dog" in plan_fts_filter
-    assert "FilterExec: id@" in plan_fts_filter  # Should show filter details
+    assert "LanceRead" in plan_fts_filter
+    assert "full_filter=id = Int64(1)" in plan_fts_filter  # Should show filter details
 
 
 @pytest.mark.asyncio
