@@ -33,8 +33,11 @@ tantivy = pytest.importorskip("tantivy")
 
 @pytest.fixture
 def table(tmp_path) -> ldb.table.LanceTable:
+    # Use local random state to avoid affecting other tests
+    rng = np.random.RandomState(42)
+    local_random = random.Random(42)
     db = ldb.connect(tmp_path)
-    vectors = [np.random.randn(128) for _ in range(100)]
+    vectors = [rng.randn(128) for _ in range(100)]
 
     text_nouns = ("puppy", "car")
     text2_nouns = ("rabbit", "girl", "monkey")
@@ -44,10 +47,10 @@ def table(tmp_path) -> ldb.table.LanceTable:
     text = [
         " ".join(
             [
-                text_nouns[random.randrange(0, len(text_nouns))],
-                verbs[random.randrange(0, 5)],
-                adv[random.randrange(0, 5)],
-                adj[random.randrange(0, 5)],
+                text_nouns[local_random.randrange(0, len(text_nouns))],
+                verbs[local_random.randrange(0, 5)],
+                adv[local_random.randrange(0, 5)],
+                adj[local_random.randrange(0, 5)],
             ]
         )
         for _ in range(100)
@@ -55,15 +58,15 @@ def table(tmp_path) -> ldb.table.LanceTable:
     text2 = [
         " ".join(
             [
-                text2_nouns[random.randrange(0, len(text2_nouns))],
-                verbs[random.randrange(0, 5)],
-                adv[random.randrange(0, 5)],
-                adj[random.randrange(0, 5)],
+                text2_nouns[local_random.randrange(0, len(text2_nouns))],
+                verbs[local_random.randrange(0, 5)],
+                adv[local_random.randrange(0, 5)],
+                adj[local_random.randrange(0, 5)],
             ]
         )
         for _ in range(100)
     ]
-    count = [random.randint(1, 10000) for _ in range(100)]
+    count = [local_random.randint(1, 10000) for _ in range(100)]
     table = db.create_table(
         "test",
         data=pd.DataFrame(
@@ -82,8 +85,11 @@ def table(tmp_path) -> ldb.table.LanceTable:
 
 @pytest.fixture
 async def async_table(tmp_path) -> ldb.table.AsyncTable:
+    # Use local random state to avoid affecting other tests
+    rng = np.random.RandomState(42)
+    local_random = random.Random(42)
     db = await ldb.connect_async(tmp_path)
-    vectors = [np.random.randn(128) for _ in range(100)]
+    vectors = [rng.randn(128) for _ in range(100)]
 
     text_nouns = ("puppy", "car")
     text2_nouns = ("rabbit", "girl", "monkey")
@@ -93,10 +99,10 @@ async def async_table(tmp_path) -> ldb.table.AsyncTable:
     text = [
         " ".join(
             [
-                text_nouns[random.randrange(0, len(text_nouns))],
-                verbs[random.randrange(0, 5)],
-                adv[random.randrange(0, 5)],
-                adj[random.randrange(0, 5)],
+                text_nouns[local_random.randrange(0, len(text_nouns))],
+                verbs[local_random.randrange(0, 5)],
+                adv[local_random.randrange(0, 5)],
+                adj[local_random.randrange(0, 5)],
             ]
         )
         for _ in range(100)
@@ -104,15 +110,15 @@ async def async_table(tmp_path) -> ldb.table.AsyncTable:
     text2 = [
         " ".join(
             [
-                text2_nouns[random.randrange(0, len(text2_nouns))],
-                verbs[random.randrange(0, 5)],
-                adv[random.randrange(0, 5)],
-                adj[random.randrange(0, 5)],
+                text2_nouns[local_random.randrange(0, len(text2_nouns))],
+                verbs[local_random.randrange(0, 5)],
+                adv[local_random.randrange(0, 5)],
+                adj[local_random.randrange(0, 5)],
             ]
         )
         for _ in range(100)
     ]
-    count = [random.randint(1, 10000) for _ in range(100)]
+    count = [local_random.randint(1, 10000) for _ in range(100)]
     table = await db.create_table(
         "test",
         data=pd.DataFrame(
