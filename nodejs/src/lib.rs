@@ -14,6 +14,7 @@ pub mod merge;
 mod query;
 pub mod remote;
 mod rerankers;
+mod session;
 mod table;
 mod util;
 

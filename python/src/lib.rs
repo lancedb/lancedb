@@ -11,6 +11,7 @@ use pyo3::{
     wrap_pyfunction, Bound, PyResult, Python,
 };
 use query::{FTSQuery, HybridQuery, Query, VectorQuery};
+use session::Session;
 use table::{
     AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, MergeResult,
     Table, UpdateResult,
@@ -21,6 +22,7 @@ pub mod connection;
 pub mod error;
 pub mod index;
 pub mod query;
+pub mod session;
 pub mod table;
 pub mod util;
 
@@ -31,6 +33,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         .write_style("LANCEDB_LOG_STYLE");
     env_logger::init_from_env(env);
     m.add_class::<Connection>()?;
+    m.add_class::<Session>()?;
     m.add_class::<Table>()?;
     m.add_class::<IndexConfig>()?;
     m.add_class::<Query>()?;

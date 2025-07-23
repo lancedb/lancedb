@@ -37,6 +37,9 @@ if TYPE_CHECKING:
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
+    from .session import Session as SESSION_TYPE
+else:
+    SESSION_TYPE = "Session"
 
 
 class DBConnection(EnforceOverrides):
@@ -247,6 +250,10 @@ class DBConnection(EnforceOverrides):
         name: str
             The name of the table.
         index_cache_size: int, default 256
+            **Deprecated**: Use session-level cache configuration instead.
+            Create a Session with custom cache sizes and pass it to lancedb.connect().
+            Session caches are specified in bytes and are more efficient.
+
             Set the size of the index cache, specified as a number of entries
 
             The exact meaning of an "entry" will depend on the type of index:
@@ -354,6 +361,7 @@ class LanceDBConnection(DBConnection):
         *,
         read_consistency_interval: Optional[timedelta] = None,
         storage_options: Optional[Dict[str, str]] = None,
+        session: Optional[SESSION_TYPE] = None,
     ):
         if not isinstance(uri, Path):
             scheme = get_uri_scheme(uri)
@@ -367,6 +375,7 @@ class LanceDBConnection(DBConnection):
         self._entered = False
         self.read_consistency_interval = read_consistency_interval
         self.storage_options = storage_options
+        self.session = session
 
         if read_consistency_interval is not None:
             read_consistency_interval_secs = read_consistency_interval.total_seconds()
@@ -475,6 +484,18 @@ class LanceDBConnection(DBConnection):
         -------
         A LanceTable object representing the table.
         """
+        if index_cache_size is not None:
+            import warnings
+
+            warnings.warn(
+                "index_cache_size is deprecated. Use session-level cache "
+                "configuration instead. Create a Session with custom cache sizes "
+                "and pass it to lancedb.connect(). Session caches are specified "
+                "in bytes and are more efficient.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         return LanceTable.open(
             self,
             name,
@@ -820,6 +841,10 @@ class AsyncConnection(object):
             See available options at
             <https://lancedb.github.io/lancedb/guides/storage/>
         index_cache_size: int, default 256
+            **Deprecated**: Use session-level cache configuration instead.
+            Create a Session with custom cache sizes and pass it to lancedb.connect().
+            Session caches are specified in bytes and are more efficient.
+
             Set the size of the index cache, specified as a number of entries
 
             The exact meaning of an "entry" will depend on the type of index:

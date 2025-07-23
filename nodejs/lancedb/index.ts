@@ -7,6 +7,8 @@ import {
   cleanseStorageOptions,
 } from "./connection";
 
+import { Session } from "./session";
+
 import {
   ConnectionOptions,
   Connection as LanceDbConnection,
@@ -50,6 +52,8 @@ export {
   TableNamesOptions,
   OpenTableOptions,
 } from "./connection";
+
+export { Session } from "./session";
 
 export {
   ExecutableQuery,
@@ -131,6 +135,7 @@ export { IntoSql, packBits } from "./util";
 export async function connect(
   uri: string,
   options?: Partial<ConnectionOptions>,
+  session?: Session,
 ): Promise<Connection>;
 /**
  * Connect to a LanceDB instance at the given URI.
@@ -152,18 +157,33 @@ export async function connect(
  */
 export async function connect(
   options: Partial<ConnectionOptions> & { uri: string },
+  session?: Session,
 ): Promise<Connection>;
 export async function connect(
   uriOrOptions: string | (Partial<ConnectionOptions> & { uri: string }),
-  options: Partial<ConnectionOptions> = {},
+  optionsOrSession?: Partial<ConnectionOptions> | Session,
+  session?: Session,
 ): Promise<Connection> {
   let uri: string | undefined;
+  let options: Partial<ConnectionOptions> = {};
+  let finalSession: Session | undefined;
+
   if (typeof uriOrOptions !== "string") {
     const { uri: uri_, ...opts } = uriOrOptions;
     uri = uri_;
     options = opts;
+    // In this case, optionsOrSession is actually the session
+    finalSession = optionsOrSession as Session;
   } else {
     uri = uriOrOptions;
+    if (optionsOrSession instanceof Session) {
+      // Second parameter is session, no options provided
+      finalSession = optionsOrSession;
+    } else {
+      // Second parameter is options, third parameter is session
+      options = optionsOrSession || {};
+      finalSession = session;
+    }
   }
 
   if (!uri) {
@@ -174,6 +194,10 @@ export async function connect(
   (<ConnectionOptions>options).storageOptions = cleanseStorageOptions(
     (<ConnectionOptions>options).storageOptions,
   );
-  const nativeConn = await LanceDbConnection.new(uri, options);
+  const nativeConn = await LanceDbConnection.new(
+    uri,
+    options,
+    finalSession?._nativeSession,
+  );
   return new LocalConnection(nativeConn);
 }

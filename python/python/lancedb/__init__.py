@@ -17,6 +17,7 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .schema import vector
+from .session import Session
 from .table import AsyncTable
 
 
@@ -30,6 +31,7 @@ def connect(
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
     storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
     **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database.
@@ -113,6 +115,7 @@ def connect(
         uri,
         read_consistency_interval=read_consistency_interval,
         storage_options=storage_options,
+        session=session,
     )
 
 
@@ -212,6 +215,7 @@ __all__ = [
     "DBConnection",
     "LanceDBConnection",
     "RemoteDBConnection",
+    "Session",
     "__version__",
 ]
 
