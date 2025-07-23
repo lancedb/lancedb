@@ -9,16 +9,14 @@ from huggingface_hub import snapshot_download
 from pydantic import BaseModel
 from transformers import BertTokenizer
 
-# Ensure doctests don't fail if mlx is not installed
-import pytest
-
-pytest.importorskip("mlx")
+from .utils import create_import_stub
 
 try:
     import mlx.core as mx
     import mlx.nn as nn
 except ImportError:
-    raise ImportError("You need to install MLX to use this model use - pip install mlx")
+    mx = create_import_stub("mlx.core", "mlx")
+    nn = create_import_stub("mlx.nn", "mlx")
 
 
 def average_pool(last_hidden_state: mx.array, attention_mask: mx.array) -> mx.array:
@@ -77,7 +75,7 @@ class TransformerEncoder(nn.Module):
         super().__init__()
         self.layers = [
             TransformerEncoderLayer(dims, num_heads, mlp_dims)
-            for i in range(num_layers)
+            for _ in range(num_layers)
         ]
 
     def __call__(self, x, mask):
