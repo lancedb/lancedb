@@ -65,7 +65,7 @@ def ensure_vector_query(
 ) -> Union[List[float], List[List[float]], pa.Array, List[pa.Array]]:
     if isinstance(val, list):
         if len(val) == 0:
-            return ValueError("Vector query must be a non-empty list")
+            raise ValueError("Vector query must be a non-empty list")
         sample = val[0]
     else:
         if isinstance(val, float):
@@ -78,7 +78,7 @@ def ensure_vector_query(
         return val
     if isinstance(sample, list):
         if len(sample) == 0:
-            return ValueError("Vector query must be a non-empty list")
+            raise ValueError("Vector query must be a non-empty list")
         if isinstance(sample[0], float):
             # val is list of list of floats
             return val
