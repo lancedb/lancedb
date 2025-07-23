@@ -7,11 +7,10 @@ import {
   cleanseStorageOptions,
 } from "./connection";
 
-import { Session } from "./session";
-
 import {
   ConnectionOptions,
   Connection as LanceDbConnection,
+  Session,
 } from "./native.js";
 
 export {
@@ -53,7 +52,7 @@ export {
   OpenTableOptions,
 } from "./connection";
 
-export { Session } from "./session";
+export { Session } from "./native.js";
 
 export {
   ExecutableQuery,
@@ -194,10 +193,6 @@ export async function connect(
   (<ConnectionOptions>options).storageOptions = cleanseStorageOptions(
     (<ConnectionOptions>options).storageOptions,
   );
-  const nativeConn = await LanceDbConnection.new(
-    uri,
-    options,
-    finalSession?._nativeSession,
-  );
+  const nativeConn = await LanceDbConnection.new(uri, options, finalSession);
   return new LocalConnection(nativeConn);
 }
