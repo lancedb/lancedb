@@ -1,14 +1,11 @@
 [package]
 name = "lancedb-jni"
 description = "JNI bindings for LanceDB"
-# TODO modify lancedb/Cargo.toml for version and dependencies
 version = "0.10.0"
-edition.workspace = true
-repository.workspace = true
-readme.workspace = true
-license.workspace = true
-keywords.workspace = true
-categories.workspace = true
+edition = "2021"
+authors = ["LanceDB Devs <dev@lancedb.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/lancedb/lancedb"
 publish = false
 
 [lib]
@@ -16,12 +13,12 @@ crate-type = ["cdylib"]
 
 [dependencies]
 lancedb = { path = "../../../rust/lancedb" }
-lance = { workspace = true }
-arrow = { workspace = true, features = ["ffi"] }
-arrow-schema.workspace = true
+lance = "=0.30.0"
+arrow = { version = "55.1", features = ["ffi"] }
+arrow-schema = "55.1"
 tokio = "1.23"
 jni = "0.21.1"
-snafu.workspace = true
-lazy_static.workspace = true
+snafu = "0.8"
+lazy_static = "1"
 serde = { version = "^1" }
 serde_json = { version = "1" }
