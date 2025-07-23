@@ -6,6 +6,17 @@ import pyarrow as pa
 from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 from .remote import ClientConfig
 
+class Session:
+    def __init__(
+        self,
+        index_cache_size_bytes: Optional[int] = None,
+        metadata_cache_size_bytes: Optional[int] = None,
+    ): ...
+    @staticmethod
+    def default() -> "Session": ...
+    def size_bytes(self) -> int: ...
+    def approx_num_items(self) -> int: ...
+
 class Connection(object):
     uri: str
     async def table_names(

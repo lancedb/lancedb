@@ -6,7 +6,7 @@ import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, Optional, Union, Any
+from typing import TYPE_CHECKING, Dict, Optional, Union, Any
 import warnings
 
 __version__ = importlib.metadata.version("lancedb")
@@ -17,8 +17,10 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .schema import vector
-from ._lancedb import Session
 from .table import AsyncTable
+
+if TYPE_CHECKING:
+    from ._lancedb import Session
 
 
 def connect(
