@@ -17,7 +17,7 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .schema import vector
-from .session import Session
+from ._lancedb import Session
 from .table import AsyncTable
 
 

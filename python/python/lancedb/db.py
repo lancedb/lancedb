@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
-    from .session import Session as SESSION_TYPE
+    from ._lancedb import Session as SESSION_TYPE
 else:
     SESSION_TYPE = "Session"
 

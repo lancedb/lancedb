@@ -87,7 +87,6 @@ export interface OpenTableOptions {
    *
    * @deprecated Use session-level cache configuration instead.
    * Create a Session with custom cache sizes and pass it to the connect() function.
-   * Session caches are specified in bytes and are more efficient.
    *
    * The exact meaning of an "entry" will depend on the type of index:
    * - IVF: there is one entry for each IVF partition
