@@ -45,11 +45,7 @@ impl Connection {
 impl Connection {
     /// Create a new Connection instance from the given URI.
     #[napi(factory)]
-    pub async fn new(
-        uri: String,
-        options: ConnectionOptions,
-        session: Option<&crate::session::Session>,
-    ) -> napi::Result<Self> {
+    pub async fn new(uri: String, options: ConnectionOptions) -> napi::Result<Self> {
         let mut builder = ConnectBuilder::new(&uri);
         if let Some(interval) = options.read_consistency_interval {
             builder =
@@ -78,7 +74,7 @@ impl Connection {
             builder = builder.host_override(&host_override);
         }
 
-        if let Some(session) = session {
+        if let Some(session) = options.session {
             builder = builder.session(session.inner.clone());
         }
 

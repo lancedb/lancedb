@@ -12,6 +12,7 @@ use napi_derive::*;
 /// Sessions allow you to configure cache sizes for index and metadata caches,
 /// which can significantly impact performance for large datasets.
 #[napi]
+#[derive(Clone)]
 pub struct Session {
     pub(crate) inner: Arc<LanceSession>,
 }
@@ -80,5 +81,18 @@ impl Session {
     #[napi]
     pub fn approx_num_items(&self) -> u32 {
         self.inner.approx_num_items() as u32
+    }
+}
+
+// Implement FromNapiValue for Session to work with napi(object)
+impl napi::bindgen_prelude::FromNapiValue for Session {
+    unsafe fn from_napi_value(
+        env: napi::sys::napi_env,
+        napi_val: napi::sys::napi_value,
+    ) -> napi::Result<Self> {
+        let object: napi::bindgen_prelude::ClassInstance<Session> =
+            napi::bindgen_prelude::ClassInstance::from_napi_value(env, napi_val)?;
+        let copy = object.clone();
+        Ok(copy)
     }
 }

@@ -153,46 +153,43 @@ export async function connect(
  *   storageOptions: {timeout: "60s"}
  * });
  * ```
+ *
+ * @example
+ * ```ts
+ * const session = Session.default();
+ * const conn = await connect({
+ *   uri: "/path/to/database",
+ *   session: session
+ * });
+ * ```
  */
 export async function connect(
   options: Partial<ConnectionOptions> & { uri: string },
-  session?: Session,
 ): Promise<Connection>;
 export async function connect(
   uriOrOptions: string | (Partial<ConnectionOptions> & { uri: string }),
-  optionsOrSession?: Partial<ConnectionOptions> | Session,
-  session?: Session,
+  options?: Partial<ConnectionOptions>,
 ): Promise<Connection> {
   let uri: string | undefined;
-  let options: Partial<ConnectionOptions> = {};
-  let finalSession: Session | undefined;
+  let finalOptions: Partial<ConnectionOptions> = {};
 
   if (typeof uriOrOptions !== "string") {
     const { uri: uri_, ...opts } = uriOrOptions;
     uri = uri_;
-    options = opts;
-    // In this case, optionsOrSession is actually the session
-    finalSession = optionsOrSession as Session;
+    finalOptions = opts;
   } else {
     uri = uriOrOptions;
-    if (optionsOrSession instanceof Session) {
-      // Second parameter is session, no options provided
-      finalSession = optionsOrSession;
-    } else {
-      // Second parameter is options, third parameter is session
-      options = optionsOrSession || {};
-      finalSession = session;
-    }
+    finalOptions = options || {};
   }
 
   if (!uri) {
     throw new Error("uri is required");
   }
 
-  options = (options as ConnectionOptions) ?? {};
-  (<ConnectionOptions>options).storageOptions = cleanseStorageOptions(
-    (<ConnectionOptions>options).storageOptions,
+  finalOptions = (finalOptions as ConnectionOptions) ?? {};
+  (<ConnectionOptions>finalOptions).storageOptions = cleanseStorageOptions(
+    (<ConnectionOptions>finalOptions).storageOptions,
   );
-  const nativeConn = await LanceDbConnection.new(uri, options, finalSession);
+  const nativeConn = await LanceDbConnection.new(uri, finalOptions);
   return new LocalConnection(nativeConn);
 }

@@ -32,13 +32,12 @@ impl Session {
     /// ----------
     /// index_cache_size_bytes : int, optional
     ///     The size of the index cache in bytes.
-    ///     The index cache stores decompressed vector indices in memory for faster access.
-    ///     A larger cache can improve performance for datasets with many indices, but uses more RAM.
+    ///     Index data is stored in memory in this cache to speed up queries.
     ///     Default: 6GB (6 * 1024 * 1024 * 1024 bytes)
     /// metadata_cache_size_bytes : int, optional
     ///     The size of the metadata cache in bytes.
     ///     The metadata cache stores file metadata and schema information in memory.
-    ///     A larger cache can improve performance for datasets with many files or frequent schema access.
+    ///     This cache improves scan and write performance.
     ///     Default: 1GB (1024 * 1024 * 1024 bytes)
     #[new]
     #[pyo3(signature = (index_cache_size_bytes=None, metadata_cache_size_bytes=None))]

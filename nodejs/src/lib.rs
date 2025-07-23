@@ -35,6 +35,9 @@ pub struct ConnectionOptions {
     ///
     /// The available options are described at https://lancedb.github.io/lancedb/guides/storage/
     pub storage_options: Option<HashMap<String, String>>,
+    /// (For LanceDB OSS only): the session to use for this connection. Holds
+    /// shared caches and other session-specific state.
+    pub session: Option<session::Session>,
 
     /// (For LanceDB cloud only): configuration for the remote HTTP client.
     pub client_config: Option<remote::ClientConfig>,

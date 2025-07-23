@@ -37,9 +37,7 @@ if TYPE_CHECKING:
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
-    from ._lancedb import Session as SESSION_TYPE
-else:
-    SESSION_TYPE = "Session"
+    from ._lancedb import Session
 
 
 class DBConnection(EnforceOverrides):
@@ -361,7 +359,7 @@ class LanceDBConnection(DBConnection):
         *,
         read_consistency_interval: Optional[timedelta] = None,
         storage_options: Optional[Dict[str, str]] = None,
-        session: Optional[SESSION_TYPE] = None,
+        session: Optional[Session] = None,
     ):
         if not isinstance(uri, Path):
             scheme = get_uri_scheme(uri)
