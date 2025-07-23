@@ -678,7 +678,8 @@ impl Database for ListingDatabase {
         let mut read_params = request.lance_read_params.unwrap_or_else(|| {
             let mut default_params = ReadParams::default();
             if let Some(index_cache_size) = request.index_cache_size {
-                default_params.index_cache_size = index_cache_size as usize;
+                #[allow(deprecated)]
+                default_params.index_cache_size(index_cache_size as usize);
             }
             default_params
         });
