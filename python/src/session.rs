@@ -16,6 +16,14 @@ pub struct Session {
     pub(crate) inner: Arc<LanceSession>,
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(LanceSession::default()),
+        }
+    }
+}
+
 #[pymethods]
 impl Session {
     /// Create a new session with custom cache sizes.
@@ -62,10 +70,9 @@ impl Session {
     /// Session
     ///     A new Session with default cache sizes
     #[staticmethod]
+    #[allow(clippy::should_implement_trait)]
     pub fn default() -> Self {
-        Self {
-            inner: Arc::new(LanceSession::default()),
-        }
+        Default::default()
     }
 
     /// Get the current size of the session caches in bytes.
