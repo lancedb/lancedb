@@ -33,8 +33,11 @@ impl Session {
     /// # Parameters
     ///
     /// - `index_cache_size_bytes`: The size of the index cache in bytes.
+    ///   Index data is stored in memory in this cache to speed up queries.
     ///   Defaults to 6GB if not specified.
     /// - `metadata_cache_size_bytes`: The size of the metadata cache in bytes.
+    ///   The metadata cache stores file metadata and schema information in memory.
+    ///   This cache improves scan and write performance.
     ///   Defaults to 1GB if not specified.
     #[napi(constructor)]
     pub fn new(

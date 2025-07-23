@@ -29,6 +29,7 @@
 - [Query](classes/Query.md)
 - [QueryBase](classes/QueryBase.md)
 - [RecordBatchIterator](classes/RecordBatchIterator.md)
+- [Session](classes/Session.md)
 - [Table](classes/Table.md)
 - [TagContents](classes/TagContents.md)
 - [Tags](classes/Tags.md)

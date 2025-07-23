@@ -70,6 +70,17 @@ Defaults to 'us-east-1'.
 
 ***
 
+### session?
+
+```ts
+optional session: Session;
+```
+
+(For LanceDB OSS only): the session to use for this connection. Holds
+shared caches and other session-specific state.
+
+***
+
 ### storageOptions?
 
 ```ts
