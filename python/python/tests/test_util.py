@@ -597,3 +597,57 @@ def test_sanitize_data_stream():
 
     with pytest.raises(ValueError):
         next(output)
+
+
+def test_infer_vector_column_query_single_vector():
+    """Test that infer_vector_column_query returns the single vector column."""
+    from lancedb.util import infer_vector_column_query
+
+    schema = pa.schema(
+        {"id": pa.int64(), "text": pa.string(), "vector": pa.list_(pa.float32(), 10)}
+    )
+
+    result = infer_vector_column_query(schema)
+    assert result == "vector"
+
+
+def test_infer_vector_column_query_no_vector_columns():
+    """Test error message when there are no vector columns."""
+    from lancedb.util import infer_vector_column_query
+
+    schema = pa.schema({"id": pa.int64(), "text": pa.string(), "score": pa.float32()})
+
+    with pytest.raises(ValueError) as exc_info:
+        infer_vector_column_query(schema)
+
+    error_msg = str(exc_info.value)
+    assert "There is no vector column in the data" in error_msg
+    assert "Please specify the vector column name for vector search" in error_msg
+    assert "Available columns: ['id', 'text', 'score']" in error_msg
+
+
+def test_infer_vector_column_query_multiple_vector_columns():
+    """Test error message when there are multiple vector columns."""
+    from lancedb.util import infer_vector_column_query
+
+    schema = pa.schema(
+        {
+            "id": pa.int64(),
+            "embeddings": pa.list_(pa.float32(), 384),
+            "text": pa.string(),
+            "image_vec": pa.list_(pa.float32(), 512),
+        }
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        infer_vector_column_query(schema)
+
+    error_msg = str(exc_info.value)
+    assert (
+        "Schema has more than one vector column: ['embeddings', 'image_vec']"
+        in error_msg
+    )
+    assert (
+        "Please specify the vector column name for vector search using the "
+        "'vector_column_name' parameter" in error_msg
+    )
