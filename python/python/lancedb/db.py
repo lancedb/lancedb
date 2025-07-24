@@ -250,7 +250,6 @@ class DBConnection(EnforceOverrides):
         index_cache_size: int, default 256
             **Deprecated**: Use session-level cache configuration instead.
             Create a Session with custom cache sizes and pass it to lancedb.connect().
-            Session caches are specified in bytes and are more efficient.
 
             Set the size of the index cache, specified as a number of entries
 
@@ -489,8 +488,7 @@ class LanceDBConnection(DBConnection):
             warnings.warn(
                 "index_cache_size is deprecated. Use session-level cache "
                 "configuration instead. Create a Session with custom cache sizes "
-                "and pass it to lancedb.connect(). Session caches are specified "
-                "in bytes and are more efficient.",
+                "and pass it to lancedb.connect().",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -842,7 +840,6 @@ class AsyncConnection(object):
         index_cache_size: int, default 256
             **Deprecated**: Use session-level cache configuration instead.
             Create a Session with custom cache sizes and pass it to lancedb.connect().
-            Session caches are specified in bytes and are more efficient.
 
             Set the size of the index cache, specified as a number of entries
 

@@ -9,7 +9,8 @@ use pyo3::{pyclass, pymethods, PyResult};
 /// A session for managing caches and object stores across LanceDB operations.
 ///
 /// Sessions allow you to configure cache sizes for index and metadata caches,
-/// which can significantly impact performance for large datasets.
+/// which can significantly impact memory use and performance. They can
+/// also be re-used across multiple connections to share the same cache state.
 #[pyclass]
 #[derive(Clone)]
 pub struct Session {

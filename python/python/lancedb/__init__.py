@@ -66,6 +66,12 @@ def connect(
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
         <https://lancedb.github.io/lancedb/guides/storage/>
+    session: Session, optional
+        (For LanceDB OSS only)
+        A session to use for this connection. Sessions allow you to configure
+        cache sizes for index and metadata caches, which can significantly
+        impact memory use and performance. They can also be re-used across
+        multiple connections to share the same cache state.
 
     Examples
     --------
@@ -162,6 +168,12 @@ async def connect_async(
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
         <https://lancedb.github.io/lancedb/guides/storage/>
+    session: Session, optional
+        (For LanceDB OSS only)
+        A session to use for this connection. Sessions allow you to configure
+        cache sizes for index and metadata caches, which can significantly
+        impact memory use and performance. They can also be re-used across
+        multiple connections to share the same cache state.
 
     Examples
     --------
