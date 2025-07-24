@@ -179,7 +179,7 @@ impl Connection {
 }
 
 #[pyfunction]
-#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None))]
+#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn connect(
     py: Python,
@@ -190,6 +190,7 @@ pub fn connect(
     read_consistency_interval: Option<f64>,
     client_config: Option<PyClientConfig>,
     storage_options: Option<HashMap<String, String>>,
+    session: Option<crate::session::Session>,
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
@@ -212,6 +213,9 @@ pub fn connect(
         #[cfg(feature = "remote")]
         if let Some(client_config) = client_config {
             builder = builder.client_config(client_config.into());
+        }
+        if let Some(session) = session {
+            builder = builder.session(session.inner.clone());
         }
         Ok(Connection::new(builder.execute().await.infer_error()?))
     })

@@ -290,3 +290,7 @@ impl Display for DistanceType {
 
 /// Connect to a database
 pub use connection::connect;
+
+/// Re-export Lance Session and ObjectStoreRegistry for custom session creation
+pub use lance::session::Session;
+pub use lance_io::object_store::ObjectStoreRegistry;

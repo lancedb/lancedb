@@ -165,9 +165,9 @@ def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
-            "Please check "
-            "https://lancedb.github.io/lancedb/python/python/ "
-            "to see supported types."
+            "Supported types: list of dicts, pandas DataFrame, polars DataFrame, "
+            "pyarrow Table/RecordBatch, or Pydantic models. "
+            "See https://lancedb.github.io/lancedb/guides/tables/ for examples."
         )
 
 
