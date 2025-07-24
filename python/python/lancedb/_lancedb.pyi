@@ -100,6 +100,7 @@ async def connect(
     read_consistency_interval: Optional[float],
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]],
     storage_options: Optional[Dict[str, str]],
+    session: Optional[Session],
 ) -> Connection: ...
 
 class RecordBatchStream:
