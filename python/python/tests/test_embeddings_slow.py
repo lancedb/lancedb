@@ -499,6 +499,23 @@ def test_ollama_embedding(tmp_path):
     except TypeError:
         pytest.fail("Failed to JSON serialize the dumped model")
 
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("AZURE_AI_API_KEY") is None or os.environ.get("AZURE_AI_ENDPOINT") is None, reason="AZURE_AI_API_KEY or AZURE_AI_ENDPOINT not set"
+)
+def test_azure_ai_embedding_function():
+    azureai = get_registry().get("azure-ai-text").create(name="embed-v-4-0", ndim=1536)
+
+    class TextModel(LanceModel):
+        text: str = azureai.SourceField()
+        vector: Vector(azureai.ndims()) = azureai.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == azureai.ndims()
 
 @pytest.mark.slow
 @pytest.mark.skipif(

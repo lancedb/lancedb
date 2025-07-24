@@ -87,6 +87,7 @@ embeddings = [
     "botocore>=1.31.57",
     "ollama>=0.3.0",
     "ibm-watsonx-ai>=1.1.2",
+    "azure-ai-inference>=1.0.0b9"
 ]
 azure = ["adlfs>=2024.2.0"]
 

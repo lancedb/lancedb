@@ -249,7 +249,7 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         if VoyageAIEmbeddingFunction.client is None:
             voyageai = attempt_import_or_raise("voyageai")
             if os.environ.get("VOYAGE_API_KEY") is None:
-                api_key_not_found_help("voyageai")
+                api_key_not_found_help("voyage")
             VoyageAIEmbeddingFunction.client = voyageai.Client(
                 os.environ["VOYAGE_API_KEY"]
             )
