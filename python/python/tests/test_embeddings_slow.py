@@ -656,6 +656,7 @@ def test_colpali(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_siglip(tmp_path, test_images, query_image_bytes):
     from PIL import Image
 
