@@ -193,7 +193,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        msrv: ["1.78.0"] # This should match up with rust-version in Cargo.toml
+        msrv: ["1.82.0"] # This should match up with rust-version in Cargo.toml
     env:
       # Need up-to-date compilers for kernels
       CC: clang-18

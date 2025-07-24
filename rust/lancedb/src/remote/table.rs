@@ -4,6 +4,7 @@
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
+use crate::remote::client::StreamingBody;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::AlterColumnsResult;
@@ -15,13 +16,14 @@ use crate::table::UpdateResult;
 use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
-use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
+use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
+use futures::StreamExt;
 use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, StatusCode};
@@ -30,6 +32,8 @@ use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
+use lance_datafusion::spill::SpillSender;
+use lance_datafusion::spill::{create_replay_spill, SpillReceiver};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
@@ -191,6 +195,97 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
     }
 }
 
+struct StreamingBodyGenerator {
+    handle: Arc<SpillHandle>,
+    receiver: SpillReceiver,
+}
+
+/// A handle that keeps the reading task and the path alive.
+/// When it is dropped, it will cancel the reading task and clean up the temporary file.
+struct SpillHandle {
+    read_task: tokio::task::JoinHandle<SpillSender>,
+    path: std::path::PathBuf,
+}
+
+impl Drop for SpillHandle {
+    fn drop(&mut self) {
+        // Ensure the read task is cancelled when the generator is dropped.
+        self.read_task.abort();
+        // Clean up the temporary file.
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+impl StreamingBodyGenerator {
+    fn new(reader: Box<dyn RecordBatchReader + Send>) -> Self {
+        static TMP_DIR: std::sync::LazyLock<std::path::PathBuf> =
+            std::sync::LazyLock::new(std::env::temp_dir);
+        let filename = format!("lancedb-remote-spill-{}.arrow", uuid::Uuid::new_v4());
+        let path = TMP_DIR.join(filename);
+
+        // Buffer the stream to a replay spill. Inputs < 20MB will be buffered in memory.
+        // If the stream is larger, it will be spilled to the temporary file.
+        let (mut tx, receiver) =
+            create_replay_spill(path.clone(), reader.schema().clone(), 20 * 1024 * 1024);
+
+        let read_task = tokio::task::spawn(async move {
+            for batch in reader {
+                match batch {
+                    Ok(batch) => {
+                        if let Err(err) = tx.write(batch).await {
+                            tx.send_error(err);
+                            return tx;
+                        }
+                    }
+                    Err(e) => {
+                        tx.send_error(e.into());
+                        return tx;
+                    }
+                }
+            }
+            if let Err(err) = tx.finish().await {
+                tx.send_error(err);
+            }
+            tx
+        });
+        let handle = Arc::new(SpillHandle { read_task, path });
+
+        Self { handle, receiver }
+    }
+
+    fn read(&self) -> Result<StreamingBody> {
+        let inner = self.receiver.read();
+        let writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &inner.schema())?;
+
+        // To associate the spill lifetime with this stream, we pass a clone
+        // of the handle in. This way, even if the generator is dropped, as
+        // long as there is a stream reading from it, the handle will keep
+        // the reading task and the temporary file alive.
+        let body_stream = futures::stream::unfold(
+            (inner, writer, self.handle.clone()),
+            |(mut inner, mut writer, handle)| async move {
+                match inner.next().await {
+                    Some(Ok(batch)) => {
+                        writer.write(&batch).ok()?;
+                        let buffer = std::mem::take(writer.get_mut());
+                        Some((Ok(buffer), (inner, writer, handle)))
+                    }
+                    Some(Err(e)) => {
+                        let error = Error::Lance { source: e.into() };
+                        Some((Err(error), (inner, writer, handle)))
+                    }
+                    None => {
+                        writer.finish().ok()?;
+                        let buffer = std::mem::take(writer.get_mut());
+                        Some((Ok(buffer), (inner, writer, handle)))
+                    }
+                }
+            },
+        );
+        Ok(StreamingBody::from(body_stream))
+    }
+}
+
 #[derive(Debug)]
 pub struct RemoteTable<S: HttpSend = Sender> {
     #[allow(dead_code)]
@@ -249,7 +344,7 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
-    fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
+    fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<StreamingBody> {
         // TODO: Once Phalanx supports compression, we should use it here.
         let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
 
@@ -269,25 +364,7 @@ impl<S: HttpSend> RemoteTable<S> {
             }
         });
         let body_stream = futures::stream::iter(body_iter);
-        Ok(reqwest::Body::wrap_stream(body_stream))
-    }
-
-    /// Buffer the reader into memory
-    async fn buffer_reader<R: RecordBatchReader + ?Sized>(
-        reader: &mut R,
-    ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
-        let schema = reader.schema();
-        let mut batches = Vec::new();
-        for batch in reader {
-            batches.push(batch?);
-        }
-        Ok((schema, batches))
-    }
-
-    /// Create a new RecordBatchReader from buffered data
-    fn make_reader(schema: SchemaRef, batches: Vec<RecordBatch>) -> impl RecordBatchReader {
-        let iter = batches.into_iter().map(Ok);
-        RecordBatchIterator::new(iter, schema)
+        Ok(StreamingBody::from(body_stream))
     }
 
     async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<(String, Response)> {
@@ -305,26 +382,33 @@ impl<S: HttpSend> RemoteTable<S> {
     async fn send_streaming(
         &self,
         req: RequestBuilder,
-        mut data: Box<dyn RecordBatchReader + Send>,
+        data: Box<dyn RecordBatchReader + Send>,
         with_retry: bool,
     ) -> Result<(String, Response)> {
         if !with_retry || self.client.retry_config.retries == 0 {
-            let body = Self::reader_as_body(data)?;
-            return self.client.send(req.body(body)).await;
+            let streaming_body = Self::reader_as_body(data)?;
+            return self
+                .client
+                .send(req.body(streaming_body.body))
+                .await
+                .map_err(|e| {
+                    if let Ok(error) = streaming_body.error_rx.try_recv() {
+                        error
+                    } else {
+                        e
+                    }
+                });
+        } else {
+            // to support retries, we need to buffer the stream.
+            let body_generator = StreamingBodyGenerator::new(data);
+            let make_body = Box::new(move || body_generator.read());
+            let res = self
+                .client
+                .send_with_retry(req, Some(make_body), false)
+                .await?;
+
+            Ok(res)
         }
-
-        // to support retries, buffer into memory and clone the batches on each retry
-        let (schema, batches) = Self::buffer_reader(&mut *data).await?;
-        let make_body = Box::new(move || {
-            let reader = Self::make_reader(schema.clone(), batches.clone());
-            Self::reader_as_body(Box::new(reader))
-        });
-        let res = self
-            .client
-            .send_with_retry(req, Some(make_body), false)
-            .await?;
-
-        Ok(res)
     }
 
     async fn check_table_response(
