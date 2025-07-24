@@ -18,9 +18,10 @@ from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .schema import vector
 from .table import AsyncTable
+from ._lancedb import Session
 
 if TYPE_CHECKING:
-    from ._lancedb import Session
+    pass
 
 
 def connect(
@@ -130,6 +131,7 @@ async def connect_async(
     read_consistency_interval: Optional[timedelta] = None,
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]] = None,
     storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
 ) -> AsyncConnection:
     """Connect to a LanceDB database.
 
@@ -202,6 +204,7 @@ async def connect_async(
             read_consistency_interval_secs,
             client_config,
             storage_options,
+            session,
         )
     )
 

@@ -389,6 +389,7 @@ class LanceDBConnection(DBConnection):
                 read_consistency_interval_secs,
                 None,
                 storage_options,
+                session,
             )
 
         self._conn = AsyncConnection(LOOP.run(do_connect()))
