@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { Bool, Field, Int32, List, Schema, Struct, Utf8 } from "apache-arrow";
+import {
+  Bool,
+  Field,
+  Int32,
+  List,
+  Schema,
+  Struct,
+  Uint8,
+  Utf8,
+} from "apache-arrow";
 
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
@@ -253,6 +262,89 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(actual.numRows).toBe(3);
         const actualSchema = actual.schema;
         expect(actualSchema).toEqual(schema);
+      });
+
+      it("will detect vector columns when name contains 'vector' or 'embedding'", async function () {
+        // Test various naming patterns that should be detected as vector columns
+        const table = makeArrowTable([
+          {
+            // Float vectors (use decimal values to ensure they're treated as floats)
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            user_vector: [1.1, 2.2],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            text_embedding: [3.3, 4.4],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            doc_embeddings: [5.5, 6.6],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            my_vector_field: [7.7, 8.8],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            embedding_model: [9.9, 10.1],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            VECTOR_COL: [11.1, 12.2], // uppercase
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            Vector_Mixed: [13.3, 14.4], // mixed case
+            // Integer vectors (use whole numbers to be detected as integers)
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            vector_int: [1, 2],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            embedding_int: [3, 4],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            normal_list: [15.5, 16.6], // should NOT be detected as vector
+          },
+        ]);
+
+        // Check that columns with 'vector' or 'embedding' in name are converted to FixedSizeList
+        expect(
+          DataType.isFixedSizeList(table.getChild("user_vector")?.type),
+        ).toBe(true);
+        expect(
+          DataType.isFixedSizeList(table.getChild("text_embedding")?.type),
+        ).toBe(true);
+        expect(
+          DataType.isFixedSizeList(table.getChild("doc_embeddings")?.type),
+        ).toBe(true);
+        expect(
+          DataType.isFixedSizeList(table.getChild("my_vector_field")?.type),
+        ).toBe(true);
+        expect(
+          DataType.isFixedSizeList(table.getChild("embedding_model")?.type),
+        ).toBe(true);
+        expect(
+          DataType.isFixedSizeList(table.getChild("VECTOR_COL")?.type),
+        ).toBe(true);
+        expect(
+          DataType.isFixedSizeList(table.getChild("Vector_Mixed")?.type),
+        ).toBe(true);
+
+        // Integer vectors should also be detected (when implemented)
+        expect(
+          DataType.isFixedSizeList(table.getChild("vector_int")?.type),
+        ).toBe(true);
+        expect(
+          DataType.isFixedSizeList(table.getChild("embedding_int")?.type),
+        ).toBe(true);
+
+        // Normal list should NOT be converted to FixedSizeList
+        expect(
+          DataType.isFixedSizeList(table.getChild("normal_list")?.type),
+        ).toBe(false);
+        expect(DataType.isList(table.getChild("normal_list")?.type)).toBe(true);
+
+        // Check that float vectors use Float32 by default
+        expect(
+          table.getChild("user_vector")?.type.children[0].type.toString(),
+        ).toEqual(new Float32().toString());
+        expect(
+          table.getChild("text_embedding")?.type.children[0].type.toString(),
+        ).toEqual(new Float32().toString());
+
+        // Check that integer vectors use Uint8
+        expect(
+          table.getChild("vector_int")?.type.children[0].type.toString(),
+        ).toEqual(new Uint8().toString());
+        expect(
+          table.getChild("embedding_int")?.type.children[0].type.toString(),
+        ).toEqual(new Uint8().toString());
       });
 
       it("will allow different vector column types", async function () {
