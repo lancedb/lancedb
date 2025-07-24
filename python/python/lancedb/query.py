@@ -1508,8 +1508,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             query = query.replace('"', "'")
             query = f'"{query}"'
         limit = self._limit if self._limit is not None else 10
+        offset = self._offset if self._offset is not None else 0
         row_ids, scores = search_index(
-            index, query, limit, ordering_field=self.ordering_field_name
+            index, query, limit, ordering_field=self.ordering_field_name, offset=offset
         )
         if len(row_ids) == 0:
             empty_schema = pa.schema([pa.field("_score", pa.float32())])

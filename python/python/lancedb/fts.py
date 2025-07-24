@@ -162,7 +162,11 @@ def resolve_path(schema, field_name: str) -> pa.Field:
 
 
 def search_index(
-    index: tantivy.Index, query: str, limit: int = 10, ordering_field=None
+    index: tantivy.Index,
+    query: str,
+    limit: int = 10,
+    ordering_field=None,
+    offset: int = 0,
 ) -> Tuple[Tuple[int], Tuple[float]]:
     """
     Search an index for a query
@@ -175,6 +179,8 @@ def search_index(
         The query string
     limit : int
         The maximum number of results to return
+    offset : int
+        The number of results to skip
 
     Returns
     -------
@@ -186,10 +192,12 @@ def search_index(
     query = index.parse_query(query)
     # get top results
     if ordering_field:
-        results = searcher.search(query, limit, order_by_field=ordering_field)
+        results = searcher.search(
+            query, limit, order_by_field=ordering_field, offset=offset
+        )
     else:
-        results = searcher.search(query, limit)
-    if results.count == 0:
+        results = searcher.search(query, limit, offset=offset)
+    if results.count == 0 or len(results.hits) == 0:
         return tuple(), tuple()
     return tuple(
         zip(
