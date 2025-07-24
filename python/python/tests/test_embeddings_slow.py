@@ -114,18 +114,18 @@ def test_images():
 
 
 @pytest.fixture(scope="module")
-def query_image():
+def query_image_bytes():
     import requests
-    from PIL import Image
 
     query_image_uri = "http://farm1.staticflickr.com/200/467715466_ed4a31801f_z.jpg"
     image_bytes = requests.get(query_image_uri).content
-    image = Image.open(io.BytesIO(image_bytes))
-    return image
+    return image_bytes
 
 
 @pytest.mark.slow
-def test_openclip(tmp_path, test_images, query_image):
+def test_openclip(tmp_path, test_images, query_image_bytes):
+    from PIL import Image
+
     db = lancedb.connect(tmp_path)
     registry = get_registry()
     func = registry.get("open-clip").create(max_retries=0)
@@ -161,6 +161,7 @@ def test_openclip(tmp_path, test_images, query_image):
     assert np.allclose(actual.vector, frombytes.vector)
 
     # image search
+    query_image = Image.open(io.BytesIO(query_image_bytes))
     actual = (
         table.search(query_image, vector_column_name="vector")
         .limit(1)
@@ -655,7 +656,9 @@ def test_colpali(tmp_path):
     )
 
 
-def test_siglip(tmp_path, test_images, query_image):
+def test_siglip(tmp_path, test_images, query_image_bytes):
+    from PIL import Image
+
     labels, uris, image_bytes = test_images
 
     db = lancedb.connect(tmp_path)
@@ -698,6 +701,7 @@ def test_siglip(tmp_path, test_images, query_image):
     assert np.allclose(actual.vector, frombytes.vector)
 
     # Image search
+    query_image = Image.open(io.BytesIO(query_image_bytes))
     actual = (
         table.search(query_image, vector_column_name="vector")
         .limit(1)
