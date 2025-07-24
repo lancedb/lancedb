@@ -18,6 +18,7 @@ from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .schema import vector
 from .table import AsyncTable
+from ._lancedb import Session
 
 
 def connect(
@@ -30,6 +31,7 @@ def connect(
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
     storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
     **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database.
@@ -64,6 +66,12 @@ def connect(
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
         <https://lancedb.github.io/lancedb/guides/storage/>
+    session: Session, optional
+        (For LanceDB OSS only)
+        A session to use for this connection. Sessions allow you to configure
+        cache sizes for index and metadata caches, which can significantly
+        impact memory use and performance. They can also be re-used across
+        multiple connections to share the same cache state.
 
     Examples
     --------
@@ -113,6 +121,7 @@ def connect(
         uri,
         read_consistency_interval=read_consistency_interval,
         storage_options=storage_options,
+        session=session,
     )
 
 
@@ -125,6 +134,7 @@ async def connect_async(
     read_consistency_interval: Optional[timedelta] = None,
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]] = None,
     storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
 ) -> AsyncConnection:
     """Connect to a LanceDB database.
 
@@ -158,6 +168,12 @@ async def connect_async(
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
         <https://lancedb.github.io/lancedb/guides/storage/>
+    session: Session, optional
+        (For LanceDB OSS only)
+        A session to use for this connection. Sessions allow you to configure
+        cache sizes for index and metadata caches, which can significantly
+        impact memory use and performance. They can also be re-used across
+        multiple connections to share the same cache state.
 
     Examples
     --------
@@ -197,6 +213,7 @@ async def connect_async(
             read_consistency_interval_secs,
             client_config,
             storage_options,
+            session,
         )
     )
 
@@ -212,6 +229,7 @@ __all__ = [
     "DBConnection",
     "LanceDBConnection",
     "RemoteDBConnection",
+    "Session",
     "__version__",
 ]
 

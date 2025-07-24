@@ -14,3 +14,6 @@ Common commands:
 Before committing changes, run lints and then formatting.
 
 When you change the Rust code, you will need to recompile the Python bindings: `make develop`.
+
+When you export new types from Rust to Python, you must manually update `python/lancedb/_lancedb.pyi`
+with the corresponding type hints. You can run `pyright` to check for type errors in the Python code.

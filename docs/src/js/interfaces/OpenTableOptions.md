@@ -8,13 +8,18 @@
 
 ## Properties
 
-### indexCacheSize?
+### ~~indexCacheSize?~~
 
 ```ts
 optional indexCacheSize: number;
 ```
 
 Set the size of the index cache, specified as a number of entries
+
+#### Deprecated
+
+Use session-level cache configuration instead.
+Create a Session with custom cache sizes and pass it to the connect() function.
 
 The exact meaning of an "entry" will depend on the type of index:
 - IVF: there is one entry for each IVF partition

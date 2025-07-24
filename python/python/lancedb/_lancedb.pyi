@@ -6,6 +6,19 @@ import pyarrow as pa
 from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 from .remote import ClientConfig
 
+class Session:
+    def __init__(
+        self,
+        index_cache_size_bytes: Optional[int] = None,
+        metadata_cache_size_bytes: Optional[int] = None,
+    ): ...
+    @staticmethod
+    def default() -> "Session": ...
+    @property
+    def size_bytes(self) -> int: ...
+    @property
+    def approx_num_items(self) -> int: ...
+
 class Connection(object):
     uri: str
     async def table_names(
@@ -89,6 +102,7 @@ async def connect(
     read_consistency_interval: Optional[float],
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]],
     storage_options: Optional[Dict[str, str]],
+    session: Optional[Session],
 ) -> Connection: ...
 
 class RecordBatchStream:
