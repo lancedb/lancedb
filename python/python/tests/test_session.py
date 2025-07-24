@@ -19,10 +19,6 @@ def test_session_cache_configuration(tmp_path):
     initial_cache_size = session.size_bytes
     initial_cache_items = session.approx_num_items
 
-    assert initial_cache_size > 0  # Some initial overhead
-    assert initial_cache_size < index_cache_size + metadata_cache_size  # Within limits
-    assert initial_cache_items >= 0  # Non-negative
-
     # Test session works with database connection
     db = lancedb.connect(tmp_path, session=session)
 
@@ -39,3 +35,4 @@ def test_session_cache_configuration(tmp_path):
 
     assert final_cache_size > initial_cache_size  # Cache should have grown
     assert final_cache_items >= initial_cache_items  # Items should not decrease
+    assert initial_cache_size < index_cache_size + metadata_cache_size

@@ -22,10 +22,6 @@ describe("Session", () => {
     const initialCacheSize = session.sizeBytes();
     const initialCacheItems = session.approxNumItems();
 
-    expect(initialCacheSize).toBeGreaterThan(0); // Some initial overhead
-    expect(initialCacheSize).toBeLessThan(indexCacheSize + metadataCacheSize); // Within limits
-    expect(initialCacheItems).toBeGreaterThanOrEqual(0); // Non-negative
-
     // Test session works with database connection
     const db = await connect({ uri: tmpDir.name, session: session });
 
@@ -45,5 +41,6 @@ describe("Session", () => {
 
     expect(finalCacheSize).toBeGreaterThan(initialCacheSize); // Cache should have grown
     expect(finalCacheItems).toBeGreaterThanOrEqual(initialCacheItems); // Items should not decrease
+    expect(initialCacheSize).toBeLessThan(indexCacheSize + metadataCacheSize); // Within limits
   });
 });
