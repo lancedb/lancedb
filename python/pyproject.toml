@@ -61,7 +61,6 @@ tests = [
     "pylance>=0.25",
     "requests",
     "datafusion",
-    "scikit-learn"
 ]
 dev = [
     "ruff",
@@ -71,7 +70,7 @@ dev = [
 ]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings-python"]
 clip = ["torch", "pillow", "open-clip-torch"]
-siglip = ["torch", "pillow", "transformers>=4.41.0"]
+siglip = ["torch", "pillow", "transformers>=4.41.0","sentencepiece"]
 embeddings = [
     "requests>=2.31.0",
     "openai>=1.6.1",
@@ -89,8 +88,7 @@ embeddings = [
     "botocore>=1.31.57",
     "ollama>=0.3.0",
     "ibm-watsonx-ai>=1.1.2",
-    "transformers>=4.41.0",
-    "sentencepiece",
+    "sentencepiece"
 ]
 azure = ["adlfs>=2024.2.0"]
 
