@@ -14,7 +14,7 @@ from typing import (
     Literal,
     Optional,
     Tuple,
-    Type,
+    TypeVar,
     Union,
     Any,
 )
@@ -57,6 +57,8 @@ if TYPE_CHECKING:
         from typing import Self
     else:
         from typing_extensions import Self
+
+T = TypeVar("T", bound="LanceModel")
 
 
 # Pydantic validation function for vector queries
@@ -746,8 +748,8 @@ class LanceQueryBuilder(ABC):
         return self.to_arrow(timeout=timeout).to_pylist()
 
     def to_pydantic(
-        self, model: Type[LanceModel], *, timeout: Optional[timedelta] = None
-    ) -> List[LanceModel]:
+        self, model: type[T], *, timeout: Optional[timedelta] = None
+    ) -> list[T]:
         """Return the table as a list of pydantic models.
 
         Parameters

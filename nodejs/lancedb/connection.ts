@@ -85,6 +85,9 @@ export interface OpenTableOptions {
   /**
    * Set the size of the index cache, specified as a number of entries
    *
+   * @deprecated Use session-level cache configuration instead.
+   * Create a Session with custom cache sizes and pass it to the connect() function.
+   *
    * The exact meaning of an "entry" will depend on the type of index:
    * - IVF: there is one entry for each IVF partition
    * - BTREE: there is one entry for the entire index
