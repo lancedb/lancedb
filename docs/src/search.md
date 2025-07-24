@@ -17,7 +17,7 @@ Currently, LanceDB supports the following metrics:
 | --------- | --------------------------------------------------------------------------- |
 | `l2`      | [Euclidean / l2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
 | `cosine`  | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)        |
-| `dot`     | [Dot Production](https://en.wikipedia.org/wiki/Dot_product)                 |
+| `dot`     | [Dot Product](https://en.wikipedia.org/wiki/Dot_product)                 |
 | `hamming` | [Hamming Distance](https://en.wikipedia.org/wiki/Hamming_distance)          |
 
 !!! note
@@ -26,7 +26,7 @@ Currently, LanceDB supports the following metrics:
 ## Exhaustive search (kNN)
 
 If you do not create a vector index, LanceDB exhaustively scans the _entire_ vector space
-and computes the distance to every vector in order to find the exact nearest neighbors. This is effectively a kNN search.
+and computes the distance to every vector to find the exact nearest neighbors. This is effectively a kNN search.
 
 <!-- Setup Code
 ```python

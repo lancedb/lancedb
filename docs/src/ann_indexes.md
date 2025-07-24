@@ -67,7 +67,7 @@ Lance supports `IVF_PQ` index type by default.
 
     IVF_PQ index parameters are more fully defined in the [crate docs](https://docs.rs/lancedb/latest/lancedb/index/vector/struct.IvfPqIndexBuilder.html).
 
-The following IVF_PQ paramters can be specified:
+The following IVF_PQ parameters can be specified:
 
 - **distance_type**: The distance metric to use. By default it uses euclidean distance "`l2`".
   We also support "cosine" and "dot" distance as well.
@@ -76,8 +76,8 @@ The following IVF_PQ paramters can be specified:
 
 !!! note
 
-    In the synchronous python SDK and node's `vectordb` the default is 256. This default has
-    changed in the asynchronous python SDK and node's `lancedb`.
+    In the synchronous Python SDK and node's `vectordb` the default is 256. This default has
+    changed in the asynchronous Python SDK and node's `lancedb`.
 
 - **num_sub_vectors**: The number of sub-vectors (M) that will be created during Product Quantization (PQ).
   For D dimensional vector, it will be divided into `M` subvectors with dimension `D/M`, each of which is replaced by
@@ -86,8 +86,8 @@ The following IVF_PQ paramters can be specified:
 
 !!! note
 
-    In the synchronous python SDK and node's `vectordb` the default is currently 96. This default has
-    changed in the asynchronous python SDK and node's `lancedb`.
+    In the synchronous Python SDK and node's `vectordb` the default is currently 96. This default has
+    changed in the asynchronous Python SDK and node's `lancedb`.
 
 <figure markdown>
   ![IVF PQ](./assets/ivf_pq.png)
@@ -128,7 +128,7 @@ You can specify the GPU device to train IVF partitions via
     ```
 !!! note
     GPU based indexing is not yet supported with our asynchronous client.
-    
+
 Troubleshooting:
 
 If you see `AssertionError: Torch not compiled with CUDA enabled`, you need to [install
@@ -278,9 +278,9 @@ In our benchmarks, computing distances for 100K pairs of 1K dimension vectors ta
 We observe that for small datasets (~100K rows) or for applications that can accept 100ms latency,
 vector indices are usually not necessary.
 
-For large-scale or higher dimension vectors, it can beneficial to create vector index for performance.
+For large-scale or higher dimension vectors, it can be beneficial to create a vector index for performance.
 
-### How big is my index, and how many memory will it take?
+### How big is my index, and how much memory will it take?
 
 In LanceDB, all vector indices are **disk-based**, meaning that when responding to a vector query, only the relevant pages from the index file are loaded from disk and cached in memory. Additionally, each sub-vector is usually encoded into 1 byte PQ code.
 

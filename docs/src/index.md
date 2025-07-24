@@ -11,7 +11,7 @@ Both the database and the underlying data format are designed from the ground up
 
 ## Truly multi-modal
 
-Most existing vector databases that store and query just the embeddings and their metadata. The actual data is stored elsewhere, requiring you to manage their storage and versioning separately.
+Most existing vector databases are databases that store and query just the embeddings and their metadata. The actual data is stored elsewhere, requiring you to manage their storage and versioning separately.
 
 LanceDB supports storage of the *actual data itself*, alongside the embeddings and metadata. You can persist your images, videos, text documents, audio files and more in the Lance format, which provides automatic data versioning and blazing fast retrievals and filtering via LanceDB.
 
@@ -31,7 +31,7 @@ LanceDB **Cloud** is a SaaS (software-as-a-service) solution that runs serverles
 
 * Fast production-scale vector similarity, full-text & hybrid search and a SQL query interface (via [DataFusion](https://github.com/apache/arrow-datafusion))
 
-* Python, Javascript/Typescript, and Rust support
+* Python, JavaScript/TypeScript, and Rust support
 
 * Store, query & manage multi-modal data (text, images, videos, point clouds, etc.), not just the embeddings and metadata
 
@@ -45,7 +45,7 @@ LanceDB **Cloud** is a SaaS (software-as-a-service) solution that runs serverles
 
 ## Documentation guide
 
-The following pages go deeper into the internal of LanceDB and how to use it.
+The following pages go deeper into the internals of LanceDB and how to use it.
 
 * [Quick start](basic.md): Get started with LanceDB and vector DB concepts
 * [Vector search concepts](concepts/vector_search.md): Understand the basics of vector search

@@ -30,11 +30,11 @@ print(docs[0].page_content)
 ```
 
 ## Documentation
-In the above example `LanceDB` vector store class object is created using `from_documents()` method  which is a `classmethod` and returns the initialized class object. 
+In the above example `LanceDB` vector store class object is created using `from_documents()` method  which is a `classmethod` and returns the initialized class object.
 
-You can also use `LanceDB.from_texts(texts: List[str],embedding: Embeddings)` class method.  
+You can also use `LanceDB.from_texts(texts: List[str],embedding: Embeddings)` class method.
 
-The exhaustive list of parameters for `LanceDB` vector store are : 
+The exhaustive list of parameters for `LanceDB` vector store are :
 
 |Name|type|Purpose|default|
 |:----|:----|:----|:----|
@@ -68,7 +68,7 @@ vector_store = LanceDB(
     )
 ```
 
-### Methods 
+### Methods
 
 ##### add_texts()
 
@@ -84,7 +84,7 @@ This method turn texts into embedding and add it to the database.
 It returns list of ids of the added texts.
 
 ```python
-vector_store.add_texts(texts = ['test_123'], metadatas =[{'source' :'wiki'}]) 
+vector_store.add_texts(texts = ['test_123'], metadatas =[{'source' :'wiki'}])
 
 #Additionaly, to explore the table you can load it into a df or save it in a csv file:
 
@@ -100,7 +100,7 @@ vector_store = LanceDB(connection=tbl, embedding=embeddings)
 ------
 
 
-##### create_index() 
+##### create_index()
 
 This method creates a scalar(for non-vector cols) or a vector index on a table.
 
@@ -151,7 +151,7 @@ print(docs[0].page_content)
 
 ##### similarity_search_by_vector()
 
-The method returns documents that are most similar to the specified **embedding (query) vector**. 
+The method returns documents that are most similar to the specified **embedding (query) vector**.
 
 | Name        | Type                      | Purpose | Default |
 |-------------|---------------------------|---------|---------|
@@ -227,7 +227,7 @@ Maximal marginal relevance optimizes for similarity to query AND diversity among
 | `filter`| `Optional[Dict[str, str]]`| Filter by metadata. | `None`    |
 |`kwargs`| Other keyworded arguments provided by the user. |-|
 
-Similarly, `max_marginal_relevance_search_by_vector()` function returns docs most similar to the embedding passed to the function using MMR. instead of a string query you need to pass the embedding to be searched for. 
+Similarly, `max_marginal_relevance_search_by_vector()` function returns docs most similar to the embedding passed to the function using MMR. instead of a string query you need to pass the embedding to be searched for.
 
 ```python
 result = docsearch.max_marginal_relevance_search(
@@ -248,7 +248,7 @@ print(result_texts)
 
 ##### add_images()
 
-This method ddds images by automatically creating their embeddings and adds them to the vectorstore.
+This method adds images by automatically creating their embeddings and adds them to the vectorstore.
 
 | Name       | Type                          | Purpose                        | Default |
 |------------|-------------------------------|--------------------------------|---------|
@@ -259,8 +259,6 @@ This method ddds images by automatically creating their embeddings and adds them
 It returns list of IDs of the added images.
 
 ```python
-vec_store.add_images(uris=image_uris) 
+vec_store.add_images(uris=image_uris)
 # here image_uris are local fs paths to the images.
 ```
-
-

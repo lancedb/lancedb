@@ -25,7 +25,7 @@ The following parameters can be passed to the `create` method:
 
 ## Usage Example
 
-First, the watsonx.ai library is an optional dependency, so must be installed seperately:
+First, the watsonx.ai library is an optional dependency, so must be installed separately:
 
 ```
 pip install ibm-watsonx-ai

@@ -4,7 +4,7 @@
 
 <img id="splash" width="400" alt="transformersjs" src="https://github.com/lancedb/lancedb/assets/43097991/88a31e30-3d6f-4eef-9216-4b7c688f1b4f">
 
-This example shows how to use the [transformers.js](https://github.com/xenova/transformers.js) library to perform vector embedding search using LanceDB's Javascript API.
+This example shows how to use the [transformers.js](https://github.com/xenova/transformers.js) library to perform vector embedding search using LanceDB's JavaScript API.
 
 
 ### Setting up
@@ -118,4 +118,4 @@ Output of `results`:
 
 ### Wrapping it up
 
-In this example, we showed how to use the `transformers.js` library to perform vector embedding search using LanceDB's Javascript API. You can find the full code for this example on [Github](https://github.com/lancedb/lancedb/blob/main/node/examples/js-transformers/index.js)!
+In this example, we showed how to use the `transformers.js` library to perform vector embedding search using LanceDB's JavaScript API. You can find the full code for this example on [GitHub](https://github.com/lancedb/lancedb/blob/main/node/examples/js-transformers/index.js)!

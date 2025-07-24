@@ -77,7 +77,7 @@
     cargo add lancedb
     ```
 
-    !!! info "To use the lancedb create, you first need to install protobuf."
+    !!! info "To use the lancedb crate, you first need to install protobuf."
 
     === "macOS"
 
@@ -122,7 +122,7 @@ recommend switching to stable releases.
 
 === "Rust"
 
-    We don't push preview releases to crates.io, but you can referent the tag
+    We don't push preview releases to crates.io, but you can reference the tag
     in GitHub within your Cargo dependencies:
 
     ```toml
@@ -244,7 +244,7 @@ table.
     --8<-- "rust/lancedb/examples/simple.rs:create_table"
     ```
 
-    If the table already exists, LanceDB will raise an error by default.  See
+    If the table already exists, LanceDB will raise an error by default. See
     [the mode option](https://docs.rs/lancedb/latest/lancedb/connection/struct.CreateTableBuilder.html#method.mode)
     for details on how to overwrite (or open) existing tables instead.
 
@@ -450,14 +450,14 @@ Once you've embedded the query, you can find its nearest neighbors as follows:
     ```
 
     !!! Query vectors in Rust
-        Rust does not yet support automatic execution of embedding functions.  You will need to
-        calculate embeddings yourself.  Support for this is on the roadmap and can be tracked at
+        Rust does not yet support automatic execution of embedding functions. You will need to
+        calculate embeddings yourself. Support for this is on the roadmap and can be tracked at
         https://github.com/lancedb/lancedb/issues/994
 
         Query vectors can be provided as Arrow arrays or a Vec/slice of Rust floats.
         Support for additional formats (e.g. `polars::series::Series`) is on the roadmap.
 
-By default, LanceDB runs a brute-force scan over dataset to find the K nearest neighbours (KNN).
+By default, LanceDB runs a brute-force scan over the dataset to find the K nearest neighbours (KNN).
 For tables with more than 50K vectors, creating an ANN index is recommended to speed up search performance.
 LanceDB allows you to create an ANN index on a table as follows:
 

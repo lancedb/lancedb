@@ -24,15 +24,15 @@ If there are multiple matches then the behavior is undefined.
 Currently this causes multiple copies of the row to be created
 but that behavior is subject to change.
 
-Optionally, a filter can be specified.  This should be an SQL
+Optionally, a filter can be specified. This should be an SQL
 filter where fields with the prefix "target." refer to fields
 in the target table (old data) and fields with the prefix
-"source." refer to fields in the source table (new data).  For
+"source." refer to fields in the source table (new data). For
 example, the filter "target.lastUpdated < source.lastUpdated" will
 only update matched rows when the incoming `lastUpdated` value is
 newer.
 
-Rows that do not match the filter will not be updated.  Rows that
+Rows that do not match the filter will not be updated. Rows that
 do not match the filter do become "not matched" rows.
 
 #### Defined in

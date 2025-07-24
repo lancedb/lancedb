@@ -6,7 +6,7 @@ both the synchronous and asynchronous clients are based on this implementation.
 In Node, the new client is available as `@lancedb/lancedb`, which replaces
 the existing `vectordb` package.
 
-This guide describes the differences between the two Node APIs and will hopefully assist users
+This guide describes the differences between the two Node APIs and will assist users
 that would like to migrate to the new API.
 
 ## TypeScript/JavaScript

@@ -181,7 +181,7 @@ Initialize a LanceDB connection and create a table
     ```
 
 !!! info "Note"
-    Data is converted to Arrow before being written to disk. For maximum control over how data is saved, either provide the PyArrow schema to convert to or else provide a PyArrow Table directly.
+    Data is converted to Arrow before being written to disk. For maximum control over how data is saved, either provide the PyArrow schema to convert to or provide a PyArrow Table directly.
 
 The **`vector`** column needs to be a [Vector](../python/pydantic.md#vector-field) (defined as [pyarrow.FixedSizeList](https://arrow.apache.org/docs/python/generated/pyarrow.list_.html)) type.
 
@@ -361,7 +361,7 @@ When you run this code it should print "A ValidationError was raised."
 #### Pydantic custom types
 
 LanceDB does NOT yet support converting pydantic custom types. If this is something you need,
-please file a feature request on the [LanceDB Github repo](https://github.com/lancedb/lancedb/issues/new).
+please file a feature request on the [LanceDB GitHub repo](https://github.com/lancedb/lancedb/issues/new).
 
 ### Using Iterators / Writing Large Datasets
 
