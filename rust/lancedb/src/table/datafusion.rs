@@ -486,11 +486,9 @@ pub mod tests {
         TestFixture::check_plan(
             plan,
             "MetadataEraserExec
-             CoalesceBatchesExec:...
-             FilterExec: i@0 >= 5
              RepartitionExec:...
              ProjectionExec:...
-             LanceScan:...",
+             LanceRead:...",
         )
         .await;
 

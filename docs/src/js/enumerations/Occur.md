@@ -10,6 +10,7 @@ Enum representing the occurrence of terms in full-text queries.
 
 - `Must`: The term must be present in the document.
 - `Should`: The term should contribute to the document score, but is not required.
+- `MustNot`: The term must not be present in the document.
 
 ## Enumeration Members
 
@@ -17,6 +18,14 @@ Enum representing the occurrence of terms in full-text queries.
 
 ```ts
 Must: "MUST";
+```
+
+***
+
+### MustNot
+
+```ts
+MustNot: "MUST_NOT";
 ```
 
 ***

@@ -6,11 +6,10 @@
 
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-parent</artifactId>
-    <version>0.21.1-final.0</version>
+    <version>0.21.2-beta.1</version>
     <packaging>pom</packaging>
-
-    <name>LanceDB Parent</name>
-    <description>LanceDB vector database Java API</description>
+    <name>${project.artifactId}</name>
+    <description>LanceDB Java SDK Parent POM</description>
     <url>http://lancedb.com/</url>
 
     <developers>
@@ -29,6 +28,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <arrow.version>15.0.0</arrow.version>
+        <lance-namespace.verison>0.0.1</lance-namespace.verison>
         <spotless.skip>false</spotless.skip>
         <spotless.version>2.30.0</spotless.version>
         <spotless.java.googlejavaformat.version>1.7</spotless.java.googlejavaformat.version>
@@ -52,6 +52,7 @@
 
     <modules>
         <module>core</module>
+        <module>lance-namespace</module>
     </modules>
 
     <scm>
@@ -62,6 +63,11 @@
 
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>com.lancedb</groupId>
+                <artifactId>lance-namespace-core</artifactId>
+                <version>${lance-namespace.verison}</version>
+            </dependency>
             <dependency>
                 <groupId>org.apache.arrow</groupId>
                 <artifactId>arrow-vector</artifactId>

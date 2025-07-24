@@ -1,6 +1,6 @@
 {
   "name": "@lancedb/lancedb-win32-arm64-msvc",
-  "version": "0.21.1",
+  "version": "0.21.2-beta.1",
   "os": [
     "win32"
   ],

@@ -627,6 +627,12 @@ pub struct ConnectRequest {
     /// consistency only applies to read operations. Write operations are
     /// always consistent.
     pub read_consistency_interval: Option<std::time::Duration>,
+
+    /// Optional session for object stores and caching
+    ///
+    /// If provided, this session will be used instead of creating a default one.
+    /// This allows for custom configuration of object store registries, caching, etc.
+    pub session: Option<Arc<lance::session::Session>>,
 }
 
 #[derive(Debug)]
@@ -645,6 +651,7 @@ impl ConnectBuilder {
                 client_config: Default::default(),
                 read_consistency_interval: None,
                 options: HashMap::new(),
+                session: None,
             },
             embedding_registry: None,
         }
@@ -802,6 +809,20 @@ impl ConnectBuilder {
         self
     }
 
+    /// Set a custom session for object stores and caching.
+    ///
+    /// By default, a new session with default configuration will be created.
+    /// This method allows you to provide a custom session with your own
+    /// configuration for object store registries, caching, etc.
+    ///
+    /// # Arguments
+    ///
+    /// * `session` - A custom session to use for this connection
+    pub fn session(mut self, session: Arc<lance::session::Session>) -> Self {
+        self.request.session = Some(session);
+        self
+    }
+
     #[cfg(feature = "remote")]
     fn execute_remote(self) -> Result<Connection> {
         use crate::remote::db::RemoteDatabaseOptions;
@@ -884,6 +905,7 @@ impl CatalogConnectBuilder {
                 client_config: Default::default(),
                 read_consistency_interval: None,
                 options: HashMap::new(),
+                session: None,
             },
         }
     }

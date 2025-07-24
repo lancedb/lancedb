@@ -216,6 +216,7 @@ impl Catalog for ListingCatalog {
             client_config: Default::default(),
             read_consistency_interval: None,
             options: Default::default(),
+            session: None,
         };
 
         // Add the db options to the connect request
@@ -243,6 +244,7 @@ impl Catalog for ListingCatalog {
             client_config: Default::default(),
             read_consistency_interval: None,
             options: Default::default(),
+            session: None,
         };
 
         // Add the db options to the connect request
@@ -312,6 +314,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             read_consistency_interval: None,
+            session: None,
         };
 
         let catalog = ListingCatalog::connect(&request).await.unwrap();
@@ -573,6 +576,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             read_consistency_interval: None,
+            session: None,
         };
 
         let catalog = ListingCatalog::connect(&request).await.unwrap();
@@ -592,6 +596,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             read_consistency_interval: None,
+            session: None,
         };
 
         let catalog = ListingCatalog::connect(&request).await.unwrap();
@@ -608,6 +613,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             read_consistency_interval: None,
+            session: None,
         };
 
         let result = ListingCatalog::connect(&request).await;

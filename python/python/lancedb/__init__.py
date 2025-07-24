@@ -92,7 +92,7 @@ def connect(
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")
         if api_key is None:
-            raise ValueError(f"api_key is required to connected LanceDB cloud: {uri}")
+            raise ValueError(f"api_key is required to connect to LanceDB cloud: {uri}")
         if isinstance(request_thread_pool, int):
             request_thread_pool = ThreadPoolExecutor(request_thread_pool)
         return RemoteDBConnection(

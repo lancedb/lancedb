@@ -30,7 +30,8 @@ excluded_globs = [
     "../src/rag/advanced_techniques/*.md",
     "../src/guides/scalar_index.md",
     "../src/guides/storage.md",
-    "../src/search.md"
+    "../src/search.md",
+    "../src/guides/sql_querying.md",
 ]
 
 python_prefix = "py"

@@ -1,7 +1,9 @@
+# SQL Querying
+
 You can use DuckDB and Apache Datafusion to query your LanceDB tables using SQL.
 This guide will show how to query Lance tables them using both.
 
-We will re-use the dataset [created previously](./pandas_and_pyarrow.md):
+We will re-use the dataset [created previously](./tables.md):
 
 ```python
 import lancedb
@@ -27,15 +29,10 @@ arrow_table = table.to_lance()
 duckdb.query("SELECT * FROM arrow_table")
 ```
 
-```
-┌─────────────┬─────────┬────────┐
-│   vector    │  item   │ price  │
-│   float[]   │ varchar │ double │
-├─────────────┼─────────┼────────┤
-│ [3.1, 4.1]  │ foo     │   10.0 │
-│ [5.9, 26.5] │ bar     │   20.0 │
-└─────────────┴─────────┴────────┘
-```
+| vector      | item | price |
+| ----------- | ---- | ----- |
+| [3.1, 4.1]  | foo  | 10.0  |
+| [5.9, 26.5] | bar  | 20.0  |
 
 ## Querying a LanceDB Table with Apache Datafusion
 
@@ -57,12 +54,7 @@ Register the table created with the Datafusion session context.
     --8<-- "python/python/tests/docs/test_guide_tables.py:lance_sql_basic"
     ```
 
-```
-┌─────────────┬─────────┬────────┐
-│   vector    │  item   │ price  │
-│   float[]   │ varchar │ double │
-├─────────────┼─────────┼────────┤
-│ [3.1, 4.1]  │ foo     │   10.0 │
-│ [5.9, 26.5] │ bar     │   20.0 │
-└─────────────┴─────────┴────────┘
-```
+| vector      | item | price |
+| ----------- | ---- | ----- |
+| [3.1, 4.1]  | foo  | 10.0  |
+| [5.9, 26.5] | bar  | 20.0  |

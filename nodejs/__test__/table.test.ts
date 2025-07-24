@@ -1863,4 +1863,43 @@ describe("column name options", () => {
     expect(results[0].query_index).toBe(0);
     expect(results[1].query_index).toBe(1);
   });
+
+  test("index and search multivectors", async () => {
+    const db = await connect(tmpDir.name);
+    const data = [];
+    // generate 512 random multivectors
+    for (let i = 0; i < 256; i++) {
+      data.push({
+        multivector: Array.from({ length: 10 }, () =>
+          Array(2).fill(Math.random()),
+        ),
+      });
+    }
+    const table = await db.createTable("multivectors", data, {
+      schema: new Schema([
+        new Field(
+          "multivector",
+          new List(
+            new Field(
+              "item",
+              new FixedSizeList(2, new Field("item", new Float32())),
+            ),
+          ),
+        ),
+      ]),
+    });
+
+    const results = await table.search(data[0].multivector).limit(10).toArray();
+    expect(results.length).toBe(10);
+
+    await table.createIndex("multivector", {
+      config: Index.ivfPq({ numPartitions: 2, distanceType: "cosine" }),
+    });
+
+    const results2 = await table
+      .search(data[0].multivector)
+      .limit(10)
+      .toArray();
+    expect(results2.length).toBe(10);
+  });
 });

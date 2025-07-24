@@ -612,7 +612,7 @@ of the given query
 
 #### Parameters
 
-* **query**: `string` \| [`IntoVector`](../type-aliases/IntoVector.md) \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
+* **query**: `string` \| [`IntoVector`](../type-aliases/IntoVector.md) \| [`MultiVector`](../type-aliases/MultiVector.md) \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
     the query, a vector or string
 
 * **queryType?**: `string`
@@ -799,7 +799,7 @@ by `query`.
 
 #### Parameters
 
-* **vector**: [`IntoVector`](../type-aliases/IntoVector.md)
+* **vector**: [`IntoVector`](../type-aliases/IntoVector.md) \| [`MultiVector`](../type-aliases/MultiVector.md)
 
 #### Returns
 

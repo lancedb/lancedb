@@ -265,6 +265,7 @@ impl ListingDatabase {
                     uri,
                     request.read_consistency_interval,
                     options.new_table_config,
+                    request.session.clone(),
                 )
                 .await
             }
@@ -316,7 +317,10 @@ impl ListingDatabase {
 
                 let plain_uri = url.to_string();
 
-                let session = Arc::new(lance::session::Session::default());
+                let session = request
+                    .session
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
                 let os_params = ObjectStoreParams {
                     storage_options: Some(options.storage_options.clone()),
                     ..Default::default()
@@ -357,6 +361,7 @@ impl ListingDatabase {
                     uri,
                     request.read_consistency_interval,
                     options.new_table_config,
+                    request.session.clone(),
                 )
                 .await
             }
@@ -367,8 +372,9 @@ impl ListingDatabase {
         path: &str,
         read_consistency_interval: Option<std::time::Duration>,
         new_table_config: NewTableConfig,
+        session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
-        let session = Arc::new(lance::session::Session::default());
+        let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
         let (object_store, base_path) = ObjectStore::from_uri_and_params(
             session.store_registry(),
             path,
@@ -672,7 +678,8 @@ impl Database for ListingDatabase {
         let mut read_params = request.lance_read_params.unwrap_or_else(|| {
             let mut default_params = ReadParams::default();
             if let Some(index_cache_size) = request.index_cache_size {
-                default_params.index_cache_size = index_cache_size as usize;
+                #[allow(deprecated)]
+                default_params.index_cache_size(index_cache_size as usize);
             }
             default_params
         });

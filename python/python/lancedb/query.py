@@ -906,11 +906,11 @@ class LanceQueryBuilder(ABC):
         >>> plan = table.search(query).explain_plan(True)
         >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
-        GlobalLimitExec: skip=0, fetch=10
-          FilterExec: _distance@2 IS NOT NULL
-            SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
-              KNNVectorDistance: metric=l2
-                LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+          GlobalLimitExec: skip=0, fetch=10
+            FilterExec: _distance@2 IS NOT NULL
+              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+                KNNVectorDistance: metric=l2
+                  LanceRead: uri=..., projection=[vector], ...
 
         Parameters
         ----------
@@ -940,19 +940,19 @@ class LanceQueryBuilder(ABC):
         >>> plan = table.search(query).analyze_plan()
         >>> print(plan)  # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         AnalyzeExec verbose=true, metrics=[]
-          ProjectionExec: expr=[...], metrics=[...]
-            GlobalLimitExec: skip=0, fetch=10, metrics=[...]
-              FilterExec: _distance@2 IS NOT NULL,
-              metrics=[output_rows=..., elapsed_compute=...]
-                SortExec: TopK(fetch=10), expr=[...],
-                preserve_partitioning=[...],
-                metrics=[output_rows=..., elapsed_compute=..., row_replacements=...]
-                  KNNVectorDistance: metric=l2,
-                  metrics=[output_rows=..., elapsed_compute=..., output_batches=...]
-                    LanceScan: uri=..., projection=[vector], row_id=true,
-                    row_addr=false, ordered=false,
-                    metrics=[output_rows=..., elapsed_compute=...,
-                    bytes_read=..., iops=..., requests=...]
+          TracedExec, metrics=[]
+            ProjectionExec: expr=[...], metrics=[...]
+              GlobalLimitExec: skip=0, fetch=10, metrics=[...]
+                FilterExec: _distance@2 IS NOT NULL,
+                metrics=[output_rows=..., elapsed_compute=...]
+                  SortExec: TopK(fetch=10), expr=[...],
+                  preserve_partitioning=[...],
+                  metrics=[output_rows=..., elapsed_compute=..., row_replacements=...]
+                    KNNVectorDistance: metric=l2,
+                    metrics=[output_rows=..., elapsed_compute=..., output_batches=...]
+                      LanceRead: uri=..., projection=[vector], ...
+                      metrics=[output_rows=..., elapsed_compute=...,
+                      bytes_read=..., iops=..., requests=...]
 
         Returns
         -------
@@ -2043,7 +2043,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
           FilterExec: _distance@2 IS NOT NULL
             SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
               KNNVectorDistance: metric=l2
-                LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+                LanceRead: uri=..., projection=[vector], ...
 
         Parameters
         ----------
@@ -2429,7 +2429,7 @@ class AsyncQueryBase(object):
             FilterExec: _distance@2 IS NOT NULL
               SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
-                  LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+                  LanceRead: uri=..., projection=[vector], ...
 
         Parameters
         ----------
@@ -3054,7 +3054,7 @@ class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
                 FilterExec: _distance@2 IS NOT NULL
                   SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
                     KNNVectorDistance: metric=l2
-                      LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+                      LanceRead: uri=..., projection=[vector], ...
         <BLANKLINE>
         FTS Search Plan:
         ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
