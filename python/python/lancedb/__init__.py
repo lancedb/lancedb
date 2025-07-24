@@ -6,7 +6,7 @@ import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import TYPE_CHECKING, Dict, Optional, Union, Any
+from typing import Dict, Optional, Union, Any
 import warnings
 
 __version__ = importlib.metadata.version("lancedb")
@@ -20,9 +20,6 @@ from .schema import vector
 from .table import AsyncTable
 from ._lancedb import Session
 
-if TYPE_CHECKING:
-    pass
-
 
 def connect(
     uri: URI,
@@ -34,7 +31,7 @@ def connect(
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
     storage_options: Optional[Dict[str, str]] = None,
-    session: Optional["Session"] = None,
+    session: Optional[Session] = None,
     **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database.
