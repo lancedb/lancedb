@@ -72,7 +72,7 @@ Consider that we have a LanceDB table named `my_table`, whose string column `tex
         .await?;
     ```
 
-It would search on all indexed columns by default, so it's useful when there are multiple indexed columns.
+The search will include all indexed columns by default, which is useful when there are multiple indexed columns.
 
 Passing `fts_columns="text"` if you want to specify the columns to search.
 
@@ -117,7 +117,7 @@ For example, for language with accents, you can specify the tokenizer to use `as
 LanceDB full text search supports to filter the search results by a condition, both pre-filtering and post-filtering are supported.
 
 This can be invoked via the familiar `where` syntax.
- 
+
 With pre-filtering:
 === "Python"
 
@@ -255,4 +255,4 @@ This can make the query more efficient, especially when the table is large and t
     ```
 !!! note
 
-    New data added after creating the FTS index will appear in search results while incremental index is still progress, but with increased latency due to a flat search on the unindexed portion. LanceDB Cloud automates this merging process, minimizing the impact on search speed. 
+    New data added after creating the FTS index will appear in search results while incremental indexing is still in progress, but with increased latency due to a flat search on the unindexed portion. LanceDB Cloud automates this merging process, minimizing the impact on search speed.

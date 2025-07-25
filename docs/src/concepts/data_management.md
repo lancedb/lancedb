@@ -4,7 +4,7 @@ This section covers concepts related to managing your data over time in LanceDB.
 
 ## A primer on Lance
 
-Because LanceDB is built on top of the [Lance](https://lancedb.github.io/lance/) data format, it helps to understand some of its core ideas. Just like Apache Arrow, Lance is a fast columnar data format, but it has the added benefit of being versionable, query and train ML models on. Lance is designed to be used with simple and complex data types, like tabular data, images, videos audio, 3D point clouds (which are deeply nested) and more.
+Because LanceDB is built on top of the [Lance](https://lancedb.github.io/lance/) data format, it helps to understand some of its core ideas. Just like Apache Arrow, Lance is a fast columnar data format, but it has the added benefit of being versionable and allowing you to query and train ML models on it. Lance is designed to be used with simple and complex data types, like tabular data, images, videos audio, 3D point clouds (which are deeply nested) and more.
 
 The following concepts are important to keep in mind:
 
@@ -13,7 +13,7 @@ The following concepts are important to keep in mind:
 - Data is versioned, with each insert operation creating a new version of the dataset and an update to the manifest that tracks versions via metadata
 
 !!! note
-    1. First, each version contains metadata and just the new/updated data in your transaction. So if you have 100 versions, they aren't 100 duplicates of the same data. However, they do have 100x the metadata overhead of a single version, which can result in slower queries.  
+    1. First, each version contains metadata and just the new/updated data in your transaction. So if you have 100 versions, they aren't 100 duplicates of the same data. However, they do have 100x the metadata overhead of a single version, which can result in slower queries.
     2. Second, these versions exist to keep LanceDB scalable and consistent. We do not immediately blow away old versions when creating new ones because other clients might be in the middle of querying the old version. It's important to retain older versions for as long as they might be queried.
 
 ## What are fragments?
@@ -50,7 +50,7 @@ Reindexing is the process of updating the index to account for new data, keeping
 
 Both LanceDB OSS and Cloud support reindexing, but the process (at least for now) is different for each, depending on the type of index.
 
-When a reindex job is triggered in the background, the entire data is reindexed, but in the interim as new queries come in, LanceDB will combine results from the existing index with exhaustive kNN search on the new data. This is done to ensure that you're still searching on all your data, but it does come at a performance cost. The more data that you add without reindexing, the impact on latency (due to exhaustive search) can be noticeable.
+When a reindex job is triggered in the background, all the data is reindexed, but in the interim as new queries come in, LanceDB will combine results from the existing index with exhaustive kNN search on the new data. This is done to ensure that you're still searching on all your data, but it does come at a performance cost. The more data that you add without reindexing, the impact on latency (due to exhaustive search) can be noticeable.
 
 ### Vector reindex
 
