@@ -1339,3 +1339,20 @@ async def test_query_timeout_async(tmp_path):
             .nearest_to([0.0, 0.0])
             .to_list(timeout=timedelta(0))
         )
+
+
+def test_search_empty_table(mem_db):
+    """Test searching on empty table should not crash
+
+    Regression test for issue #303:
+    https://github.com/lancedb/lancedb/issues/303
+    Searching on empty table produces scary error message
+    """
+    schema = pa.schema(
+        [pa.field("vector", pa.list_(pa.float32(), 2)), pa.field("id", pa.int64())]
+    )
+    table = mem_db.create_table("test_empty_search", schema=schema)
+
+    # Search on empty table should return empty results, not crash
+    results = table.search([1.0, 2.0]).limit(5).to_list()
+    assert results == []

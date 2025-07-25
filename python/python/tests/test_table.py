@@ -1804,3 +1804,45 @@ def test_stats(mem_db: DBConnection):
             },
         },
     }
+
+
+def test_create_table_empty_list_with_schema(mem_db: DBConnection):
+    """Test creating table with empty list data and schema
+
+    Regression test for IndexError: list index out of range
+    when calling create_table(name, data=[], schema=schema)
+    """
+    schema = pa.schema(
+        [pa.field("vector", pa.list_(pa.float32(), 2)), pa.field("id", pa.int64())]
+    )
+    table = mem_db.create_table("test_empty_list", data=[], schema=schema)
+    assert table.count_rows() == 0
+    assert table.schema == schema
+
+
+def test_create_table_empty_list_no_schema_error(mem_db: DBConnection):
+    """Test that creating table with empty list and no schema raises error"""
+    with pytest.raises(
+        ValueError, match="Cannot create table from empty list without a schema"
+    ):
+        mem_db.create_table("test_empty_no_schema", data=[])
+
+
+def test_add_table_with_empty_embeddings(tmp_path):
+    """Test exact scenario from issue #1968
+
+    Regression test for issue #1968:
+    https://github.com/lancedb/lancedb/issues/1968
+    """
+    db = lancedb.connect(tmp_path)
+
+    class MySchema(LanceModel):
+        text: str
+        embedding: Vector(16)
+
+    table = db.create_table("test", schema=MySchema)
+    table.add(
+        [{"text": "bar", "embedding": [0.1] * 16}],
+        on_bad_vectors="drop",
+    )
+    assert table.count_rows() == 1
