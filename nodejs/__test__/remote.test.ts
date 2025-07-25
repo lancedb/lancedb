@@ -42,6 +42,28 @@ describe("remote connection", () => {
     });
   });
 
+  it("should accept overall timeout configuration", async () => {
+    await connect("db://test", {
+      apiKey: "fake",
+      clientConfig: {
+        timeoutConfig: { timeout: 30 },
+      },
+    });
+
+    // Test with all timeout parameters
+    await connect("db://test", {
+      apiKey: "fake",
+      clientConfig: {
+        timeoutConfig: {
+          timeout: 60,
+          connectTimeout: 10,
+          readTimeout: 20,
+          poolIdleTimeout: 300,
+        },
+      },
+    });
+  });
+
   it("should pass down apiKey and userAgent", async () => {
     await withMockDatabase(
       (req, res) => {
