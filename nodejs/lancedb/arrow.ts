@@ -62,19 +62,10 @@ function nameSuggestsVectorColumn(fieldName: string): boolean {
 }
 
 /**
- * Check if all values in an array are integers.
- * Optimized to check only the first few values for performance.
+ * Check if the value is a Uint8Array.
  */
-function isAllIntegers(values: unknown[]): boolean {
-  // For performance, check only first 10 values or all if less than 10
-  const samplesToCheck = Math.min(values.length, 10);
-  for (let i = 0; i < samplesToCheck; i++) {
-    const v = values[i];
-    if (typeof v !== "number" || !Number.isInteger(v)) {
-      return false;
-    }
-  }
-  return true;
+function isUint8Array(value: unknown): boolean {
+  return value instanceof Uint8Array;
 }
 
 export * from "apache-arrow";
@@ -618,10 +609,8 @@ function inferType(
     }
     // Try to automatically detect embedding columns.
     if (nameSuggestsVectorColumn(path[path.length - 1])) {
-      // Check if values are integers for type determination
-      const isIntegerVector = isAllIntegers(value);
-
-      if (isIntegerVector) {
+      // Check if value is a Uint8Array for integer vector type determination
+      if (isUint8Array(value)) {
         // For integer vectors, we default to Uint8 (matching Python implementation)
         const child = new Field("item", new Uint8(), true);
         return new FixedSizeList(value.length, child);
