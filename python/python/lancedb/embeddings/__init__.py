@@ -20,3 +20,4 @@ from .jinaai import JinaEmbeddings
 from .watsonx import WatsonxEmbeddings
 from .voyageai import VoyageAIEmbeddingFunction
 from .colpali import ColPaliEmbeddings
+from .azure_ai_foundry import AzureAITextEmbeddingFunction

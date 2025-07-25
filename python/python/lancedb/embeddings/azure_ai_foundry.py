@@ -23,9 +23,7 @@ class AzureAITextEmbeddingFunction(TextEmbeddingFunction):
     Parameters
     ----------
     - name: str
-        The name of the model to use. This should be set to the model you want to use for embeddings.
-    - _ndims: int
-        The number of dimensions of the embeddings. This is required to create the vector column in LanceDB.
+        The name of the model you want to use from the model catalog.
 
 
     Examples
@@ -35,7 +33,7 @@ class AzureAITextEmbeddingFunction(TextEmbeddingFunction):
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.embeddings import get_registry
 
-    model = get_registry().get("azure-ai-text").create(name="embed-v-4-0", ndims=1536)
+    model = get_registry().get("azure-ai-text").create(name="embed-v-4-0")
 
     class TextModel(LanceModel):
         text: str = model.SourceField()
@@ -52,20 +50,23 @@ class AzureAITextEmbeddingFunction(TextEmbeddingFunction):
     """
 
     name: str
-    _ndims: int
     client: ClassVar = None
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._ndims = kwargs.get("ndims")
-        if self._ndims is None:
-            raise ValueError(
-                "AzureAIEmbeddingFunction requires ndims to be set. "
-                "Please provide the number of dimensions for the embeddings."
-            )
-
     def ndims(self):
-        return self._ndims
+        if self.name == "embed-v-4-0":
+            return 1536
+        elif self.name == "Cohere-embed-v3-english":
+            return 1024
+        elif self.name == "Cohere-embed-v3-multilingual":
+            return 1024
+        elif self.name == "text-embedding-ada-002":
+            return 1536
+        elif self.name == "text-embedding-3-large":
+            return 3072
+        elif self.name == "text-embedding-3-small":
+            return 1536
+        else:
+            raise ValueError(f"Unknown model name: {self.name}")
 
     def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
         return self.compute_source_embeddings(query, input_type="query")
@@ -96,7 +97,8 @@ class AzureAITextEmbeddingFunction(TextEmbeddingFunction):
         if isinstance(texts, np.ndarray):
             if texts.dtype != object:
                 raise ValueError(
-                    "AzureAIEmbeddingFunction only supports input of type `object` (i.e., list of strings) for numpy arrays."
+                    "AzureAIEmbeddingFunction only supports input of strings for numpy \
+                        arrays."
                 )
             texts = texts.tolist()
 
@@ -107,7 +109,7 @@ class AzureAITextEmbeddingFunction(TextEmbeddingFunction):
             rs = AzureAITextEmbeddingFunction.client.embed(
                 input=texts[i : i + batch_size],
                 model=self.name,
-                dimensions=self._ndims,
+                dimensions=self.ndims(),
                 **kwargs,
             )
             embeddings.extend(emb.embedding for emb in rs.data)
@@ -126,7 +128,7 @@ class AzureAITextEmbeddingFunction(TextEmbeddingFunction):
             )
 
             credentials = attempt_import_or_raise(
-                "azure.core.credentials", "azure-ai-inference"
+                "azure.core.credentials", "azure-core"
             )
 
             AzureAITextEmbeddingFunction.client = inference.EmbeddingsClient(
