@@ -61,13 +61,6 @@ function nameSuggestsVectorColumn(fieldName: string): boolean {
   return nameLower.includes("vector") || nameLower.includes("embedding");
 }
 
-/**
- * Check if the value is a Uint8Array.
- */
-function isUint8Array(value: unknown): boolean {
-  return value instanceof Uint8Array;
-}
-
 export * from "apache-arrow";
 export type SchemaLike =
   | Schema
@@ -610,7 +603,7 @@ function inferType(
     // Try to automatically detect embedding columns.
     if (nameSuggestsVectorColumn(path[path.length - 1])) {
       // Check if value is a Uint8Array for integer vector type determination
-      if (isUint8Array(value)) {
+      if (value instanceof Uint8Array) {
         // For integer vectors, we default to Uint8 (matching Python implementation)
         const child = new Field("item", new Uint8(), true);
         return new FixedSizeList(value.length, child);
