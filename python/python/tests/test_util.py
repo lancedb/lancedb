@@ -390,6 +390,87 @@ def test_infer_target_schema():
     assert output == expected
 
 
+def test_infer_target_schema_with_vector_embedding_names():
+    """Test that _infer_target_schema detects vector columns with 'vector'/'embedding'.
+
+    This tests the enhanced column name detection for vector inference.
+    """
+
+    # Test float vectors with various naming patterns
+    example = pa.schema(
+        {
+            "user_vector": pa.list_(pa.float64()),
+            "text_embedding": pa.list_(pa.float64()),
+            "doc_embeddings": pa.list_(pa.float64()),
+            "my_vector_field": pa.list_(pa.float64()),
+            "embedding_model": pa.list_(pa.float64()),
+            "VECTOR_COL": pa.list_(pa.float64()),  # uppercase
+            "Vector_Mixed": pa.list_(pa.float64()),  # mixed case
+            "normal_list": pa.list_(pa.float64()),  # should not be converted
+        }
+    )
+    data = pa.table(
+        {
+            "user_vector": [[1.0, 2.0]],
+            "text_embedding": [[3.0, 4.0]],
+            "doc_embeddings": [[5.0, 6.0]],
+            "my_vector_field": [[7.0, 8.0]],
+            "embedding_model": [[9.0, 10.0]],
+            "VECTOR_COL": [[11.0, 12.0]],
+            "Vector_Mixed": [[13.0, 14.0]],
+            "normal_list": [[15.0, 16.0]],
+        },
+        schema=example,
+    )
+
+    expected = pa.schema(
+        {
+            "user_vector": pa.list_(pa.float32(), 2),  # converted
+            "text_embedding": pa.list_(pa.float32(), 2),  # converted
+            "doc_embeddings": pa.list_(pa.float32(), 2),  # converted
+            "my_vector_field": pa.list_(pa.float32(), 2),  # converted
+            "embedding_model": pa.list_(pa.float32(), 2),  # converted
+            "VECTOR_COL": pa.list_(pa.float32(), 2),  # converted
+            "Vector_Mixed": pa.list_(pa.float32(), 2),  # converted
+            "normal_list": pa.list_(pa.float64()),  # not converted
+        }
+    )
+
+    output, _ = _infer_target_schema(data.to_reader())
+    assert output == expected
+
+    # Test integer vectors with various naming patterns
+    example_int = pa.schema(
+        {
+            "user_vector": pa.list_(pa.int32()),
+            "text_embedding": pa.list_(pa.int64()),
+            "doc_embeddings": pa.list_(pa.int16()),
+            "normal_list": pa.list_(pa.int32()),  # should not be converted
+        }
+    )
+    data_int = pa.table(
+        {
+            "user_vector": [[1, 2]],
+            "text_embedding": [[3, 4]],
+            "doc_embeddings": [[5, 6]],
+            "normal_list": [[7, 8]],
+        },
+        schema=example_int,
+    )
+
+    expected_int = pa.schema(
+        {
+            "user_vector": pa.list_(pa.uint8(), 2),  # converted
+            "text_embedding": pa.list_(pa.uint8(), 2),  # converted
+            "doc_embeddings": pa.list_(pa.uint8(), 2),  # converted
+            "normal_list": pa.list_(pa.int32()),  # not converted
+        }
+    )
+
+    output_int, _ = _infer_target_schema(data_int.to_reader())
+    assert output_int == expected_int
+
+
 @pytest.mark.parametrize(
     "data",
     [
