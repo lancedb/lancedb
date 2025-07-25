@@ -102,7 +102,9 @@ if TYPE_CHECKING:
     )
 
 
-def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
+def _into_pyarrow_reader(
+    data, schema: Optional[pa.Schema] = None
+) -> pa.RecordBatchReader:
     from lancedb.dependencies import datasets
 
     if _check_for_hugging_face(data):
@@ -123,6 +125,12 @@ def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
         raise ValueError("Cannot add a single dictionary to a table. Use a list.")
 
     if isinstance(data, list):
+        # Handle empty list case
+        if not data:
+            if schema is None:
+                raise ValueError("Cannot create table from empty list without a schema")
+            return pa.Table.from_pylist(data, schema=schema).to_reader()
+
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
             schema = data[0].__class__.to_arrow_schema()
@@ -236,7 +244,7 @@ def _sanitize_data(
     # 1. There might be embedding columns missing that will be added
     #    in the add_embeddings step.
     # 2. If `allow_subschemas` is True, there might be columns missing.
-    reader = _into_pyarrow_reader(data)
+    reader = _into_pyarrow_reader(data, target_schema)
 
     reader = _append_vector_columns(reader, target_schema, metadata=metadata)
 
