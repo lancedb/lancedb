@@ -36,7 +36,7 @@ The type of the index
 optional loss: number;
 ```
 
-The KMeans loss value of the index,
+The K-means loss value of the index,
 it is only present for vector indices.
 
 ***

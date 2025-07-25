@@ -556,7 +556,7 @@ pub struct IndexStatistics {
     pub distance_type: Option<String>,
     /// The number of parts this index is split into.
     pub num_indices: Option<u32>,
-    /// The KMeans loss value of the index,
+    /// The K-means loss value of the index,
     /// it is only present for vector indices.
     pub loss: Option<f64>,
 }

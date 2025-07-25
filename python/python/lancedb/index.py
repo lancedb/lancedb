@@ -196,7 +196,7 @@ class HnswPq:
         If the dimension is not visible by 8 then we use 1 subvector.  This is not
         ideal and will likely result in poor performance.
 
-     num_bits: int, default 8
+    num_bits: int, default 8
         Number of bits to encode each sub-vector.
 
         This value controls how much the sub-vectors are compressed.  The more bits
@@ -204,27 +204,27 @@ class HnswPq:
 
     max_iterations, default 50
 
-        Max iterations to train kmeans.
+        Max iterations to train k-means.
 
-        When training an IVF index we use kmeans to calculate the partitions.  This
-        parameter controls how many iterations of kmeans to run.
+        When training an IVF index we use k-means to calculate the partitions.  This
+        parameter controls how many iterations of k-means to run.
 
         Increasing this might improve the quality of the index but in most cases the
-        parameter is unused because kmeans will converge with fewer iterations.  The
-        parameter is only used in cases where kmeans does not appear to converge.  In
+        parameter is unused because k-means will converge with fewer iterations.  The
+        parameter is only used in cases where k-means does not appear to converge.  In
         those cases it is unlikely that setting this larger will lead to the index
         converging anyways.
 
     sample_rate, default 256
 
-        The rate used to calculate the number of training vectors for kmeans.
+        The rate used to calculate the number of training vectors for k-means.
 
         When an IVF index is trained, we need to calculate partitions.  These are
         groups of vectors that are similar to each other.  To do this we use an
-        algorithm called kmeans.
+        algorithm called k-means.
 
-        Running kmeans on a large dataset can be slow.  To speed this up we
-        run kmeans on a random sample of the data.  This parameter controls the
+        Running k-means on a large dataset can be slow.  To speed this up we
+        run k-means on a random sample of the data.  This parameter controls the
         size of the sample.  The total number of vectors used to train the index
         is `sample_rate * num_partitions`.
 
@@ -303,27 +303,27 @@ class HnswSq:
 
     max_iterations, default 50
 
-        Max iterations to train kmeans.
+        Max iterations to train k-means.
 
-        When training an IVF index we use kmeans to calculate the partitions.
-        This parameter controls how many iterations of kmeans to run.
+        When training an IVF index we use k-means to calculate the partitions.
+        This parameter controls how many iterations of k-means to run.
 
         Increasing this might improve the quality of the index but in most cases
-        the parameter is unused because kmeans will converge with fewer iterations.
-        The parameter is only used in cases where kmeans does not appear to converge.
+        the parameter is unused because k-means will converge with fewer iterations.
+        The parameter is only used in cases where k-means does not appear to converge.
         In those cases it is unlikely that setting this larger will lead to
         the index converging anyways.
 
     sample_rate, default 256
 
-        The rate used to calculate the number of training vectors for kmeans.
+        The rate used to calculate the number of training vectors for k-means.
 
         When an IVF index is trained, we need to calculate partitions.  These
         are groups of vectors that are similar to each other.  To do this
-        we use an algorithm called kmeans.
+        we use an algorithm called k-means.
 
-        Running kmeans on a large dataset can be slow.  To speed this up we
-        run kmeans on a random sample of the data.  This parameter controls the
+        Running k-means on a large dataset can be slow.  To speed this up we
+        run k-means on a random sample of the data.  This parameter controls the
         size of the sample.  The total number of vectors used to train the index
         is `sample_rate * num_partitions`.
 
@@ -416,24 +416,24 @@ class IvfFlat:
         part of the search (searching within a partition) will be slow.
 
     max_iterations: int, default 50
-        Max iteration to train kmeans.
+        Max iteration to train k-means.
 
-        When training an IVF PQ index we use kmeans to calculate the partitions.
-        This parameter controls how many iterations of kmeans to run.
+        When training an IVF PQ index we use k-means to calculate the partitions.
+        This parameter controls how many iterations of k-means to run.
 
         Increasing this might improve the quality of the index but in most cases
         these extra iterations have diminishing returns.
 
         The default value is 50.
     sample_rate: int, default 256
-        The rate used to calculate the number of training vectors for kmeans.
+        The rate used to calculate the number of training vectors for k-means.
 
         When an IVF PQ index is trained, we need to calculate partitions.  These
         are groups of vectors that are similar to each other.  To do this we use an
-        algorithm called kmeans.
+        algorithm called k-means.
 
-        Running kmeans on a large dataset can be slow.  To speed this up we run
-        kmeans on a random sample of the data.  This parameter controls the size of
+        Running k-means on a large dataset can be slow.  To speed this up we run
+        k-means on a random sample of the data.  This parameter controls the size of
         the sample.  The total number of vectors used to train the index is
         `sample_rate * num_partitions`.
 
@@ -536,24 +536,24 @@ class IvfPq:
         the more accurate the index but the slower search.  The default is 8
         bits.  Only 4 and 8 are supported.
     max_iterations: int, default 50
-        Max iteration to train kmeans.
+        Max iteration to train k-means.
 
-        When training an IVF PQ index we use kmeans to calculate the partitions.
-        This parameter controls how many iterations of kmeans to run.
+        When training an IVF PQ index we use k-means to calculate the partitions.
+        This parameter controls how many iterations of k-means to run.
 
         Increasing this might improve the quality of the index but in most cases
         these extra iterations have diminishing returns.
 
         The default value is 50.
     sample_rate: int, default 256
-        The rate used to calculate the number of training vectors for kmeans.
+        The rate used to calculate the number of training vectors for k-means.
 
         When an IVF PQ index is trained, we need to calculate partitions.  These
         are groups of vectors that are similar to each other.  To do this we use an
-        algorithm called kmeans.
+        algorithm called k-means.
 
-        Running kmeans on a large dataset can be slow.  To speed this up we run
-        kmeans on a random sample of the data.  This parameter controls the size of
+        Running k-means on a large dataset can be slow.  To speed this up we run
+        k-means on a random sample of the data.  This parameter controls the size of
         the sample.  The total number of vectors used to train the index is
         `sample_rate * num_partitions`.
 
