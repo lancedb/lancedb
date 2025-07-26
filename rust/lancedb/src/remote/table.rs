@@ -1407,6 +1407,53 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })?;
         Ok(stats)
     }
+
+    async fn table_metadata(&self) -> Result<std::collections::HashMap<String, String>> {
+        let request = self
+            .client
+            .get(&format!("/v1/table/{}/metadata", self.name));
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        let metadata = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse table metadata: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+        Ok(metadata)
+    }
+
+    async fn update_config(&self, upsert_values: Vec<(String, String)>) -> Result<()> {
+        let metadata_map: std::collections::HashMap<String, String> =
+            upsert_values.into_iter().collect();
+
+        let payload = serde_json::json!({
+            "upsert": metadata_map
+        });
+
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/metadata", self.name))
+            .json(&payload);
+        let (request_id, response) = self.send(request, true).await?;
+        self.check_table_response(&request_id, response).await?;
+        Ok(())
+    }
+
+    async fn delete_config_keys(&self, delete_keys: &[&str]) -> Result<()> {
+        let payload = serde_json::json!({
+            "delete": delete_keys
+        });
+
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/metadata", self.name))
+            .json(&payload);
+        let (request_id, response) = self.send(request, true).await?;
+        self.check_table_response(&request_id, response).await?;
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
@@ -3069,5 +3116,161 @@ mod tests {
             http::Response::builder().status(status).body(body).unwrap()
         });
         table
+    }
+
+    #[tokio::test]
+    async fn test_table_metadata_get() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "GET");
+            assert_eq!(request.url().path(), "/v1/table/my_table/metadata");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tag": "prod", "description": "Production table", "version": "1.0"}"#)
+                .unwrap()
+        });
+
+        let metadata = table.table_metadata().await.unwrap();
+        assert_eq!(metadata.len(), 3);
+        assert_eq!(metadata.get("tag"), Some(&"prod".to_string()));
+        assert_eq!(
+            metadata.get("description"),
+            Some(&"Production table".to_string())
+        );
+        assert_eq!(metadata.get("version"), Some(&"1.0".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_table_metadata_get_empty() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "GET");
+            assert_eq!(request.url().path(), "/v1/table/my_table/metadata");
+
+            http::Response::builder().status(200).body(r#"{}"#).unwrap()
+        });
+
+        let metadata = table.table_metadata().await.unwrap();
+        assert!(metadata.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_update_config_upsert() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/metadata");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
+
+            // Verify the payload structure matches the issue specification
+            assert!(parsed.get("upsert").is_some());
+            assert!(parsed.get("delete").is_none());
+
+            let upsert_data = parsed.get("upsert").unwrap().as_object().unwrap();
+            assert_eq!(upsert_data.get("tag").unwrap().as_str().unwrap(), "prod");
+            assert_eq!(
+                upsert_data.get("description").unwrap().as_str().unwrap(),
+                "Production table"
+            );
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let metadata = vec![
+            ("tag".to_string(), "prod".to_string()),
+            ("description".to_string(), "Production table".to_string()),
+        ];
+
+        table.update_config(metadata).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_delete_config_keys() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/metadata");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
+
+            // Verify the payload structure matches the issue specification
+            assert!(parsed.get("delete").is_some());
+            assert!(parsed.get("upsert").is_none());
+
+            let delete_keys = parsed.get("delete").unwrap().as_array().unwrap();
+            assert_eq!(delete_keys.len(), 2);
+            assert_eq!(delete_keys[0].as_str().unwrap(), "tag");
+            assert_eq!(delete_keys[1].as_str().unwrap(), "version");
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        table.delete_config_keys(&["tag", "version"]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_metadata_combined_upsert_and_delete() {
+        // This test verifies that we can handle both upsert and delete in a single request
+        // by making separate calls (since our current API separates them)
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let count = call_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/metadata");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let parsed: serde_json::Value = serde_json::from_slice(body).unwrap();
+
+            if count == 0 {
+                // First call should be upsert
+                assert!(parsed.get("upsert").is_some());
+                assert!(parsed.get("delete").is_none());
+            } else if count == 1 {
+                // Second call should be delete
+                assert!(parsed.get("delete").is_some());
+                assert!(parsed.get("upsert").is_none());
+            }
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        // Test both operations
+        table
+            .update_config(vec![("new_key".to_string(), "new_value".to_string())])
+            .await
+            .unwrap();
+        table.delete_config_keys(&["old_key"]).await.unwrap();
+
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_metadata_error_handling() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "GET");
+            assert_eq!(request.url().path(), "/v1/table/my_table/metadata");
+
+            http::Response::builder()
+                .status(500)
+                .body("Internal server error")
+                .unwrap()
+        });
+
+        let result = table.table_metadata().await;
+        assert!(result.is_err());
     }
 }

@@ -763,6 +763,55 @@ impl Table {
         })
     }
 
+    pub fn table_metadata(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let native_tbl = inner
+                .as_native()
+                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?;
+            let metadata = native_tbl.table_metadata().await.infer_error()?;
+            Python::with_gil(|py| {
+                let py_dict = PyDict::new(py);
+                for (key, value) in metadata {
+                    py_dict.set_item(key, value)?;
+                }
+                Ok(py_dict.unbind())
+            })
+        })
+    }
+
+    pub fn update_config(
+        self_: PyRef<'_, Self>,
+        metadata: Vec<(String, String)>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let native_tbl = inner
+                .as_native()
+                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?;
+            native_tbl.update_config(metadata).await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn delete_config_keys(
+        self_: PyRef<'_, Self>,
+        keys: Vec<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let native_tbl = inner
+                .as_native()
+                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?;
+            let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+            native_tbl
+                .delete_config_keys(&key_refs)
+                .await
+                .infer_error()?;
+            Ok(())
+        })
+    }
+
     pub fn replace_field_metadata<'a>(
         self_: PyRef<'a, Self>,
         field_name: String,

@@ -1846,3 +1846,38 @@ def test_add_table_with_empty_embeddings(tmp_path):
         on_bad_vectors="drop",
     )
     assert table.count_rows() == 1
+
+
+def test_table_metadata(mem_db: DBConnection):
+    """Test table metadata operations"""
+    import asyncio
+
+    data = [
+        {"vector": [1.0, 2.0], "item": "foo"},
+        {"vector": [3.0, 4.0], "item": "bar"},
+    ]
+    table = mem_db.create_table("test_metadata", data)
+
+    # Test inserting metadata
+    asyncio.run(
+        table.metadata.insert({"tag": "prod", "description": "Production table"})
+    )
+
+    # Test getting metadata
+    metadata = asyncio.run(table.metadata.get())
+    assert metadata["tag"] == "prod"
+    assert metadata["description"] == "Production table"
+
+    # Test updating metadata
+    asyncio.run(table.metadata.insert({"tag": "staging", "version": "1.0"}))
+    metadata = asyncio.run(table.metadata.get())
+    assert metadata["tag"] == "staging"
+    assert metadata["description"] == "Production table"
+    assert metadata["version"] == "1.0"
+
+    # Test deleting metadata keys
+    asyncio.run(table.metadata.delete_keys(["tag", "version"]))
+    metadata = asyncio.run(table.metadata.get())
+    assert "tag" not in metadata
+    assert "version" not in metadata
+    assert metadata["description"] == "Production table"

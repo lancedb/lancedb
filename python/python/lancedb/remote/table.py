@@ -27,7 +27,7 @@ from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
-from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
+from ..table import AsyncTable, IndexStatistics, Query, Table, TableMetadata, Tags
 
 
 class RemoteTable(Table):
@@ -63,6 +63,20 @@ class RemoteTable(Table):
     @property
     def tags(self) -> Tags:
         return Tags(self._table)
+
+    @property
+    def metadata(self) -> TableMetadata:
+        """Table metadata management.
+
+        Table metadata allows storing arbitrary key-value information about
+        the table such as tags, descriptions, or configuration settings.
+
+        Returns
+        -------
+        TableMetadata
+            The metadata manager for managing table metadata.
+        """
+        return TableMetadata(self._table)
 
     @cached_property
     def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:

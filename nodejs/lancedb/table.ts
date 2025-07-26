@@ -458,6 +458,23 @@ export abstract class Table {
   abstract tags(): Promise<Tags>;
 
   /**
+   * Get a metadata manager for this table.
+   *
+   * Table metadata allows storing arbitrary key-value information about
+   * the table such as tags, descriptions, or configuration settings.
+   *
+   * @returns {TableMetadata} A metadata manager for this table
+   * @example
+   * ```typescript
+   * await table.metadata.insert({ tag: "prod", description: "Production table" });
+   * const metadata = await table.metadata.get();
+   * console.log(metadata.tag); // "prod"
+   * await table.metadata.deleteKeys(["tag"]);
+   * ```
+   */
+  abstract get metadata(): TableMetadata;
+
+  /**
    * Restore the table to the currently checked out version
    *
    * This operation will fail if checkout has not been called previously
@@ -798,6 +815,10 @@ export class LocalTable extends Table {
     return await this.inner.tags();
   }
 
+  get metadata(): TableMetadata {
+    return new TableMetadata(this.inner);
+  }
+
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
     let cleanupOlderThanMs;
     if (
@@ -899,4 +920,45 @@ export interface ColumnAlteration {
   dataType?: string | DataType;
   /** Set the new nullability. Note that a nullable column cannot be made non-nullable. */
   nullable?: boolean;
+}
+
+/**
+ * Manager for table metadata operations.
+ *
+ * Table metadata allows storing arbitrary key-value information about
+ * the table such as tags, descriptions, or configuration settings.
+ */
+export class TableMetadata {
+  private table: _NativeTable;
+
+  constructor(table: _NativeTable) {
+    this.table = table;
+  }
+
+  /**
+   * Retrieve all table metadata as key-value pairs.
+   *
+   * @returns {Promise<Record<string, string>>} Dictionary containing all table metadata
+   */
+  async get(): Promise<Record<string, string>> {
+    return await this.table.tableMetadata();
+  }
+
+  /**
+   * Insert or update table metadata.
+   *
+   * @param {Record<string, string>} metadata Dictionary of key-value pairs to insert or update
+   */
+  async insert(metadata: Record<string, string>): Promise<void> {
+    await this.table.updateConfig(metadata);
+  }
+
+  /**
+   * Delete specific keys from table metadata.
+   *
+   * @param {string[]} keys List of metadata keys to delete
+   */
+  async deleteKeys(keys: string[]): Promise<void> {
+    await this.table.deleteConfigKeys(keys);
+  }
 }

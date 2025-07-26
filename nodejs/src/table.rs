@@ -315,6 +315,28 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn table_metadata(&self) -> napi::Result<HashMap<String, String>> {
+        let inner = self.inner_ref()?;
+        inner.table_metadata().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn update_config(&self, metadata: HashMap<String, String>) -> napi::Result<()> {
+        let inner = self.inner_ref()?;
+        inner
+            .update_config(metadata.into_iter())
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn delete_config_keys(&self, keys: Vec<String>) -> napi::Result<()> {
+        let inner = self.inner_ref()?;
+        let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        inner.delete_config_keys(&key_refs).await.default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn optimize(
         &self,
         older_than_ms: Option<i64>,

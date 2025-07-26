@@ -628,6 +628,16 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def metadata(self) -> TableMetadata:
+        """Table metadata management.
+
+        Table metadata allows storing arbitrary key-value information about
+        the table such as tags, descriptions, or configuration settings.
+        """
+        raise NotImplementedError
+
     def __len__(self) -> int:
         """The number of rows in this Table"""
         return self.count_rows(None)
@@ -1686,6 +1696,33 @@ class LanceTable(Table):
         0  [1.1, 0.9]  vector
         """
         return Tags(self._table)
+
+    @property
+    def metadata(self) -> TableMetadata:
+        """Table metadata management.
+
+        Table metadata allows storing arbitrary key-value information about
+        the table such as tags, descriptions, or configuration settings.
+
+        Returns
+        -------
+        TableMetadata
+            The metadata manager for managing table metadata.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table",
+        ...    [{"vector": [1.1, 0.9], "type": "vector"}])
+        >>> import asyncio
+        >>> asyncio.run(table.metadata.insert({"tag": "prod"}))
+        >>> metadata = asyncio.run(table.metadata.get())
+        >>> print(metadata["tag"])
+        prod
+        >>> asyncio.run(table.metadata.delete_keys(["tag"]))
+        """
+        return TableMetadata(self._table)
 
     def checkout(self, version: Union[int, str]):
         """Checkout a version of the table. This is an in-place operation.
@@ -4045,6 +4082,20 @@ class AsyncTable:
         """
         return AsyncTags(self._inner)
 
+    @property
+    def metadata(self) -> TableMetadata:
+        """Table metadata management.
+
+        Table metadata allows storing arbitrary key-value information about
+        the table such as tags, descriptions, or configuration settings.
+
+        Returns
+        -------
+        TableMetadata
+            The metadata manager for managing table metadata.
+        """
+        return TableMetadata(self._inner)
+
     async def optimize(
         self,
         *,
@@ -4178,6 +4229,85 @@ class AsyncTable:
             The new metadata to set
         """
         await self._inner.replace_field_metadata(field_name, new_metadata)
+
+    async def table_metadata(self) -> Dict[str, str]:
+        """
+        Retrieve table metadata as key-value pairs.
+
+        Returns
+        -------
+        Dict[str, str]
+            Dictionary containing all table metadata
+        """
+        return await self._inner.table_metadata()
+
+    async def update_config(self, upsert_values: List[Tuple[str, str]]) -> None:
+        """
+        Update key-value pairs in table metadata.
+
+        Parameters
+        ----------
+        upsert_values : List[Tuple[str, str]]
+            List of key-value pairs to insert or update
+        """
+        await self._inner.update_config(upsert_values)
+
+    async def delete_config_keys(self, keys: List[str]) -> None:
+        """
+        Delete keys from table metadata.
+
+        Parameters
+        ----------
+        keys : List[str]
+            List of metadata keys to delete
+        """
+        await self._inner.delete_config_keys(keys)
+
+
+class TableMetadata:
+    """
+    Interface for managing table metadata.
+
+    Table metadata is stored as key-value pairs and can be used to store
+    arbitrary information about the table such as tags, descriptions, or
+    configuration settings.
+    """
+
+    def __init__(self, table):
+        self._table = table
+
+    async def get(self) -> Dict[str, str]:
+        """
+        Retrieve all table metadata as key-value pairs.
+
+        Returns
+        -------
+        Dict[str, str]
+            Dictionary containing all table metadata
+        """
+        return await self._table.table_metadata()
+
+    async def insert(self, metadata: Dict[str, str]) -> None:
+        """
+        Insert or update table metadata.
+
+        Parameters
+        ----------
+        metadata : Dict[str, str]
+            Dictionary of key-value pairs to insert or update
+        """
+        await self._table.update_config(list(metadata.items()))
+
+    async def delete_keys(self, keys: List[str]) -> None:
+        """
+        Delete specific keys from table metadata.
+
+        Parameters
+        ----------
+        keys : List[str]
+            List of metadata keys to delete
+        """
+        await self._table.delete_config_keys(keys)
 
 
 @dataclass
