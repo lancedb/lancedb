@@ -605,6 +605,12 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<()>;
     /// Get statistics on the table
     async fn stats(&self) -> Result<TableStatistics>;
+    /// Get table metadata as key-value pairs
+    async fn table_metadata(&self) -> Result<std::collections::HashMap<String, String>>;
+    /// Update key-value pairs in table metadata
+    async fn update_config(&self, upsert_values: Vec<(String, String)>) -> Result<()>;
+    /// Delete keys from table metadata
+    async fn delete_config_keys(&self, delete_keys: &[&str]) -> Result<()>;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -1331,6 +1337,26 @@ impl Table {
     pub async fn stats(&self) -> Result<TableStatistics> {
         self.inner.stats().await
     }
+
+    /// Get table metadata as key-value pairs
+    pub async fn table_metadata(&self) -> Result<std::collections::HashMap<String, String>> {
+        self.inner.table_metadata().await
+    }
+
+    /// Update key-value pairs in table metadata
+    pub async fn update_config(
+        &self,
+        upsert_values: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<()> {
+        self.inner
+            .update_config(upsert_values.into_iter().collect())
+            .await
+    }
+
+    /// Delete keys from table metadata
+    pub async fn delete_config_keys(&self, delete_keys: &[&str]) -> Result<()> {
+        self.inner.delete_config_keys(delete_keys).await
+    }
 }
 
 pub struct NativeTags {
@@ -2038,6 +2064,12 @@ impl NativeTable {
     pub async fn manifest(&self) -> Result<Manifest> {
         let dataset = self.dataset.get().await?;
         Ok(dataset.manifest().clone())
+    }
+
+    /// Get table metadata as key-value pairs
+    pub async fn table_metadata(&self) -> Result<std::collections::HashMap<String, String>> {
+        let dataset = self.dataset.get().await?;
+        Ok(dataset.manifest().config.clone())
     }
 
     /// Update key-value pairs in config.
@@ -2773,6 +2805,23 @@ impl BaseTable for NativeTable {
             fragment_stats: frag_stats,
         };
         Ok(stats)
+    }
+
+    async fn table_metadata(&self) -> Result<std::collections::HashMap<String, String>> {
+        let dataset = self.dataset.get().await?;
+        Ok(dataset.manifest().config.clone())
+    }
+
+    async fn update_config(&self, upsert_values: Vec<(String, String)>) -> Result<()> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.update_config(upsert_values).await?;
+        Ok(())
+    }
+
+    async fn delete_config_keys(&self, delete_keys: &[&str]) -> Result<()> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.delete_config_keys(delete_keys).await?;
+        Ok(())
     }
 }
 
@@ -4359,5 +4408,79 @@ mod tests {
         let result = table.list_indices().await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].index_type, crate::index::IndexType::Bitmap);
+    }
+
+    #[tokio::test]
+    async fn test_table_metadata() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        let table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+
+        let native_tbl = table.as_native().unwrap();
+
+        // Test initial metadata (may have some default entries)
+        let initial_metadata = native_tbl.table_metadata().await.unwrap();
+        let initial_count = initial_metadata.len();
+
+        // Test inserting metadata
+        native_tbl
+            .update_config(vec![
+                ("tag".to_string(), "prod".to_string()),
+                ("description".to_string(), "Production table".to_string()),
+            ])
+            .await
+            .unwrap();
+
+        let metadata = native_tbl.table_metadata().await.unwrap();
+        assert_eq!(metadata.len(), initial_count + 2);
+        assert_eq!(metadata.get("tag"), Some(&"prod".to_string()));
+        assert_eq!(
+            metadata.get("description"),
+            Some(&"Production table".to_string())
+        );
+
+        // Test updating metadata
+        native_tbl
+            .update_config(vec![
+                ("tag".to_string(), "staging".to_string()),
+                ("version".to_string(), "1.0".to_string()),
+            ])
+            .await
+            .unwrap();
+
+        let metadata = native_tbl.table_metadata().await.unwrap();
+        assert_eq!(metadata.len(), initial_count + 3);
+        assert_eq!(metadata.get("tag"), Some(&"staging".to_string()));
+        assert_eq!(
+            metadata.get("description"),
+            Some(&"Production table".to_string())
+        );
+        assert_eq!(metadata.get("version"), Some(&"1.0".to_string()));
+
+        // Test deleting metadata keys
+        native_tbl
+            .delete_config_keys(&["tag", "version"])
+            .await
+            .unwrap();
+
+        let metadata = native_tbl.table_metadata().await.unwrap();
+        assert_eq!(metadata.len(), initial_count + 1);
+        assert!(metadata.get("tag").is_none());
+        assert!(metadata.get("version").is_none());
+        assert_eq!(
+            metadata.get("description"),
+            Some(&"Production table".to_string())
+        );
     }
 }
