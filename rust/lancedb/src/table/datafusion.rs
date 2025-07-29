@@ -494,7 +494,6 @@ pub mod tests {
         TestFixture::check_plan(
             plan,
             "MetadataEraserExec
-             RepartitionExec:...
              ProjectionExec:...
              LanceRead:...",
         )
