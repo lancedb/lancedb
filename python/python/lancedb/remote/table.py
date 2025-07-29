@@ -114,7 +114,7 @@ class RemoteTable(Table):
         index_type: Literal["BTREE", "BITMAP", "LABEL_LIST", "scalar"] = "scalar",
         *,
         replace: bool = False,
-        wait_timeout: timedelta = None,
+        wait_timeout: Optional[timedelta] = None,
     ):
         """Creates a scalar index
         Parameters
