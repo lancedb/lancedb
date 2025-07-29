@@ -582,7 +582,7 @@ describe("When creating an index", () => {
       "Invalid input, minimum_nprobes must be greater than 0",
     );
     expect(() => tbl.query().nearestTo(queryVec).maximumNprobes(5)).toThrow(
-      "Invalid input, maximum_nprobes must be greater than minimum_nprobes",
+      "Invalid input, maximum_nprobes must be greater than or equal to minimum_nprobes",
     );
 
     await tbl.dropIndex("vec_idx");
