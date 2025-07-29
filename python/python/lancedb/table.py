@@ -3141,7 +3141,7 @@ class AsyncTable:
         metadata : Dict[str, str]
             A dictionary containing the new metadata key-value pairs.
         """
-        return await self._inner.replace_schema_metadata(metadata)
+        await self._inner.replace_schema_metadata(metadata)
 
     async def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
         """

@@ -63,7 +63,7 @@ class RemoteTable(Table):
         metadata : Dict[str, str]
             A dictionary containing the new metadata key-value pairs.
         """
-        return LOOP.run(self._table.replace_schema_metadata(metadata))
+        LOOP.run(self._table.replace_schema_metadata(metadata))
 
     @property
     def version(self) -> int:

@@ -725,7 +725,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
         let request = self
             .client
-            .put(&format!("/v1/table/{}/schema/metadata", self.name))
+            .post(&format!("/v1/table/{}/schema_metadata/update", self.name))
             .json(&metadata);
 
         let (request_id, response) = self.send(request, true).await?;
@@ -3037,8 +3037,11 @@ mod tests {
     #[tokio::test]
     async fn test_replace_schema_metadata() {
         let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.method(), "PUT");
-            assert_eq!(request.url().path(), "/v1/table/my_table/schema/metadata");
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/schema_metadata/update"
+            );
 
             // Verify the request body contains the metadata
             let body = request.body().unwrap().as_bytes().unwrap();
