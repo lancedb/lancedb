@@ -599,6 +599,17 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def replace_schema_metadata(self, metadata: Dict[str, str]) -> None:
+        """Replace the schema metadata of the table.
+
+        Parameters
+        ----------
+        metadata : Dict[str, str]
+            A dictionary containing the new metadata key-value pairs.
+        """
+        raise NotImplementedError
+
     @property
     @abstractmethod
     def tags(self) -> Tags:
@@ -1638,6 +1649,16 @@ class LanceTable(Table):
         pa.Schema
             A PyArrow schema object."""
         return LOOP.run(self._table.schema())
+
+    def replace_schema_metadata(self, metadata: Dict[str, str]) -> None:
+        """Replace the schema metadata of the table.
+
+        Parameters
+        ----------
+        metadata : Dict[str, str]
+            A dictionary containing the new metadata key-value pairs.
+        """
+        return LOOP.run(self._table.replace_schema_metadata(metadata))
 
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
@@ -3111,6 +3132,16 @@ class AsyncTable:
 
         """
         return await self._inner.schema()
+
+    async def replace_schema_metadata(self, metadata: Dict[str, str]) -> None:
+        """Replace the schema metadata of the table.
+
+        Parameters
+        ----------
+        metadata : Dict[str, str]
+            A dictionary containing the new metadata key-value pairs.
+        """
+        return await self._inner.replace_schema_metadata(metadata)
 
     async def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
         """

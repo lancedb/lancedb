@@ -720,6 +720,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let schema = self.describe().await?.schema;
         Ok(Arc::new(schema.try_into()?))
     }
+
+    async fn replace_schema_metadata(&self, metadata: HashMap<String, String>) -> Result<()> {
+        self.check_mutable().await?;
+        let request = self
+            .client
+            .put(&format!("/v1/table/{}/schema/metadata", self.name))
+            .json(&metadata);
+
+        let (request_id, response) = self.send(request, true).await?;
+        self.check_table_response(&request_id, response).await?;
+        Ok(())
+    }
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
         let mut request = self
             .client
@@ -3020,6 +3032,33 @@ mod tests {
             e.to_string(),
             "Timeout error: timed out waiting for indices: [\"doesnt_exist_idx\"] after 1s"
         );
+    }
+
+    #[tokio::test]
+    async fn test_replace_schema_metadata() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "PUT");
+            assert_eq!(request.url().path(), "/v1/table/my_table/schema/metadata");
+
+            // Verify the request body contains the metadata
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let metadata: HashMap<String, String> = serde_json::from_slice(body).unwrap();
+            let expected_metadata: HashMap<String, String> = [
+                ("description".to_string(), "Test table".to_string()),
+                ("version".to_string(), "1.0".to_string()),
+            ]
+            .into_iter()
+            .collect();
+            assert_eq!(metadata, expected_metadata);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let mut metadata = HashMap::new();
+        metadata.insert("description".to_string(), "Test table".to_string());
+        metadata.insert("version".to_string(), "1.0".to_string());
+
+        table.replace_schema_metadata(metadata).await.unwrap();
     }
 
     fn _make_table_with_indices(unindexed_rows: usize) -> Table {

@@ -280,6 +280,30 @@ impl Table {
         })
     }
 
+    /// Replace the schema metadata of the table.
+    ///
+    /// # Arguments
+    /// * `metadata` - A dictionary containing the new metadata key-value pairs
+    pub fn replace_schema_metadata<'a>(
+        self_: PyRef<'a, Self>,
+        metadata: &Bound<'_, PyDict>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let mut metadata_map = HashMap::new();
+        for (key, value) in metadata.into_iter() {
+            let key: String = key.extract()?;
+            let value: String = value.extract()?;
+            metadata_map.insert(key, value);
+        }
+        future_into_py(self_.py(), async move {
+            inner
+                .replace_schema_metadata(metadata_map)
+                .await
+                .infer_error()?;
+            Ok(())
+        })
+    }
+
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: Bound<'_, PyAny>,

@@ -132,6 +132,23 @@ export abstract class Table {
   /** Get the schema of the table. */
   abstract schema(): Promise<Schema>;
   /**
+   * Replace the schema metadata of the table.
+   *
+   * @param metadata A record/object containing the new metadata key-value pairs
+   * @returns Promise that resolves when the metadata has been updated
+   *
+   * @example
+   * ```ts
+   * await table.replaceSchemaMetadata({
+   *   "description": "Updated table description",
+   *   "version": "2.0"
+   * });
+   * ```
+   */
+  abstract replaceSchemaMetadata(
+    metadata: Record<string, string>,
+  ): Promise<void>;
+  /**
    * Insert records into this Table.
    * @param {Data} data Records to be inserted into the Table
    * @returns {Promise<AddResult>} A promise that resolves to an object
@@ -560,6 +577,10 @@ export class LocalTable extends Table {
     const schemaBuf = await this.inner.schema();
     const tbl = tableFromIPC(schemaBuf);
     return tbl.schema;
+  }
+
+  async replaceSchemaMetadata(metadata: Record<string, string>): Promise<void> {
+    return await this.inner.replaceSchemaMetadata(metadata);
   }
 
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<AddResult> {

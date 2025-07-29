@@ -1902,4 +1902,38 @@ describe("column name options", () => {
       .toArray();
     expect(results2.length).toBe(10);
   });
+
+  test("replaceSchemaMetadata", async () => {
+    const data = [
+      { vector: [3.1, 4.1], item: "foo", price: 10.0 },
+      { vector: [5.9, 26.5], item: "bar", price: 20.0 },
+    ];
+
+    const conn = await connect(tmpDir.name);
+    table = await conn.createTable("test_metadata", data);
+
+    // Get initial schema
+    const initialSchema = await table.schema();
+    expect(initialSchema).toBeDefined();
+
+    // Replace schema metadata
+    const newMetadata = {
+      description: "Test table for schema metadata",
+      version: "1.0",
+      createdBy: "jest",
+    };
+
+    await table.replaceSchemaMetadata(newMetadata);
+
+    // Verify metadata was updated
+    const updatedSchema = await table.schema();
+    expect(updatedSchema).toBeDefined();
+    expect(updatedSchema.metadata).toBeDefined();
+
+    // Check that our new metadata is present
+    const metadata = updatedSchema.metadata;
+    for (const [key, value] of Object.entries(newMetadata)) {
+      expect(metadata.get(key)).toBe(value);
+    }
+  });
 });

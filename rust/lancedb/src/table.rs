@@ -512,6 +512,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn name(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
+    /// Replace the schema metadata of the table.
+    async fn replace_schema_metadata(&self, metadata: HashMap<String, String>) -> Result<()>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
     /// Create a physical plan for the query.
@@ -713,6 +715,15 @@ impl Table {
     /// Get the arrow [Schema] of the table.
     pub async fn schema(&self) -> Result<SchemaRef> {
         self.inner.schema().await
+    }
+
+    /// Replace the schema metadata of the table.
+    ///
+    /// # Arguments
+    ///
+    /// * `metadata` - A HashMap containing the new metadata key-value pairs
+    pub async fn replace_schema_metadata(&self, metadata: HashMap<String, String>) -> Result<()> {
+        self.inner.replace_schema_metadata(metadata).await
     }
 
     /// Count the number of rows in this dataset.
@@ -2142,6 +2153,12 @@ impl BaseTable for NativeTable {
     async fn schema(&self) -> Result<SchemaRef> {
         let lance_schema = self.dataset.get().await?.schema().clone();
         Ok(Arc::new(Schema::from(&lance_schema)))
+    }
+
+    async fn replace_schema_metadata(&self, metadata: HashMap<String, String>) -> Result<()> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.replace_schema_metadata(metadata).await?;
+        Ok(())
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {

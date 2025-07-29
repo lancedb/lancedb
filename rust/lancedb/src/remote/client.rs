@@ -348,6 +348,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.post(full_uri)
     }
 
+    pub fn put(&self, uri: &str) -> RequestBuilder {
+        let full_uri = format!("{}{}", self.host, uri);
+        self.client.put(full_uri)
+    }
+
     pub async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
