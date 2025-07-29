@@ -561,6 +561,36 @@ for await (const batch of table.query()) {
 
 ***
 
+### replaceSchemaMetadata()
+
+```ts
+abstract replaceSchemaMetadata(metadata): Promise<void>
+```
+
+Replace the schema metadata of the table.
+
+#### Parameters
+
+* **metadata**: `Record`&lt;`string`, `string`&gt;
+    A record/object containing the new metadata key-value pairs
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+Promise that resolves when the metadata has been updated
+
+#### Example
+
+```ts
+await table.replaceSchemaMetadata({
+  "description": "Updated table description",
+  "version": "2.0"
+});
+```
+
+***
+
 ### restore()
 
 ```ts

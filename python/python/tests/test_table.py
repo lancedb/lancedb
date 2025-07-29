@@ -1850,10 +1850,7 @@ def test_add_table_with_empty_embeddings(tmp_path):
 
 def test_replace_schema_metadata(mem_db: DBConnection):
     """Test replacing schema metadata"""
-    data = [
-        {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-        {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
-    ]
+    data = [{"item": "foo", "price": 10.0}]
     table = mem_db.create_table("test_metadata", data=data)
 
     # Replace schema metadata
@@ -1864,11 +1861,7 @@ def test_replace_schema_metadata(mem_db: DBConnection):
     }
     table.replace_schema_metadata(new_metadata)
 
-    # Verify metadata was updated
-    updated_schema = table.schema
-    assert updated_schema.metadata is not None
-
-    # Check that our new metadata is present
-    for key, value in new_metadata.items():
-        assert key.encode() in updated_schema.metadata
-        assert updated_schema.metadata[key.encode()].decode() == value
+    metadata_strings = {
+        k.decode("utf-8"): v.decode("utf-8") for k, v in table.schema.metadata.items()
+    }
+    assert metadata_strings == new_metadata
