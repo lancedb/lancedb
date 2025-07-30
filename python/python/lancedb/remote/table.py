@@ -148,7 +148,7 @@ class RemoteTable(Table):
         column: str,
         *,
         replace: bool = False,
-        wait_timeout: timedelta = None,
+        wait_timeout: Optional[timedelta] = None,
         with_position: bool = False,
         # tokenizer configs:
         base_tokenizer: str = "simple",
