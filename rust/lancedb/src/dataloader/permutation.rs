@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 //! Contains the [PermutationBuilder] to create a permutation "view" of an existing table.
 //!
 //! A permutation view can apply a filter, divide the data into splits, and shuffle the data.

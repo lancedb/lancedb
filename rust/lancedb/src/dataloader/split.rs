@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use std::{
     iter,
     sync::{
@@ -83,9 +86,9 @@ impl Default for SplitStrategy {
 impl SplitStrategy {
     pub fn validate(&self, num_rows: u64) -> Result<()> {
         match self {
-            SplitStrategy::NoSplit => Ok(()),
-            SplitStrategy::Random { sizes, .. } => sizes.validate(num_rows),
-            SplitStrategy::Hash {
+            Self::NoSplit => Ok(()),
+            Self::Random { sizes, .. } => sizes.validate(num_rows),
+            Self::Hash {
                 split_weights,
                 columns,
                 ..
@@ -107,8 +110,8 @@ impl SplitStrategy {
                 }
                 Ok(())
             }
-            SplitStrategy::Sequential { sizes } => sizes.validate(num_rows),
-            SplitStrategy::Calculated { .. } => Ok(()),
+            Self::Sequential { sizes } => sizes.validate(num_rows),
+            Self::Calculated { .. } => Ok(()),
         }
     }
 }
@@ -206,7 +209,7 @@ impl Splitter {
                 &exhausted,
             );
 
-            let mut arrays = batch.columns().iter().cloned().collect::<Vec<_>>();
+            let mut arrays = batch.columns().to_vec();
             // This can happen if we exhaust all splits in the middle of a batch
             if split_ids.len() < batch.num_rows() {
                 arrays = arrays
@@ -331,7 +334,7 @@ impl Splitter {
             }
             SplitStrategy::Random { seed, sizes } => {
                 let shuffler = Shuffler::new(ShufflerConfig {
-                    seed: seed.clone(),
+                    seed: *seed,
                     // In this case we are only shuffling row ids so we can use a large max_rows_per_file
                     max_rows_per_file: 10 * 1024 * 1024,
                     temp_dir: self.temp_dir.clone(),
@@ -421,7 +424,7 @@ impl SplitSizes {
                 for percentage in percentages {
                     if *percentage < 0.0 || *percentage > 1.0 {
                         return Err(Error::InvalidInput {
-                            message: format!("Split percentages must be between 0.0 and 1.0"),
+                            message: "Split percentages must be between 0.0 and 1.0".to_string(),
                         });
                     }
                     if percentage * (num_rows as f32) < 1.0 {
@@ -436,7 +439,7 @@ impl SplitSizes {
                 }
                 if percentages.iter().sum::<f32>() > 1.0 {
                     return Err(Error::InvalidInput {
-                        message: format!("Split percentages must sum to 1.0 or less"),
+                        message: "Split percentages must sum to 1.0 or less".to_string(),
                     });
                 }
             }
@@ -452,7 +455,7 @@ impl SplitSizes {
                 }
                 if counts.iter().any(|c| *c == 0) {
                     return Err(Error::InvalidInput {
-                        message: format!("Split counts must be greater than 0"),
+                        message: "Split counts must be greater than 0".to_string(),
                     });
                 }
             }
@@ -620,8 +623,8 @@ mod tests {
 
         assert_eq!(split_batch.num_rows(), total_split_sizes as usize);
         let mut expected = Vec::with_capacity(total_split_sizes as usize);
-        for i in 0..expected_split_sizes.len() {
-            expected.extend(iter::repeat_n(i as u64, expected_split_sizes[i] as usize));
+        for (i, size) in expected_split_sizes.iter().enumerate() {
+            expected.extend(iter::repeat_n(i as u64, *size as usize));
         }
         let expected = Arc::new(UInt64Array::from(expected)) as Arc<dyn Array>;
 
