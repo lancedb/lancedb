@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use std::sync::{Arc, Mutex};
 
 use arrow::compute::concat_batches;
@@ -131,7 +134,7 @@ impl Shuffler {
         let shard_size = self.config.shard_size.unwrap_or(1);
         if shard_size == 0 {
             return Err(Error::InvalidInput {
-                message: format!("Shard size must be greater than 0"),
+                message: "Shard size must be greater than 0".to_string(),
             });
         }
 
@@ -179,7 +182,7 @@ impl Shuffler {
             }
             let num_shards = (batch.num_rows() as u64).div_ceil(shard_size);
             let mut batch_offsets_for_files =
-                vec![Vec::<u64>::with_capacity(batch.num_rows() as usize); num_files as usize];
+                vec![Vec::<u64>::with_capacity(batch.num_rows()); num_files as usize];
             // Partition the batch randomly and write to the appropriate accumulator
             for shard_offset in 0..num_shards {
                 let shard_start = shard_offset * shard_size;
