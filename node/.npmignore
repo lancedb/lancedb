@@ -1,4 +1,0 @@
-gen_test_data.py
-index.node
-dist/lancedb*.tgz
-vectordb*.tgz
