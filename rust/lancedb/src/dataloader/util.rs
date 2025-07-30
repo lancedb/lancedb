@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 use std::{path::PathBuf, sync::Arc};
 
 use arrow_array::RecordBatch;
@@ -27,27 +30,25 @@ pub enum TemporaryDirectory {
 impl TemporaryDirectory {
     pub fn create_temp_dir(&self) -> Result<TempDir> {
         match self {
-            TemporaryDirectory::OsDefault => tempfile::tempdir(),
-            TemporaryDirectory::Specific(path) => tempfile::Builder::default().tempdir_in(path),
-            TemporaryDirectory::None => {
+            Self::OsDefault => tempfile::tempdir(),
+            Self::Specific(path) => tempfile::Builder::default().tempdir_in(path),
+            Self::None => {
                 return Err(Error::Runtime {
-                    message: format!(
-                        "No temporary directory was supplied and this operation requires spilling to disk"
-                    ),
+                    message: "No temporary directory was supplied and this operation requires spilling to disk".to_string(),
                 });
             }
         }
         .map_err(|err| Error::Other {
-            message: format!("Failed to create temporary directory"),
+            message: "Failed to create temporary directory".to_string(),
             source: Some(err.into()),
         })
     }
 
     pub fn to_disk_manager_mode(&self) -> DiskManagerMode {
         match self {
-            TemporaryDirectory::OsDefault => DiskManagerMode::OsTmpDirectory,
-            TemporaryDirectory::Specific(path) => DiskManagerMode::Directories(vec![path.clone()]),
-            TemporaryDirectory::None => DiskManagerMode::Disabled,
+            Self::OsDefault => DiskManagerMode::OsTmpDirectory,
+            Self::Specific(path) => DiskManagerMode::Directories(vec![path.clone()]),
+            Self::None => DiskManagerMode::Disabled,
         }
     }
 }
@@ -85,11 +86,8 @@ pub fn rename_column(
     let new_schema_clone = new_schema.clone();
 
     let renamed_stream = stream.and_then(move |batch| {
-        let renamed_batch = RecordBatch::try_new(
-            new_schema.clone(),
-            batch.columns().iter().cloned().collect::<Vec<_>>(),
-        )
-        .map_err(Error::from);
+        let renamed_batch =
+            RecordBatch::try_new(new_schema.clone(), batch.columns().to_vec()).map_err(Error::from);
         std::future::ready(renamed_batch)
     });
 
