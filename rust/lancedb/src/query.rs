@@ -958,7 +958,8 @@ impl VectorQuery {
         if let Some(maximum_nprobes) = self.request.maximum_nprobes {
             if minimum_nprobes > maximum_nprobes {
                 return Err(Error::InvalidInput {
-                    message: "minimum_nprobes must be less or equal to maximum_nprobes".to_string(),
+                    message: "minimum_nprobes must be less than or equal to maximum_nprobes"
+                        .to_string(),
                 });
             }
         }
@@ -989,7 +990,8 @@ impl VectorQuery {
             }
             if maximum_nprobes < self.request.minimum_nprobes {
                 return Err(Error::InvalidInput {
-                    message: "maximum_nprobes must be greater than minimum_nprobes".to_string(),
+                    message: "maximum_nprobes must be greater than or equal to minimum_nprobes"
+                        .to_string(),
                 });
             }
         }

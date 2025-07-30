@@ -445,13 +445,31 @@ def test_invalid_nprobes_sync(table):
     with pytest.raises(ValueError, match="minimum_nprobes must be greater than 0"):
         LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(0).to_list()
     with pytest.raises(
-        ValueError, match="maximum_nprobes must be greater than minimum_nprobes"
+        ValueError,
+        match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
         LanceVectorQueryBuilder(table, [0, 0], "vector").maximum_nprobes(5).to_list()
     with pytest.raises(
-        ValueError, match="minimum_nprobes must be less or equal to maximum_nprobes"
+        ValueError,
+        match="minimum_nprobes must be less than or equal to maximum_nprobes",
     ):
         LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(100).to_list()
+
+
+def test_nprobes_works_sync(table):
+    LanceVectorQueryBuilder(table, [0, 0], "vector").nprobes(30).to_list()
+
+
+def test_nprobes_min_max_works_sync(table):
+    LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(2).maximum_nprobes(
+        4
+    ).to_list()
+
+
+def test_multiple_nprobes_calls_works_sync(table):
+    LanceVectorQueryBuilder(table, [0, 0], "vector").nprobes(30).maximum_nprobes(
+        20
+    ).minimum_nprobes(20).to_list()
 
 
 @pytest.mark.asyncio
@@ -459,11 +477,13 @@ async def test_invalid_nprobes_async(table_async: AsyncTable):
     with pytest.raises(ValueError, match="minimum_nprobes must be greater than 0"):
         await table_async.vector_search([0, 0]).minimum_nprobes(0).to_list()
     with pytest.raises(
-        ValueError, match="maximum_nprobes must be greater than minimum_nprobes"
+        ValueError,
+        match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
         await table_async.vector_search([0, 0]).maximum_nprobes(5).to_list()
     with pytest.raises(
-        ValueError, match="minimum_nprobes must be less or equal to maximum_nprobes"
+        ValueError,
+        match="minimum_nprobes must be less than or equal to maximum_nprobes",
     ):
         await table_async.vector_search([0, 0]).minimum_nprobes(100).to_list()
 
