@@ -1,10 +1,16 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
+use arrow_array::RecordBatch;
+use arrow_schema::{Fields, Schema};
 use datafusion_execution::disk_manager::DiskManagerMode;
+use futures::TryStreamExt;
 use rand::{RngCore, SeedableRng};
 use tempfile::TempDir;
 
-use crate::{Error, Result};
+use crate::{
+    arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
+    Error, Result,
+};
 
 /// Directory to use for temporary files
 #[derive(Debug, Clone, Default)]
@@ -52,4 +58,43 @@ pub fn non_crypto_rng(seed: &Option<u64>) -> Box<dyn RngCore + Send> {
             .map(|seed| rand_xoshiro::Xoshiro256Plus::seed_from_u64(*seed))
             .unwrap_or_else(|| rand_xoshiro::Xoshiro256Plus::from_rng(&mut rand::rng())),
     )
+}
+
+pub fn rename_column(
+    stream: SendableRecordBatchStream,
+    old_name: &str,
+    new_name: &str,
+) -> Result<SendableRecordBatchStream> {
+    let schema = stream.schema();
+    let field_index = schema.index_of(old_name)?;
+
+    let new_fields = schema
+        .fields
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(idx, f)| {
+            if idx == field_index {
+                Arc::new(f.as_ref().clone().with_name(new_name))
+            } else {
+                f
+            }
+        })
+        .collect::<Fields>();
+    let new_schema = Arc::new(Schema::new(new_fields).with_metadata(schema.metadata().clone()));
+    let new_schema_clone = new_schema.clone();
+
+    let renamed_stream = stream.and_then(move |batch| {
+        let renamed_batch = RecordBatch::try_new(
+            new_schema.clone(),
+            batch.columns().iter().cloned().collect::<Vec<_>>(),
+        )
+        .map_err(Error::from);
+        std::future::ready(renamed_batch)
+    });
+
+    Ok(Box::pin(SimpleRecordBatchStream::new(
+        renamed_stream,
+        new_schema_clone,
+    )))
 }

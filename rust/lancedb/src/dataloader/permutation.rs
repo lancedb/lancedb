@@ -18,7 +18,7 @@ use crate::{
     dataloader::{
         shuffle::{Shuffler, ShufflerConfig},
         split::{SplitStrategy, Splitter, SPLIT_ID_COLUMN},
-        util::TemporaryDirectory,
+        util::{rename_column, TemporaryDirectory},
     },
     query::{ExecutableQuery, QueryBase},
     Connection, Error, Result, Table,
@@ -223,9 +223,12 @@ impl PermutationBuilder {
             shuffled
         };
 
+        // Rename _rowid to row_id
+        let renamed = rename_column(sorted, "_rowid", "row_id")?;
+
         // Create permutation table
         dest_db
-            .create_table_streaming(dest_table_name, sorted)
+            .create_table_streaming(dest_table_name, renamed)
             .execute()
             .await
     }
