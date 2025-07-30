@@ -442,11 +442,12 @@ impl TableMetadata {
     /// Update table metadata
     /// If replace is true, replaces all metadata. Otherwise, upserts the given keys.
     /// Keys with null values are deleted when replace is false.
+    /// Returns the final updated metadata.
     pub async fn update(
         &self,
         metadata: HashMap<String, Option<String>>,
         replace: bool,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, String>> {
         self.table.update_table_metadata(metadata, replace).await
     }
 }
@@ -469,11 +470,12 @@ impl SchemaMetadata {
     /// Update schema metadata
     /// If replace is true, replaces all metadata. Otherwise, upserts the given keys.
     /// Keys with null values are deleted when replace is false.
+    /// Returns the final updated metadata.
     pub async fn update(
         &self,
         metadata: HashMap<String, Option<String>>,
         replace: bool,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, String>> {
         self.table.update_schema_metadata(metadata, replace).await
     }
 }
@@ -496,11 +498,12 @@ impl TableConfig {
     /// Update table config
     /// If replace is true, replaces all config. Otherwise, upserts the given keys.
     /// Keys with null values are deleted when replace is false.
+    /// Returns the final updated config.
     pub async fn update(
         &self,
         config: HashMap<String, Option<String>>,
         replace: bool,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, String>> {
         self.table.update_table_config(config, replace).await
     }
 }
@@ -695,7 +698,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         metadata: HashMap<String, Option<String>>,
         replace: bool,
-    ) -> Result<()>;
+    ) -> Result<HashMap<String, String>>;
 
     /// Get schema metadata
     async fn schema_metadata(&self) -> Result<HashMap<String, String>>;
@@ -705,7 +708,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         metadata: HashMap<String, Option<String>>,
         replace: bool,
-    ) -> Result<()>;
+    ) -> Result<HashMap<String, String>>;
 
     /// Get table config
     async fn table_config(&self) -> Result<HashMap<String, String>>;
@@ -715,7 +718,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         config: HashMap<String, Option<String>>,
         replace: bool,
-    ) -> Result<()>;
+    ) -> Result<HashMap<String, String>>;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -2911,7 +2914,7 @@ impl BaseTable for NativeTable {
         &self,
         _metadata: HashMap<String, Option<String>>,
         _replace: bool,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, String>> {
         // TODO: Implement with Lance dataset.update_config() method when available
         todo!("update_table_metadata not yet implemented - requires Lance dataset.update_config() support")
     }
@@ -2927,7 +2930,7 @@ impl BaseTable for NativeTable {
         &self,
         _metadata: HashMap<String, Option<String>>,
         _replace: bool,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, String>> {
         // TODO: Implement with Lance dataset.replace_schema_metadata() method when available
         todo!("update_schema_metadata not yet implemented - requires Lance dataset schema metadata support")
     }
@@ -2942,7 +2945,7 @@ impl BaseTable for NativeTable {
         &self,
         _config: HashMap<String, Option<String>>,
         _replace: bool,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, String>> {
         // TODO: Implement with Lance dataset.update_config() method when available
         todo!("update_table_config not yet implemented - requires Lance dataset.update_config() support")
     }

@@ -278,12 +278,18 @@ impl TableMetadata {
 
         let table = self_.table.clone();
         future_into_py(self_.py(), async move {
-            table
+            let updated_metadata = table
                 .metadata()
                 .update(update_map, replace)
                 .await
                 .infer_error()?;
-            Ok(Python::with_gil(|py| py.None()))
+            Python::with_gil(|py| {
+                let dict = PyDict::new(py);
+                for (key, value) in updated_metadata {
+                    dict.set_item(key, value)?;
+                }
+                Ok(dict.unbind())
+            })
         })
     }
 }
@@ -337,12 +343,18 @@ impl SchemaMetadata {
 
         let table = self_.table.clone();
         future_into_py(self_.py(), async move {
-            table
+            let updated_metadata = table
                 .schema_metadata()
                 .update(update_map, replace)
                 .await
                 .infer_error()?;
-            Ok(Python::with_gil(|py| py.None()))
+            Python::with_gil(|py| {
+                let dict = PyDict::new(py);
+                for (key, value) in updated_metadata {
+                    dict.set_item(key, value)?;
+                }
+                Ok(dict.unbind())
+            })
         })
     }
 }
@@ -396,12 +408,18 @@ impl TableConfig {
 
         let table = self_.table.clone();
         future_into_py(self_.py(), async move {
-            table
+            let updated_config = table
                 .config()
                 .update(update_map, replace)
                 .await
                 .infer_error()?;
-            Ok(Python::with_gil(|py| py.None()))
+            Python::with_gil(|py| {
+                let dict = PyDict::new(py);
+                for (key, value) in updated_config {
+                    dict.set_item(key, value)?;
+                }
+                Ok(dict.unbind())
+            })
         })
     }
 }

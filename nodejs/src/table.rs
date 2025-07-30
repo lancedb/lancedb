@@ -43,12 +43,13 @@ impl TableMetadata {
     /// @param metadata - Object with key-value pairs to update
     /// @param replace - If true, replaces all metadata. If false, upserts the given keys.
     ///                  Keys with null values are deleted when replace is false.
+    /// @returns The final updated metadata
     #[napi]
     pub async fn update(
         &self,
         metadata: HashMap<String, Option<String>>,
         replace: Option<bool>,
-    ) -> napi::Result<()> {
+    ) -> napi::Result<HashMap<String, String>> {
         let replace = replace.unwrap_or(false);
         self.table
             .metadata()
@@ -76,12 +77,13 @@ impl SchemaMetadata {
     /// @param metadata - Object with key-value pairs to update
     /// @param replace - If true, replaces all metadata. If false, upserts the given keys.
     ///                  Keys with null values are deleted when replace is false.
+    /// @returns The final updated schema metadata
     #[napi]
     pub async fn update(
         &self,
         metadata: HashMap<String, Option<String>>,
         replace: Option<bool>,
-    ) -> napi::Result<()> {
+    ) -> napi::Result<HashMap<String, String>> {
         let replace = replace.unwrap_or(false);
         self.table
             .schema_metadata()
@@ -109,12 +111,13 @@ impl TableConfig {
     /// @param config - Object with key-value pairs to update
     /// @param replace - If true, replaces all config. If false, upserts the given keys.
     ///                  Keys with null values are deleted when replace is false.
+    /// @returns The final updated config
     #[napi]
     pub async fn update(
         &self,
         config: HashMap<String, Option<String>>,
         replace: Option<bool>,
-    ) -> napi::Result<()> {
+    ) -> napi::Result<HashMap<String, String>> {
         let replace = replace.unwrap_or(false);
         self.table
             .config()

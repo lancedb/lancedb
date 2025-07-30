@@ -1428,7 +1428,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         metadata: HashMap<String, Option<String>>,
         replace: bool,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, String>> {
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/metadata/update", self.name));
@@ -1439,7 +1439,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
-        Ok(())
+
+        // Fetch the updated metadata
+        self.table_metadata().await
     }
 
     async fn schema_metadata(&self) -> Result<HashMap<String, String>> {
@@ -1462,7 +1464,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         metadata: HashMap<String, Option<String>>,
         replace: bool,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, String>> {
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/schema/metadata/update", self.name));
@@ -1473,7 +1475,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
-        Ok(())
+
+        // Fetch the updated schema metadata
+        self.schema_metadata().await
     }
 
     async fn table_config(&self) -> Result<HashMap<String, String>> {
@@ -1496,7 +1500,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         config: HashMap<String, Option<String>>,
         replace: bool,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, String>> {
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/config/update", self.name));
@@ -1507,7 +1511,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
-        Ok(())
+
+        // Fetch the updated config
+        self.table_config().await
     }
 }
 

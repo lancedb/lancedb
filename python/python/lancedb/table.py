@@ -4238,7 +4238,7 @@ class AsyncTableMetadata:
         """
         return await self._inner.get()
     
-    async def update(self, metadata: Dict[str, Optional[str]], *, replace: bool = False) -> None:
+    async def update(self, metadata: Dict[str, Optional[str]], *, replace: bool = False) -> Dict[str, str]:
         """
         Update table metadata.
         
@@ -4249,8 +4249,13 @@ class AsyncTableMetadata:
             are deleted when replace is False.
         replace : bool, default False
             If True, replaces all metadata. If False, upserts the given keys.
+            
+        Returns
+        -------
+        Dict[str, str]
+            The final updated metadata
         """
-        await self._inner.update(metadata, replace)
+        return await self._inner.update(metadata, replace)
 
 
 class AsyncSchemaMetadata:
@@ -4270,7 +4275,7 @@ class AsyncSchemaMetadata:
         """
         return await self._inner.get()
     
-    async def update(self, metadata: Dict[str, Optional[str]], *, replace: bool = False) -> None:
+    async def update(self, metadata: Dict[str, Optional[str]], *, replace: bool = False) -> Dict[str, str]:
         """
         Update schema metadata.
         
@@ -4281,8 +4286,13 @@ class AsyncSchemaMetadata:
             are deleted when replace is False.
         replace : bool, default False
             If True, replaces all metadata. If False, upserts the given keys.
+            
+        Returns
+        -------
+        Dict[str, str]
+            The final updated schema metadata
         """
-        await self._inner.update(metadata, replace)
+        return await self._inner.update(metadata, replace)
 
 
 class AsyncTableConfig:
@@ -4302,7 +4312,7 @@ class AsyncTableConfig:
         """
         return await self._inner.get()
     
-    async def update(self, config: Dict[str, Optional[str]], *, replace: bool = False) -> None:
+    async def update(self, config: Dict[str, Optional[str]], *, replace: bool = False) -> Dict[str, str]:
         """
         Update table config.
         
@@ -4313,8 +4323,13 @@ class AsyncTableConfig:
             are deleted when replace is False.
         replace : bool, default False
             If True, replaces all config. If False, upserts the given keys.
+            
+        Returns
+        -------
+        Dict[str, str]
+            The final updated config
         """
-        await self._inner.update(config, replace)
+        return await self._inner.update(config, replace)
 
 
 @dataclass
