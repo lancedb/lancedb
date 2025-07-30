@@ -25,6 +25,105 @@ pub struct Table {
     pub(crate) inner: Option<LanceDbTable>,
 }
 
+#[napi]
+pub struct TableMetadata {
+    table: LanceDbTable,
+}
+
+#[napi]
+impl TableMetadata {
+    /// Get the table metadata as an object
+    #[napi]
+    pub async fn get(&self) -> napi::Result<HashMap<String, String>> {
+        self.table.metadata().get().await.default_error()
+    }
+
+    /// Update table metadata
+    ///
+    /// @param metadata - Object with key-value pairs to update
+    /// @param replace - If true, replaces all metadata. If false, upserts the given keys.
+    ///                  Keys with null values are deleted when replace is false.
+    #[napi]
+    pub async fn update(
+        &self,
+        metadata: HashMap<String, Option<String>>,
+        replace: Option<bool>,
+    ) -> napi::Result<()> {
+        let replace = replace.unwrap_or(false);
+        self.table
+            .metadata()
+            .update(metadata, replace)
+            .await
+            .default_error()
+    }
+}
+
+#[napi]
+pub struct SchemaMetadata {
+    table: LanceDbTable,
+}
+
+#[napi]
+impl SchemaMetadata {
+    /// Get the schema metadata as an object
+    #[napi]
+    pub async fn get(&self) -> napi::Result<HashMap<String, String>> {
+        self.table.schema_metadata().get().await.default_error()
+    }
+
+    /// Update schema metadata
+    ///
+    /// @param metadata - Object with key-value pairs to update
+    /// @param replace - If true, replaces all metadata. If false, upserts the given keys.
+    ///                  Keys with null values are deleted when replace is false.
+    #[napi]
+    pub async fn update(
+        &self,
+        metadata: HashMap<String, Option<String>>,
+        replace: Option<bool>,
+    ) -> napi::Result<()> {
+        let replace = replace.unwrap_or(false);
+        self.table
+            .schema_metadata()
+            .update(metadata, replace)
+            .await
+            .default_error()
+    }
+}
+
+#[napi]
+pub struct TableConfig {
+    table: LanceDbTable,
+}
+
+#[napi]
+impl TableConfig {
+    /// Get the table config as an object
+    #[napi]
+    pub async fn get(&self) -> napi::Result<HashMap<String, String>> {
+        self.table.config().get().await.default_error()
+    }
+
+    /// Update table config
+    ///
+    /// @param config - Object with key-value pairs to update
+    /// @param replace - If true, replaces all config. If false, upserts the given keys.
+    ///                  Keys with null values are deleted when replace is false.
+    #[napi]
+    pub async fn update(
+        &self,
+        config: HashMap<String, Option<String>>,
+        replace: Option<bool>,
+    ) -> napi::Result<()> {
+        let replace = replace.unwrap_or(false);
+        self.table
+            .config()
+            .update(config, replace)
+            .await
+            .default_error()
+    }
+}
+
 impl Table {
     fn inner_ref(&self) -> napi::Result<&LanceDbTable> {
         self.inner
@@ -416,6 +515,27 @@ impl Table {
             .migrate_manifest_paths_v2()
             .await
             .default_error()
+    }
+
+    /// Get a table metadata accessor
+    #[napi]
+    pub fn metadata(&self) -> napi::Result<TableMetadata> {
+        let table = self.inner_ref()?.clone();
+        Ok(TableMetadata { table })
+    }
+
+    /// Get a schema metadata accessor
+    #[napi]
+    pub fn schema_metadata(&self) -> napi::Result<SchemaMetadata> {
+        let table = self.inner_ref()?.clone();
+        Ok(SchemaMetadata { table })
+    }
+
+    /// Get a table config accessor
+    #[napi]
+    pub fn config(&self) -> napi::Result<TableConfig> {
+        let table = self.inner_ref()?.clone();
+        Ok(TableConfig { table })
     }
 }
 

@@ -229,6 +229,183 @@ pub struct Table {
     inner: Option<LanceDbTable>,
 }
 
+/// Table metadata accessor
+#[pyclass]
+pub struct TableMetadata {
+    table: LanceDbTable,
+}
+
+#[pymethods]
+impl TableMetadata {
+    /// Get the table metadata as a dictionary
+    pub fn get(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let table = self_.table.clone();
+        future_into_py(self_.py(), async move {
+            let metadata = table.metadata().get().await.infer_error()?;
+            Python::with_gil(|py| {
+                let dict = PyDict::new(py);
+                for (key, value) in metadata {
+                    dict.set_item(key, value)?;
+                }
+                Ok(dict.unbind())
+            })
+        })
+    }
+
+    /// Update table metadata
+    ///
+    /// Args:
+    ///     metadata: Dictionary of key-value pairs to update
+    ///     replace: If True, replaces all metadata. If False, upserts the given keys.
+    ///              Keys with None values are deleted when replace is False.
+    pub fn update<'a>(
+        self_: PyRef<'a, Self>,
+        metadata: Bound<'_, PyDict>,
+        replace: Option<bool>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let replace = replace.unwrap_or(false);
+        let mut update_map = HashMap::new();
+
+        for (key, value) in metadata.iter() {
+            let key_str: String = key.extract()?;
+            if value.is_none() {
+                update_map.insert(key_str, None);
+            } else {
+                let value_str: String = value.extract()?;
+                update_map.insert(key_str, Some(value_str));
+            }
+        }
+
+        let table = self_.table.clone();
+        future_into_py(self_.py(), async move {
+            table
+                .metadata()
+                .update(update_map, replace)
+                .await
+                .infer_error()?;
+            Ok(Python::with_gil(|py| py.None()))
+        })
+    }
+}
+
+/// Schema metadata accessor
+#[pyclass]
+pub struct SchemaMetadata {
+    table: LanceDbTable,
+}
+
+#[pymethods]
+impl SchemaMetadata {
+    /// Get the schema metadata as a dictionary
+    pub fn get(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let table = self_.table.clone();
+        future_into_py(self_.py(), async move {
+            let metadata = table.schema_metadata().get().await.infer_error()?;
+            Python::with_gil(|py| {
+                let dict = PyDict::new(py);
+                for (key, value) in metadata {
+                    dict.set_item(key, value)?;
+                }
+                Ok(dict.unbind())
+            })
+        })
+    }
+
+    /// Update schema metadata
+    ///
+    /// Args:
+    ///     metadata: Dictionary of key-value pairs to update
+    ///     replace: If True, replaces all metadata. If False, upserts the given keys.
+    ///              Keys with None values are deleted when replace is False.
+    pub fn update<'a>(
+        self_: PyRef<'a, Self>,
+        metadata: Bound<'_, PyDict>,
+        replace: Option<bool>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let replace = replace.unwrap_or(false);
+        let mut update_map = HashMap::new();
+
+        for (key, value) in metadata.iter() {
+            let key_str: String = key.extract()?;
+            if value.is_none() {
+                update_map.insert(key_str, None);
+            } else {
+                let value_str: String = value.extract()?;
+                update_map.insert(key_str, Some(value_str));
+            }
+        }
+
+        let table = self_.table.clone();
+        future_into_py(self_.py(), async move {
+            table
+                .schema_metadata()
+                .update(update_map, replace)
+                .await
+                .infer_error()?;
+            Ok(Python::with_gil(|py| py.None()))
+        })
+    }
+}
+
+/// Table config accessor
+#[pyclass]
+pub struct TableConfig {
+    table: LanceDbTable,
+}
+
+#[pymethods]
+impl TableConfig {
+    /// Get the table config as a dictionary
+    pub fn get(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let table = self_.table.clone();
+        future_into_py(self_.py(), async move {
+            let config = table.config().get().await.infer_error()?;
+            Python::with_gil(|py| {
+                let dict = PyDict::new(py);
+                for (key, value) in config {
+                    dict.set_item(key, value)?;
+                }
+                Ok(dict.unbind())
+            })
+        })
+    }
+
+    /// Update table config
+    ///
+    /// Args:
+    ///     config: Dictionary of key-value pairs to update
+    ///     replace: If True, replaces all config. If False, upserts the given keys.
+    ///              Keys with None values are deleted when replace is False.
+    pub fn update<'a>(
+        self_: PyRef<'a, Self>,
+        config: Bound<'_, PyDict>,
+        replace: Option<bool>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let replace = replace.unwrap_or(false);
+        let mut update_map = HashMap::new();
+
+        for (key, value) in config.iter() {
+            let key_str: String = key.extract()?;
+            if value.is_none() {
+                update_map.insert(key_str, None);
+            } else {
+                let value_str: String = value.extract()?;
+                update_map.insert(key_str, Some(value_str));
+            }
+        }
+
+        let table = self_.table.clone();
+        future_into_py(self_.py(), async move {
+            table
+                .config()
+                .update(update_map, replace)
+                .await
+                .infer_error()?;
+            Ok(Python::with_gil(|py| py.None()))
+        })
+    }
+}
+
 #[pymethods]
 impl OptimizeStats {
     pub fn __repr__(&self) -> String {
@@ -792,6 +969,24 @@ impl Table {
 
             Ok(())
         })
+    }
+
+    /// Get a table metadata accessor
+    pub fn metadata(&self) -> PyResult<TableMetadata> {
+        let table = self.inner_ref()?.clone();
+        Ok(TableMetadata { table })
+    }
+
+    /// Get a schema metadata accessor  
+    pub fn schema_metadata(&self) -> PyResult<SchemaMetadata> {
+        let table = self.inner_ref()?.clone();
+        Ok(SchemaMetadata { table })
+    }
+
+    /// Get a table config accessor
+    pub fn config(&self) -> PyResult<TableConfig> {
+        let table = self.inner_ref()?.clone();
+        Ok(TableConfig { table })
     }
 }
 

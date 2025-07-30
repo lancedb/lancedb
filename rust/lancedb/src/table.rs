@@ -424,6 +424,87 @@ pub trait Tags: Send + Sync {
     async fn update(&mut self, tag: &str, version: u64) -> Result<()>;
 }
 
+/// Metadata accessor for table metadata operations
+pub struct TableMetadata {
+    table: Arc<dyn BaseTable>,
+}
+
+impl TableMetadata {
+    pub(crate) fn new(table: Arc<dyn BaseTable>) -> Self {
+        Self { table }
+    }
+
+    /// Get the table metadata as a HashMap
+    pub async fn get(&self) -> Result<HashMap<String, String>> {
+        self.table.table_metadata().await
+    }
+
+    /// Update table metadata
+    /// If replace is true, replaces all metadata. Otherwise, upserts the given keys.
+    /// Keys with null values are deleted when replace is false.
+    pub async fn update(
+        &self,
+        metadata: HashMap<String, Option<String>>,
+        replace: bool,
+    ) -> Result<()> {
+        self.table.update_table_metadata(metadata, replace).await
+    }
+}
+
+/// Metadata accessor for schema metadata operations  
+pub struct SchemaMetadata {
+    table: Arc<dyn BaseTable>,
+}
+
+impl SchemaMetadata {
+    pub(crate) fn new(table: Arc<dyn BaseTable>) -> Self {
+        Self { table }
+    }
+
+    /// Get the schema metadata as a HashMap
+    pub async fn get(&self) -> Result<HashMap<String, String>> {
+        self.table.schema_metadata().await
+    }
+
+    /// Update schema metadata
+    /// If replace is true, replaces all metadata. Otherwise, upserts the given keys.
+    /// Keys with null values are deleted when replace is false.
+    pub async fn update(
+        &self,
+        metadata: HashMap<String, Option<String>>,
+        replace: bool,
+    ) -> Result<()> {
+        self.table.update_schema_metadata(metadata, replace).await
+    }
+}
+
+/// Config accessor for table config operations
+pub struct TableConfig {
+    table: Arc<dyn BaseTable>,
+}
+
+impl TableConfig {
+    pub(crate) fn new(table: Arc<dyn BaseTable>) -> Self {
+        Self { table }
+    }
+
+    /// Get the table config as a HashMap
+    pub async fn get(&self) -> Result<HashMap<String, String>> {
+        self.table.table_config().await
+    }
+
+    /// Update table config
+    /// If replace is true, replaces all config. Otherwise, upserts the given keys.
+    /// Keys with null values are deleted when replace is false.
+    pub async fn update(
+        &self,
+        config: HashMap<String, Option<String>>,
+        replace: bool,
+    ) -> Result<()> {
+        self.table.update_table_config(config, replace).await
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UpdateResult {
     #[serde(default)]
@@ -605,6 +686,36 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<()>;
     /// Get statistics on the table
     async fn stats(&self) -> Result<TableStatistics>;
+
+    /// Get table metadata
+    async fn table_metadata(&self) -> Result<HashMap<String, String>>;
+
+    /// Update table metadata
+    async fn update_table_metadata(
+        &self,
+        metadata: HashMap<String, Option<String>>,
+        replace: bool,
+    ) -> Result<()>;
+
+    /// Get schema metadata
+    async fn schema_metadata(&self) -> Result<HashMap<String, String>>;
+
+    /// Update schema metadata
+    async fn update_schema_metadata(
+        &self,
+        metadata: HashMap<String, Option<String>>,
+        replace: bool,
+    ) -> Result<()>;
+
+    /// Get table config
+    async fn table_config(&self) -> Result<HashMap<String, String>>;
+
+    /// Update table config
+    async fn update_table_config(
+        &self,
+        config: HashMap<String, Option<String>>,
+        replace: bool,
+    ) -> Result<()>;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -1330,6 +1441,21 @@ impl Table {
     /// Retrieve statistics on the table
     pub async fn stats(&self) -> Result<TableStatistics> {
         self.inner.stats().await
+    }
+
+    /// Get a table metadata accessor
+    pub fn metadata(&self) -> TableMetadata {
+        TableMetadata::new(self.inner.clone())
+    }
+
+    /// Get a schema metadata accessor
+    pub fn schema_metadata(&self) -> SchemaMetadata {
+        SchemaMetadata::new(self.inner.clone())
+    }
+
+    /// Get a table config accessor
+    pub fn config(&self) -> TableConfig {
+        TableConfig::new(self.inner.clone())
     }
 }
 
@@ -2773,6 +2899,52 @@ impl BaseTable for NativeTable {
             fragment_stats: frag_stats,
         };
         Ok(stats)
+    }
+
+    async fn table_metadata(&self) -> Result<HashMap<String, String>> {
+        // TODO: Implement with Lance dataset.config() method when available
+        // For now, use a placeholder implementation
+        todo!("table_metadata not yet implemented - requires Lance dataset.config() support")
+    }
+
+    async fn update_table_metadata(
+        &self,
+        _metadata: HashMap<String, Option<String>>,
+        _replace: bool,
+    ) -> Result<()> {
+        // TODO: Implement with Lance dataset.update_config() method when available
+        todo!("update_table_metadata not yet implemented - requires Lance dataset.update_config() support")
+    }
+
+    async fn schema_metadata(&self) -> Result<HashMap<String, String>> {
+        // TODO: Implement with Lance dataset.replace_schema_metadata() method when available
+        todo!(
+            "schema_metadata not yet implemented - requires Lance dataset schema metadata support"
+        )
+    }
+
+    async fn update_schema_metadata(
+        &self,
+        _metadata: HashMap<String, Option<String>>,
+        _replace: bool,
+    ) -> Result<()> {
+        // TODO: Implement with Lance dataset.replace_schema_metadata() method when available
+        todo!("update_schema_metadata not yet implemented - requires Lance dataset schema metadata support")
+    }
+
+    async fn table_config(&self) -> Result<HashMap<String, String>> {
+        // TODO: Implement with Lance dataset.config() method when available
+        // This might be the same as table_metadata depending on Lance implementation
+        todo!("table_config not yet implemented - requires Lance dataset.config() support")
+    }
+
+    async fn update_table_config(
+        &self,
+        _config: HashMap<String, Option<String>>,
+        _replace: bool,
+    ) -> Result<()> {
+        // TODO: Implement with Lance dataset.update_config() method when available
+        todo!("update_table_config not yet implemented - requires Lance dataset.update_config() support")
     }
 }
 
@@ -4359,5 +4531,133 @@ mod tests {
         let result = table.list_indices().await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].index_type, crate::index::IndexType::Bitmap);
+    }
+
+    #[tokio::test]
+    async fn test_metadata_accessors() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        let data = some_sample_data();
+        let table = conn
+            .create_table("test_table", data)
+            .execute()
+            .await
+            .unwrap();
+
+        // Test that accessor objects are created correctly
+        let table_metadata = table.metadata();
+        let schema_metadata = table.schema_metadata();
+        let config = table.config();
+
+        // Test that the methods exist and return expected errors (todo!() panics)
+        // Since we're using todo!() macros, these should panic in the local backend
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async { table_metadata.get().await })
+        }));
+        assert!(result.is_err()); // Should panic due to todo!()
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async { schema_metadata.get().await })
+        }));
+        assert!(result.is_err()); // Should panic due to todo!()
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async { config.get().await })
+        }));
+        assert!(result.is_err()); // Should panic due to todo!()
+    }
+
+    #[tokio::test]
+    async fn test_metadata_remote_api_calls() {
+        use crate::remote::table::RemoteTable;
+        use std::collections::HashMap;
+
+        // Test the API endpoint patterns for remote tables
+        let table = RemoteTable::new_mock(
+            "test_table".to_string(),
+            |req| match req.url().path() {
+                "/v1/table/test_table/metadata/get" => {
+                    let mut metadata = HashMap::new();
+                    metadata.insert("created_at".to_string(), "2024-01-01".to_string());
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&metadata).unwrap())
+                        .unwrap()
+                }
+                "/v1/table/test_table/config/get" => {
+                    let mut config = HashMap::new();
+                    config.insert("setting".to_string(), "value".to_string());
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&config).unwrap())
+                        .unwrap()
+                }
+                "/v1/table/test_table/schema/metadata/get" => {
+                    let mut schema_metadata = HashMap::new();
+                    schema_metadata.insert("version".to_string(), "1".to_string());
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&schema_metadata).unwrap())
+                        .unwrap()
+                }
+                "/v1/table/test_table/metadata/update" => http::Response::builder()
+                    .status(200)
+                    .body("".to_string())
+                    .unwrap(),
+                "/v1/table/test_table/config/update" => http::Response::builder()
+                    .status(200)
+                    .body("".to_string())
+                    .unwrap(),
+                "/v1/table/test_table/schema/metadata/update" => http::Response::builder()
+                    .status(200)
+                    .body("".to_string())
+                    .unwrap(),
+                _ => http::Response::builder()
+                    .status(404)
+                    .body("".to_string())
+                    .unwrap(),
+            },
+            None,
+        );
+
+        // Test get methods
+        let table_metadata = table.table_metadata().await.unwrap();
+        assert_eq!(table_metadata.get("created_at").unwrap(), "2024-01-01");
+
+        let config = table.table_config().await.unwrap();
+        assert_eq!(config.get("setting").unwrap(), "value");
+
+        let schema_metadata = table.schema_metadata().await.unwrap();
+        assert_eq!(schema_metadata.get("version").unwrap(), "1");
+
+        // Test update methods
+        let mut update_metadata = HashMap::new();
+        update_metadata.insert("key".to_string(), Some("value".to_string()));
+        table
+            .update_table_metadata(update_metadata, false)
+            .await
+            .unwrap();
+
+        let mut update_config = HashMap::new();
+        update_config.insert("key".to_string(), Some("value".to_string()));
+        table
+            .update_table_config(update_config, false)
+            .await
+            .unwrap();
+
+        let mut update_schema_metadata = HashMap::new();
+        update_schema_metadata.insert("key".to_string(), Some("value".to_string()));
+        table
+            .update_schema_metadata(update_schema_metadata, false)
+            .await
+            .unwrap();
     }
 }

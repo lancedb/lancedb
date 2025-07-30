@@ -4184,6 +4184,138 @@ class AsyncTable:
         """
         await self._inner.replace_field_metadata(field_name, new_metadata)
 
+    @property
+    def metadata(self) -> "AsyncTableMetadata":
+        """
+        Get a table metadata accessor.
+        
+        Returns
+        -------
+        AsyncTableMetadata
+            An accessor for table metadata operations
+        """
+        return AsyncTableMetadata(self._inner.metadata())
+
+    @property
+    def schema_metadata(self) -> "AsyncSchemaMetadata":
+        """
+        Get a schema metadata accessor.
+        
+        Returns
+        -------
+        AsyncSchemaMetadata
+            An accessor for schema metadata operations
+        """
+        return AsyncSchemaMetadata(self._inner.schema_metadata())
+
+    @property
+    def config(self) -> "AsyncTableConfig":
+        """
+        Get a table config accessor.
+        
+        Returns
+        -------
+        AsyncTableConfig
+            An accessor for table config operations
+        """
+        return AsyncTableConfig(self._inner.config())
+
+
+class AsyncTableMetadata:
+    """Async wrapper for table metadata operations."""
+    
+    def __init__(self, inner):
+        self._inner = inner
+    
+    async def get(self) -> Dict[str, str]:
+        """
+        Get the table metadata as a dictionary.
+        
+        Returns
+        -------
+        Dict[str, str]
+            The table metadata
+        """
+        return await self._inner.get()
+    
+    async def update(self, metadata: Dict[str, Optional[str]], *, replace: bool = False) -> None:
+        """
+        Update table metadata.
+        
+        Parameters
+        ----------
+        metadata : Dict[str, Optional[str]]
+            Dictionary of key-value pairs to update. Keys with None values
+            are deleted when replace is False.
+        replace : bool, default False
+            If True, replaces all metadata. If False, upserts the given keys.
+        """
+        await self._inner.update(metadata, replace)
+
+
+class AsyncSchemaMetadata:
+    """Async wrapper for schema metadata operations."""
+    
+    def __init__(self, inner):
+        self._inner = inner
+    
+    async def get(self) -> Dict[str, str]:
+        """
+        Get the schema metadata as a dictionary.
+        
+        Returns
+        -------
+        Dict[str, str]
+            The schema metadata
+        """
+        return await self._inner.get()
+    
+    async def update(self, metadata: Dict[str, Optional[str]], *, replace: bool = False) -> None:
+        """
+        Update schema metadata.
+        
+        Parameters
+        ----------
+        metadata : Dict[str, Optional[str]]
+            Dictionary of key-value pairs to update. Keys with None values
+            are deleted when replace is False.
+        replace : bool, default False
+            If True, replaces all metadata. If False, upserts the given keys.
+        """
+        await self._inner.update(metadata, replace)
+
+
+class AsyncTableConfig:
+    """Async wrapper for table config operations."""
+    
+    def __init__(self, inner):
+        self._inner = inner
+    
+    async def get(self) -> Dict[str, str]:
+        """
+        Get the table config as a dictionary.
+        
+        Returns
+        -------
+        Dict[str, str]
+            The table config
+        """
+        return await self._inner.get()
+    
+    async def update(self, config: Dict[str, Optional[str]], *, replace: bool = False) -> None:
+        """
+        Update table config.
+        
+        Parameters
+        ----------
+        config : Dict[str, Optional[str]]
+            Dictionary of key-value pairs to update. Keys with None values
+            are deleted when replace is False.
+        replace : bool, default False
+            If True, replaces all config. If False, upserts the given keys.
+        """
+        await self._inner.update(config, replace)
+
 
 @dataclass
 class IndexStatistics:
