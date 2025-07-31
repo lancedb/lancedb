@@ -2,7 +2,7 @@
 
 LanceDB also provides support for full-text search via [Tantivy](https://github.com/quickwit-oss/tantivy), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions.
 
-The tantivy-based FTS is only available in Python synchronous APIs and does not support building indexes on object storage or incremental indexing. If you need these features, try native FTS [native FTS](fts.md).
+The tantivy-based FTS is only available in Python synchronous APIs and does not support building indexes on object storage or incremental indexing. If you need these features, use [native FTS](fts.md) instead.
 
 ## Installation
 
@@ -153,7 +153,7 @@ table.create_fts_index(["title", "content"], use_tantivy=True, writer_heap_size=
 
 ## Current limitations
 
-1. New data added after creating the FTS index will appear in search results, but with increased latency due to a flat search on the unindexed portion. Re-indexing with `create_fts_index` will reduce latency. LanceDB Cloud automates this merging process, minimizing the impact on search speed. 
+1. New data added after creating the FTS index will appear in search results, but with increased latency due to a flat search on the unindexed portion. Re-indexing with `create_fts_index` will reduce latency. LanceDB Cloud automates this merging process, minimizing the impact on search speed.
 
 2. We currently only support local filesystem paths for the FTS index.
    This is a tantivy limitation. We've implemented an object store plugin

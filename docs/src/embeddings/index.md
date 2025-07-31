@@ -99,8 +99,8 @@ LanceDB registers the Sentence Transformers embeddings function in the registry 
 
     Coming Soon!
 
-### Embedding function with LanceDB cloud
-Embedding functions are now supported on LanceDB cloud. The embeddings will be generated on the source device and sent to the cloud. This means that the source device must have the necessary resources to generate the embeddings. Here's an example using the OpenAI embedding function:
+### Embedding function with LanceDB Cloud
+Embedding functions are now supported on LanceDB Cloud. The embeddings will be generated on the source device and sent to the cloud. This means that the source device must have the necessary resources to generate the embeddings. Here's an example using the OpenAI embedding function:
 
 ```python
 import os

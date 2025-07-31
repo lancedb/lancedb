@@ -2,9 +2,9 @@
 
 Try it yourself: <a href="https://colab.research.google.com/github/lancedb/lancedb/blob/main/docs/src/notebooks/lancedb_reranking.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a><br/>
 
-VectorDBs are used as retrievers in recommender or chatbot-based systems for retrieving relevant data based on user queries. For example, retrievers are a critical component of Retrieval Augmented Generation (RAG) acrhitectures. In this section, we will discuss how to improve the performance of retrievers.
+VectorDBs are used as retrievers in recommender or chatbot-based systems for retrieving relevant data based on user queries. For example, retrievers are a critical component of Retrieval Augmented Generation (RAG) architectures. In this section, we will discuss how to improve the performance of retrievers.
 
-There are serveral ways to improve the performance of retrievers. Some of the common techniques are:
+There are several ways to improve the performance of retrievers. Some of the common techniques are:
 
 * Using different query types
 * Using hybrid search
@@ -22,7 +22,7 @@ Using different embedding models is something that's very specific to the use ca
 We'll be using a QA dataset generated using a LLama2 review paper. The dataset contains 221 query, context and answer triplets. The queries and answers are generated using GPT-4 based on a given query. Full script used to generate the dataset can be found on this [repo](https://github.com/lancedb/ragged). It can be downloaded from [here](https://github.com/AyushExel/assets/blob/main/data_qa.csv).
 
 ### Using different query types
-Let's setup the embeddings and the dataset first. We'll use the LanceDB's `huggingface` embeddings integration for this guide. 
+Let's setup the embeddings and the dataset first. We'll use the LanceDB's `huggingface` embeddings integration for this guide.
 
 ```python
 import lancedb
@@ -63,7 +63,7 @@ Now that we have the dataset and embeddings table set up, here's how you can run
 ---
 
 * <b> Full-text Search: </b>
-    
+
     FTS requires creating an index on the column you want to search on. `replace=True` will replace the existing index if it exists.
     Once the index is created, you can search using the `fts` query type.
     ```python
@@ -89,7 +89,7 @@ Now that we have the dataset and embeddings table set up, here's how you can run
         By default, it uses `LinearCombinationReranker` that combines the scores from vector and full-text search using a weighted linear combination. It is the simplest reranker implementation available in LanceDB. You can also use other rerankers like `CrossEncoderReranker` or `CohereReranker` for reranking the results.
         Learn more about rerankers [here](https://lancedb.github.io/lancedb/reranking/).
 
-    
+
 
 ### Hit rate evaluation results
 
@@ -127,5 +127,3 @@ The hit-rate results can vary based on the dataset and the query type. Here are 
     | Hybrid Search (w/ LinearCombinationReranker) | 0.80 |
 
 In these standard datasets, FTS seems to perform much better than vector search because the queries have a lot of keywords in common with the context. So, in general choosing the query type is very specific to the use case and the data.
-
-

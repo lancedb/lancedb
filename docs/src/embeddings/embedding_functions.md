@@ -17,7 +17,7 @@ For this purpose, LanceDB introduces an **embedding functions API**, that allow 
 === "Python"
     In the LanceDB python SDK, we define a global embedding function registry with
     many different embedding models and even more coming soon.
-    Here's let's an implementation of CLIP as example.
+    Here's an implementation of CLIP as an example.
 
     ```python
     from lancedb.embeddings import get_registry
