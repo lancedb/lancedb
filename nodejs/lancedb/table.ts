@@ -27,6 +27,9 @@ import {
   IndexConfig,
   IndexStatistics,
   OptimizeStats,
+  SchemaMetadata,
+  TableConfig,
+  TableMetadata,
   TableStatistics,
   Tags,
   UpdateResult,
@@ -523,6 +526,15 @@ export abstract class Table {
    *
    */
   abstract stats(): Promise<TableStatistics>;
+
+  /** Get a table metadata accessor */
+  abstract get metadata(): TableMetadata;
+
+  /** Get a schema metadata accessor */
+  abstract get schemaMetadata(): SchemaMetadata;
+
+  /** Get a table config accessor */
+  abstract get config(): TableConfig;
 }
 
 export class LocalTable extends Table {
@@ -863,6 +875,21 @@ export class LocalTable extends Table {
    */
   async migrateManifestPathsV2(): Promise<void> {
     await this.inner.migrateManifestPathsV2();
+  }
+
+  /** Get a table metadata accessor */
+  get metadata(): TableMetadata {
+    return this.inner.metadata();
+  }
+
+  /** Get a schema metadata accessor */
+  get schemaMetadata(): SchemaMetadata {
+    return this.inner.schemaMetadata();
+  }
+
+  /** Get a table config accessor */
+  get config(): TableConfig {
+    return this.inner.config();
   }
 }
 
