@@ -15,7 +15,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-lancedb = { path = "../../../rust/lancedb" }
+lancedb = { path = "../../../rust/lancedb", default-features = false }
 lance = { workspace = true }
 arrow = { workspace = true, features = ["ffi"] }
 arrow-schema.workspace = true
@@ -25,3 +25,6 @@ snafu.workspace = true
 lazy_static.workspace = true
 serde = { version = "^1" }
 serde_json = { version = "1" }
+
+[features]
+default = ["lancedb/default"]
