@@ -1902,4 +1902,21 @@ describe("column name options", () => {
       .toArray();
     expect(results2.length).toBe(10);
   });
+
+  test("replaceSchemaMetadata", async () => {
+    const data = [{ item: "foo", price: 10.0 }];
+    const conn = await connect("memory://");
+    table = await conn.createTable("test_metadata", data);
+
+    // Replace schema metadata
+    const newMetadata = {
+      description: "Test table for schema metadata",
+      version: "1.0",
+      createdBy: "jest",
+    };
+
+    await table.replaceSchemaMetadata(newMetadata);
+    const newSchema = await table.schema();
+    expect(Object.fromEntries(newSchema.metadata)).toEqual(newMetadata);
+  });
 });
