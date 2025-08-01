@@ -2823,7 +2823,6 @@ pub struct FragmentSummaryStats {
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use std::iter;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -3401,7 +3400,7 @@ mod tests {
                 schema.clone(),
                 vec![
                     Arc::new(Int32Array::from_iter_values(offset..(offset + 10))),
-                    Arc::new(Int32Array::from_iter_values(iter::repeat(age).take(10))),
+                    Arc::new(Int32Array::from_iter_values(std::iter::repeat_n(age, 10))),
                 ],
             )],
             schema,

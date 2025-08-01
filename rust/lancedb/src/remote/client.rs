@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use bytes::Bytes;
+use futures::{TryStream, TryStreamExt};
 use http::HeaderName;
 use log::debug;
 use reqwest::{
     header::{HeaderMap, HeaderValue},
-    Body, Request, RequestBuilder, Response,
+    Request, RequestBuilder, Response,
 };
 use std::{collections::HashMap, future::Future, str::FromStr, time::Duration};
 
@@ -373,7 +375,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub async fn send_with_retry(
         &self,
         req_builder: RequestBuilder,
-        mut make_body: Option<Box<dyn FnMut() -> Result<Body> + Send + 'static>>,
+        mut make_body: Option<Box<dyn FnMut() -> Result<StreamingBody> + Send + 'static>>,
         retry_5xx: bool,
     ) -> Result<(String, Response)> {
         let retry_config = &self.retry_config;
@@ -399,9 +401,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             })?;
 
             // set the streaming body on the request builder after clone
+            let mut error_rx = None;
             if let Some(body_gen) = make_body.as_mut() {
                 let body = body_gen()?;
-                req_builder = req_builder.body(body);
+                req_builder = req_builder.body(body.body);
+                error_rx = Some(body.error_rx);
             }
 
             let (c, request) = req_builder.build_split();
@@ -410,6 +414,13 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             self.log_request(&request, &request_id);
 
             let response = self.sender.send(&c, request).await.map(|r| (r.status(), r));
+
+            // Check if there is an error in the error channel.
+            if let Some(rx) = error_rx {
+                if let Ok(err) = rx.try_recv() {
+                    return Err(err);
+                }
+            }
 
             match response {
                 Ok((status, response)) if status.is_success() => {
@@ -509,6 +520,34 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 request_id: request_id.into(),
                 status_code: Some(status),
             })
+        }
+    }
+}
+
+/// A special body type for streaming bodies that allows errors from the input
+/// stream to be captured and returned when the request is being sent.
+///
+/// This can be removed once this upstream bug is fixed: https://github.com/hyperium/hyper/issues/2547
+pub struct StreamingBody {
+    pub body: reqwest::Body,
+    pub error_rx: std::sync::mpsc::Receiver<Error>,
+}
+
+impl<S> From<S> for StreamingBody
+where
+    S: TryStream + Send + 'static,
+    S::Error: Into<Error>,
+    Bytes: From<S::Ok>,
+{
+    fn from(stream: S) -> Self {
+        let (tx, error_rx) = std::sync::mpsc::channel::<Error>();
+        let inner = stream.map_err(move |e| {
+            let _ = tx.send(e.into());
+            "stream error sent by user: unexpected internal error encountered"
+        });
+        Self {
+            body: reqwest::Body::wrap_stream(inner),
+            error_rx,
         }
     }
 }
