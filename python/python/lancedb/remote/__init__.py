@@ -17,6 +17,12 @@ class TimeoutConfig:
 
     Attributes
     ----------
+    timeout: Optional[timedelta]
+        The overall timeout for the entire request. This includes connection,
+        send, and read time. If the entire request doesn't complete within
+        this time, it will fail. Default is None (no overall timeout).
+        This can also be set via the environment variable
+        `LANCE_CLIENT_TIMEOUT`, as an integer number of seconds.
     connect_timeout: Optional[timedelta]
         The timeout for establishing a connection. Default is 120 seconds (2 minutes).
         This can also be set via the environment variable
@@ -31,6 +37,7 @@ class TimeoutConfig:
         `LANCE_CLIENT_CONNECTION_TIMEOUT`, as an integer number of seconds.
     """
 
+    timeout: Optional[timedelta] = None
     connect_timeout: Optional[timedelta] = None
     read_timeout: Optional[timedelta] = None
     pool_idle_timeout: Optional[timedelta] = None
@@ -50,6 +57,7 @@ class TimeoutConfig:
             )
 
     def __post_init__(self):
+        self.timeout = self.__to_timedelta(self.timeout)
         self.connect_timeout = self.__to_timedelta(self.connect_timeout)
         self.read_timeout = self.__to_timedelta(self.read_timeout)
         self.pool_idle_timeout = self.__to_timedelta(self.pool_idle_timeout)

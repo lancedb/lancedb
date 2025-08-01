@@ -798,6 +798,21 @@ def test_create_client():
     assert isinstance(db.client_config, ClientConfig)
     assert db.client_config.timeout_config.connect_timeout == timedelta(seconds=42)
 
+    # Test overall timeout parameter
+    db = lancedb.connect(
+        **mandatory_args,
+        client_config=ClientConfig(timeout_config={"timeout": 60}),
+    )
+    assert isinstance(db.client_config, ClientConfig)
+    assert db.client_config.timeout_config.timeout == timedelta(seconds=60)
+
+    db = lancedb.connect(
+        **mandatory_args,
+        client_config={"timeout_config": {"timeout": timedelta(seconds=60)}},
+    )
+    assert isinstance(db.client_config, ClientConfig)
+    assert db.client_config.timeout_config.timeout == timedelta(seconds=60)
+
     db = lancedb.connect(
         **mandatory_args, client_config=ClientConfig(retry_config={"retries": 42})
     )

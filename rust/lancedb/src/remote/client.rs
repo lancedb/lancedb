@@ -41,6 +41,16 @@ impl Default for ClientConfig {
 /// How to handle timeouts for HTTP requests.
 #[derive(Clone, Default, Debug)]
 pub struct TimeoutConfig {
+    /// The overall timeout for the entire request.
+    ///
+    /// This includes connection, send, and read time. If the entire request
+    /// doesn't complete within this time, it will fail.
+    ///
+    /// You can also set the `LANCE_CLIENT_TIMEOUT` environment variable
+    /// to set this value. Use an integer value in seconds.
+    ///
+    /// By default, no overall timeout is set.
+    pub timeout: Option<Duration>,
     /// The timeout for creating a connection to the server.
     ///
     /// You can also set the `LANCE_CLIENT_CONNECT_TIMEOUT` environment variable
@@ -159,9 +169,9 @@ impl HttpSend for Sender {
 }
 
 impl RestfulLanceDbClient<Sender> {
-    fn get_timeout(passed: Option<Duration>, env_var: &str, default: Duration) -> Result<Duration> {
+    fn get_timeout(passed: Option<Duration>, env_var: &str) -> Result<Option<Duration>> {
         if let Some(passed) = passed {
-            Ok(passed)
+            Ok(Some(passed))
         } else if let Ok(timeout) = std::env::var(env_var) {
             let timeout = timeout.parse::<u64>().map_err(|_| Error::InvalidInput {
                 message: format!(
@@ -169,9 +179,9 @@ impl RestfulLanceDbClient<Sender> {
                     env_var, timeout
                 ),
             })?;
-            Ok(Duration::from_secs(timeout))
+            Ok(Some(Duration::from_secs(timeout)))
         } else {
-            Ok(default)
+            Ok(None)
         }
     }
 
@@ -203,28 +213,34 @@ impl RestfulLanceDbClient<Sender> {
         };
 
         // Get the timeouts
+        let timeout =
+            Self::get_timeout(client_config.timeout_config.timeout, "LANCE_CLIENT_TIMEOUT")?;
         let connect_timeout = Self::get_timeout(
             client_config.timeout_config.connect_timeout,
             "LANCE_CLIENT_CONNECT_TIMEOUT",
-            Duration::from_secs(120),
-        )?;
+        )?
+        .unwrap_or_else(|| Duration::from_secs(120));
         let read_timeout = Self::get_timeout(
             client_config.timeout_config.read_timeout,
             "LANCE_CLIENT_READ_TIMEOUT",
-            Duration::from_secs(300),
-        )?;
+        )?
+        .unwrap_or_else(|| Duration::from_secs(300));
         let pool_idle_timeout = Self::get_timeout(
             client_config.timeout_config.pool_idle_timeout,
             // Though it's confusing with the connect_timeout name, this is the
             // legacy name for this in the Python sync client. So we keep as-is.
             "LANCE_CLIENT_CONNECTION_TIMEOUT",
-            Duration::from_secs(300),
-        )?;
+        )?
+        .unwrap_or_else(|| Duration::from_secs(300));
 
-        let client = reqwest::Client::builder()
+        let mut client_builder = reqwest::Client::builder()
             .connect_timeout(connect_timeout)
             .read_timeout(read_timeout)
-            .pool_idle_timeout(pool_idle_timeout)
+            .pool_idle_timeout(pool_idle_timeout);
+        if let Some(timeout) = timeout {
+            client_builder = client_builder.timeout(timeout);
+        }
+        let client = client_builder
             .default_headers(Self::default_headers(
                 api_key,
                 region,
@@ -579,5 +595,53 @@ pub mod test_utils {
                 f: Arc::new(wrapper),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_timeout_config_default() {
+        let config = TimeoutConfig::default();
+        assert!(config.timeout.is_none());
+        assert!(config.connect_timeout.is_none());
+        assert!(config.read_timeout.is_none());
+        assert!(config.pool_idle_timeout.is_none());
+    }
+
+    #[test]
+    fn test_timeout_config_with_overall_timeout() {
+        let config = TimeoutConfig {
+            timeout: Some(Duration::from_secs(60)),
+            connect_timeout: Some(Duration::from_secs(10)),
+            read_timeout: Some(Duration::from_secs(30)),
+            pool_idle_timeout: Some(Duration::from_secs(300)),
+        };
+
+        assert_eq!(config.timeout, Some(Duration::from_secs(60)));
+        assert_eq!(config.connect_timeout, Some(Duration::from_secs(10)));
+        assert_eq!(config.read_timeout, Some(Duration::from_secs(30)));
+        assert_eq!(config.pool_idle_timeout, Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn test_client_config_with_timeout() {
+        let timeout_config = TimeoutConfig {
+            timeout: Some(Duration::from_secs(120)),
+            ..Default::default()
+        };
+
+        let client_config = ClientConfig {
+            timeout_config,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            client_config.timeout_config.timeout,
+            Some(Duration::from_secs(120))
+        );
     }
 }

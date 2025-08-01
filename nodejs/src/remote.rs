@@ -9,6 +9,12 @@ use napi_derive::*;
 #[napi(object)]
 #[derive(Debug)]
 pub struct TimeoutConfig {
+    /// The overall timeout for the entire request in seconds. This includes
+    /// connection, send, and read time. If the entire request doesn't complete
+    /// within this time, it will fail. Default is None (no overall timeout).
+    /// This can also be set via the environment variable `LANCE_CLIENT_TIMEOUT`,
+    /// as an integer number of seconds.
+    pub timeout: Option<f64>,
     /// The timeout for establishing a connection in seconds. Default is 120
     /// seconds (2 minutes). This can also be set via the environment variable
     /// `LANCE_CLIENT_CONNECT_TIMEOUT`, as an integer number of seconds.
@@ -75,6 +81,7 @@ pub struct ClientConfig {
 impl From<TimeoutConfig> for lancedb::remote::TimeoutConfig {
     fn from(config: TimeoutConfig) -> Self {
         Self {
+            timeout: config.timeout.map(std::time::Duration::from_secs_f64),
             connect_timeout: config
                 .connect_timeout
                 .map(std::time::Duration::from_secs_f64),
