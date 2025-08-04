@@ -241,6 +241,7 @@ pub struct PyClientRetryConfig {
 
 #[derive(FromPyObject)]
 pub struct PyClientTimeoutConfig {
+    timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
     pool_idle_timeout: Option<Duration>,
@@ -264,6 +265,7 @@ impl From<PyClientRetryConfig> for lancedb::remote::RetryConfig {
 impl From<PyClientTimeoutConfig> for lancedb::remote::TimeoutConfig {
     fn from(value: PyClientTimeoutConfig) -> Self {
         Self {
+            timeout: value.timeout,
             connect_timeout: value.connect_timeout,
             read_timeout: value.read_timeout,
             pool_idle_timeout: value.pool_idle_timeout,
