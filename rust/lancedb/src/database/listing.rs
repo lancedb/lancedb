@@ -411,17 +411,13 @@ impl ListingDatabase {
     fn table_uri(&self, name: &str) -> Result<String> {
         validate_table_name(name)?;
 
-        let path = Path::new(&self.uri);
-        let table_uri = path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
-
-        let mut uri = table_uri
-            .as_path()
-            .to_str()
-            .context(InvalidTableNameSnafu {
-                name,
-                reason: "Name is not valid URL",
-            })?
-            .to_string();
+        let mut uri = self.uri.clone();
+        // If the URI does not end with a slash, add one
+        if !uri.ends_with('/') {
+            uri.push('/');
+        }
+        // Append the table name with the lance file extension
+        uri.push_str(&format!("{}.{}", name, LANCE_FILE_EXTENSION));
 
         // If there are query string set on the connection, propagate to lance
         if let Some(query) = self.query_string.as_ref() {
