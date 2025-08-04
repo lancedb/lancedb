@@ -13,10 +13,10 @@ use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
-use snafu::{OptionExt, ResultExt};
+use snafu::ResultExt;
 
 use crate::connection::ConnectRequest;
-use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
+use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
