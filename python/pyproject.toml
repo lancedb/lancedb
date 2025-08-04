@@ -68,8 +68,9 @@ dev = [
     "pyright",
     'typing-extensions>=4.0.0; python_version < "3.11"',
 ]
-docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
+docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings-python"]
 clip = ["torch", "pillow", "open-clip-torch"]
+siglip = ["torch", "pillow", "transformers>=4.41.0","sentencepiece"]
 embeddings = [
     "requests>=2.31.0",
     "openai>=1.6.1",
@@ -87,6 +88,7 @@ embeddings = [
     "botocore>=1.31.57",
     'ibm-watsonx-ai>=1.1.2; python_version >= "3.10"',
     "ollama>=0.3.0",
+    "sentencepiece"
 ]
 azure = ["adlfs>=2024.2.0"]
 
