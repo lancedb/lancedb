@@ -105,7 +105,7 @@ impl ListingCatalog {
     }
 
     async fn open_path(path: &str) -> Result<Self> {
-        let (object_store, base_path) = ObjectStore::from_uri(path).await.unwrap();
+        let (object_store, base_path) = ObjectStore::from_uri(path).await?;
         if object_store.is_local() {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
@@ -216,6 +216,7 @@ impl Catalog for ListingCatalog {
             client_config: Default::default(),
             read_consistency_interval: None,
             options: Default::default(),
+            session: None,
         };
 
         // Add the db options to the connect request
@@ -243,6 +244,7 @@ impl Catalog for ListingCatalog {
             client_config: Default::default(),
             read_consistency_interval: None,
             options: Default::default(),
+            session: None,
         };
 
         // Add the db options to the connect request
@@ -312,6 +314,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             read_consistency_interval: None,
+            session: None,
         };
 
         let catalog = ListingCatalog::connect(&request).await.unwrap();
@@ -573,6 +576,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             read_consistency_interval: None,
+            session: None,
         };
 
         let catalog = ListingCatalog::connect(&request).await.unwrap();
@@ -592,6 +596,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             read_consistency_interval: None,
+            session: None,
         };
 
         let catalog = ListingCatalog::connect(&request).await.unwrap();
@@ -608,6 +613,7 @@ mod tests {
             client_config: Default::default(),
             options: Default::default(),
             read_consistency_interval: None,
+            session: None,
         };
 
         let result = ListingCatalog::connect(&request).await;

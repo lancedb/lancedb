@@ -85,6 +85,14 @@ impl ExecutionPlan for MetadataEraserExec {
         vec![&self.input]
     }
 
+    fn maintains_input_order(&self) -> Vec<bool> {
+        vec![true; self.children().len()]
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false; self.children().len()]
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -392,9 +400,18 @@ pub mod tests {
                 } else {
                     expected_line.trim()
                 };
-                assert_eq!(&actual_trimmed[..expected_trimmed.len()], expected_trimmed);
+                assert_eq!(
+                    &actual_trimmed[..expected_trimmed.len()],
+                    expected_trimmed,
+                    "\nactual:\n{physical_plan}\nexpected:\n{expected}"
+                );
             }
-            assert_eq!(lines_checked, expected.lines().count());
+            assert_eq!(
+                lines_checked,
+                expected.lines().count(),
+                "\nlines_checked:\n{lines_checked}\nexpected:\n{}",
+                expected.lines().count()
+            );
         }
     }
 
@@ -477,11 +494,8 @@ pub mod tests {
         TestFixture::check_plan(
             plan,
             "MetadataEraserExec
-             RepartitionExec:...
-             CoalesceBatchesExec:...
-             FilterExec: i@0 >= 5
              ProjectionExec:...
-             LanceScan:...",
+             LanceRead:...",
         )
         .await;
 

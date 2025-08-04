@@ -6,9 +6,11 @@ import {
   Data,
   DataType,
   IntoVector,
+  MultiVector,
   Schema,
   dataTypeToJson,
   fromDataToBuffer,
+  isMultiVector,
   tableFromIPC,
 } from "./arrow";
 
@@ -75,10 +77,10 @@ export interface OptimizeOptions {
    * // Delete all versions older than 1 day
    * const olderThan = new Date();
    * olderThan.setDate(olderThan.getDate() - 1));
-   * tbl.cleanupOlderVersions(olderThan);
+   * tbl.optimize({cleanupOlderThan: olderThan});
    *
    * // Delete all versions except the current version
-   * tbl.cleanupOlderVersions(new Date());
+   * tbl.optimize({cleanupOlderThan: new Date()});
    */
   cleanupOlderThan: Date;
   deleteUnverified: boolean;
@@ -346,7 +348,7 @@ export abstract class Table {
    * if the query is a string and no embedding function is defined, it will be treated as a full text search query
    */
   abstract search(
-    query: string | IntoVector | FullTextQuery,
+    query: string | IntoVector | MultiVector | FullTextQuery,
     queryType?: string,
     ftsColumns?: string | string[],
   ): VectorQuery | Query;
@@ -357,7 +359,7 @@ export abstract class Table {
    * is the same thing as calling `nearestTo` on the builder returned
    * by `query`.  @see {@link Query#nearestTo} for more details.
    */
-  abstract vectorSearch(vector: IntoVector): VectorQuery;
+  abstract vectorSearch(vector: IntoVector | MultiVector): VectorQuery;
   /**
    * Add new columns with defined values.
    * @param {AddColumnsSql[]} newColumnTransforms pairs of column names and
@@ -668,7 +670,7 @@ export class LocalTable extends Table {
   }
 
   search(
-    query: string | IntoVector | FullTextQuery,
+    query: string | IntoVector | MultiVector | FullTextQuery,
     queryType: string = "auto",
     ftsColumns?: string | string[],
   ): VectorQuery | Query {
@@ -715,7 +717,15 @@ export class LocalTable extends Table {
     return this.query().nearestTo(queryPromise);
   }
 
-  vectorSearch(vector: IntoVector): VectorQuery {
+  vectorSearch(vector: IntoVector | MultiVector): VectorQuery {
+    if (isMultiVector(vector)) {
+      const query = this.query().nearestTo(vector[0]);
+      for (const v of vector.slice(1)) {
+        query.addQueryVector(v);
+      }
+      return query;
+    }
+
     return this.query().nearestTo(vector);
   }
 

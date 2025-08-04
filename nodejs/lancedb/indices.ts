@@ -439,7 +439,7 @@ export interface FtsOptions {
    *
    * "raw" - Raw tokenizer. This tokenizer does not split the text into tokens and indexes the entire text as a single token.
    */
-  baseTokenizer?: "simple" | "whitespace" | "raw";
+  baseTokenizer?: "simple" | "whitespace" | "raw" | "ngram";
 
   /**
    * language for stemming and stop words
@@ -472,6 +472,21 @@ export interface FtsOptions {
    * whether to remove punctuation
    */
   asciiFolding?: boolean;
+
+  /**
+   * ngram min length
+   */
+  ngramMinLength?: number;
+
+  /**
+   * ngram max length
+   */
+  ngramMaxLength?: number;
+
+  /**
+   * whether to only index the prefix of the token for ngram tokenizer
+   */
+  prefixOnly?: boolean;
 }
 
 export class Index {
@@ -608,6 +623,9 @@ export class Index {
         options?.stem,
         options?.removeStopWords,
         options?.asciiFolding,
+        options?.ngramMinLength,
+        options?.ngramMaxLength,
+        options?.prefixOnly,
       ),
     );
   }

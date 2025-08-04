@@ -541,10 +541,18 @@ jobs:
         run: npm deprecate vectordb "Use @lancedb/lancedb instead."
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
       - name: Update package-lock.json
-        run: bash ci/update_lockfiles.sh
+        run: |
+          git config user.name 'Lance Release'
+          git config user.email 'lance-dev@lancedb.com'
+          bash ci/update_lockfiles.sh
       - name: Push new commit
         uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          branch: main
       - name: Notify Slack Action
         uses: ravsamhq/notify-slack-action@2.3.0
         if: ${{ always() }}

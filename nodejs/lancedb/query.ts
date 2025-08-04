@@ -448,10 +448,41 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
    * For best results we recommend tuning this parameter with a benchmark against
    * your actual data to find the smallest possible value that will still give
    * you the desired recall.
+   *
+   * For more fine grained control over behavior when you have a very narrow filter
+   * you can use `minimumNprobes` and `maximumNprobes`.  This method sets both
+   * the minimum and maximum to the same value.
    */
   nprobes(nprobes: number): VectorQuery {
     super.doCall((inner) => inner.nprobes(nprobes));
 
+    return this;
+  }
+
+  /**
+   * Set the minimum number of probes used.
+   *
+   * This controls the minimum number of partitions that will be searched.  This
+   * parameter will impact every query against a vector index, regardless of the
+   * filter.  See `nprobes` for more details.  Higher values will increase recall
+   * but will also increase latency.
+   */
+  minimumNprobes(minimumNprobes: number): VectorQuery {
+    super.doCall((inner) => inner.minimumNprobes(minimumNprobes));
+    return this;
+  }
+
+  /**
+   * Set the maximum number of probes used.
+   *
+   * This controls the maximum number of partitions that will be searched.  If this
+   * number is greater than minimumNprobes then the excess partitions will _only_ be
+   * searched if we have not found enough results.  This can be useful when there is
+   * a narrow filter to allow these queries to spend more time searching and avoid
+   * potential false negatives.
+   */
+  maximumNprobes(maximumNprobes: number): VectorQuery {
+    super.doCall((inner) => inner.maximumNprobes(maximumNprobes));
     return this;
   }
 
@@ -781,10 +812,12 @@ export enum Operator {
  *
  * - `Must`: The term must be present in the document.
  * - `Should`: The term should contribute to the document score, but is not required.
+ * - `MustNot`: The term must not be present in the document.
  */
 export enum Occur {
-  Must = "MUST",
   Should = "SHOULD",
+  Must = "MUST",
+  MustNot = "MUST_NOT",
 }
 
 /**
@@ -825,6 +858,7 @@ export class MatchQuery implements FullTextQuery {
    *   - `fuzziness`: The fuzziness level for the query (default is 0).
    *   - `maxExpansions`: The maximum number of terms to consider for fuzzy matching (default is 50).
    *   - `operator`: The logical operator to use for combining terms in the query (default is "OR").
+   *   - `prefixLength`: The number of beginning characters being unchanged for fuzzy matching.
    */
   constructor(
     query: string,
@@ -834,6 +868,7 @@ export class MatchQuery implements FullTextQuery {
       fuzziness?: number;
       maxExpansions?: number;
       operator?: Operator;
+      prefixLength?: number;
     },
   ) {
     let fuzziness = options?.fuzziness;
@@ -847,6 +882,7 @@ export class MatchQuery implements FullTextQuery {
       fuzziness,
       options?.maxExpansions ?? 50,
       options?.operator ?? Operator.Or,
+      options?.prefixLength ?? 0,
     );
   }
 

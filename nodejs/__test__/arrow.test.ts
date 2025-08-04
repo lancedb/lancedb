@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { Schema } from "apache-arrow";
+import { Bool, Field, Int32, List, Schema, Struct, Utf8 } from "apache-arrow";
 
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
@@ -11,10 +11,12 @@ import * as arrow18 from "apache-arrow-18";
 import {
   convertToTable,
   fromBufferToRecordBatch,
+  fromDataToBuffer,
   fromRecordBatchToBuffer,
   fromTableToBuffer,
   makeArrowTable,
   makeEmptyTable,
+  tableFromIPC,
 } from "../lancedb/arrow";
 import {
   EmbeddingFunction,
@@ -375,8 +377,221 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(table2.schema).toEqual(schema);
       });
 
+      it("will handle missing columns in schema alignment when using embeddings", async function () {
+        const schema = new Schema(
+          [
+            new Field("domain", new Utf8(), true),
+            new Field("name", new Utf8(), true),
+            new Field("description", new Utf8(), true),
+          ],
+          new Map([["embedding_functions", JSON.stringify([])]]),
+        );
+
+        const data = [
+          { domain: "google.com", name: "Google" },
+          { domain: "facebook.com", name: "Facebook" },
+        ];
+
+        const table = await convertToTable(data, undefined, { schema });
+
+        expect(table.numCols).toBe(3);
+        expect(table.numRows).toBe(2);
+
+        const descriptionColumn = table.getChild("description");
+        expect(descriptionColumn).toBeDefined();
+        expect(descriptionColumn?.nullCount).toBe(2);
+        expect(descriptionColumn?.toArray()).toEqual([null, null]);
+
+        expect(table.getChild("domain")?.toArray()).toEqual([
+          "google.com",
+          "facebook.com",
+        ]);
+        expect(table.getChild("name")?.toArray()).toEqual([
+          "Google",
+          "Facebook",
+        ]);
+      });
+
+      it("will handle completely missing nested struct columns", async function () {
+        const schema = new Schema(
+          [
+            new Field("id", new Utf8(), true),
+            new Field("name", new Utf8(), true),
+            new Field(
+              "metadata",
+              new Struct([
+                new Field("version", new Int32(), true),
+                new Field("author", new Utf8(), true),
+                new Field(
+                  "tags",
+                  new List(new Field("item", new Utf8(), true)),
+                  true,
+                ),
+              ]),
+              true,
+            ),
+          ],
+          new Map([["embedding_functions", JSON.stringify([])]]),
+        );
+
+        const data = [
+          { id: "doc1", name: "Document 1" },
+          { id: "doc2", name: "Document 2" },
+        ];
+
+        const table = await convertToTable(data, undefined, { schema });
+
+        expect(table.numCols).toBe(3);
+        expect(table.numRows).toBe(2);
+
+        const buf = await fromTableToBuffer(table);
+        const retrievedTable = tableFromIPC(buf);
+
+        const rows = [];
+        for (let i = 0; i < retrievedTable.numRows; i++) {
+          rows.push(retrievedTable.get(i));
+        }
+
+        expect(rows[0].metadata.version).toBe(null);
+        expect(rows[0].metadata.author).toBe(null);
+        expect(rows[0].metadata.tags).toBe(null);
+        expect(rows[0].id).toBe("doc1");
+        expect(rows[0].name).toBe("Document 1");
+      });
+
+      it("will handle partially missing nested struct fields", async function () {
+        const schema = new Schema(
+          [
+            new Field("id", new Utf8(), true),
+            new Field(
+              "metadata",
+              new Struct([
+                new Field("version", new Int32(), true),
+                new Field("author", new Utf8(), true),
+                new Field("created_at", new Utf8(), true),
+              ]),
+              true,
+            ),
+          ],
+          new Map([["embedding_functions", JSON.stringify([])]]),
+        );
+
+        const data = [
+          { id: "doc1", metadata: { version: 1, author: "Alice" } },
+          { id: "doc2", metadata: { version: 2 } },
+        ];
+
+        const table = await convertToTable(data, undefined, { schema });
+
+        expect(table.numCols).toBe(2);
+        expect(table.numRows).toBe(2);
+
+        const metadataColumn = table.getChild("metadata");
+        expect(metadataColumn).toBeDefined();
+        expect(metadataColumn?.type.toString()).toBe(
+          "Struct<{version:Int32, author:Utf8, created_at:Utf8}>",
+        );
+      });
+
+      it("will handle multiple levels of nested structures", async function () {
+        const schema = new Schema(
+          [
+            new Field("id", new Utf8(), true),
+            new Field(
+              "config",
+              new Struct([
+                new Field("database", new Utf8(), true),
+                new Field(
+                  "connection",
+                  new Struct([
+                    new Field("host", new Utf8(), true),
+                    new Field("port", new Int32(), true),
+                    new Field(
+                      "ssl",
+                      new Struct([
+                        new Field("enabled", new Bool(), true),
+                        new Field("cert_path", new Utf8(), true),
+                      ]),
+                      true,
+                    ),
+                  ]),
+                  true,
+                ),
+              ]),
+              true,
+            ),
+          ],
+          new Map([["embedding_functions", JSON.stringify([])]]),
+        );
+
+        const data = [
+          {
+            id: "config1",
+            config: {
+              database: "postgres",
+              connection: { host: "localhost" },
+            },
+          },
+          {
+            id: "config2",
+            config: { database: "mysql" },
+          },
+          {
+            id: "config3",
+          },
+        ];
+
+        const table = await convertToTable(data, undefined, { schema });
+
+        expect(table.numCols).toBe(2);
+        expect(table.numRows).toBe(3);
+
+        const configColumn = table.getChild("config");
+        expect(configColumn).toBeDefined();
+        expect(configColumn?.type.toString()).toBe(
+          "Struct<{database:Utf8, connection:Struct<{host:Utf8, port:Int32, ssl:Struct<{enabled:Bool, cert_path:Utf8}>}>}>",
+        );
+      });
+
+      it("will handle missing columns in Arrow table input when using embeddings", async function () {
+        const incompleteTable = makeArrowTable([
+          { domain: "google.com", name: "Google" },
+          { domain: "facebook.com", name: "Facebook" },
+        ]);
+
+        const schema = new Schema(
+          [
+            new Field("domain", new Utf8(), true),
+            new Field("name", new Utf8(), true),
+            new Field("description", new Utf8(), true),
+          ],
+          new Map([["embedding_functions", JSON.stringify([])]]),
+        );
+
+        const buf = await fromDataToBuffer(incompleteTable, undefined, schema);
+
+        expect(buf.byteLength).toBeGreaterThan(0);
+
+        const retrievedTable = tableFromIPC(buf);
+        expect(retrievedTable.numCols).toBe(3);
+        expect(retrievedTable.numRows).toBe(2);
+
+        const descriptionColumn = retrievedTable.getChild("description");
+        expect(descriptionColumn).toBeDefined();
+        expect(descriptionColumn?.nullCount).toBe(2);
+        expect(descriptionColumn?.toArray()).toEqual([null, null]);
+
+        expect(retrievedTable.getChild("domain")?.toArray()).toEqual([
+          "google.com",
+          "facebook.com",
+        ]);
+        expect(retrievedTable.getChild("name")?.toArray()).toEqual([
+          "Google",
+          "Facebook",
+        ]);
+      });
+
       it("should correctly retain values in nested struct fields", async function () {
-        // Define test data with nested struct
         const testData = [
           {
             id: "doc1",
@@ -400,10 +615,8 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           },
         ];
 
-        // Create Arrow table from the data
         const table = makeArrowTable(testData);
 
-        // Verify schema has the nested struct fields
         const metadataField = table.schema.fields.find(
           (f) => f.name === "metadata",
         );
@@ -417,23 +630,17 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           "text",
         ]);
 
-        // Convert to buffer and back (simulating storage and retrieval)
         const buf = await fromTableToBuffer(table);
         const retrievedTable = tableFromIPC(buf);
 
-        // Verify the retrieved table has the same structure
         const rows = [];
         for (let i = 0; i < retrievedTable.numRows; i++) {
           rows.push(retrievedTable.get(i));
         }
 
-        // Check values in the first row
         const firstRow = rows[0];
         expect(firstRow.id).toBe("doc1");
         expect(firstRow.vector.toJSON()).toEqual([1, 2, 3]);
-
-        // Verify metadata values are preserved (this is where the bug is)
-        expect(firstRow.metadata).toBeDefined();
         expect(firstRow.metadata.filePath).toBe("/path/to/file1.ts");
         expect(firstRow.metadata.startLine).toBe(10);
         expect(firstRow.metadata.endLine).toBe(20);
@@ -592,14 +799,14 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         ).rejects.toThrow("column vector was missing");
       });
 
-      it("will provide a nice error if run twice", async function () {
+      it("will skip embedding application if already applied", async function () {
         const records = sampleRecords();
         const table = await convertToTable(records, dummyEmbeddingConfig);
 
         // fromTableToBuffer will try and apply the embeddings again
-        await expect(
-          fromTableToBuffer(table, dummyEmbeddingConfig),
-        ).rejects.toThrow("already existed");
+        // but should skip since the column already has non-null values
+        const result = await fromTableToBuffer(table, dummyEmbeddingConfig);
+        expect(result.byteLength).toBeGreaterThan(0);
       });
     });
 

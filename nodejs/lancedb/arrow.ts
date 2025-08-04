@@ -107,6 +107,20 @@ export type IntoVector =
   | number[]
   | Promise<Float32Array | Float64Array | number[]>;
 
+export type MultiVector = IntoVector[];
+
+export function isMultiVector(value: unknown): value is MultiVector {
+  return Array.isArray(value) && isIntoVector(value[0]);
+}
+
+export function isIntoVector(value: unknown): value is IntoVector {
+  return (
+    value instanceof Float32Array ||
+    value instanceof Float64Array ||
+    (Array.isArray(value) && !Array.isArray(value[0]))
+  );
+}
+
 export function isArrowTable(value: object): value is TableLike {
   if (value instanceof ArrowTable) return true;
   return "schema" in value && "batches" in value;
@@ -417,7 +431,9 @@ function inferSchema(
         } else {
           const inferredType = inferType(value, path, opts);
           if (inferredType === undefined) {
-            throw new Error(`Failed to infer data type for field ${path.join(".")} at row ${rowI}. \
+            throw new Error(`Failed to infer data type for field ${path.join(
+              ".",
+            )} at row ${rowI}. \
                              Consider providing an explicit schema.`);
           }
           pathTree.set(path, inferredType);
@@ -799,11 +815,17 @@ async function applyEmbeddingsFromMetadata(
         `Cannot apply embedding function because the source column '${functionEntry.sourceColumn}' was not present in the data`,
       );
     }
+
+    // Check if destination column exists and handle accordingly
     if (columns[destColumn] !== undefined) {
-      throw new Error(
-        `Attempt to apply embeddings to table failed because column ${destColumn} already existed`,
-      );
+      const existingColumn = columns[destColumn];
+      // If the column exists but is all null, we can fill it with embeddings
+      if (existingColumn.nullCount !== existingColumn.length) {
+        // Column has non-null values, skip embedding application
+        continue;
+      }
     }
+
     if (table.batches.length > 1) {
       throw new Error(
         "Internal error: `makeArrowTable` unexpectedly created a table with more than one batch",
@@ -831,6 +853,15 @@ async function applyEmbeddingsFromMetadata(
     const vector = makeVector(vectors, destType);
     columns[destColumn] = vector;
   }
+
+  // Add any missing columns from the schema as null vectors
+  for (const field of schema.fields) {
+    if (!(field.name in columns)) {
+      const nullValues = new Array(table.numRows).fill(null);
+      columns[field.name] = makeVector(nullValues, field.type);
+    }
+  }
+
   const newTable = new ArrowTable(columns);
   return alignTable(newTable, schema);
 }
@@ -903,11 +934,23 @@ async function applyEmbeddings<T>(
       );
     }
   } else {
+    // Check if destination column exists and handle accordingly
     if (Object.prototype.hasOwnProperty.call(newColumns, destColumn)) {
-      throw new Error(
-        `Attempt to apply embeddings to table failed because column ${destColumn} already existed`,
-      );
+      const existingColumn = newColumns[destColumn];
+      // If the column exists but is all null, we can fill it with embeddings
+      if (existingColumn.nullCount !== existingColumn.length) {
+        // Column has non-null values, skip embedding application and return table as-is
+        let newTable = new ArrowTable(newColumns);
+        if (schema != null) {
+          newTable = alignTable(newTable, schema as Schema);
+        }
+        return new ArrowTable(
+          new Schema(newTable.schema.fields, schemaMetadata),
+          newTable.batches,
+        );
+      }
     }
+
     if (table.batches.length > 1) {
       throw new Error(
         "Internal error: `makeArrowTable` unexpectedly created a table with more than one batch",
@@ -967,7 +1010,21 @@ export async function convertToTable(
   embeddings?: EmbeddingFunctionConfig,
   makeTableOptions?: Partial<MakeArrowTableOptions>,
 ): Promise<ArrowTable> {
-  const table = makeArrowTable(data, makeTableOptions);
+  let processedData = data;
+
+  // If we have a schema with embedding metadata, we need to preprocess the data
+  // to ensure all nested fields are present
+  if (
+    makeTableOptions?.schema &&
+    makeTableOptions.schema.metadata?.has("embedding_functions")
+  ) {
+    processedData = ensureNestedFieldsExist(
+      data,
+      makeTableOptions.schema as Schema,
+    );
+  }
+
+  const table = makeArrowTable(processedData, makeTableOptions);
   return await applyEmbeddings(table, embeddings, makeTableOptions?.schema);
 }
 
@@ -1060,7 +1117,16 @@ export async function fromDataToBuffer(
     schema = sanitizeSchema(schema);
   }
   if (isArrowTable(data)) {
-    return fromTableToBuffer(sanitizeTable(data), embeddings, schema);
+    const table = sanitizeTable(data);
+    // If we have a schema with embedding functions, we need to ensure all columns exist
+    // before applying embeddings, since applyEmbeddingsFromMetadata expects all columns
+    // to be present in the table
+    if (schema && schema.metadata?.has("embedding_functions")) {
+      const alignedTable = alignTableToSchema(table, schema);
+      return fromTableToBuffer(alignedTable, embeddings, schema);
+    } else {
+      return fromTableToBuffer(table, embeddings, schema);
+    }
   } else {
     const table = await convertToTable(data, embeddings, { schema });
     return fromTableToBuffer(table);
@@ -1129,7 +1195,7 @@ function alignBatch(batch: RecordBatch, schema: Schema): RecordBatch {
     type: new Struct(schema.fields),
     length: batch.numRows,
     nullCount: batch.nullCount,
-    children: alignedChildren,
+    children: alignedChildren as unknown as ArrowData<DataType>[],
   });
   return new RecordBatch(schema, newData);
 }
@@ -1199,6 +1265,79 @@ function validateSchemaEmbeddings(
   }
 
   return new Schema(fields, schema.metadata);
+}
+
+/**
+ * Ensures that all nested fields defined in the schema exist in the data,
+ * filling missing fields with null values.
+ */
+export function ensureNestedFieldsExist(
+  data: Array<Record<string, unknown>>,
+  schema: Schema,
+): Array<Record<string, unknown>> {
+  return data.map((row) => {
+    const completeRow: Record<string, unknown> = {};
+
+    for (const field of schema.fields) {
+      if (field.name in row) {
+        if (
+          field.type.constructor.name === "Struct" &&
+          row[field.name] !== null &&
+          row[field.name] !== undefined
+        ) {
+          // Handle nested struct
+          const nestedValue = row[field.name] as Record<string, unknown>;
+          completeRow[field.name] = ensureStructFieldsExist(
+            nestedValue,
+            field.type,
+          );
+        } else {
+          // Non-struct field or null struct value
+          completeRow[field.name] = row[field.name];
+        }
+      } else {
+        // Field is missing from the data - set to null
+        completeRow[field.name] = null;
+      }
+    }
+
+    return completeRow;
+  });
+}
+
+/**
+ * Recursively ensures that all fields in a struct type exist in the data,
+ * filling missing fields with null values.
+ */
+function ensureStructFieldsExist(
+  data: Record<string, unknown>,
+  structType: Struct,
+): Record<string, unknown> {
+  const completeStruct: Record<string, unknown> = {};
+
+  for (const childField of structType.children) {
+    if (childField.name in data) {
+      if (
+        childField.type.constructor.name === "Struct" &&
+        data[childField.name] !== null &&
+        data[childField.name] !== undefined
+      ) {
+        // Recursively handle nested struct
+        completeStruct[childField.name] = ensureStructFieldsExist(
+          data[childField.name] as Record<string, unknown>,
+          childField.type,
+        );
+      } else {
+        // Non-struct field or null struct value
+        completeStruct[childField.name] = data[childField.name];
+      }
+    } else {
+      // Field is missing - set to null
+      completeStruct[childField.name] = null;
+    }
+  }
+
+  return completeStruct;
 }
 
 interface JsonDataType {
@@ -1333,4 +1472,65 @@ function fieldToJson(field: Field): JsonField {
     nullable: field.nullable,
     metadata: field.metadata,
   };
+}
+
+function alignTableToSchema(
+  table: ArrowTable,
+  targetSchema: Schema,
+): ArrowTable {
+  const existingColumns = new Map<string, Vector>();
+
+  // Map existing columns
+  for (const field of table.schema.fields) {
+    existingColumns.set(field.name, table.getChild(field.name)!);
+  }
+
+  // Create vectors for all fields in target schema
+  const alignedColumns: Record<string, Vector> = {};
+
+  for (const field of targetSchema.fields) {
+    if (existingColumns.has(field.name)) {
+      // Column exists, use it
+      alignedColumns[field.name] = existingColumns.get(field.name)!;
+    } else {
+      // Column missing, create null vector
+      alignedColumns[field.name] = createNullVector(field, table.numRows);
+    }
+  }
+
+  // Create new table with aligned schema and columns
+  return new ArrowTable(targetSchema, alignedColumns);
+}
+
+function createNullVector(field: Field, numRows: number): Vector {
+  if (field.type.constructor.name === "Struct") {
+    // For struct types, create a struct with null fields
+    const structType = field.type as Struct;
+    const childVectors = structType.children.map((childField) =>
+      createNullVector(childField, numRows),
+    );
+
+    // Create struct data
+    const structData = makeData({
+      type: structType,
+      length: numRows,
+      nullCount: 0,
+      children: childVectors.map((v) => v.data[0]),
+    });
+
+    return arrowMakeVector(structData);
+  } else {
+    // For other types, create a vector of nulls
+    const nullBitmap = new Uint8Array(Math.ceil(numRows / 8));
+    // All bits are 0, meaning all values are null
+
+    const data = makeData({
+      type: field.type,
+      length: numRows,
+      nullCount: numRows,
+      nullBitmap,
+    });
+
+    return arrowMakeVector(data);
+  }
 }

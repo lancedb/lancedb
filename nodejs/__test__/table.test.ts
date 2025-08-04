@@ -368,9 +368,9 @@ describe("merge insert", () => {
       { a: 4, b: "z" },
     ];
 
-    expect(
-      JSON.parse(JSON.stringify((await table.toArrow()).toArray())),
-    ).toEqual(expected);
+    const result = (await table.toArrow()).toArray().sort((a, b) => a.a - b.a);
+
+    expect(result.map((row) => ({ ...row }))).toEqual(expected);
   });
   test("conditional update", async () => {
     const newData = [
@@ -558,6 +558,32 @@ describe("When creating an index", () => {
     // test offset
     rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
     expect(rst.numRows).toBe(1);
+
+    // test nprobes
+    rst = await tbl.query().nearestTo(queryVec).limit(2).nprobes(50).toArrow();
+    expect(rst.numRows).toBe(2);
+    rst = await tbl
+      .query()
+      .nearestTo(queryVec)
+      .limit(2)
+      .minimumNprobes(15)
+      .toArrow();
+    expect(rst.numRows).toBe(2);
+    rst = await tbl
+      .query()
+      .nearestTo(queryVec)
+      .limit(2)
+      .minimumNprobes(10)
+      .maximumNprobes(20)
+      .toArrow();
+    expect(rst.numRows).toBe(2);
+
+    expect(() => tbl.query().nearestTo(queryVec).minimumNprobes(0)).toThrow(
+      "Invalid input, minimum_nprobes must be greater than 0",
+    );
+    expect(() => tbl.query().nearestTo(queryVec).maximumNprobes(5)).toThrow(
+      "Invalid input, maximum_nprobes must be greater than or equal to minimum_nprobes",
+    );
 
     await tbl.dropIndex("vec_idx");
     const indices2 = await tbl.listIndices();
@@ -1624,13 +1650,25 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(resultSet.has("fob")).toBe(true);
       expect(resultSet.has("fo")).toBe(true);
       expect(resultSet.has("food")).toBe(true);
+
+      const prefixResults = await table
+        .search(
+          new MatchQuery("foo", "text", { fuzziness: 3, prefixLength: 3 }),
+        )
+        .toArray();
+      expect(prefixResults.length).toBe(2);
+      const resultSet2 = new Set(prefixResults.map((r) => r.text));
+      expect(resultSet2.has("foo")).toBe(true);
+      expect(resultSet2.has("food")).toBe(true);
     });
 
     test("full text search boolean query", async () => {
       const db = await connect(tmpDir.name);
       const data = [
-        { text: "hello world", vector: [0.1, 0.2, 0.3] },
-        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+        { text: "The cat and dog are playing" },
+        { text: "The cat is sleeping" },
+        { text: "The dog is barking" },
+        { text: "The dog chases the cat" },
       ];
       const table = await db.createTable("test", data);
       await table.createIndex("text", {
@@ -1640,22 +1678,86 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const shouldResults = await table
         .search(
           new BooleanQuery([
-            [Occur.Should, new MatchQuery("hello", "text")],
-            [Occur.Should, new MatchQuery("goodbye", "text")],
+            [Occur.Should, new MatchQuery("cat", "text")],
+            [Occur.Should, new MatchQuery("dog", "text")],
           ]),
         )
         .toArray();
-      expect(shouldResults.length).toBe(2);
+      expect(shouldResults.length).toBe(4);
 
       const mustResults = await table
         .search(
           new BooleanQuery([
-            [Occur.Must, new MatchQuery("hello", "text")],
-            [Occur.Must, new MatchQuery("world", "text")],
+            [Occur.Must, new MatchQuery("cat", "text")],
+            [Occur.Must, new MatchQuery("dog", "text")],
           ]),
         )
         .toArray();
-      expect(mustResults.length).toBe(1);
+      expect(mustResults.length).toBe(2);
+
+      const mustNotResults = await table
+        .search(
+          new BooleanQuery([
+            [Occur.Must, new MatchQuery("cat", "text")],
+            [Occur.MustNot, new MatchQuery("dog", "text")],
+          ]),
+        )
+        .toArray();
+      expect(mustNotResults.length).toBe(1);
+    });
+
+    test("full text search ngram", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "lance database", vector: [0.4, 0.5, 0.6] },
+        { text: "lance is cool", vector: [0.7, 0.8, 0.9] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ baseTokenizer: "ngram" }),
+      });
+
+      const results = await table.search("lan").toArray();
+      expect(results.length).toBe(2);
+      const resultSet = new Set(results.map((r) => r.text));
+      expect(resultSet.has("lance database")).toBe(true);
+      expect(resultSet.has("lance is cool")).toBe(true);
+
+      const results2 = await table.search("nce").toArray(); // spellchecker:disable-line
+      expect(results2.length).toBe(2);
+      const resultSet2 = new Set(results2.map((r) => r.text));
+      expect(resultSet2.has("lance database")).toBe(true);
+      expect(resultSet2.has("lance is cool")).toBe(true);
+
+      // the default min_ngram_length is 3, so "la" should not match
+      const results3 = await table.search("la").toArray();
+      expect(results3.length).toBe(0);
+
+      // test setting min_ngram_length and prefix_only
+      await table.createIndex("text", {
+        config: Index.fts({
+          baseTokenizer: "ngram",
+          ngramMinLength: 2,
+          prefixOnly: true,
+        }),
+        replace: true,
+      });
+
+      const results4 = await table.search("lan").toArray();
+      expect(results4.length).toBe(2);
+      const resultSet4 = new Set(results4.map((r) => r.text));
+      expect(resultSet4.has("lance database")).toBe(true);
+      expect(resultSet4.has("lance is cool")).toBe(true);
+
+      const results5 = await table.search("nce").toArray(); // spellchecker:disable-line
+      expect(results5.length).toBe(0);
+
+      const results6 = await table.search("la").toArray();
+      expect(results6.length).toBe(2);
+      const resultSet6 = new Set(results6.map((r) => r.text));
+      expect(resultSet6.has("lance database")).toBe(true);
+      expect(resultSet6.has("lance is cool")).toBe(true);
     });
 
     test.each([
@@ -1760,5 +1862,44 @@ describe("column name options", () => {
     results.sort((a, b) => a.query_index - b.query_index);
     expect(results[0].query_index).toBe(0);
     expect(results[1].query_index).toBe(1);
+  });
+
+  test("index and search multivectors", async () => {
+    const db = await connect(tmpDir.name);
+    const data = [];
+    // generate 512 random multivectors
+    for (let i = 0; i < 256; i++) {
+      data.push({
+        multivector: Array.from({ length: 10 }, () =>
+          Array(2).fill(Math.random()),
+        ),
+      });
+    }
+    const table = await db.createTable("multivectors", data, {
+      schema: new Schema([
+        new Field(
+          "multivector",
+          new List(
+            new Field(
+              "item",
+              new FixedSizeList(2, new Field("item", new Float32())),
+            ),
+          ),
+        ),
+      ]),
+    });
+
+    const results = await table.search(data[0].multivector).limit(10).toArray();
+    expect(results.length).toBe(10);
+
+    await table.createIndex("multivector", {
+      config: Index.ivfPq({ numPartitions: 2, distanceType: "cosine" }),
+    });
+
+    const results2 = await table
+      .search(data[0].multivector)
+      .limit(10)
+      .toArray();
+    expect(results2.length).toBe(10);
   });
 });

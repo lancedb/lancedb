@@ -210,6 +210,25 @@ async def test_retry_error():
         assert cause.status_code == 429
 
 
+def test_table_unimplemented_functions():
+    def handler(request):
+        if request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        with pytest.raises(NotImplementedError):
+            table.to_arrow()
+        with pytest.raises(NotImplementedError):
+            table.to_pandas()
+
+
 def test_table_add_in_threadpool():
     def handler(request):
         if request.path == "/v1/table/test/insert/":
@@ -496,6 +515,8 @@ def test_query_sync_minimal():
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 20,
+            "minimum_nprobes": 20,
+            "maximum_nprobes": 20,
             "version": None,
         }
 
@@ -536,6 +557,8 @@ def test_query_sync_maximal():
             "refine_factor": 10,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 5,
+            "minimum_nprobes": 5,
+            "maximum_nprobes": 5,
             "lower_bound": None,
             "upper_bound": None,
             "ef": None,
@@ -560,6 +583,66 @@ def test_query_sync_maximal():
             .where("id > 0", prefilter=True)
             .with_row_id(True)
             .select(["id", "name"])
+            .to_list()
+        )
+
+
+def test_query_sync_nprobes():
+    def handler(body):
+        assert body == {
+            "distance_type": "l2",
+            "k": 10,
+            "prefilter": True,
+            "fast_search": True,
+            "vector_column": "vector2",
+            "refine_factor": None,
+            "lower_bound": None,
+            "upper_bound": None,
+            "ef": None,
+            "vector": [1.0, 2.0, 3.0],
+            "nprobes": 5,
+            "minimum_nprobes": 5,
+            "maximum_nprobes": 15,
+            "version": None,
+        }
+
+        return pa.table({"id": [1, 2, 3], "name": ["a", "b", "c"]})
+
+    with query_test_table(handler) as table:
+        (
+            table.search([1, 2, 3], vector_column_name="vector2", fast_search=True)
+            .minimum_nprobes(5)
+            .maximum_nprobes(15)
+            .to_list()
+        )
+
+
+def test_query_sync_no_max_nprobes():
+    def handler(body):
+        assert body == {
+            "distance_type": "l2",
+            "k": 10,
+            "prefilter": True,
+            "fast_search": True,
+            "vector_column": "vector2",
+            "refine_factor": None,
+            "lower_bound": None,
+            "upper_bound": None,
+            "ef": None,
+            "vector": [1.0, 2.0, 3.0],
+            "nprobes": 5,
+            "minimum_nprobes": 5,
+            "maximum_nprobes": 0,
+            "version": None,
+        }
+
+        return pa.table({"id": [1, 2, 3], "name": ["a", "b", "c"]})
+
+    with query_test_table(handler) as table:
+        (
+            table.search([1, 2, 3], vector_column_name="vector2", fast_search=True)
+            .minimum_nprobes(5)
+            .maximum_nprobes(0)
             .to_list()
         )
 
@@ -666,6 +749,8 @@ def test_query_sync_hybrid():
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "nprobes": 20,
+                "minimum_nprobes": 20,
+                "maximum_nprobes": 20,
                 "lower_bound": None,
                 "upper_bound": None,
                 "ef": None,

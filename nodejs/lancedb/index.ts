@@ -10,6 +10,7 @@ import {
 import {
   ConnectionOptions,
   Connection as LanceDbConnection,
+  Session,
 } from "./native.js";
 
 export {
@@ -50,6 +51,8 @@ export {
   TableNamesOptions,
   OpenTableOptions,
 } from "./connection";
+
+export { Session } from "./native.js";
 
 export {
   ExecutableQuery,
@@ -100,6 +103,7 @@ export {
   RecordBatchLike,
   DataLike,
   IntoVector,
+  MultiVector,
 } from "./arrow";
 export { IntoSql, packBits } from "./util";
 
@@ -130,6 +134,7 @@ export { IntoSql, packBits } from "./util";
 export async function connect(
   uri: string,
   options?: Partial<ConnectionOptions>,
+  session?: Session,
 ): Promise<Connection>;
 /**
  * Connect to a LanceDB instance at the given URI.
@@ -148,31 +153,43 @@ export async function connect(
  *   storageOptions: {timeout: "60s"}
  * });
  * ```
+ *
+ * @example
+ * ```ts
+ * const session = Session.default();
+ * const conn = await connect({
+ *   uri: "/path/to/database",
+ *   session: session
+ * });
+ * ```
  */
 export async function connect(
   options: Partial<ConnectionOptions> & { uri: string },
 ): Promise<Connection>;
 export async function connect(
   uriOrOptions: string | (Partial<ConnectionOptions> & { uri: string }),
-  options: Partial<ConnectionOptions> = {},
+  options?: Partial<ConnectionOptions>,
 ): Promise<Connection> {
   let uri: string | undefined;
+  let finalOptions: Partial<ConnectionOptions> = {};
+
   if (typeof uriOrOptions !== "string") {
     const { uri: uri_, ...opts } = uriOrOptions;
     uri = uri_;
-    options = opts;
+    finalOptions = opts;
   } else {
     uri = uriOrOptions;
+    finalOptions = options || {};
   }
 
   if (!uri) {
     throw new Error("uri is required");
   }
 
-  options = (options as ConnectionOptions) ?? {};
-  (<ConnectionOptions>options).storageOptions = cleanseStorageOptions(
-    (<ConnectionOptions>options).storageOptions,
+  finalOptions = (finalOptions as ConnectionOptions) ?? {};
+  (<ConnectionOptions>finalOptions).storageOptions = cleanseStorageOptions(
+    (<ConnectionOptions>finalOptions).storageOptions,
   );
-  const nativeConn = await LanceDbConnection.new(uri, options);
+  const nativeConn = await LanceDbConnection.new(uri, finalOptions);
   return new LocalConnection(nativeConn);
 }

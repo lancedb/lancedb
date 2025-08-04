@@ -18,7 +18,7 @@ from lancedb._lancedb import (
     UpdateResult,
 )
 from lancedb.embeddings.base import EmbeddingFunctionConfig
-from lancedb.index import FTS, BTree, Bitmap, HnswPq, HnswSq, IvfFlat, IvfPq, LabelList
+from lancedb.index import FTS, BTree, Bitmap, HnswSq, IvfFlat, IvfPq, LabelList
 from lancedb.remote.db import LOOP
 import pyarrow as pa
 
@@ -89,7 +89,7 @@ class RemoteTable(Table):
 
     def to_pandas(self):
         """to_pandas() is not yet supported on LanceDB cloud."""
-        return NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
+        raise NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
     def checkout(self, version: Union[int, str]):
         return LOOP.run(self._table.checkout(version))
@@ -158,6 +158,9 @@ class RemoteTable(Table):
         stem: bool = True,
         remove_stop_words: bool = True,
         ascii_folding: bool = True,
+        ngram_min_length: int = 3,
+        ngram_max_length: int = 3,
+        prefix_only: bool = False,
     ):
         config = FTS(
             with_position=with_position,
@@ -168,6 +171,9 @@ class RemoteTable(Table):
             stem=stem,
             remove_stop_words=remove_stop_words,
             ascii_folding=ascii_folding,
+            ngram_min_length=ngram_min_length,
+            ngram_max_length=ngram_max_length,
+            prefix_only=prefix_only,
         )
         LOOP.run(
             self._table.create_index(
@@ -186,6 +192,8 @@ class RemoteTable(Table):
         accelerator: Optional[str] = None,
         index_type="vector",
         wait_timeout: Optional[timedelta] = None,
+        *,
+        num_bits: int = 8,
     ):
         """Create an index on the table.
         Currently, the only parameters that matter are
@@ -220,11 +228,6 @@ class RemoteTable(Table):
         >>> table.create_index("l2", "vector") # doctest: +SKIP
         """
 
-        if num_partitions is not None:
-            logging.warning(
-                "num_partitions is not supported on LanceDB cloud."
-                "This parameter will be tuned automatically."
-            )
         if num_sub_vectors is not None:
             logging.warning(
                 "num_sub_vectors is not supported on LanceDB cloud."
@@ -244,13 +247,21 @@ class RemoteTable(Table):
 
         index_type = index_type.upper()
         if index_type == "VECTOR" or index_type == "IVF_PQ":
-            config = IvfPq(distance_type=metric)
+            config = IvfPq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                num_sub_vectors=num_sub_vectors,
+                num_bits=num_bits,
+            )
         elif index_type == "IVF_HNSW_PQ":
-            config = HnswPq(distance_type=metric)
+            raise ValueError(
+                "IVF_HNSW_PQ is not supported on LanceDB cloud."
+                "Please use IVF_HNSW_SQ instead."
+            )
         elif index_type == "IVF_HNSW_SQ":
-            config = HnswSq(distance_type=metric)
+            config = HnswSq(distance_type=metric, num_partitions=num_partitions)
         elif index_type == "IVF_FLAT":
-            config = IvfFlat(distance_type=metric)
+            config = IvfFlat(distance_type=metric, num_partitions=num_partitions)
         else:
             raise ValueError(
                 f"Unknown vector index type: {index_type}. Valid options are"

@@ -23,7 +23,7 @@ whether to remove punctuation
 ### baseTokenizer?
 
 ```ts
-optional baseTokenizer: "raw" | "simple" | "whitespace";
+optional baseTokenizer: "raw" | "simple" | "whitespace" | "ngram";
 ```
 
 The tokenizer to use when building the index.
@@ -68,6 +68,36 @@ optional maxTokenLength: number;
 
 maximum token length
 tokens longer than this length will be ignored
+
+***
+
+### ngramMaxLength?
+
+```ts
+optional ngramMaxLength: number;
+```
+
+ngram max length
+
+***
+
+### ngramMinLength?
+
+```ts
+optional ngramMinLength: number;
+```
+
+ngram min length
+
+***
+
+### prefixOnly?
+
+```ts
+optional prefixOnly: boolean;
+```
+
+whether to only index the prefix of the token for ngram tokenizer
 
 ***
 

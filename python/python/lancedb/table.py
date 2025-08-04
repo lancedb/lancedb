@@ -102,7 +102,9 @@ if TYPE_CHECKING:
     )
 
 
-def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
+def _into_pyarrow_reader(
+    data, schema: Optional[pa.Schema] = None
+) -> pa.RecordBatchReader:
     from lancedb.dependencies import datasets
 
     if _check_for_hugging_face(data):
@@ -123,6 +125,12 @@ def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
         raise ValueError("Cannot add a single dictionary to a table. Use a list.")
 
     if isinstance(data, list):
+        # Handle empty list case
+        if not data:
+            if schema is None:
+                raise ValueError("Cannot create table from empty list without a schema")
+            return pa.Table.from_pylist(data, schema=schema).to_reader()
+
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
             schema = data[0].__class__.to_arrow_schema()
@@ -165,9 +173,9 @@ def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
-            "Please check "
-            "https://lancedb.github.io/lancedb/python/python/ "
-            "to see supported types."
+            "Supported types: list of dicts, pandas DataFrame, polars DataFrame, "
+            "pyarrow Table/RecordBatch, or Pydantic models. "
+            "See https://lancedb.github.io/lancedb/guides/tables/ for examples."
         )
 
 
@@ -236,7 +244,7 @@ def _sanitize_data(
     # 1. There might be embedding columns missing that will be added
     #    in the add_embeddings step.
     # 2. If `allow_subschemas` is True, there might be columns missing.
-    reader = _into_pyarrow_reader(data)
+    reader = _into_pyarrow_reader(data, target_schema)
 
     reader = _append_vector_columns(reader, target_schema, metadata=metadata)
 
@@ -827,7 +835,7 @@ class Table(ABC):
         ordering_field_names: Optional[Union[str, List[str]]] = None,
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
-        use_tantivy: bool = True,
+        use_tantivy: bool = False,
         tokenizer_name: Optional[str] = None,
         with_position: bool = False,
         # tokenizer configs:
@@ -838,6 +846,9 @@ class Table(ABC):
         stem: bool = True,
         remove_stop_words: bool = True,
         ascii_folding: bool = True,
+        ngram_min_length: int = 3,
+        ngram_max_length: int = 3,
+        prefix_only: bool = False,
         wait_timeout: Optional[timedelta] = None,
     ):
         """Create a full-text search index on the table.
@@ -864,7 +875,7 @@ class Table(ABC):
             The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
             language code followed by "_stem". So for english it would be "en_stem".
             For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
-        use_tantivy: bool, default True
+        use_tantivy: bool, default False
             If True, use the legacy full-text search implementation based on tantivy.
             If False, use the new full-text search implementation based on lance-index.
         with_position: bool, default False
@@ -877,6 +888,7 @@ class Table(ABC):
             - "simple": Splits text by whitespace and punctuation.
             - "whitespace": Split text by whitespace, but not punctuation.
             - "raw": No tokenization. The entire text is treated as a single token.
+            - "ngram": N-Gram tokenizer.
         language : str, default "English"
             The language to use for tokenization.
         max_token_length : int, default 40
@@ -894,6 +906,12 @@ class Table(ABC):
         ascii_folding : bool, default True
             Whether to fold ASCII characters. This converts accented characters to
             their ASCII equivalent. For example, "café" would be converted to "cafe".
+        ngram_min_length: int, default 3
+            The minimum length of an n-gram.
+        ngram_max_length: int, default 3
+            The maximum length of an n-gram.
+        prefix_only: bool, default False
+            Whether to only index the prefix of the token for ngram tokenizer.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
         """
@@ -1970,7 +1988,7 @@ class LanceTable(Table):
         ordering_field_names: Optional[Union[str, List[str]]] = None,
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
-        use_tantivy: bool = True,
+        use_tantivy: bool = False,
         tokenizer_name: Optional[str] = None,
         with_position: bool = False,
         # tokenizer configs:
@@ -1981,6 +1999,9 @@ class LanceTable(Table):
         stem: bool = True,
         remove_stop_words: bool = True,
         ascii_folding: bool = True,
+        ngram_min_length: int = 3,
+        ngram_max_length: int = 3,
+        prefix_only: bool = False,
     ):
         if not use_tantivy:
             if not isinstance(field_names, str):
@@ -1996,6 +2017,9 @@ class LanceTable(Table):
                     "stem": stem,
                     "remove_stop_words": remove_stop_words,
                     "ascii_folding": ascii_folding,
+                    "ngram_min_length": ngram_min_length,
+                    "ngram_max_length": ngram_max_length,
+                    "prefix_only": prefix_only,
                 }
             else:
                 tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
@@ -2065,6 +2089,9 @@ class LanceTable(Table):
                 "stem": False,
                 "remove_stop_words": False,
                 "ascii_folding": False,
+                "ngram_min_length": 3,
+                "ngram_max_length": 3,
+                "prefix_only": False,
             }
         elif tokenizer_name == "raw":
             return {
@@ -2075,6 +2102,9 @@ class LanceTable(Table):
                 "stem": False,
                 "remove_stop_words": False,
                 "ascii_folding": False,
+                "ngram_min_length": 3,
+                "ngram_max_length": 3,
+                "prefix_only": False,
             }
         elif tokenizer_name == "whitespace":
             return {
@@ -2085,6 +2115,9 @@ class LanceTable(Table):
                 "stem": False,
                 "remove_stop_words": False,
                 "ascii_folding": False,
+                "ngram_min_length": 3,
+                "ngram_max_length": 3,
+                "prefix_only": False,
             }
 
         # or it's with language stemming with pattern like "en_stem"
@@ -2103,6 +2136,9 @@ class LanceTable(Table):
             "stem": True,
             "remove_stop_words": False,
             "ascii_folding": False,
+            "ngram_min_length": 3,
+            "ngram_max_length": 3,
+            "prefix_only": False,
         }
 
     def add(
@@ -3637,8 +3673,15 @@ class AsyncTable:
             )
             if query.distance_type is not None:
                 async_query = async_query.distance_type(query.distance_type)
-            if query.nprobes is not None:
-                async_query = async_query.nprobes(query.nprobes)
+            if query.minimum_nprobes is not None and query.maximum_nprobes is not None:
+                # Set both to the minimum first to avoid min > max error.
+                async_query = async_query.nprobes(
+                    query.minimum_nprobes
+                ).maximum_nprobes(query.maximum_nprobes)
+            elif query.minimum_nprobes is not None:
+                async_query = async_query.minimum_nprobes(query.minimum_nprobes)
+            elif query.maximum_nprobes is not None:
+                async_query = async_query.maximum_nprobes(query.maximum_nprobes)
             if query.refine_factor is not None:
                 async_query = async_query.refine_factor(query.refine_factor)
             if query.vector_column:

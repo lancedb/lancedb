@@ -166,7 +166,7 @@ async def test_explain_plan(table: AsyncTable):
     assert "Vector Search Plan" in plan
     assert "KNNVectorDistance" in plan
     assert "FTS Search Plan" in plan
-    assert "LanceScan" in plan
+    assert "LanceRead" in plan
 
 
 @pytest.mark.asyncio

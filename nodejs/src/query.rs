@@ -179,6 +179,31 @@ impl VectorQuery {
     }
 
     #[napi]
+    pub fn minimum_nprobes(&mut self, minimum_nprobe: u32) -> napi::Result<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .minimum_nprobes(minimum_nprobe as usize)
+            .default_error()?;
+        Ok(())
+    }
+
+    #[napi]
+    pub fn maximum_nprobes(&mut self, maximum_nprobes: u32) -> napi::Result<()> {
+        let maximum_nprobes = if maximum_nprobes == 0 {
+            None
+        } else {
+            Some(maximum_nprobes as usize)
+        };
+        self.inner = self
+            .inner
+            .clone()
+            .maximum_nprobes(maximum_nprobes)
+            .default_error()?;
+        Ok(())
+    }
+
+    #[napi]
     pub fn distance_range(&mut self, lower_bound: Option<f64>, upper_bound: Option<f64>) {
         // napi doesn't support f32, so we have to convert to f32
         self.inner = self
@@ -310,6 +335,7 @@ impl JsFullTextQuery {
         fuzziness: Option<u32>,
         max_expansions: u32,
         operator: String,
+        prefix_length: u32,
     ) -> napi::Result<Self> {
         Ok(Self {
             inner: MatchQuery::new(query)
@@ -322,6 +348,7 @@ impl JsFullTextQuery {
                         napi::Error::from_reason(format!("Invalid operator: {}", e))
                     })?,
                 )
+                .with_prefix_length(prefix_length)
                 .into(),
         })
     }

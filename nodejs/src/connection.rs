@@ -74,6 +74,10 @@ impl Connection {
             builder = builder.host_override(&host_override);
         }
 
+        if let Some(session) = options.session {
+            builder = builder.session(session.inner.clone());
+        }
+
         Ok(Self::inner_new(builder.execute().await.default_error()?))
     }
 

@@ -272,7 +272,9 @@ async def test_distance_range_with_new_rows_async():
     # append more rows so that execution plan would be mixed with ANN & Flat KNN
     new_data = pa.table(
         {
-            "vector": pa.FixedShapeTensorArray.from_numpy_ndarray(np.random.rand(4, 2)),
+            "vector": pa.FixedShapeTensorArray.from_numpy_ndarray(
+                np.random.rand(4, 2) + 1
+            ),
         }
     )
     await table.add(new_data)
@@ -439,6 +441,53 @@ def test_query_builder_with_filter(table):
     assert all(np.array(rs[0]["vector"]) == [3, 4])
 
 
+def test_invalid_nprobes_sync(table):
+    with pytest.raises(ValueError, match="minimum_nprobes must be greater than 0"):
+        LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(0).to_list()
+    with pytest.raises(
+        ValueError,
+        match="maximum_nprobes must be greater than or equal to minimum_nprobes",
+    ):
+        LanceVectorQueryBuilder(table, [0, 0], "vector").maximum_nprobes(5).to_list()
+    with pytest.raises(
+        ValueError,
+        match="minimum_nprobes must be less than or equal to maximum_nprobes",
+    ):
+        LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(100).to_list()
+
+
+def test_nprobes_works_sync(table):
+    LanceVectorQueryBuilder(table, [0, 0], "vector").nprobes(30).to_list()
+
+
+def test_nprobes_min_max_works_sync(table):
+    LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(2).maximum_nprobes(
+        4
+    ).to_list()
+
+
+def test_multiple_nprobes_calls_works_sync(table):
+    LanceVectorQueryBuilder(table, [0, 0], "vector").nprobes(30).maximum_nprobes(
+        20
+    ).minimum_nprobes(20).to_list()
+
+
+@pytest.mark.asyncio
+async def test_invalid_nprobes_async(table_async: AsyncTable):
+    with pytest.raises(ValueError, match="minimum_nprobes must be greater than 0"):
+        await table_async.vector_search([0, 0]).minimum_nprobes(0).to_list()
+    with pytest.raises(
+        ValueError,
+        match="maximum_nprobes must be greater than or equal to minimum_nprobes",
+    ):
+        await table_async.vector_search([0, 0]).maximum_nprobes(5).to_list()
+    with pytest.raises(
+        ValueError,
+        match="minimum_nprobes must be less than or equal to maximum_nprobes",
+    ):
+        await table_async.vector_search([0, 0]).minimum_nprobes(100).to_list()
+
+
 def test_query_builder_with_prefilter(table):
     df = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
@@ -583,6 +632,21 @@ async def test_query_async(table_async: AsyncTable):
     )
     await check_query(
         table_async.query().nearest_to(pa.array([1, 2])).nprobes(10),
+        expected_num_rows=2,
+    )
+    await check_query(
+        table_async.query().nearest_to(pa.array([1, 2])).minimum_nprobes(10),
+        expected_num_rows=2,
+    )
+    await check_query(
+        table_async.query().nearest_to(pa.array([1, 2])).maximum_nprobes(30),
+        expected_num_rows=2,
+    )
+    await check_query(
+        table_async.query()
+        .nearest_to(pa.array([1, 2]))
+        .minimum_nprobes(10)
+        .maximum_nprobes(20),
         expected_num_rows=2,
     )
     await check_query(
@@ -731,6 +795,83 @@ def test_explain_plan(table):
 async def test_explain_plan_async(table_async: AsyncTable):
     plan = await table_async.query().nearest_to(pa.array([1, 2])).explain_plan(True)
     assert "KNN" in plan
+
+
+@pytest.mark.asyncio
+async def test_explain_plan_fts(table_async: AsyncTable):
+    """Test explain plan for FTS queries"""
+    # Create FTS index
+    from lancedb.index import FTS
+
+    await table_async.create_index("text", config=FTS())
+
+    # Test pure FTS query
+    query = await table_async.search("dog", query_type="fts", fts_columns="text")
+    plan = await query.explain_plan()
+    # Should show FTS details (issue #2465 is now fixed)
+    assert "MatchQuery: query=dog" in plan
+    assert "GlobalLimitExec" in plan  # Default limit
+
+    # Test FTS query with limit
+    query_with_limit = await table_async.search(
+        "dog", query_type="fts", fts_columns="text"
+    )
+    plan_with_limit = await query_with_limit.limit(1).explain_plan()
+    assert "MatchQuery: query=dog" in plan_with_limit
+    assert "GlobalLimitExec: skip=0, fetch=1" in plan_with_limit
+
+    # Test FTS query with offset and limit
+    query_with_offset = await table_async.search(
+        "dog", query_type="fts", fts_columns="text"
+    )
+    plan_with_offset = await query_with_offset.offset(1).limit(1).explain_plan()
+    assert "MatchQuery: query=dog" in plan_with_offset
+    assert "GlobalLimitExec: skip=1, fetch=1" in plan_with_offset
+
+
+@pytest.mark.asyncio
+async def test_explain_plan_vector_with_limit_offset(table_async: AsyncTable):
+    """Test explain plan for vector queries with limit and offset"""
+    # Test vector query with limit
+    plan_with_limit = await (
+        table_async.query().nearest_to(pa.array([1, 2])).limit(1).explain_plan()
+    )
+    assert "KNN" in plan_with_limit
+    assert "GlobalLimitExec: skip=0, fetch=1" in plan_with_limit
+
+    # Test vector query with offset and limit
+    plan_with_offset = await (
+        table_async.query()
+        .nearest_to(pa.array([1, 2]))
+        .offset(1)
+        .limit(1)
+        .explain_plan()
+    )
+    assert "KNN" in plan_with_offset
+    assert "GlobalLimitExec: skip=1, fetch=1" in plan_with_offset
+
+
+@pytest.mark.asyncio
+async def test_explain_plan_with_filters(table_async: AsyncTable):
+    """Test explain plan for queries with filters"""
+    # Test vector query with filter
+    plan_with_filter = await (
+        table_async.query().nearest_to(pa.array([1, 2])).where("id = 1").explain_plan()
+    )
+    assert "KNN" in plan_with_filter
+    assert "LanceRead" in plan_with_filter
+
+    # Test FTS query with filter
+    from lancedb.index import FTS
+
+    await table_async.create_index("text", config=FTS())
+    query_fts_filter = await table_async.search(
+        "dog", query_type="fts", fts_columns="text"
+    )
+    plan_fts_filter = await query_fts_filter.where("id = 1").explain_plan()
+    assert "MatchQuery: query=dog" in plan_fts_filter
+    assert "LanceRead" in plan_fts_filter
+    assert "full_filter=id = Int64(1)" in plan_fts_filter  # Should show filter details
 
 
 @pytest.mark.asyncio
@@ -911,7 +1052,39 @@ def test_query_serialization_sync(table: lancedb.table.Table):
 
     q = table.search([5.0, 6.0]).nprobes(10).refine_factor(5).to_query_object()
     check_set_props(
-        q, vector_column="vector", vector=[5.0, 6.0], nprobes=10, refine_factor=5
+        q,
+        vector_column="vector",
+        vector=[5.0, 6.0],
+        minimum_nprobes=10,
+        maximum_nprobes=10,
+        refine_factor=5,
+    )
+
+    q = table.search([5.0, 6.0]).minimum_nprobes(10).to_query_object()
+    check_set_props(
+        q,
+        vector_column="vector",
+        vector=[5.0, 6.0],
+        minimum_nprobes=10,
+        maximum_nprobes=None,
+    )
+
+    q = table.search([5.0, 6.0]).nprobes(50).to_query_object()
+    check_set_props(
+        q,
+        vector_column="vector",
+        vector=[5.0, 6.0],
+        minimum_nprobes=50,
+        maximum_nprobes=50,
+    )
+
+    q = table.search([5.0, 6.0]).maximum_nprobes(10).to_query_object()
+    check_set_props(
+        q,
+        vector_column="vector",
+        vector=[5.0, 6.0],
+        maximum_nprobes=10,
+        minimum_nprobes=None,
     )
 
     q = table.search([5.0, 6.0]).distance_range(0.0, 1.0).to_query_object()
@@ -963,7 +1136,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         limit=10,
         vector=sample_vector,
         postfilter=False,
-        nprobes=20,
+        minimum_nprobes=20,
+        maximum_nprobes=20,
         with_row_id=False,
         bypass_vector_index=False,
     )
@@ -973,7 +1147,20 @@ async def test_query_serialization_async(table_async: AsyncTable):
         q,
         vector=sample_vector,
         postfilter=False,
-        nprobes=20,
+        minimum_nprobes=20,
+        maximum_nprobes=20,
+        with_row_id=False,
+        bypass_vector_index=False,
+        limit=10,
+    )
+
+    q = (await table_async.search([5.0, 6.0])).nprobes(50).to_query_object()
+    check_set_props(
+        q,
+        vector=sample_vector,
+        postfilter=False,
+        minimum_nprobes=50,
+        maximum_nprobes=50,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -992,7 +1179,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         filter="id = 1",
         postfilter=True,
         vector=sample_vector,
-        nprobes=20,
+        minimum_nprobes=20,
+        maximum_nprobes=20,
         with_row_id=False,
         bypass_vector_index=False,
     )
@@ -1006,8 +1194,21 @@ async def test_query_serialization_async(table_async: AsyncTable):
     check_set_props(
         q,
         vector=sample_vector,
-        nprobes=10,
+        minimum_nprobes=10,
+        maximum_nprobes=10,
         refine_factor=5,
+        postfilter=False,
+        with_row_id=False,
+        bypass_vector_index=False,
+        limit=10,
+    )
+
+    q = (await table_async.search([5.0, 6.0])).minimum_nprobes(5).to_query_object()
+    check_set_props(
+        q,
+        vector=sample_vector,
+        minimum_nprobes=5,
+        maximum_nprobes=20,
         postfilter=False,
         with_row_id=False,
         bypass_vector_index=False,
@@ -1025,7 +1226,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         lower_bound=0.0,
         upper_bound=1.0,
         postfilter=False,
-        nprobes=20,
+        minimum_nprobes=20,
+        maximum_nprobes=20,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1037,7 +1239,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         distance_type="cosine",
         vector=sample_vector,
         postfilter=False,
-        nprobes=20,
+        minimum_nprobes=20,
+        maximum_nprobes=20,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1049,7 +1252,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         ef=7,
         vector=sample_vector,
         postfilter=False,
-        nprobes=20,
+        minimum_nprobes=20,
+        maximum_nprobes=20,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1061,7 +1265,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         bypass_vector_index=True,
         vector=sample_vector,
         postfilter=False,
-        nprobes=20,
+        minimum_nprobes=20,
+        maximum_nprobes=20,
         with_row_id=False,
         limit=10,
     )
@@ -1154,3 +1359,20 @@ async def test_query_timeout_async(tmp_path):
             .nearest_to([0.0, 0.0])
             .to_list(timeout=timedelta(0))
         )
+
+
+def test_search_empty_table(mem_db):
+    """Test searching on empty table should not crash
+
+    Regression test for issue #303:
+    https://github.com/lancedb/lancedb/issues/303
+    Searching on empty table produces scary error message
+    """
+    schema = pa.schema(
+        [pa.field("vector", pa.list_(pa.float32(), 2)), pa.field("id", pa.int64())]
+    )
+    table = mem_db.create_table("test_empty_search", schema=schema)
+
+    # Search on empty table should return empty results, not crash
+    results = table.search([1.0, 2.0]).limit(5).to_list()
+    assert results == []

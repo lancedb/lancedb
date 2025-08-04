@@ -8,18 +8,24 @@
     <parent>
         <groupId>com.lancedb</groupId>
         <artifactId>lancedb-parent</artifactId>
-        <version>0.20.0-final.0</version>
+        <version>0.21.2-final.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <artifactId>lancedb-core</artifactId>
-    <name>LanceDB Core</name>
+    <name>${project.artifactId}</name>
+    <description>LanceDB Core</description>
     <packaging>jar</packaging>
     <properties>
         <rust.release.build>false</rust.release.build>
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>com.lancedb</groupId>
+            <artifactId>lance-namespace-core</artifactId>
+            <version>0.0.1</version>
+        </dependency>
         <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-vector</artifactId>

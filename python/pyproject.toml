@@ -85,8 +85,8 @@ embeddings = [
     "boto3>=1.28.57",
     "awscli>=1.29.57",
     "botocore>=1.31.57",
-    "ollama",
-    "ibm-watsonx-ai>=1.1.2",
+    'ibm-watsonx-ai>=1.1.2; python_version >= "3.10"',
+    "ollama>=0.3.0",
 ]
 azure = ["adlfs>=2024.2.0"]
 

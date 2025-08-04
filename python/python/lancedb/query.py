@@ -14,7 +14,7 @@ from typing import (
     Literal,
     Optional,
     Tuple,
-    Type,
+    TypeVar,
     Union,
     Any,
 )
@@ -57,6 +57,8 @@ if TYPE_CHECKING:
         from typing import Self
     else:
         from typing_extensions import Self
+
+T = TypeVar("T", bound="LanceModel")
 
 
 # Pydantic validation function for vector queries
@@ -101,8 +103,9 @@ class FullTextOperator(str, Enum):
 
 
 class Occur(str, Enum):
-    MUST = "MUST"
     SHOULD = "SHOULD"
+    MUST = "MUST"
+    MUST_NOT = "MUST_NOT"
 
 
 @pydantic.dataclasses.dataclass
@@ -181,6 +184,9 @@ class MatchQuery(FullTextQuery):
         Can be either `AND` or `OR`.
         If `AND`, all terms in the query must match.
         If `OR`, at least one term in the query must match.
+    prefix_length : int, optional
+        The number of beginning characters being unchanged for fuzzy matching.
+        This is useful to achieve prefix matching.
     """
 
     query: str
@@ -189,6 +195,7 @@ class MatchQuery(FullTextQuery):
     fuzziness: int = pydantic.Field(0, kw_only=True)
     max_expansions: int = pydantic.Field(50, kw_only=True)
     operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
+    prefix_length: int = pydantic.Field(0, kw_only=True)
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH
@@ -437,8 +444,18 @@ class Query(pydantic.BaseModel):
     # which columns to return in the results
     columns: Optional[Union[List[str], Dict[str, str]]] = None
 
-    # number of IVF partitions to search
-    nprobes: Optional[int] = None
+    # minimum number of IVF partitions to search
+    #
+    # If None then a default value (20) will be used.
+    minimum_nprobes: Optional[int] = None
+
+    # maximum number of IVF partitions to search
+    #
+    # If None then a default value (20) will be used.
+    #
+    # If 0 then no limit will be applied and all partitions could be searched
+    # if needed to satisfy the limit.
+    maximum_nprobes: Optional[int] = None
 
     # lower bound for distance search
     lower_bound: Optional[float] = None
@@ -476,7 +493,8 @@ class Query(pydantic.BaseModel):
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
-        query.nprobes = req.nprobes
+        query.minimum_nprobes = req.minimum_nprobes
+        query.maximum_nprobes = req.maximum_nprobes
         query.lower_bound = req.lower_bound
         query.upper_bound = req.upper_bound
         query.ef = req.ef
@@ -730,8 +748,8 @@ class LanceQueryBuilder(ABC):
         return self.to_arrow(timeout=timeout).to_pylist()
 
     def to_pydantic(
-        self, model: Type[LanceModel], *, timeout: Optional[timedelta] = None
-    ) -> List[LanceModel]:
+        self, model: type[T], *, timeout: Optional[timedelta] = None
+    ) -> list[T]:
         """Return the table as a list of pydantic models.
 
         Parameters
@@ -887,11 +905,11 @@ class LanceQueryBuilder(ABC):
         >>> plan = table.search(query).explain_plan(True)
         >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
-        GlobalLimitExec: skip=0, fetch=10
-          FilterExec: _distance@2 IS NOT NULL
-            SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
-              KNNVectorDistance: metric=l2
-                LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+          GlobalLimitExec: skip=0, fetch=10
+            FilterExec: _distance@2 IS NOT NULL
+              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+                KNNVectorDistance: metric=l2
+                  LanceRead: uri=..., projection=[vector], ...
 
         Parameters
         ----------
@@ -921,19 +939,19 @@ class LanceQueryBuilder(ABC):
         >>> plan = table.search(query).analyze_plan()
         >>> print(plan)  # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         AnalyzeExec verbose=true, metrics=[]
-          ProjectionExec: expr=[...], metrics=[...]
-            GlobalLimitExec: skip=0, fetch=10, metrics=[...]
-              FilterExec: _distance@2 IS NOT NULL,
-              metrics=[output_rows=..., elapsed_compute=...]
-                SortExec: TopK(fetch=10), expr=[...],
-                preserve_partitioning=[...],
-                metrics=[output_rows=..., elapsed_compute=..., row_replacements=...]
-                  KNNVectorDistance: metric=l2,
-                  metrics=[output_rows=..., elapsed_compute=..., output_batches=...]
-                    LanceScan: uri=..., projection=[vector], row_id=true,
-                    row_addr=false, ordered=false,
-                    metrics=[output_rows=..., elapsed_compute=...,
-                    bytes_read=..., iops=..., requests=...]
+          TracedExec, metrics=[]
+            ProjectionExec: expr=[...], metrics=[...]
+              GlobalLimitExec: skip=0, fetch=10, metrics=[...]
+                FilterExec: _distance@2 IS NOT NULL,
+                metrics=[output_rows=..., elapsed_compute=...]
+                  SortExec: TopK(fetch=10), expr=[...],
+                  preserve_partitioning=[...],
+                  metrics=[output_rows=..., elapsed_compute=..., row_replacements=...]
+                    KNNVectorDistance: metric=l2,
+                    metrics=[output_rows=..., elapsed_compute=..., output_batches=...]
+                      LanceRead: uri=..., projection=[vector], ...
+                      metrics=[output_rows=..., elapsed_compute=...,
+                      bytes_read=..., iops=..., requests=...]
 
         Returns
         -------
@@ -1034,7 +1052,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._query = query
         self._distance_type = None
-        self._nprobes = None
+        self._minimum_nprobes = None
+        self._maximum_nprobes = None
         self._lower_bound = None
         self._upper_bound = None
         self._refine_factor = None
@@ -1097,6 +1116,10 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         See discussion in [Querying an ANN Index][querying-an-ann-index] for
         tuning advice.
 
+        This method sets both the minimum and maximum number of probes to the same
+        value. See `minimum_nprobes` and `maximum_nprobes` for more fine-grained
+        control.
+
         Parameters
         ----------
         nprobes: int
@@ -1107,7 +1130,36 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._nprobes = nprobes
+        self._minimum_nprobes = nprobes
+        self._maximum_nprobes = nprobes
+        return self
+
+    def minimum_nprobes(self, minimum_nprobes: int) -> LanceVectorQueryBuilder:
+        """Set the minimum number of probes to use.
+
+        See `nprobes` for more details.
+
+        These partitions will be searched on every vector query and will increase recall
+        at the expense of latency.
+        """
+        self._minimum_nprobes = minimum_nprobes
+        return self
+
+    def maximum_nprobes(self, maximum_nprobes: int) -> LanceVectorQueryBuilder:
+        """Set the maximum number of probes to use.
+
+        See `nprobes` for more details.
+
+        If this value is greater than `minimum_nprobes` then the excess partitions
+        will be searched only if we have not found enough results.
+
+        This can be useful when there is a narrow filter to allow these queries to
+        spend more time searching and avoid potential false negatives.
+
+        If this value is 0 then no limit will be applied and all partitions could be
+        searched if needed to satisfy the limit.
+        """
+        self._maximum_nprobes = maximum_nprobes
         return self
 
     def distance_range(
@@ -1211,7 +1263,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             distance_type=self._distance_type,
             columns=self._columns,
-            nprobes=self._nprobes,
+            minimum_nprobes=self._minimum_nprobes,
+            maximum_nprobes=self._maximum_nprobes,
             lower_bound=self._lower_bound,
             upper_bound=self._upper_bound,
             refine_factor=self._refine_factor,
@@ -1320,6 +1373,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         if query_string is not None and not isinstance(query_string, str):
             raise ValueError("Reranking currently only supports string queries")
         self._str_query = query_string if query_string is not None else self._str_query
+        if reranker.score == "all":
+            self.with_row_id(True)
         return self
 
     def bypass_vector_index(self) -> LanceVectorQueryBuilder:
@@ -1397,10 +1452,13 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         query = self._query
         if self._phrase_query:
-            raise NotImplementedError(
-                "Phrase query is not yet supported in Lance FTS. "
-                "Use tantivy-based index instead for now."
-            )
+            if isinstance(query, str):
+                if not query.startswith('"') or not query.endswith('"'):
+                    query = f'"{query}"'
+            elif isinstance(query, FullTextQuery) and not isinstance(
+                query, PhraseQuery
+            ):
+                raise TypeError("Please use PhraseQuery for phrase queries.")
         query = self.to_query_object()
         results = self._table._execute_query(query, timeout=timeout)
         results = results.read_all()
@@ -1512,6 +1570,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             The LanceQueryBuilder object.
         """
         self._reranker = reranker
+        if reranker.score == "all":
+            self.with_row_id(True)
         return self
 
 
@@ -1575,7 +1635,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._fts_columns = fts_columns
         self._norm = None
         self._reranker = None
-        self._nprobes = None
+        self._minimum_nprobes = None
+        self._maximum_nprobes = None
         self._refine_factor = None
         self._distance_type = None
         self._phrase_query = None
@@ -1787,6 +1848,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         self._norm = normalize
         self._reranker = reranker
+        if reranker.score == "all":
+            self.with_row_id(True)
 
         return self
 
@@ -1807,7 +1870,24 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        self._nprobes = nprobes
+        self._minimum_nprobes = nprobes
+        self._maximum_nprobes = nprobes
+        return self
+
+    def minimum_nprobes(self, minimum_nprobes: int) -> LanceHybridQueryBuilder:
+        """Set the minimum number of probes to use.
+
+        See `nprobes` for more details.
+        """
+        self._minimum_nprobes = minimum_nprobes
+        return self
+
+    def maximum_nprobes(self, maximum_nprobes: int) -> LanceHybridQueryBuilder:
+        """Set the maximum number of probes to use.
+
+        See `nprobes` for more details.
+        """
+        self._maximum_nprobes = maximum_nprobes
         return self
 
     def distance_range(
@@ -1962,7 +2042,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
           FilterExec: _distance@2 IS NOT NULL
             SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
               KNNVectorDistance: metric=l2
-                LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+                LanceRead: uri=..., projection=[vector], ...
 
         Parameters
         ----------
@@ -2036,8 +2116,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.phrase_query(True)
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
-        if self._nprobes:
-            self._vector_query.nprobes(self._nprobes)
+        if self._minimum_nprobes:
+            self._vector_query.minimum_nprobes(self._minimum_nprobes)
+        if self._maximum_nprobes is not None:
+            self._vector_query.maximum_nprobes(self._maximum_nprobes)
         if self._refine_factor:
             self._vector_query.refine_factor(self._refine_factor)
         if self._ef:
@@ -2368,7 +2450,7 @@ class AsyncQueryBase(object):
             FilterExec: _distance@2 IS NOT NULL
               SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
-                  LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+                  LanceRead: uri=..., projection=[vector], ...
 
         Parameters
         ----------
@@ -2670,6 +2752,34 @@ class AsyncVectorQueryBase:
         self._inner.nprobes(nprobes)
         return self
 
+    def minimum_nprobes(self, minimum_nprobes: int) -> Self:
+        """Set the minimum number of probes to use.
+
+        See `nprobes` for more details.
+
+        These partitions will be searched on every indexed vector query and will
+        increase recall at the expense of latency.
+        """
+        self._inner.minimum_nprobes(minimum_nprobes)
+        return self
+
+    def maximum_nprobes(self, maximum_nprobes: int) -> Self:
+        """Set the maximum number of probes to use.
+
+        See `nprobes` for more details.
+
+        If this value is greater than `minimum_nprobes` then the excess partitions
+        will be searched only if we have not found enough results.
+
+        This can be useful when there is a narrow filter to allow these queries to
+        spend more time searching and avoid potential false negatives.
+
+        If this value is 0 then no limit will be applied and all partitions could be
+        searched if needed to satisfy the limit.
+        """
+        self._inner.maximum_nprobes(maximum_nprobes)
+        return self
+
     def distance_range(
         self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
     ) -> Self:
@@ -2959,15 +3069,21 @@ class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         Vector Search Plan:
         ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
-            Take: columns="vector, _rowid, _distance, (text)"
-                CoalesceBatchesExec: target_batch_size=1024
-                GlobalLimitExec: skip=0, fetch=10
-                    FilterExec: _distance@2 IS NOT NULL
-                    SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
-                        KNNVectorDistance: metric=l2
-                        LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+          Take: columns="vector, _rowid, _distance, (text)"
+            CoalesceBatchesExec: target_batch_size=1024
+              GlobalLimitExec: skip=0, fetch=10
+                FilterExec: _distance@2 IS NOT NULL
+                  SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+                    KNNVectorDistance: metric=l2
+                      LanceRead: uri=..., projection=[vector], ...
+        <BLANKLINE>
         FTS Search Plan:
-        LanceScan: uri=..., projection=[vector, text], row_id=false, row_addr=false, ordered=true
+        ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
+          Take: columns="_rowid, _score, (vector), (text)"
+            CoalesceBatchesExec: target_batch_size=1024
+              GlobalLimitExec: skip=0, fetch=10
+                MatchQuery: query=hello
+        <BLANKLINE>
 
         Parameters
         ----------

@@ -19,7 +19,7 @@ lancedb = { path = "../../../rust/lancedb" }
 lance = { workspace = true }
 arrow = { workspace = true, features = ["ffi"] }
 arrow-schema.workspace = true
-tokio = "1.23"
+tokio = "1.46"
 jni = "0.21.1"
 snafu.workspace = true
 lazy_static.workspace = true

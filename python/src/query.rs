@@ -50,8 +50,9 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                 let fuzziness = ob.getattr("fuzziness")?.extract()?;
                 let max_expansions = ob.getattr("max_expansions")?.extract()?;
                 let operator = ob.getattr("operator")?.extract::<String>()?;
+                let prefix_length = ob.getattr("prefix_length")?.extract()?;
 
-                Ok(PyLanceDB(
+                Ok(Self(
                     MatchQuery::new(query)
                         .with_column(Some(column))
                         .with_boost(boost)
@@ -60,6 +61,7 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                         .with_operator(Operator::try_from(operator.as_str()).map_err(|e| {
                             PyValueError::new_err(format!("Invalid operator: {}", e))
                         })?)
+                        .with_prefix_length(prefix_length)
                         .into(),
                 ))
             }
@@ -68,7 +70,7 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                 let column = ob.getattr("column")?.extract()?;
                 let slop = ob.getattr("slop")?.extract()?;
 
-                Ok(PyLanceDB(
+                Ok(Self(
                     PhraseQuery::new(query)
                         .with_column(Some(column))
                         .with_slop(slop)
@@ -76,10 +78,10 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                 ))
             }
             "BoostQuery" => {
-                let positive: PyLanceDB<FtsQuery> = ob.getattr("positive")?.extract()?;
-                let negative: PyLanceDB<FtsQuery> = ob.getattr("negative")?.extract()?;
+                let positive: Self = ob.getattr("positive")?.extract()?;
+                let negative: Self = ob.getattr("negative")?.extract()?;
                 let negative_boost = ob.getattr("negative_boost")?.extract()?;
-                Ok(PyLanceDB(
+                Ok(Self(
                     BoostQuery::new(positive.0, negative.0, negative_boost).into(),
                 ))
             }
@@ -101,18 +103,17 @@ impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
                 let op = Operator::try_from(operator.as_str())
                     .map_err(|e| PyValueError::new_err(format!("Invalid operator: {}", e)))?;
 
-                Ok(PyLanceDB(q.with_operator(op).into()))
+                Ok(Self(q.with_operator(op).into()))
             }
             "BooleanQuery" => {
-                let queries: Vec<(String, PyLanceDB<FtsQuery>)> =
-                    ob.getattr("queries")?.extract()?;
+                let queries: Vec<(String, Self)> = ob.getattr("queries")?.extract()?;
                 let mut sub_queries = Vec::with_capacity(queries.len());
                 for (occur, q) in queries {
                     let occur = Occur::try_from(occur.as_str())
                         .map_err(|e| PyValueError::new_err(e.to_string()))?;
                     sub_queries.push((occur, q.0));
                 }
-                Ok(PyLanceDB(BooleanQuery::new(sub_queries).into()))
+                Ok(Self(BooleanQuery::new(sub_queries).into()))
             }
             name => Err(PyValueError::new_err(format!(
                 "Unsupported FTS query type: {}",
@@ -139,7 +140,8 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 kwargs.set_item("boost", query.boost)?;
                 kwargs.set_item("fuzziness", query.fuzziness)?;
                 kwargs.set_item("max_expansions", query.max_expansions)?;
-                kwargs.set_item("operator", operator_to_str(query.operator))?;
+                kwargs.set_item::<_, &str>("operator", query.operator.into())?;
+                kwargs.set_item("prefix_length", query.prefix_length)?;
                 namespace
                     .getattr(intern!(py, "MatchQuery"))?
                     .call((query.terms, query.column.unwrap()), Some(&kwargs))
@@ -152,8 +154,8 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                     .call((query.terms, query.column.unwrap()), Some(&kwargs))
             }
             FtsQuery::Boost(query) => {
-                let positive = PyLanceDB(query.positive.as_ref().clone()).into_pyobject(py)?;
-                let negative = PyLanceDB(query.negative.as_ref().clone()).into_pyobject(py)?;
+                let positive = Self(query.positive.as_ref().clone()).into_pyobject(py)?;
+                let negative = Self(query.negative.as_ref().clone()).into_pyobject(py)?;
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("negative_boost", query.negative_boost)?;
                 namespace
@@ -169,38 +171,30 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                     .unzip();
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("boosts", boosts)?;
-                kwargs.set_item("operator", operator_to_str(first.operator))?;
+                kwargs.set_item::<_, &str>("operator", first.operator.into())?;
                 namespace
                     .getattr(intern!(py, "MultiMatchQuery"))?
                     .call((first.terms.clone(), columns), Some(&kwargs))
             }
             FtsQuery::Boolean(query) => {
-                let mut queries = Vec::with_capacity(query.must.len() + query.should.len());
-                for q in query.must {
-                    queries.push((occur_to_str(Occur::Must), PyLanceDB(q).into_pyobject(py)?));
-                }
+                let mut queries: Vec<(&str, Bound<'py, PyAny>)> = Vec::with_capacity(
+                    query.should.len() + query.must.len() + query.must_not.len(),
+                );
                 for q in query.should {
-                    queries.push((occur_to_str(Occur::Should), PyLanceDB(q).into_pyobject(py)?));
+                    queries.push((Occur::Should.into(), Self(q).into_pyobject(py)?));
                 }
+                for q in query.must {
+                    queries.push((Occur::Must.into(), Self(q).into_pyobject(py)?));
+                }
+                for q in query.must_not {
+                    queries.push((Occur::MustNot.into(), Self(q).into_pyobject(py)?));
+                }
+
                 namespace
                     .getattr(intern!(py, "BooleanQuery"))?
                     .call1((queries,))
             }
         }
-    }
-}
-
-fn operator_to_str(op: Operator) -> &'static str {
-    match op {
-        Operator::And => "AND",
-        Operator::Or => "OR",
-    }
-}
-
-fn occur_to_str(occur: Occur) -> &'static str {
-    match occur {
-        Occur::Must => "MUST",
-        Occur::Should => "SHOULD",
     }
 }
 
@@ -235,7 +229,10 @@ pub struct PyQueryRequest {
     pub with_row_id: Option<bool>,
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
-    pub nprobes: Option<usize>,
+    pub minimum_nprobes: Option<usize>,
+    // None means user did not set it and default shoud be used (currenty 20)
+    // Some(0) means user set it to None and there is no limit
+    pub maximum_nprobes: Option<usize>,
     pub lower_bound: Option<f32>,
     pub upper_bound: Option<f32>,
     pub ef: Option<usize>,
@@ -261,7 +258,8 @@ impl From<AnyQuery> for PyQueryRequest {
                 with_row_id: Some(query_request.with_row_id),
                 column: None,
                 query_vector: None,
-                nprobes: None,
+                minimum_nprobes: None,
+                maximum_nprobes: None,
                 lower_bound: None,
                 upper_bound: None,
                 ef: None,
@@ -281,7 +279,11 @@ impl From<AnyQuery> for PyQueryRequest {
                 with_row_id: Some(vector_query.base.with_row_id),
                 column: vector_query.column,
                 query_vector: Some(PyQueryVectors(vector_query.query_vector)),
-                nprobes: Some(vector_query.nprobes),
+                minimum_nprobes: Some(vector_query.minimum_nprobes),
+                maximum_nprobes: match vector_query.maximum_nprobes {
+                    None => Some(0),
+                    Some(value) => Some(value),
+                },
                 lower_bound: vector_query.lower_bound,
                 upper_bound: vector_query.upper_bound,
                 ef: vector_query.ef,
@@ -560,7 +562,10 @@ impl FTSQuery {
     }
 
     pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner.clone();
+        let inner = self_
+            .inner
+            .clone()
+            .full_text_search(self_.fts_query.clone());
         future_into_py(self_.py(), async move {
             inner
                 .explain_plan(verbose)
@@ -570,7 +575,10 @@ impl FTSQuery {
     }
 
     pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner.clone();
+        let inner = self_
+            .inner
+            .clone()
+            .full_text_search(self_.fts_query.clone());
         future_into_py(self_.py(), async move {
             inner
                 .analyze_plan()
@@ -653,6 +661,29 @@ impl VectorQuery {
 
     pub fn nprobes(&mut self, nprobe: u32) {
         self.inner = self.inner.clone().nprobes(nprobe as usize);
+    }
+
+    pub fn minimum_nprobes(&mut self, minimum_nprobes: u32) -> PyResult<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .minimum_nprobes(minimum_nprobes as usize)
+            .infer_error()?;
+        Ok(())
+    }
+
+    pub fn maximum_nprobes(&mut self, maximum_nprobes: u32) -> PyResult<()> {
+        let maximum_nprobes = if maximum_nprobes == 0 {
+            None
+        } else {
+            Some(maximum_nprobes as usize)
+        };
+        self.inner = self
+            .inner
+            .clone()
+            .maximum_nprobes(maximum_nprobes)
+            .infer_error()?;
+        Ok(())
     }
 
     #[pyo3(signature = (lower_bound=None, upper_bound=None))]
