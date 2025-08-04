@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "rust/ffi/node",
     "rust/lancedb",
     "nodejs",
     "python",
