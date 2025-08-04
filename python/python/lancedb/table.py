@@ -2926,6 +2926,12 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
     return pc.is_in(indices, has_nan_indices)
 
 
+def _name_suggests_vector_column(field_name: str) -> bool:
+    """Check if a field name indicates a vector column."""
+    name_lower = field_name.lower()
+    return "vector" in name_lower or "embedding" in name_lower
+
+
 def _infer_target_schema(
     reader: pa.RecordBatchReader,
 ) -> Tuple[pa.Schema, pa.RecordBatchReader]:
@@ -2933,35 +2939,27 @@ def _infer_target_schema(
     peeked = None
 
     for i, field in enumerate(schema):
-        if (
-            field.name == VECTOR_COLUMN_NAME
-            and (pa.types.is_list(field.type) or pa.types.is_large_list(field.type))
-            and pa.types.is_floating(field.type.value_type)
-        ):
+        is_list_type = pa.types.is_list(field.type) or pa.types.is_large_list(
+            field.type
+        )
+
+        if _name_suggests_vector_column(field.name) and is_list_type:
             if peeked is None:
                 peeked, reader = peek_reader(reader)
             # Use the most common length of the list as the dimensions
             dim = _modal_list_size(peeked.column(i))
 
-            new_field = pa.field(
-                VECTOR_COLUMN_NAME,
-                pa.list_(pa.float32(), dim),
-                nullable=field.nullable,
-            )
+            # Determine target type based on value type
+            if pa.types.is_floating(field.type.value_type):
+                target_type = pa.list_(pa.float32(), dim)
+            elif pa.types.is_integer(field.type.value_type):
+                target_type = pa.list_(pa.uint8(), dim)
+            else:
+                continue  # Skip non-numeric types
 
-            schema = schema.set(i, new_field)
-        elif (
-            field.name == VECTOR_COLUMN_NAME
-            and (pa.types.is_list(field.type) or pa.types.is_large_list(field.type))
-            and pa.types.is_integer(field.type.value_type)
-        ):
-            if peeked is None:
-                peeked, reader = peek_reader(reader)
-            # Use the most common length of the list as the dimensions
-            dim = _modal_list_size(peeked.column(i))
             new_field = pa.field(
-                VECTOR_COLUMN_NAME,
-                pa.list_(pa.uint8(), dim),
+                field.name,  # preserve original field name
+                target_type,
                 nullable=field.nullable,
             )
 

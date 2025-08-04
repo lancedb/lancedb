@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { Bool, Field, Int32, List, Schema, Struct, Utf8 } from "apache-arrow";
+import {
+  Bool,
+  Field,
+  Int32,
+  List,
+  Schema,
+  Struct,
+  Uint8,
+  Utf8,
+} from "apache-arrow";
 
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
@@ -253,6 +262,98 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(actual.numRows).toBe(3);
         const actualSchema = actual.schema;
         expect(actualSchema).toEqual(schema);
+      });
+
+      it("will detect vector columns when name contains 'vector' or 'embedding'", async function () {
+        // Test various naming patterns that should be detected as vector columns
+        const floatVectorTable = makeArrowTable([
+          {
+            // Float vectors (use decimal values to ensure they're treated as floats)
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            user_vector: [1.1, 2.2],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            text_embedding: [3.3, 4.4],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            doc_embeddings: [5.5, 6.6],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            my_vector_field: [7.7, 8.8],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            embedding_model: [9.9, 10.1],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            VECTOR_COL: [11.1, 12.2], // uppercase
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            Vector_Mixed: [13.3, 14.4], // mixed case
+          },
+        ]);
+
+        // Check that columns with 'vector' or 'embedding' in name are converted to FixedSizeList
+        const floatVectorColumns = [
+          "user_vector",
+          "text_embedding",
+          "doc_embeddings",
+          "my_vector_field",
+          "embedding_model",
+          "VECTOR_COL",
+          "Vector_Mixed",
+        ];
+
+        for (const columnName of floatVectorColumns) {
+          expect(
+            DataType.isFixedSizeList(
+              floatVectorTable.getChild(columnName)?.type,
+            ),
+          ).toBe(true);
+          // Check that float vectors use Float32 by default
+          expect(
+            floatVectorTable
+              .getChild(columnName)
+              ?.type.children[0].type.toString(),
+          ).toEqual(new Float32().toString());
+        }
+
+        // Test that regular integer arrays still get treated as float vectors
+        // (since JavaScript doesn't distinguish integers from floats at runtime)
+        const integerArrayTable = makeArrowTable([
+          {
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            vector_int: [1, 2], // Regular array with integers - should be Float32
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            embedding_int: [3, 4], // Regular array with integers - should be Float32
+          },
+        ]);
+
+        const integerArrayColumns = ["vector_int", "embedding_int"];
+
+        for (const columnName of integerArrayColumns) {
+          expect(
+            DataType.isFixedSizeList(
+              integerArrayTable.getChild(columnName)?.type,
+            ),
+          ).toBe(true);
+          // Regular integer arrays should use Float32 (avoiding false positives)
+          expect(
+            integerArrayTable
+              .getChild(columnName)
+              ?.type.children[0].type.toString(),
+          ).toEqual(new Float32().toString());
+        }
+
+        // Test normal list should NOT be converted to FixedSizeList
+        const normalListTable = makeArrowTable([
+          {
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            normal_list: [15.5, 16.6], // should NOT be detected as vector
+          },
+        ]);
+
+        expect(
+          DataType.isFixedSizeList(
+            normalListTable.getChild("normal_list")?.type,
+          ),
+        ).toBe(false);
+        expect(
+          DataType.isList(normalListTable.getChild("normal_list")?.type),
+        ).toBe(true);
       });
 
       it("will allow different vector column types", async function () {

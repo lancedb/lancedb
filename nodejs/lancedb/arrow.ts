@@ -34,6 +34,7 @@ import {
   Struct,
   Timestamp,
   Type,
+  Uint8,
   Utf8,
   Vector,
   makeVector as arrowMakeVector,
@@ -51,6 +52,15 @@ import {
   sanitizeTable,
   sanitizeType,
 } from "./sanitize";
+
+/**
+ * Check if a field name indicates a vector column.
+ */
+function nameSuggestsVectorColumn(fieldName: string): boolean {
+  const nameLower = fieldName.toLowerCase();
+  return nameLower.includes("vector") || nameLower.includes("embedding");
+}
+
 export * from "apache-arrow";
 export type SchemaLike =
   | Schema
@@ -591,10 +601,17 @@ function inferType(
       return undefined;
     }
     // Try to automatically detect embedding columns.
-    if (valueType instanceof Float && path[path.length - 1] === "vector") {
-      // We default to Float32 for vectors.
-      const child = new Field("item", new Float32(), true);
-      return new FixedSizeList(value.length, child);
+    if (nameSuggestsVectorColumn(path[path.length - 1])) {
+      // Check if value is a Uint8Array for integer vector type determination
+      if (value instanceof Uint8Array) {
+        // For integer vectors, we default to Uint8 (matching Python implementation)
+        const child = new Field("item", new Uint8(), true);
+        return new FixedSizeList(value.length, child);
+      } else {
+        // For float vectors, we default to Float32
+        const child = new Field("item", new Float32(), true);
+        return new FixedSizeList(value.length, child);
+      }
     } else {
       const child = new Field("item", valueType, true);
       return new List(child);
