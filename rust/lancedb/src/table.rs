@@ -2379,8 +2379,31 @@ impl BaseTable for NativeTable {
             Select::All => {}
         }
 
-        if query.base.with_row_id {
+        // Check if _rowid is needed - either explicitly requested or referenced in filters/projections
+        let mut needs_row_id = query.base.with_row_id;
+        
+        // Check if _rowid is referenced in SQL filter
+        if let Some(QueryFilter::Sql(sql)) = &query.base.filter {
+            info!("LanceDB: Checking SQL filter for _rowid: {}", sql);
+            if sql.contains("_rowid") {
+                info!("LanceDB: Found _rowid in SQL filter, enabling row_id");
+                needs_row_id = true;
+            }
+        }
+        
+        // Check if _rowid is referenced in select columns
+        if let Select::Columns(ref columns) = query.base.select {
+            if columns.iter().any(|col| col == "_rowid") {
+                info!("LanceDB: Found _rowid in select columns, enabling row_id");
+                needs_row_id = true;
+            }
+        }
+        
+        if needs_row_id {
+            info!("LanceDB: Enabling with_row_id on scanner");
             scanner.with_row_id();
+        } else {
+            info!("LanceDB: Not enabling with_row_id (not needed)");
         }
 
         scanner.batch_size(options.max_batch_length as usize);

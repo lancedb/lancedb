@@ -4469,7 +4469,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-python"
-version = "0.24.2-beta.0"
+version = "0.24.2-beta.1"
 dependencies = [
  "arrow",
  "env_logger",

@@ -5,7 +5,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_array::RecordBatch;
-use arrow_schema::Schema as ArrowSchema;
+use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use async_trait::async_trait;
 use datafusion_catalog::{Session, TableProvider};
 use datafusion_common::{DataFusionError, Result as DataFusionResult, Statistics};
@@ -15,6 +15,8 @@ use datafusion_physical_plan::{
     stream::RecordBatchStreamAdapter, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
 };
 use futures::{TryFutureExt, TryStreamExt};
+use lance::dataset::ROW_ID;
+use log::info;
 
 use super::{AnyQuery, BaseTable};
 use crate::{
@@ -123,15 +125,31 @@ pub struct BaseTableAdapter {
 
 impl BaseTableAdapter {
     pub async fn try_new(table: Arc<dyn BaseTable>) -> Result<Self> {
-        let schema = Arc::new(
-            table
-                .schema()
-                .await?
-                .as_ref()
-                .clone()
-                .with_metadata(HashMap::default()),
-        );
-        Ok(Self { table, schema })
+        let mut schema = table
+            .schema()
+            .await?
+            .as_ref()
+            .clone()
+            .with_metadata(HashMap::default());
+        
+        // Always include _rowid in the schema to support SQL queries
+        // This ensures SQL queries can reference _rowid without schema errors
+        let row_id_field = Field::new(ROW_ID, DataType::UInt64, true);
+        if schema.column_with_name(ROW_ID).is_none() {
+            info!("BaseTableAdapter: Adding _rowid field to schema");
+            schema = ArrowSchema::try_merge(vec![
+                schema,
+                ArrowSchema::new(vec![row_id_field]),
+            ])
+            .map_err(|e| crate::Error::Arrow { source: e })?;
+        } else {
+            info!("BaseTableAdapter: Schema already contains _rowid field");
+        }
+        
+        info!("BaseTableAdapter: Final schema fields: {:?}", 
+            schema.fields().iter().map(|f| f.name()).collect::<Vec<_>>());
+        
+        Ok(Self { table, schema: Arc::new(schema) })
     }
 }
 
@@ -156,6 +174,7 @@ impl TableProvider for BaseTableAdapter {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        info!("BaseTableAdapter::scan called with {} filters", filters.len());
         let mut query = QueryRequest::default();
         if let Some(projection) = projection {
             let field_names = projection
@@ -165,6 +184,10 @@ impl TableProvider for BaseTableAdapter {
             query.select = Select::Columns(field_names);
         }
         if !filters.is_empty() {
+            info!("BaseTableAdapter: Processing {} filters", filters.len());
+            for (i, filter) in filters.iter().enumerate() {
+                info!("BaseTableAdapter: Filter {}: {:?}", i, filter);
+            }
             let first = filters.first().unwrap().clone();
             let filter = filters[1..]
                 .iter()
