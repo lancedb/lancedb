@@ -108,7 +108,10 @@ describe("remote connection", () => {
   it("should pass on requested extra headers", async () => {
     await withMockDatabase(
       (req, res) => {
-        expect(req.headers["x-my-header"]).toEqual("my-value");
+        expect(req.headers["foo"]).toEqual("1");
+        expect(req.headers["bar"]).toEqual("2");
+        expect(req.headers["baz"]).toEqual("3");
+        expect(req.headers["x-log-attrs"]).toEqual("foo, bar, baz");
 
         const body = JSON.stringify({ tables: [] });
         res.writeHead(200, { "Content-Type": "application/json" }).end(body);
@@ -119,9 +122,12 @@ describe("remote connection", () => {
       },
       {
         clientConfig: {
-          extraHeaders: {
-            "x-my-header": "my-value",
-          },
+            extraHeaders: {
+                "x-log-attrs": "foo, bar, baz",
+                foo: "1",
+                bar: "2",
+                baz: "3",
+            },
         },
       },
     );
