@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     error::PythonErrorExt,
     index::{extract_index_params, IndexConfig},
-    query::Query,
+    query::{Query, TakeQuery},
 };
 use arrow::{
     datatypes::{DataType, Schema},
@@ -566,6 +566,20 @@ impl Table {
     #[getter]
     pub fn tags(&self) -> PyResult<Tags> {
         Ok(Tags::new(self.inner_ref()?.clone()))
+    }
+
+    #[pyo3(signature = (offsets))]
+    pub fn take_offsets(self_: PyRef<'_, Self>, offsets: Vec<u64>) -> PyResult<TakeQuery> {
+        Ok(TakeQuery::new(
+            self_.inner_ref()?.clone().take_offsets(offsets),
+        ))
+    }
+
+    #[pyo3(signature = (row_ids))]
+    pub fn take_row_ids(self_: PyRef<'_, Self>, row_ids: Vec<u64>) -> PyResult<TakeQuery> {
+        Ok(TakeQuery::new(
+            self_.inner_ref()?.clone().take_row_ids(row_ids),
+        ))
     }
 
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.

@@ -1206,6 +1206,144 @@ impl HasQuery for VectorQuery {
     }
 }
 
+/// A builder for LanceDB take queries.
+///
+/// See [`crate::Table::query`] for more details on queries
+///
+/// A `TakeQuery` is a query that is used to select a subset of rows
+/// from a table using dataset offsets or row ids.
+///
+/// See [`ExecutableQuery`] for methods that can be used to execute
+/// the query and retrieve results.
+///
+/// This query object can be reused to issue the same query multiple
+/// times.
+#[derive(Debug, Clone)]
+pub struct TakeQuery {
+    parent: Arc<dyn BaseTable>,
+    request: QueryRequest,
+}
+
+impl TakeQuery {
+    /// Create a new `TakeQuery` that will return rows at the given offsets.
+    ///
+    /// See [`crate::Table::take_offsets`] for more details.
+    pub fn from_offsets(parent: Arc<dyn BaseTable>, offsets: Vec<u64>) -> Self {
+        let filter = format!(
+            "_rowoffset in ({})",
+            offsets
+                .iter()
+                .map(|o| o.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        Self {
+            parent,
+            request: QueryRequest {
+                filter: Some(QueryFilter::Sql(filter)),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Create a new `TakeQuery` that will return rows with the given row ids.
+    ///
+    /// See [`crate::Table::take_row_ids`] for more details.
+    pub fn from_row_ids(parent: Arc<dyn BaseTable>, row_ids: Vec<u64>) -> Self {
+        let filter = format!(
+            "_rowid in ({})",
+            row_ids
+                .iter()
+                .map(|o| o.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        Self {
+            parent,
+            request: QueryRequest {
+                filter: Some(QueryFilter::Sql(filter)),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Convert the `TakeQuery` into a `QueryRequest`.
+    pub fn into_request(self) -> QueryRequest {
+        self.request
+    }
+
+    /// Return the current `QueryRequest` for the `TakeQuery`.
+    pub fn current_request(&self) -> &QueryRequest {
+        &self.request
+    }
+
+    /// Return only the specified columns.
+    ///
+    /// By default a query will return all columns from the table.  However, this can have
+    /// a very significant impact on latency.  LanceDb stores data in a columnar fashion.  This
+    /// means we can finely tune our I/O to select exactly the columns we need.
+    ///
+    /// As a best practice you should always limit queries to the columns that you need.
+    ///
+    /// You can also use this method to create new "dynamic" columns based on your existing columns.
+    /// For example, you may not care about "a" or "b" but instead simply want "a + b".  This is often
+    /// seen in the SELECT clause of an SQL query (e.g. `SELECT a+b FROM my_table`).
+    ///
+    /// To create dynamic columns use [`Select::Dynamic`] (it might be easier to create this with the
+    /// helper method [`Select::dynamic`]).  A column will be returned for each tuple provided.  The
+    /// first value in that tuple provides the name of the column.  The second value in the tuple is
+    /// an SQL string used to specify how the column is calculated.
+    ///
+    /// For example, an SQL query might state `SELECT a + b AS combined, c`.  The equivalent
+    /// input to [`Select::dynamic`] would be `&[("combined", "a + b"), ("c", "c")]`.
+    ///
+    /// Columns will always be returned in the order given, even if that order is different than
+    /// the order used when adding the data.
+    pub fn select(mut self, selection: Select) -> Self {
+        self.request.select = selection;
+        self
+    }
+
+    /// Return the `_rowid` meta column from the Table.
+    pub fn with_row_id(mut self) -> Self {
+        self.request.with_row_id = true;
+        self
+    }
+}
+
+impl HasQuery for TakeQuery {
+    fn mut_query(&mut self) -> &mut QueryRequest {
+        &mut self.request
+    }
+}
+
+impl ExecutableQuery for TakeQuery {
+    async fn create_plan(&self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
+        let req = AnyQuery::Query(self.request.clone());
+        self.parent.clone().create_plan(&req, options).await
+    }
+
+    async fn execute_with_options(
+        &self,
+        options: QueryExecutionOptions,
+    ) -> Result<SendableRecordBatchStream> {
+        let query = AnyQuery::Query(self.request.clone());
+        Ok(SendableRecordBatchStream::from(
+            self.parent.clone().query(&query, options).await?,
+        ))
+    }
+
+    async fn explain_plan(&self, verbose: bool) -> Result<String> {
+        let query = AnyQuery::Query(self.request.clone());
+        self.parent.explain_plan(&query, verbose).await
+    }
+
+    async fn analyze_plan_with_options(&self, options: QueryExecutionOptions) -> Result<String> {
+        let query = AnyQuery::Query(self.request.clone());
+        self.parent.analyze_plan(&query, options).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashSet, sync::Arc};
@@ -1801,5 +1939,76 @@ mod tests {
         let batch = &results[0];
         assert_eq!(0, batch.num_rows());
         assert_eq!(2, batch.num_columns());
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let results = table
+            .take_offsets(vec![5, 1, 17])
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 3);
+        assert_eq!(results[0].num_columns(), 2);
+
+        let ids = results[0]
+            .column_by_name("id")
+            .unwrap()
+            .as_primitive::<Int32Type>();
+
+        assert_eq!(ids.value(0), 5);
+        assert_eq!(ids.value(1), 1);
+        assert_eq!(ids.value(2), 17);
+
+        // Select specific columns
+        let results = table
+            .take_offsets(vec![5, 1, 17])
+            .select(Select::Columns(vec!["vector".to_string()]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 3);
+        assert_eq!(results[0].num_columns(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_take_row_ids() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let results = table
+            .take_row_ids(vec![5, 1, 17])
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 3);
+        assert_eq!(results[0].num_columns(), 2);
+
+        let ids = results[0]
+            .column_by_name("id")
+            .unwrap()
+            .as_primitive::<Int32Type>();
+
+        assert_eq!(ids.value(0), 5);
+        assert_eq!(ids.value(1), 1);
+        assert_eq!(ids.value(2), 17);
     }
 }
