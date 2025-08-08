@@ -8,7 +8,7 @@ We're going to build a QA bot for your documentation using LanceDB's LangChain i
 
 Modal is an end-to-end compute platform for model inference, batch jobs, task queues, web apps and more. It's a great way to deploy your LanceDB models and apps.
 
-To get started, ensure that you have created an account and logged into [Modal](https://modal.com/). To follow along, the full source code is available on Github [here](https://github.com/lancedb/lancedb/blob/main/docs/src/examples/modal_langchain.py).
+To get started, ensure that you have created an account and logged into [Modal](https://modal.com/). To follow along, the full source code is available on GitHub [here](https://github.com/lancedb/lancedb/blob/main/docs/src/examples/modal_langchain.py).
 
 ### Setting up Modal
 
@@ -46,7 +46,7 @@ db_path = Path("lancedb")
 
 ### Downloading our dataset
 
-We're going use a pregenerated dataset, which stores HTML files of the Pandas 2.0 documentation. 
+We're going use a pregenerated dataset, which stores HTML files of the Pandas 2.0 documentation.
 You could switch this out for your own dataset.
 
 ```python
@@ -110,7 +110,7 @@ def qanda_langchain(query):
     documents = text_splitter.split_documents(docs)
     embeddings = OpenAIEmbeddings()
 
-    db = lancedb.connect(db_path) 
+    db = lancedb.connect(db_path)
     table = db.create_table("pandas_docs", data=[
         {"vector": embeddings.embed_query("Hello World"), "text": "Hello World", "id": "1"}
     ], mode="overwrite")
@@ -131,7 +131,7 @@ def web(query: str):
     return {
         "answer": answer,
     }
-    
+
 @stub.function()
 def cli(query: str):
     answer = qanda_langchain(query)
@@ -153,7 +153,7 @@ modal serve modal_langchain.py
 ```
 
 In the CLI, Modal will provide you a web endpoint. Copy this endpoint URI for the next step.
-Once this is served, then we can hit it with `curl`. 
+Once this is served, then we can hit it with `curl`.
 
 Note, the first time this runs, it will take a few minutes to download the dataset and vectorize it.
 An actual production example would pre-cache/load the dataset and vectorized documents prior
@@ -163,4 +163,3 @@ curl --get --data-urlencode "query=What are the major differences in pandas 2.0?
 
 {"answer":" The major differences in pandas 2.0 include the ability to use any numpy numeric dtype in a Index, installing optional dependencies with pip extras, and enhancements, bug fixes, and performance improvements."}
 ```
-
