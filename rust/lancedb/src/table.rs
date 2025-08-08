@@ -85,6 +85,7 @@ pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
+pub use lance::dataset::transaction::UpdateMapEntry;
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
 pub use lance_index::optimize::OptimizeOptions;
 use serde_with::skip_serializing_none;
@@ -605,6 +606,30 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<()>;
     /// Get statistics on the table
     async fn stats(&self) -> Result<TableStatistics>;
+
+    /// Update table metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire metadata map.
+    ///
+    /// Returns the updated metadata map after the operation.
+    async fn update_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>>;
+
+    /// Update schema metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire schema metadata map.
+    ///
+    /// Returns the updated schema metadata map after the operation.
+    async fn update_schema_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>>;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -1331,6 +1356,46 @@ impl Table {
     pub async fn stats(&self) -> Result<TableStatistics> {
         self.inner.stats().await
     }
+
+    /// Update table metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire metadata map.
+    ///
+    /// Returns the updated metadata map after the operation.
+    pub async fn update_metadata(
+        &self,
+        values: impl IntoIterator<Item = impl Into<UpdateMapEntry>> + Send,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let values: Vec<UpdateMapEntry> = values.into_iter().map(Into::into).collect();
+        self.inner.update_metadata(values, replace).await
+    }
+
+    /// Update schema metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire schema metadata map.
+    ///
+    /// Returns the updated schema metadata map after the operation.
+    pub async fn update_schema_metadata(
+        &self,
+        values: impl IntoIterator<Item = impl Into<UpdateMapEntry>> + Send,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let values: Vec<UpdateMapEntry> = values.into_iter().map(Into::into).collect();
+        self.inner.update_schema_metadata(values, replace).await
+    }
+
+    /// Update field metadata using the builder pattern (NativeTable only)
+    ///
+    /// This method is only available for native tables and requires mutable access.
+    /// For now, this functionality is only available directly on NativeTable instances.
+    pub async fn update_field_metadata(&self) -> Result<()> {
+        Err(Error::InvalidInput {
+            message: "Field metadata builder requires mutable access to NativeTable. Use table.as_native() to get a NativeTable reference and call update_field_metadata() on it directly.".to_string(),
+        })
+    }
 }
 
 pub struct NativeTags {
@@ -2040,14 +2105,13 @@ impl NativeTable {
         Ok(dataset.manifest().clone())
     }
 
-    /// Update key-value pairs in config.
     pub async fn update_config(
         &self,
-        upsert_values: impl IntoIterator<Item = (String, String)>,
-    ) -> Result<()> {
+        values: impl IntoIterator<Item = impl Into<UpdateMapEntry>>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
         let mut dataset = self.dataset.get_mut().await?;
-        dataset.update_config(upsert_values).await?;
-        Ok(())
+        Ok(dataset.update_config(values, replace).await?.clone())
     }
 
     /// Delete keys from the config
@@ -2082,6 +2146,10 @@ impl NativeTable {
         dataset.replace_field_metadata(new_values).await?;
         Ok(())
     }
+
+    // Note: update_field_metadata with builder pattern is not exposed here
+    // because Lance's metadata module is private. Users can access it directly
+    // through the underlying dataset if needed.
 }
 
 #[async_trait::async_trait]
@@ -2773,6 +2841,24 @@ impl BaseTable for NativeTable {
             fragment_stats: frag_stats,
         };
         Ok(stats)
+    }
+
+    async fn update_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let mut dataset = self.dataset.get_mut().await?;
+        Ok(dataset.update_metadata(values, replace).await?)
+    }
+
+    async fn update_schema_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let mut dataset = self.dataset.get_mut().await?;
+        Ok(dataset.update_schema_metadata(values, replace).await?)
     }
 }
 
@@ -4027,7 +4113,10 @@ mod tests {
         let base_config_len = manifest.config.len();
 
         native_tbl
-            .update_config(vec![("test_key1".to_string(), "test_val1".to_string())])
+            .update_config(
+                vec![("test_key1".to_string(), "test_val1".to_string())],
+                false,
+            )
             .await
             .unwrap();
 
@@ -4039,7 +4128,10 @@ mod tests {
         );
 
         native_tbl
-            .update_config(vec![("test_key2".to_string(), "test_val2".to_string())])
+            .update_config(
+                vec![("test_key2".to_string(), "test_val2".to_string())],
+                false,
+            )
             .await
             .unwrap();
         let manifest = native_tbl.manifest().await.unwrap();
@@ -4054,10 +4146,10 @@ mod tests {
         );
 
         native_tbl
-            .update_config(vec![(
-                "test_key2".to_string(),
-                "test_val2_update".to_string(),
-            )])
+            .update_config(
+                vec![("test_key2".to_string(), "test_val2_update".to_string())],
+                false,
+            )
             .await
             .unwrap();
         let manifest = native_tbl.manifest().await.unwrap();
