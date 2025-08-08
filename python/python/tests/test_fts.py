@@ -718,3 +718,75 @@ def test_fts_ngram(mem_db: DBConnection):
     results = table.search("la", query_type="fts").limit(10).to_list()
     assert len(results) == 2
     assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
+
+
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_fts_offset_bug(tmp_path, use_tantivy):
+    """Test that FTS queries handle offset correctly.
+
+    Reproduces issue #2459 where offset was applied incorrectly,
+    causing offset(2).limit(2) to return empty results instead of items 2-3.
+    """
+    # Create test data with distinct, searchable text
+    data = pa.table(
+        {
+            "id": range(4),
+            "text": [
+                "This is a test",
+                "This is another test",
+                "This is a third test",
+                "This is a fourth test",
+            ],
+        }
+    )
+
+    db = ldb.connect(tmp_path)
+    table = db.create_table("test_table", data, mode="overwrite")
+
+    # Create FTS index
+    table.create_fts_index("text", use_tantivy=use_tantivy)
+
+    # Test 1: Normal query without offset (should return first 2 items by score)
+    result1 = (
+        table.search("test", query_type="fts", fts_columns="text").limit(2).to_list()
+    )
+    assert len(result1) == 2
+    ids1 = [r["id"] for r in result1]
+
+    # Test 2: Query with offset and limit (BUG FIX: should return next 2 items)
+    result2 = (
+        table.search("test", query_type="fts", fts_columns="text")
+        .offset(2)
+        .limit(2)
+        .to_list()
+    )
+
+    assert len(result2) == 2, (
+        f"Expected 2 results, got {len(result2)} (use_tantivy={use_tantivy})"
+    )
+    ids2 = [r["id"] for r in result2]
+
+    # Verify that results without offset + results with offset = all 4 items
+    all_ids = set(ids1 + ids2)
+    assert all_ids == {0, 1, 2, 3}, f"Expected all IDs {{0,1,2,3}}, got {all_ids}"
+
+    # Verify no overlap between the two result sets
+    assert set(ids1).isdisjoint(set(ids2)), f"Overlap between {ids1} and {ids2}"
+
+    # Test 3: Offset beyond available results should return empty
+    result3 = (
+        table.search("test", query_type="fts", fts_columns="text")
+        .offset(10)
+        .limit(2)
+        .to_list()
+    )
+    assert len(result3) == 0
+
+    # Test 4: Offset at boundary (skip first 3, get last 1)
+    result4 = (
+        table.search("test", query_type="fts", fts_columns="text")
+        .offset(3)
+        .limit(2)
+        .to_list()
+    )
+    assert len(result4) == 1
