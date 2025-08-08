@@ -1902,4 +1902,39 @@ describe("column name options", () => {
       .toArray();
     expect(results2.length).toBe(10);
   });
+
+  test("table metadata operations", async () => {
+    const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const conn = await connect(tmpDir.name);
+    
+    const data = [
+      { vector: [1.0, 2.0], item: "foo" },
+      { vector: [3.0, 4.0], item: "bar" },
+    ];
+    const table = await conn.createTable("test_metadata", data);
+    
+    // Test inserting metadata
+    await table.metadata.insert({ tag: "prod", description: "Production table" });
+    
+    // Test getting metadata
+    let currentMetadata = await table.metadata.get();
+    expect(currentMetadata.tag).toBe("prod");
+    expect(currentMetadata.description).toBe("Production table");
+    
+    // Test updating metadata
+    await table.metadata.insert({ tag: "staging", version: "1.0" });
+    currentMetadata = await table.metadata.get();
+    expect(currentMetadata.tag).toBe("staging");
+    expect(currentMetadata.description).toBe("Production table");
+    expect(currentMetadata.version).toBe("1.0");
+    
+    // Test deleting metadata keys
+    await table.metadata.deleteKeys(["tag", "version"]);
+    currentMetadata = await table.metadata.get();
+    expect(currentMetadata.tag).toBeUndefined();
+    expect(currentMetadata.version).toBeUndefined();
+    expect(currentMetadata.description).toBe("Production table");
+    
+    tmpDir.removeCallback();
+  });
 });
