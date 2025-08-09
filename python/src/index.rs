@@ -190,14 +190,16 @@ pub struct IndexConfig {
     pub columns: Vec<String>,
     /// Name of the index.
     pub name: String,
+    /// The status of the index
+    pub status: String,
 }
 
 #[pymethods]
 impl IndexConfig {
     pub fn __repr__(&self) -> String {
         format!(
-            "Index({}, columns={:?}, name=\"{}\")",
-            self.index_type, self.columns, self.name
+            "Index({}, columns={:?}, name=\"{}\", status=\"{}\")",
+            self.index_type, self.columns, self.name, self.status
         )
     }
 
@@ -208,6 +210,7 @@ impl IndexConfig {
             "index_type" => Ok(self.index_type.clone().into_pyobject(py)?.into_any()),
             "columns" => Ok(self.columns.clone().into_pyobject(py)?.into_any()),
             "name" | "index_name" => Ok(self.name.clone().into_pyobject(py)?.into_any()),
+            "status" => Ok(self.status.clone().into_pyobject(py)?.into_any()),
             _ => Err(PyKeyError::new_err(format!("Invalid key: {}", key))),
         }
     }
@@ -220,6 +223,7 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             index_type,
             columns: value.columns,
             name: value.name,
+            status: value.status,
         }
     }
 }
