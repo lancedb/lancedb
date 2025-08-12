@@ -1117,6 +1117,10 @@ class Table(ABC):
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
 
+        No guarantees are made regarding the order in which results are returned.  If
+        you desire an output order that matches the order of the given offsets, you will
+        need to add the row offset column to the output and align it yourself.
+
         Parameters
         ----------
         offsets: list[int]
@@ -1135,6 +1139,10 @@ class Table(ABC):
 
         Row ids are not stable and are relative to the current version of the table.
         They can change due to compaction and updates.
+
+        No guarantees are made regarding the order in which results are returned.  If
+        you desire an output order that matches the order of the given ids, you will
+        need to add the row id column to the output and align it yourself.
 
         Unlike offsets, row ids are not 0-indexed and no assumptions should be made
         about the possible range of row ids.  In order to use this method you must

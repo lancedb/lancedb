@@ -15,6 +15,7 @@ import {
   RecordBatchIterator as NativeBatchIterator,
   Query as NativeQuery,
   Table as NativeTable,
+  TakeQuery as NativeTakeQuery,
   VectorQuery as NativeVectorQuery,
 } from "./native";
 import { Reranker } from "./rerankers";
@@ -50,7 +51,7 @@ export class RecordBatchIterator implements AsyncIterator<RecordBatch> {
 /* eslint-enable */
 
 class RecordBatchIterable<
-  NativeQueryType extends NativeQuery | NativeVectorQuery,
+  NativeQueryType extends NativeQuery | NativeVectorQuery | NativeTakeQuery,
 > implements AsyncIterable<RecordBatch>
 {
   private inner: NativeQueryType;
@@ -107,7 +108,7 @@ export interface FullTextSearchOptions {
  *
  * @hideconstructor
  */
-export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
+export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery | NativeTakeQuery>
   implements AsyncIterable<RecordBatch>
 {
   /**
@@ -133,56 +134,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
       fn(this.inner);
     }
   }
-  /**
-   * A filter statement to be applied to this query.
-   *
-   * The filter should be supplied as an SQL query string.  For example:
-   * @example
-   * x > 10
-   * y > 0 AND y < 100
-   * x > 5 OR y = 'test'
-   *
-   * Filtering performance can often be improved by creating a scalar index
-   * on the filter column(s).
-   */
-  where(predicate: string): this {
-    this.doCall((inner: NativeQueryType) => inner.onlyIf(predicate));
-    return this;
-  }
-  /**
-   * A filter statement to be applied to this query.
-   * @see where
-   * @deprecated Use `where` instead
-   */
-  filter(predicate: string): this {
-    return this.where(predicate);
-  }
 
-  fullTextSearch(
-    query: string | FullTextQuery,
-    options?: Partial<FullTextSearchOptions>,
-  ): this {
-    let columns: string[] | null = null;
-    if (options) {
-      if (typeof options.columns === "string") {
-        columns = [options.columns];
-      } else if (Array.isArray(options.columns)) {
-        columns = options.columns;
-      }
-    }
-
-    this.doCall((inner: NativeQueryType) => {
-      if (typeof query === "string") {
-        inner.fullTextSearch({
-          query: query,
-          columns: columns,
-        });
-      } else {
-        inner.fullTextSearch({ query: query.inner });
-      }
-    });
-    return this;
-  }
 
   /**
    * Return only the specified columns.
@@ -238,33 +190,6 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
       selectMapping(Object.entries(columns));
     }
 
-    return this;
-  }
-
-  /**
-   * Set the maximum number of results to return.
-   *
-   * By default, a plain search has no limit.  If this method is not
-   * called then every valid row from the table will be returned.
-   */
-  limit(limit: number): this {
-    this.doCall((inner: NativeQueryType) => inner.limit(limit));
-    return this;
-  }
-
-  offset(offset: number): this {
-    this.doCall((inner: NativeQueryType) => inner.offset(offset));
-    return this;
-  }
-
-  /**
-   * Skip searching un-indexed data. This can make search faster, but will miss
-   * any data that is not yet indexed.
-   *
-   * Use {@link Table#optimize} to index all un-indexed data.
-   */
-  fastSearch(): this {
-    this.doCall((inner: NativeQueryType) => inner.fastSearch());
     return this;
   }
 
@@ -403,6 +328,98 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
   }
 }
 
+export class StandardQueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery> extends QueryBase<NativeQueryType> implements ExecutableQuery {
+  constructor(inner: NativeQueryType | Promise<NativeQueryType>) {
+    super(inner);
+  }
+
+  /**
+   * A filter statement to be applied to this query.
+   *
+   * The filter should be supplied as an SQL query string.  For example:
+   * @example
+   * x > 10
+   * y > 0 AND y < 100
+   * x > 5 OR y = 'test'
+   *
+   * Filtering performance can often be improved by creating a scalar index
+   * on the filter column(s).
+   */
+  where(predicate: string): this {
+    this.doCall((inner: NativeQueryType) => inner.onlyIf(predicate));
+    return this;
+  }
+  /**
+   * A filter statement to be applied to this query.
+   * @see where
+   * @deprecated Use `where` instead
+   */
+  filter(predicate: string): this {
+    return this.where(predicate);
+  }
+
+  fullTextSearch(
+    query: string | FullTextQuery,
+    options?: Partial<FullTextSearchOptions>,
+  ): this {
+    let columns: string[] | null = null;
+    if (options) {
+      if (typeof options.columns === "string") {
+        columns = [options.columns];
+      } else if (Array.isArray(options.columns)) {
+        columns = options.columns;
+      }
+    }
+
+    this.doCall((inner: NativeQueryType) => {
+      if (typeof query === "string") {
+        inner.fullTextSearch({
+          query: query,
+          columns: columns,
+        });
+      } else {
+        inner.fullTextSearch({ query: query.inner });
+      }
+    });
+    return this;
+  }
+
+  /**
+   * Set the maximum number of results to return.
+   *
+   * By default, a plain search has no limit.  If this method is not
+   * called then every valid row from the table will be returned.
+   */
+    limit(limit: number): this {
+      this.doCall((inner: NativeQueryType) => inner.limit(limit));
+      return this;
+    }
+  
+    /**
+     * Set the number of rows to skip before returning results.
+     *
+     * This is useful for pagination.
+     */
+    offset(offset: number): this {
+      this.doCall((inner: NativeQueryType) => inner.offset(offset));
+      return this;
+    }
+  
+    /**
+     * Skip searching un-indexed data. This can make search faster, but will miss
+     * any data that is not yet indexed.
+     *
+     * Use {@link Table#optimize} to index all un-indexed data.
+     */
+    fastSearch(): this {
+      this.doCall((inner: NativeQueryType) => inner.fastSearch());
+      return this;
+    }
+  
+
+}
+
+
 /**
  * An interface for a query that can be executed
  *
@@ -419,7 +436,7 @@ export interface ExecutableQuery {}
  *
  * @hideconstructor
  */
-export class VectorQuery extends QueryBase<NativeVectorQuery> {
+export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   /**
    * @hidden
    */
@@ -679,13 +696,24 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
   }
 }
 
+/**
+ * A query that returns a subset of the rows in the table.
+ * 
+ * @hideconstructor
+ */
+export class TakeQuery extends QueryBase<NativeTakeQuery> {
+  constructor(inner: NativeTakeQuery) {
+    super(inner);
+  }
+}
+
 /** A builder for LanceDB queries.
  *
  * @see {@link Table#query}, {@link Table#search}
  *
  * @hideconstructor
  */
-export class Query extends QueryBase<NativeQuery> {
+export class Query extends StandardQueryBase<NativeQuery> {
   /**
    * @hidden
    */

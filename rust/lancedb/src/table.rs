@@ -1087,6 +1087,10 @@ impl Table {
     /// Offsets are useful for sampling as the set of all valid offsets is easily
     /// known in advance to be [0, len(table)).
     ///
+    /// No guarantees are made regarding the order in which results are returned.  If you
+    /// desire an output order that matches the order of the given offsets, you will need
+    /// to add the row offset column to the output and align it yourself.
+    ///
     /// Parameters
     /// ----------
     /// offsets: list[int]
@@ -1110,6 +1114,9 @@ impl Table {
     /// There is an ongoing effort to make row ids stable which is tracked at
     /// https://github.com/lancedb/lancedb/issues/1120
     ///
+    /// No guarantees are made regarding the order in which results are returned.  If you
+    /// desire an output order that matches the order of the given ids, you will need
+    /// to add the row id column to the output and align it yourself.
     /// Parameters
     /// ----------
     /// row_ids: list[int]

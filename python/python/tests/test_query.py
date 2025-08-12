@@ -1337,16 +1337,20 @@ def test_take_queries(tmp_path):
     table = db.create_table("test", data)
 
     # Take by offset
-    assert table.take_offsets([5, 2, 17]).to_pandas()["idx"].to_list() == [
-        5,
+    assert list(
+        sorted(table.take_offsets([5, 2, 17]).to_pandas()["idx"].to_list())
+    ) == [
         2,
+        5,
         17,
     ]
 
     # Take by row id
-    assert table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list() == [
-        5,
+    assert list(
+        sorted(table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list())
+    ) == [
         2,
+        5,
         17,
     ]
 
