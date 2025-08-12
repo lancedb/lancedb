@@ -846,6 +846,88 @@ impl Table {
             Ok(())
         })
     }
+
+    /// Update table metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=True` to replace the entire metadata map.
+    ///
+    /// Returns the updated metadata map after the operation.
+    #[pyo3(signature = (updates, replace=false))]
+    pub fn update_metadata<'a>(
+        self_: PyRef<'a, Self>,
+        updates: &Bound<'_, PyDict>,
+        replace: bool,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        use lancedb::table::UpdateMapEntry;
+
+        let mut entries = Vec::new();
+        for (key, value) in updates.into_iter() {
+            let key: String = key.extract()?;
+            let value: Option<String> = if value.is_none() {
+                None
+            } else {
+                Some(value.extract()?)
+            };
+            entries.push(UpdateMapEntry { key, value });
+        }
+
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner
+                .update_metadata(entries, replace)
+                .await
+                .infer_error()?;
+            Python::with_gil(|py| {
+                let dict = PyDict::new(py);
+                for (k, v) in result {
+                    dict.set_item(k, v)?;
+                }
+                Ok(dict.unbind())
+            })
+        })
+    }
+
+    /// Update schema metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=True` to replace the entire schema metadata map.
+    ///
+    /// Returns the updated schema metadata map after the operation.
+    #[pyo3(signature = (updates, replace=false))]
+    pub fn update_schema_metadata<'a>(
+        self_: PyRef<'a, Self>,
+        updates: &Bound<'_, PyDict>,
+        replace: bool,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        use lancedb::table::UpdateMapEntry;
+
+        let mut entries = Vec::new();
+        for (key, value) in updates.into_iter() {
+            let key: String = key.extract()?;
+            let value: Option<String> = if value.is_none() {
+                None
+            } else {
+                Some(value.extract()?)
+            };
+            entries.push(UpdateMapEntry { key, value });
+        }
+
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner
+                .update_schema_metadata(entries, replace)
+                .await
+                .infer_error()?;
+            Python::with_gil(|py| {
+                let dict = PyDict::new(py);
+                for (k, v) in result {
+                    dict.set_item(k, v)?;
+                }
+                Ok(dict.unbind())
+            })
+        })
+    }
 }
 
 #[derive(FromPyObject)]

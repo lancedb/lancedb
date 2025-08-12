@@ -1413,6 +1413,56 @@ class Table(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def update_metadata(
+        self, 
+        updates: Dict[str, Optional[str]], 
+        replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update table metadata.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            The metadata updates to apply. Keys are metadata keys, values are 
+            the new values. Use None as a value to remove that key.
+        replace : bool, default False
+            If True, replace the entire metadata map with the provided updates.
+            If False, merge the updates with existing metadata.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated metadata map after the operation.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_schema_metadata(
+        self, 
+        updates: Dict[str, Optional[str]], 
+        replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update schema metadata.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            The schema metadata updates to apply. Keys are metadata keys, values 
+            are the new values. Use None as a value to remove that key.
+        replace : bool, default False
+            If True, replace the entire schema metadata map with the provided updates.
+            If False, merge the updates with existing metadata.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated schema metadata map after the operation.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def cleanup_old_versions(
         self,
         older_than: Optional[timedelta] = None,
@@ -2861,6 +2911,82 @@ class LanceTable(Table):
         """
         return LOOP.run(self._table.update(values, where=where, updates_sql=values_sql))
 
+    def update_metadata(
+        self, 
+        updates: Dict[str, Optional[str]], 
+        replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update table metadata.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            The metadata updates to apply. Keys are metadata keys, values are 
+            the new values. Use None as a value to remove that key.
+        replace : bool, default False
+            If True, replace the entire metadata map with the provided updates.
+            If False, merge the updates with existing metadata.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated metadata map after the operation.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1.0, 2], [3, 4], [5, 6]]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> # Add some metadata
+        >>> table.update_metadata({"description": "My test table", "version": "1.0"})
+        {"description": "My test table", "version": "1.0"}
+        >>> # Update metadata
+        >>> table.update_metadata({"version": "1.1", "author": "me"})
+        {"description": "My test table", "version": "1.1", "author": "me"}
+        >>> # Remove a key
+        >>> table.update_metadata({"author": None})
+        {"description": "My test table", "version": "1.1"}
+        """
+        return LOOP.run(self._table.update_metadata(updates, replace))
+
+    def update_schema_metadata(
+        self, 
+        updates: Dict[str, Optional[str]], 
+        replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update schema metadata.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            The schema metadata updates to apply. Keys are metadata keys, values 
+            are the new values. Use None as a value to remove that key.
+        replace : bool, default False
+            If True, replace the entire schema metadata map with the provided updates.
+            If False, merge the updates with existing metadata.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated schema metadata map after the operation.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1.0, 2], [3, 4], [5, 6]]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> # Add schema metadata
+        >>> table.update_schema_metadata({"format_version": "2.0"})
+        {"format_version": "2.0"}
+        """
+        return LOOP.run(self._table.update_schema_metadata(updates, replace))
+
     def _execute_query(
         self,
         query: Query,
@@ -4275,6 +4401,82 @@ class AsyncTable:
             updates_sql = {k: value_to_sql(v) for k, v in updates.items()}
 
         return await self._inner.update(updates_sql, where)
+
+    async def update_metadata(
+        self, 
+        updates: Dict[str, Optional[str]], 
+        replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update table metadata.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            The metadata updates to apply. Keys are metadata keys, values are 
+            the new values. Use None as a value to remove that key.
+        replace : bool, default False
+            If True, replace the entire metadata map with the provided updates.
+            If False, merge the updates with existing metadata.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated metadata map after the operation.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> import asyncio
+        >>> async def demo_metadata():
+        ...     data = pd.DataFrame({"x": [1, 2], "vector": [[1, 2], [3, 4]]})
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     table = await db.create_table("my_table", data)
+        ...     # Add metadata
+        ...     result = await table.update_metadata({"description": "My test table"})
+        ...     print(result)  # {"description": "My test table"}
+        >>> asyncio.run(demo_metadata())
+        """
+        return await self._inner.update_metadata(updates, replace)
+
+    async def update_schema_metadata(
+        self, 
+        updates: Dict[str, Optional[str]], 
+        replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update schema metadata.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            The schema metadata updates to apply. Keys are metadata keys, values 
+            are the new values. Use None as a value to remove that key.
+        replace : bool, default False
+            If True, replace the entire schema metadata map with the provided updates.
+            If False, merge the updates with existing metadata.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated schema metadata map after the operation.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> import asyncio
+        >>> async def demo_schema_metadata():
+        ...     data = pd.DataFrame({"x": [1, 2], "vector": [[1, 2], [3, 4]]})
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     table = await db.create_table("my_table", data)
+        ...     # Add schema metadata  
+        ...     result = await table.update_schema_metadata({"format_version": "2.0"})
+        ...     print(result)  # {"format_version": "2.0"}
+        >>> asyncio.run(demo_schema_metadata())
+        """
+        return await self._inner.update_schema_metadata(updates, replace)
 
     async def add_columns(
         self, transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema

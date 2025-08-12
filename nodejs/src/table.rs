@@ -475,6 +475,71 @@ impl Table {
             .await
             .default_error()
     }
+
+    /// Update table metadata
+    ///
+    /// Pass `null` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire metadata map.
+    ///
+    /// Returns the updated metadata map after the operation.
+    #[napi(catch_unwind)]
+    pub async fn update_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> napi::Result<HashMap<String, String>> {
+        use lancedb::table::UpdateMapEntry as LanceUpdateMapEntry;
+
+        let lance_entries: Vec<LanceUpdateMapEntry> = values
+            .into_iter()
+            .map(|entry| LanceUpdateMapEntry {
+                key: entry.key,
+                value: entry.value,
+            })
+            .collect();
+
+        self.inner_ref()?
+            .update_metadata(lance_entries, replace)
+            .await
+            .default_error()
+    }
+
+    /// Update schema metadata
+    ///
+    /// Pass `null` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire schema metadata map.
+    ///
+    /// Returns the updated schema metadata map after the operation.
+    #[napi(catch_unwind)]
+    pub async fn update_schema_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> napi::Result<HashMap<String, String>> {
+        use lancedb::table::UpdateMapEntry as LanceUpdateMapEntry;
+
+        let lance_entries: Vec<LanceUpdateMapEntry> = values
+            .into_iter()
+            .map(|entry| LanceUpdateMapEntry {
+                key: entry.key,
+                value: entry.value,
+            })
+            .collect();
+
+        self.inner_ref()?
+            .update_schema_metadata(lance_entries, replace)
+            .await
+            .default_error()
+    }
+}
+
+/// An entry for updating metadata maps
+#[napi(object)]
+pub struct UpdateMapEntry {
+    /// The key of the map entry to update
+    pub key: String,
+    /// The value to set for the key. Use `null` to remove the key.
+    pub value: Option<String>,
 }
 
 #[napi(object)]
