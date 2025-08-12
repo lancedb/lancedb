@@ -108,8 +108,9 @@ export interface FullTextSearchOptions {
  *
  * @hideconstructor
  */
-export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery | NativeTakeQuery>
-  implements AsyncIterable<RecordBatch>
+export class QueryBase<
+  NativeQueryType extends NativeQuery | NativeVectorQuery | NativeTakeQuery,
+> implements AsyncIterable<RecordBatch>
 {
   /**
    * @hidden
@@ -134,7 +135,6 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery |
       fn(this.inner);
     }
   }
-
 
   /**
    * Return only the specified columns.
@@ -328,7 +328,12 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery |
   }
 }
 
-export class StandardQueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery> extends QueryBase<NativeQueryType> implements ExecutableQuery {
+export class StandardQueryBase<
+    NativeQueryType extends NativeQuery | NativeVectorQuery,
+  >
+  extends QueryBase<NativeQueryType>
+  implements ExecutableQuery
+{
   constructor(inner: NativeQueryType | Promise<NativeQueryType>) {
     super(inner);
   }
@@ -390,35 +395,32 @@ export class StandardQueryBase<NativeQueryType extends NativeQuery | NativeVecto
    * By default, a plain search has no limit.  If this method is not
    * called then every valid row from the table will be returned.
    */
-    limit(limit: number): this {
-      this.doCall((inner: NativeQueryType) => inner.limit(limit));
-      return this;
-    }
-  
-    /**
-     * Set the number of rows to skip before returning results.
-     *
-     * This is useful for pagination.
-     */
-    offset(offset: number): this {
-      this.doCall((inner: NativeQueryType) => inner.offset(offset));
-      return this;
-    }
-  
-    /**
-     * Skip searching un-indexed data. This can make search faster, but will miss
-     * any data that is not yet indexed.
-     *
-     * Use {@link Table#optimize} to index all un-indexed data.
-     */
-    fastSearch(): this {
-      this.doCall((inner: NativeQueryType) => inner.fastSearch());
-      return this;
-    }
-  
+  limit(limit: number): this {
+    this.doCall((inner: NativeQueryType) => inner.limit(limit));
+    return this;
+  }
 
+  /**
+   * Set the number of rows to skip before returning results.
+   *
+   * This is useful for pagination.
+   */
+  offset(offset: number): this {
+    this.doCall((inner: NativeQueryType) => inner.offset(offset));
+    return this;
+  }
+
+  /**
+   * Skip searching un-indexed data. This can make search faster, but will miss
+   * any data that is not yet indexed.
+   *
+   * Use {@link Table#optimize} to index all un-indexed data.
+   */
+  fastSearch(): this {
+    this.doCall((inner: NativeQueryType) => inner.fastSearch());
+    return this;
+  }
 }
-
 
 /**
  * An interface for a query that can be executed
@@ -698,7 +700,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
 
 /**
  * A query that returns a subset of the rows in the table.
- * 
+ *
  * @hideconstructor
  */
 export class TakeQuery extends QueryBase<NativeTakeQuery> {

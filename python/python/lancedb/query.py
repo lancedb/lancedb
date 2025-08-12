@@ -3213,8 +3213,16 @@ class BaseQueryBuilder(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         """
-        async_reader = self._inner.execute(max_batch_length, timeout)
-        raise Exception("TODO")
+        async_iter = LOOP.run(self._inner.execute(max_batch_length, timeout))
+
+        def iter_sync():
+            try:
+                while True:
+                    yield LOOP.run(async_iter.__anext__())
+            except StopAsyncIteration:
+                return
+
+        return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
 
     def to_arrow(self, timeout: Optional[timedelta] = None) -> pa.Table:
         """

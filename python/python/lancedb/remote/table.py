@@ -26,7 +26,7 @@ from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 
-from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
+from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
 from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
 
 
@@ -616,6 +616,12 @@ class RemoteTable(Table):
 
     def stats(self):
         return LOOP.run(self._table.stats())
+
+    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
+        return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+
+    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
+        return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
 
     def uses_v2_manifest_paths(self) -> bool:
         raise NotImplementedError(
