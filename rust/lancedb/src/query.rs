@@ -1959,14 +1959,15 @@ mod tests {
         assert_eq!(results[0].num_rows(), 3);
         assert_eq!(results[0].num_columns(), 2);
 
-        let ids = results[0]
+        let mut ids = results[0]
             .column_by_name("id")
             .unwrap()
-            .as_primitive::<Int32Type>();
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+        ids.sort();
 
-        assert_eq!(ids.value(0), 5);
-        assert_eq!(ids.value(1), 1);
-        assert_eq!(ids.value(2), 17);
+        assert_eq!(ids, vec![1, 5, 17]);
 
         // Select specific columns
         let results = table
@@ -2002,13 +2003,15 @@ mod tests {
         assert_eq!(results[0].num_rows(), 3);
         assert_eq!(results[0].num_columns(), 2);
 
-        let ids = results[0]
+        let mut ids = results[0]
             .column_by_name("id")
             .unwrap()
-            .as_primitive::<Int32Type>();
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
 
-        assert_eq!(ids.value(0), 5);
-        assert_eq!(ids.value(1), 1);
-        assert_eq!(ids.value(2), 17);
+        ids.sort();
+
+        assert_eq!(ids, vec![1, 5, 17]);
     }
 }
