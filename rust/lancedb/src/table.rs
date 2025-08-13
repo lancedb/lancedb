@@ -2111,13 +2111,25 @@ impl NativeTable {
         replace: bool,
     ) -> Result<HashMap<String, String>> {
         let mut dataset = self.dataset.get_mut().await?;
-        Ok(dataset.update_config(values, replace).await?.clone())
+        let result = if replace {
+            dataset.update_config(values).replace().await?
+        } else {
+            dataset.update_config(values).await?
+        };
+        Ok(result)
     }
 
     /// Delete keys from the config
     pub async fn delete_config_keys(&self, delete_keys: &[&str]) -> Result<()> {
         let mut dataset = self.dataset.get_mut().await?;
-        dataset.delete_config_keys(delete_keys).await?;
+        let entries: Vec<UpdateMapEntry> = delete_keys
+            .iter()
+            .map(|key| UpdateMapEntry {
+                key: key.to_string(),
+                value: None,
+            })
+            .collect();
+        dataset.update_config(entries).await?;
         Ok(())
     }
 
@@ -2127,7 +2139,14 @@ impl NativeTable {
         upsert_values: impl IntoIterator<Item = (String, String)>,
     ) -> Result<()> {
         let mut dataset = self.dataset.get_mut().await?;
-        dataset.replace_schema_metadata(upsert_values).await?;
+        let entries: Vec<UpdateMapEntry> = upsert_values
+            .into_iter()
+            .map(|(key, value)| UpdateMapEntry {
+                key,
+                value: Some(value),
+            })
+            .collect();
+        dataset.update_schema_metadata(entries).replace().await?;
         Ok(())
     }
 
@@ -2849,7 +2868,12 @@ impl BaseTable for NativeTable {
         replace: bool,
     ) -> Result<HashMap<String, String>> {
         let mut dataset = self.dataset.get_mut().await?;
-        Ok(dataset.update_metadata(values, replace).await?)
+        let result = if replace {
+            dataset.update_metadata(values).replace().await?
+        } else {
+            dataset.update_metadata(values).await?
+        };
+        Ok(result)
     }
 
     async fn update_schema_metadata(
@@ -2858,7 +2882,12 @@ impl BaseTable for NativeTable {
         replace: bool,
     ) -> Result<HashMap<String, String>> {
         let mut dataset = self.dataset.get_mut().await?;
-        Ok(dataset.update_schema_metadata(values, replace).await?)
+        let result = if replace {
+            dataset.update_schema_metadata(values).replace().await?
+        } else {
+            dataset.update_schema_metadata(values).await?
+        };
+        Ok(result)
     }
 }
 
