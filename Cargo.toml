@@ -20,14 +20,14 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "path" = "../lance/rust/lance", "features" = ["dynamodb"] }
-lance-io = { "path" = "../lance/rust/lance-io" }
-lance-index = { "path" = "../lance/rust/lance-index" }
-lance-linalg = { "path" = "../lance/rust/lance-linalg" }
-lance-table = { "path" = "../lance/rust/lance-table" }
-lance-testing = { "path" = "../lance/rust/lance-testing" }
-lance-datafusion = { "path" = "../lance/rust/lance-datafusion" }
-lance-encoding = { "path" = "../lance/rust/lance-encoding" }
+lance = { "git" = "https://github.com/lancedb/lance.git", "rev" = "ec7412a0403ac4fa195176961e2098a1d71dce26", "features" = ["dynamodb"] }
+lance-io = { "git" = "https://github.com/lancedb/lance.git", "rev" = "ec7412a0403ac4fa195176961e2098a1d71dce26" }
+lance-index = { "git" = "https://github.com/lancedb/lance.git", "rev" = "ec7412a0403ac4fa195176961e2098a1d71dce26" }
+lance-linalg = { "git" = "https://github.com/lancedb/lance.git", "rev" = "ec7412a0403ac4fa195176961e2098a1d71dce26" }
+lance-table = { "git" = "https://github.com/lancedb/lance.git", "rev" = "ec7412a0403ac4fa195176961e2098a1d71dce26" }
+lance-testing = { "git" = "https://github.com/lancedb/lance.git", "rev" = "ec7412a0403ac4fa195176961e2098a1d71dce26" }
+lance-datafusion = { "git" = "https://github.com/lancedb/lance.git", "rev" = "ec7412a0403ac4fa195176961e2098a1d71dce26" }
+lance-encoding = { "git" = "https://github.com/lancedb/lance.git", "rev" = "ec7412a0403ac4fa195176961e2098a1d71dce26" }
 # Note that this one does not include pyarrow
 arrow = { version = "55.1", optional = false }
 arrow-array = "55.1"
