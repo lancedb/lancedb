@@ -700,5 +700,27 @@ export interface IndexOptions {
    */
   replace?: boolean;
 
+  /**
+   * Timeout in seconds to wait for index creation to complete.
+   *
+   * If not specified, the method will return immediately after starting the index creation.
+   */
   waitTimeoutSeconds?: number;
+
+  /**
+   * Optional custom name for the index.
+   *
+   * If not provided, a default name will be generated based on the column name.
+   */
+  name?: string;
+
+  /**
+   * Whether to train the index with existing data.
+   *
+   * If true (default), the index will be trained with existing data in the table.
+   * If false, the index will be created empty and populated as new data is added.
+   *
+   * Note: This option is only supported for scalar indices. Vector indices always train.
+   */
+  train?: boolean;
 }

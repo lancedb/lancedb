@@ -851,6 +851,40 @@ describe("When creating an index", () => {
     expect(stats).toBeUndefined();
   });
 
+  test("should support name and train parameters", async () => {
+    // Test with custom name
+    await tbl.createIndex("vec", {
+      config: Index.ivfPq({ numPartitions: 4 }),
+      name: "my_custom_vector_index",
+    });
+
+    const indices = await tbl.listIndices();
+    expect(indices).toHaveLength(1);
+    expect(indices[0].name).toBe("my_custom_vector_index");
+
+    // Test scalar index with train=false
+    await tbl.createIndex("id", {
+      config: Index.btree(),
+      name: "btree_empty",
+      train: false,
+    });
+
+    const allIndices = await tbl.listIndices();
+    expect(allIndices).toHaveLength(2);
+    expect(allIndices.some((idx) => idx.name === "btree_empty")).toBe(true);
+
+    // Test with both name and train=true (use tags column)
+    await tbl.createIndex("tags", {
+      config: Index.labelList(),
+      name: "tags_trained",
+      train: true,
+    });
+
+    const finalIndices = await tbl.listIndices();
+    expect(finalIndices).toHaveLength(3);
+    expect(finalIndices.some((idx) => idx.name === "tags_trained")).toBe(true);
+  });
+
   test("create ivf_flat with binary vectors", async () => {
     const db = await connect(tmpDir.name);
     const binarySchema = new Schema([

@@ -647,6 +647,8 @@ export class LocalTable extends Table {
       column,
       options?.replace,
       options?.waitTimeoutSeconds,
+      options?.name,
+      options?.train,
     );
   }
 

@@ -59,6 +59,10 @@ class Table:
         column: str,
         index: Union[IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS],
         replace: Optional[bool],
+        wait_timeout: Optional[object],
+        *,
+        name: Optional[str],
+        train: Optional[bool],
     ): ...
     async def list_versions(self) -> List[Dict[str, Any]]: ...
     async def version(self) -> int: ...
