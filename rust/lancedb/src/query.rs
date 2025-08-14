@@ -1328,7 +1328,7 @@ mod tests {
 
         while let Some(batch) = stream.next().await {
             // pre filter should return 10 rows
-            assert!(batch.expect("should be Ok").num_rows() == 10);
+            assert_eq!(batch.expect("should be Ok").num_rows(), 10);
         }
 
         let query = table
@@ -1343,7 +1343,7 @@ mod tests {
         // should only have one batch
         while let Some(batch) = stream.next().await {
             // pre filter should return 10 rows
-            assert!(batch.expect("should be Ok").num_rows() == 9);
+            assert_eq!(batch.expect("should be Ok").num_rows(), 10);
         }
     }
 
