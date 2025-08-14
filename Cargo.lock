@@ -2837,11 +2837,12 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "548190a42654ce848835b410ae33f43b4d55cb24548fd0a885a289a1d5a95019"
 dependencies = [
  "arrow-array",
- "rand 0.8.5",
+ "rand 0.9.1",
 ]
 
 [[package]]
@@ -3951,8 +3952,9 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94bafd9d9a9301c1eac48892ec8016d4d28204d4fc55f2ebebee9a7af465e152"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -3999,7 +4001,7 @@ dependencies = [
  "pin-project",
  "prost",
  "prost-types",
- "rand 0.8.5",
+ "rand 0.9.1",
  "roaring",
  "serde",
  "serde_json",
@@ -4014,8 +4016,9 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b97ebcd8edc2b534e8ded20c97c8928e275160794af91ed803a3d48d8d2a88d8"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4027,13 +4030,14 @@ dependencies = [
  "getrandom 0.2.16",
  "half",
  "num-traits",
- "rand 0.8.5",
+ "rand 0.9.1",
 ]
 
 [[package]]
 name = "lance-core"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce5c1849d07985d6a5011aca9de43c7a42ec4c996d66ef3f2d9896c227cc934c"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4055,7 +4059,7 @@ dependencies = [
  "object_store",
  "pin-project",
  "prost",
- "rand 0.8.5",
+ "rand 0.9.1",
  "roaring",
  "serde_json",
  "snafu",
@@ -4068,8 +4072,9 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d355c087bc66d85e36cfb428465f585b13971e1e13585dd2b6886a54d8a7d9a4"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4097,8 +4102,9 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "110d4dedfe02e9cff8f11cfb64a261755da7ee9131845197efeec8b659cc5513"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4107,15 +4113,16 @@ dependencies = [
  "chrono",
  "futures",
  "hex",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rand_xoshiro",
  "random_word 0.5.0",
 ]
 
 [[package]]
 name = "lance-encoding"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66750006299a2fb003091bc290eb1fe2a5933e35236d921934131f3e4629cd33"
 dependencies = [
  "arrayref",
  "arrow",
@@ -4143,7 +4150,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
- "rand 0.8.5",
+ "rand 0.9.1",
  "seq-macro",
  "snafu",
  "tokio",
@@ -4154,8 +4161,9 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c639062100610a075e01fd455173348b2fccea10cb0e89f70e38a3183c56022"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4189,8 +4197,9 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ae67a048a51fb525d1bfde86d1b39118462277e7e7a7cd0e7ba866312873532"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4228,7 +4237,7 @@ dependencies = [
  "object_store",
  "prost",
  "prost-build",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rayon",
  "roaring",
  "serde",
@@ -4243,8 +4252,9 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc86c7307e2d3d895cfefa503f986edcbdd208eb0aa89ba2c75724ba04bce843"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4273,7 +4283,7 @@ dependencies = [
  "path_abs",
  "pin-project",
  "prost",
- "rand 0.8.5",
+ "rand 0.9.1",
  "serde",
  "shellexpand",
  "snafu",
@@ -4284,8 +4294,9 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "769f910b6f2ad5eb4d1b3071c533b619351e61e0dfca74f13c98680a8e6476e9"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4300,7 +4311,7 @@ dependencies = [
  "lance-core",
  "log",
  "num-traits",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rayon",
  "tokio",
  "tracing",
@@ -4308,8 +4319,9 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffbeafa8a3e97b5b3a06f06d69b0cefe56e65c64a33f674c40c113b797328bd2"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4333,7 +4345,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rangemap",
  "roaring",
  "serde",
@@ -4347,14 +4359,15 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "0.32.2"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.32.2-beta.1#7f7db6afb0b55f2b4afddec0921d1c7c7e7eb04e"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "535a3bba37625cd515a7172a8d0d138f86822acef9fa9425ad1e050ef88bf92f"
 dependencies = [
  "arrow-array",
  "arrow-schema",
  "lance-arrow",
  "num-traits",
- "rand 0.8.5",
+ "rand 0.9.1",
 ]
 
 [[package]]
@@ -6236,11 +6249,11 @@ dependencies = [
 
 [[package]]
 name = "rand_xoshiro"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f97cdb2a36ed4183de61b2f824cc45c9f1037f28afe0a322e9fff4c108b5aaa"
+checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
 dependencies = [
- "rand_core 0.6.4",
+ "rand_core 0.9.3",
 ]
 
 [[package]]
