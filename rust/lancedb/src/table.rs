@@ -1725,7 +1725,7 @@ impl NativeTable {
                     );
                     Ok(Box::new(lance_idx_params))
                 } else if supported_btree_data_type(field.data_type()) {
-                    Ok(Box::new(ScalarIndexParams::from(ScalarIndexType::BTree)))
+                    Ok(Box::new(ScalarIndexParams::new(ScalarIndexType::BTree)))
                 } else {
                     return Err(Error::InvalidInput {
                         message: format!(
@@ -1738,17 +1738,15 @@ impl NativeTable {
             }
             Index::BTree(_) => {
                 Self::validate_index_type(field, "BTree", supported_btree_data_type)?;
-                Ok(Box::new(ScalarIndexParams::from(ScalarIndexType::BTree)))
+                Ok(Box::new(ScalarIndexParams::new(ScalarIndexType::BTree)))
             }
             Index::Bitmap(_) => {
                 Self::validate_index_type(field, "Bitmap", supported_bitmap_data_type)?;
-                Ok(Box::new(ScalarIndexParams::from(ScalarIndexType::Bitmap)))
+                Ok(Box::new(ScalarIndexParams::new(ScalarIndexType::Bitmap)))
             }
             Index::LabelList(_) => {
                 Self::validate_index_type(field, "LabelList", supported_label_list_data_type)?;
-                Ok(Box::new(ScalarIndexParams::from(
-                    ScalarIndexType::LabelList,
-                )))
+                Ok(Box::new(ScalarIndexParams::new(ScalarIndexType::LabelList)))
             }
             Index::FTS(fts_opts) => {
                 Self::validate_index_type(field, "FTS", supported_fts_data_type)?;
