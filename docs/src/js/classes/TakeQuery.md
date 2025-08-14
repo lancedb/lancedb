@@ -2,31 +2,27 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / Query
+[@lancedb/lancedb](../globals.md) / TakeQuery
 
-# Class: Query
+# Class: TakeQuery
 
-A builder for LanceDB queries.
-
-## See
-
-[Table#query](Table.md#query), [Table#search](Table.md#search)
+A query that returns a subset of the rows in the table.
 
 ## Extends
 
-- `StandardQueryBase`&lt;`NativeQuery`&gt;
+- [`QueryBase`](QueryBase.md)&lt;`NativeTakeQuery`&gt;
 
 ## Properties
 
 ### inner
 
 ```ts
-protected inner: Query | Promise<Query>;
+protected inner: TakeQuery | Promise<TakeQuery>;
 ```
 
 #### Inherited from
 
-`StandardQueryBase.inner`
+[`QueryBase`](QueryBase.md).[`inner`](QueryBase.md#inner)
 
 ## Methods
 
@@ -73,7 +69,7 @@ AnalyzeExec verbose=true, metrics=[]
 
 #### Inherited from
 
-`StandardQueryBase.analyzePlan`
+[`QueryBase`](QueryBase.md).[`analyzePlan`](QueryBase.md#analyzeplan)
 
 ***
 
@@ -107,7 +103,7 @@ single query)
 
 #### Inherited from
 
-`StandardQueryBase.execute`
+[`QueryBase`](QueryBase.md).[`execute`](QueryBase.md#execute)
 
 ***
 
@@ -143,203 +139,7 @@ const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
 
 #### Inherited from
 
-`StandardQueryBase.explainPlan`
-
-***
-
-### fastSearch()
-
-```ts
-fastSearch(): this
-```
-
-Skip searching un-indexed data. This can make search faster, but will miss
-any data that is not yet indexed.
-
-Use [Table#optimize](Table.md#optimize) to index all un-indexed data.
-
-#### Returns
-
-`this`
-
-#### Inherited from
-
-`StandardQueryBase.fastSearch`
-
-***
-
-### ~~filter()~~
-
-```ts
-filter(predicate): this
-```
-
-A filter statement to be applied to this query.
-
-#### Parameters
-
-* **predicate**: `string`
-
-#### Returns
-
-`this`
-
-#### See
-
-where
-
-#### Deprecated
-
-Use `where` instead
-
-#### Inherited from
-
-`StandardQueryBase.filter`
-
-***
-
-### fullTextSearch()
-
-```ts
-fullTextSearch(query, options?): this
-```
-
-#### Parameters
-
-* **query**: `string` \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
-
-* **options?**: `Partial`&lt;[`FullTextSearchOptions`](../interfaces/FullTextSearchOptions.md)&gt;
-
-#### Returns
-
-`this`
-
-#### Inherited from
-
-`StandardQueryBase.fullTextSearch`
-
-***
-
-### limit()
-
-```ts
-limit(limit): this
-```
-
-Set the maximum number of results to return.
-
-By default, a plain search has no limit.  If this method is not
-called then every valid row from the table will be returned.
-
-#### Parameters
-
-* **limit**: `number`
-
-#### Returns
-
-`this`
-
-#### Inherited from
-
-`StandardQueryBase.limit`
-
-***
-
-### nearestTo()
-
-```ts
-nearestTo(vector): VectorQuery
-```
-
-Find the nearest vectors to the given query vector.
-
-This converts the query from a plain query to a vector query.
-
-This method will attempt to convert the input to the query vector
-expected by the embedding model.  If the input cannot be converted
-then an error will be thrown.
-
-By default, there is no embedding model, and the input should be
-an array-like object of numbers (something that can be used as input
-to Float32Array.from)
-
-If there is only one vector column (a column whose data type is a
-fixed size list of floats) then the column does not need to be specified.
-If there is more than one vector column you must use
-
-#### Parameters
-
-* **vector**: [`IntoVector`](../type-aliases/IntoVector.md)
-
-#### Returns
-
-[`VectorQuery`](VectorQuery.md)
-
-#### See
-
- - [VectorQuery#column](VectorQuery.md#column)  to specify which column you would like
-to compare with.
-
-If no index has been created on the vector column then a vector query
-will perform a distance comparison between the query vector and every
-vector in the database and then sort the results.  This is sometimes
-called a "flat search"
-
-For small databases, with a few hundred thousand vectors or less, this can
-be reasonably fast.  In larger databases you should create a vector index
-on the column.  If there is a vector index then an "approximate" nearest
-neighbor search (frequently called an ANN search) will be performed.  This
-search is much faster, but the results will be approximate.
-
-The query can be further parameterized using the returned builder.  There
-are various ANN search parameters that will let you fine tune your recall
-accuracy vs search latency.
-
-Vector searches always have a `limit`.  If `limit` has not been called then
-a default `limit` of 10 will be used.
- - [Query#limit](Query.md#limit)
-
-***
-
-### nearestToText()
-
-```ts
-nearestToText(query, columns?): Query
-```
-
-#### Parameters
-
-* **query**: `string` \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
-
-* **columns?**: `string`[]
-
-#### Returns
-
-[`Query`](Query.md)
-
-***
-
-### offset()
-
-```ts
-offset(offset): this
-```
-
-Set the number of rows to skip before returning results.
-
-This is useful for pagination.
-
-#### Parameters
-
-* **offset**: `number`
-
-#### Returns
-
-`this`
-
-#### Inherited from
-
-`StandardQueryBase.offset`
+[`QueryBase`](QueryBase.md).[`explainPlan`](QueryBase.md#explainplan)
 
 ***
 
@@ -392,7 +192,7 @@ object insertion order is easy to get wrong and `Map` is more foolproof.
 
 #### Inherited from
 
-`StandardQueryBase.select`
+[`QueryBase`](QueryBase.md).[`select`](QueryBase.md#select)
 
 ***
 
@@ -414,7 +214,7 @@ Collect the results as an array of objects.
 
 #### Inherited from
 
-`StandardQueryBase.toArray`
+[`QueryBase`](QueryBase.md).[`toArray`](QueryBase.md#toarray)
 
 ***
 
@@ -440,42 +240,7 @@ ArrowTable.
 
 #### Inherited from
 
-`StandardQueryBase.toArrow`
-
-***
-
-### where()
-
-```ts
-where(predicate): this
-```
-
-A filter statement to be applied to this query.
-
-The filter should be supplied as an SQL query string.  For example:
-
-#### Parameters
-
-* **predicate**: `string`
-
-#### Returns
-
-`this`
-
-#### Example
-
-```ts
-x > 10
-y > 0 AND y < 100
-x > 5 OR y = 'test'
-
-Filtering performance can often be improved by creating a scalar index
-on the filter column(s).
-```
-
-#### Inherited from
-
-`StandardQueryBase.where`
+[`QueryBase`](QueryBase.md).[`toArrow`](QueryBase.md#toarrow)
 
 ***
 
@@ -497,4 +262,4 @@ order to perform hybrid search.
 
 #### Inherited from
 
-`StandardQueryBase.withRowId`
+[`QueryBase`](QueryBase.md).[`withRowId`](QueryBase.md#withrowid)
