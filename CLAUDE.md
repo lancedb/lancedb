@@ -11,8 +11,6 @@ Project layout:
 * `nodejs`: The Typescript bindings, using napi-rs
 * `java`: The Java bindings
 
-(`rust/ffi` and `node/` are for a deprecated package. You can ignore them.)
-
 Common commands:
 
 * Check for compiler errors: `cargo check --features remote --tests --examples`
