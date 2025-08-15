@@ -38,7 +38,8 @@ Depending on the use case and dataset, optimal compaction will have different re
 - Keep the number of fragments under 100, which is suitable for most use cases (for *really* large datasets of >500M rows, more fragments might be needed)
 
 !!! note
-LanceDB Cloud/Enterprise supports [auto-compaction](https://docs.lancedb.com/enterprise/architecture/architecture#write-path) which automatically optimizes fragments in the background as data changes.
+
+    LanceDB Cloud/Enterprise supports [auto-compaction](https://docs.lancedb.com/enterprise/architecture/architecture#write-path) which automatically optimizes fragments in the background as data changes.
 
 ## Deletion
 
