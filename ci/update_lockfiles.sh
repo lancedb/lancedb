@@ -15,9 +15,6 @@ cargo metadata --quiet > /dev/null
 pushd nodejs || exit 1
 npm install --package-lock-only --silent
 popd
-pushd node || exit 1
-npm install --package-lock-only --silent
-popd
 
 if git diff --quiet --exit-code; then
   echo "No lockfile changes to commit; skipping amend."
