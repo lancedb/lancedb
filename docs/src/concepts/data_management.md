@@ -53,7 +53,9 @@ Reindexing is the process of updating the index to account for new data, keeping
 
 Both LanceDB OSS and Cloud support reindexing, but the process (at least for now) is different for each, depending on the type of index.
 
-When a reindex job is triggered in the background, the entire data is reindexed, but in the interim as new queries come in, LanceDB will combine results from the existing index with exhaustive kNN search on the new data. This is done to ensure that you're still searching on all your data, but it does come at a performance cost. The more data that you add without reindexing, the impact on latency (due to exhaustive search) can be noticeable. This can be disabled by setting the [fast_search](https://lancedb.github.io/lancedb/python/python/#lancedb.query.AsyncQuery.fast_search) parameter which will instruct the query to ignore un-indexed data.
+In LanceDB OSS, re-indexing happens synchronously when you call either `create_index` or `optimize` on a table. In LanceDB Cloud, re-indexing happens asynchronously as you add and update data in your table.
+
+By default, queries will search new data even if it has yet to be indexed. This is done using brute-force methods, such as kNN for vector search, and combined with the fast index search results. This is done to ensure that you're always searching over all your data, but it does come at a performance cost. Without reindexing, adding more data to a table will make queries slower and more expensive. This behavior can be disabled by setting the [fast_search](https://lancedb.github.io/lancedb/python/python/#lancedb.query.AsyncQuery.fast_search) parameter which will instruct the query to ignore un-indexed data.
 
 * LanceDB Cloud/Enterprise supports [automatic incremental reindexing](https://docs.lancedb.com/core#vector-index) for vector, scalar, and FTS indices, where a background process will trigger a new index build for you automatically when new data is added or modified in a dataset
 * LanceDB OSS requires you to manually trigger a reindex operation -- we are working on adding incremental reindexing to LanceDB OSS as well
