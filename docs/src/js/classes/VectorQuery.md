@@ -16,7 +16,7 @@ This builder can be reused to execute the query many times.
 
 ## Extends
 
-- [`QueryBase`](QueryBase.md)&lt;`NativeVectorQuery`&gt;
+- `StandardQueryBase`&lt;`NativeVectorQuery`&gt;
 
 ## Properties
 
@@ -28,7 +28,7 @@ protected inner: VectorQuery | Promise<VectorQuery>;
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`inner`](QueryBase.md#inner)
+`StandardQueryBase.inner`
 
 ## Methods
 
@@ -91,7 +91,7 @@ AnalyzeExec verbose=true, metrics=[]
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`analyzePlan`](QueryBase.md#analyzeplan)
+`StandardQueryBase.analyzePlan`
 
 ***
 
@@ -248,7 +248,7 @@ single query)
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`execute`](QueryBase.md#execute)
+`StandardQueryBase.execute`
 
 ***
 
@@ -284,7 +284,7 @@ const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`explainPlan`](QueryBase.md#explainplan)
+`StandardQueryBase.explainPlan`
 
 ***
 
@@ -305,7 +305,7 @@ Use [Table#optimize](Table.md#optimize) to index all un-indexed data.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`fastSearch`](QueryBase.md#fastsearch)
+`StandardQueryBase.fastSearch`
 
 ***
 
@@ -335,7 +335,7 @@ Use `where` instead
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`filter`](QueryBase.md#filter)
+`StandardQueryBase.filter`
 
 ***
 
@@ -357,7 +357,7 @@ fullTextSearch(query, options?): this
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`fullTextSearch`](QueryBase.md#fulltextsearch)
+`StandardQueryBase.fullTextSearch`
 
 ***
 
@@ -382,7 +382,7 @@ called then every valid row from the table will be returned.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`limit`](QueryBase.md#limit)
+`StandardQueryBase.limit`
 
 ***
 
@@ -480,6 +480,10 @@ the minimum and maximum to the same value.
 offset(offset): this
 ```
 
+Set the number of rows to skip before returning results.
+
+This is useful for pagination.
+
 #### Parameters
 
 * **offset**: `number`
@@ -490,7 +494,7 @@ offset(offset): this
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`offset`](QueryBase.md#offset)
+`StandardQueryBase.offset`
 
 ***
 
@@ -637,7 +641,7 @@ object insertion order is easy to get wrong and `Map` is more foolproof.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`select`](QueryBase.md#select)
+`StandardQueryBase.select`
 
 ***
 
@@ -659,7 +663,7 @@ Collect the results as an array of objects.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`toArray`](QueryBase.md#toarray)
+`StandardQueryBase.toArray`
 
 ***
 
@@ -685,7 +689,7 @@ ArrowTable.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`toArrow`](QueryBase.md#toarrow)
+`StandardQueryBase.toArrow`
 
 ***
 
@@ -720,7 +724,7 @@ on the filter column(s).
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`where`](QueryBase.md#where)
+`StandardQueryBase.where`
 
 ***
 
@@ -742,4 +746,4 @@ order to perform hybrid search.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`withRowId`](QueryBase.md#withrowid)
+`StandardQueryBase.withRowId`

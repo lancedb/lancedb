@@ -33,6 +33,7 @@
 - [Table](classes/Table.md)
 - [TagContents](classes/TagContents.md)
 - [Tags](classes/Tags.md)
+- [TakeQuery](classes/TakeQuery.md)
 - [VectorColumnOptions](classes/VectorColumnOptions.md)
 - [VectorQuery](classes/VectorQuery.md)
 

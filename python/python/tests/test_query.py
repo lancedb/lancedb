@@ -1327,6 +1327,34 @@ def test_query_timeout(tmp_path):
         )
 
 
+def test_take_queries(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pa.table(
+        {
+            "idx": range(100),
+        }
+    )
+    table = db.create_table("test", data)
+
+    # Take by offset
+    assert list(
+        sorted(table.take_offsets([5, 2, 17]).to_pandas()["idx"].to_list())
+    ) == [
+        2,
+        5,
+        17,
+    ]
+
+    # Take by row id
+    assert list(
+        sorted(table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list())
+    ) == [
+        2,
+        5,
+        17,
+    ]
+
+
 @pytest.mark.asyncio
 async def test_query_timeout_async(tmp_path):
     db = await lancedb.connect_async(tmp_path)
