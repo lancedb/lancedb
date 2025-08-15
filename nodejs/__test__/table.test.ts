@@ -563,7 +563,7 @@ describe("When creating an index", () => {
 
     // test offset
     rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
-    expect(rst.numRows).toBe(1);
+    expect(rst.numRows).toBe(2);
 
     // test nprobes
     rst = await tbl.query().nearestTo(queryVec).limit(2).nprobes(50).toArrow();
@@ -702,7 +702,7 @@ describe("When creating an index", () => {
 
     // test offset
     rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
-    expect(rst.numRows).toBe(1);
+    expect(rst.numRows).toBe(2);
 
     // test ef
     rst = await tbl.query().limit(2).nearestTo(queryVec).ef(100).toArrow();

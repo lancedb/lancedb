@@ -401,6 +401,7 @@ pub enum Filter {
 }
 
 /// A query that can be used to search a LanceDB table
+#[derive(Debug, Clone)]
 pub enum AnyQuery {
     Query(QueryRequest),
     VectorQuery(VectorQueryRequest),
@@ -2387,20 +2388,13 @@ impl BaseTable for NativeTable {
 
             let (_, element_type) = lance::index::vector::utils::get_vector_type(schema, &column)?;
             let is_binary = matches!(element_type, DataType::UInt8);
+            let top_k = query.base.limit.unwrap_or(DEFAULT_TOP_K) + query.base.offset.unwrap_or(0);
             if is_binary {
                 let query_vector = arrow::compute::cast(&query_vector, &DataType::UInt8)?;
                 let query_vector = query_vector.as_primitive::<UInt8Type>();
-                scanner.nearest(
-                    &column,
-                    query_vector,
-                    query.base.limit.unwrap_or(DEFAULT_TOP_K),
-                )?;
+                scanner.nearest(&column, query_vector, top_k)?;
             } else {
-                scanner.nearest(
-                    &column,
-                    query_vector.as_ref(),
-                    query.base.limit.unwrap_or(DEFAULT_TOP_K),
-                )?;
+                scanner.nearest(&column, query_vector.as_ref(), top_k)?;
             }
             scanner.minimum_nprobes(query.minimum_nprobes);
             if let Some(maximum_nprobes) = query.maximum_nprobes {
