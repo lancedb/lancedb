@@ -54,6 +54,52 @@ def extract_features(line: str) -> list:
     return []
 
 
+def extract_default_features(line: str) -> bool:
+    """
+    Checks if default-features = false is present in a line in Cargo.toml.
+    Example: 'lance = { "version" = "=0.29.0", default-features = false, "features" = ["dynamodb"] }'
+    Returns: True if default-features = false is present, False otherwise
+    """
+    import re
+
+    match = re.search(r'default-features\s*=\s*false', line)
+    return match is not None
+
+
+def dict_to_toml_line(package_name: str, config: dict) -> str:
+    """
+    Converts a configuration dictionary to a TOML dependency line.
+    Dictionary insertion order is preserved (Python 3.7+), so the caller
+    controls the order of fields in the output.
+
+    Args:
+        package_name: The name of the package (e.g., "lance", "lance-io")
+        config: Dictionary with keys like "version", "path", "git", "tag", "features", "default-features"
+                The order of keys in this dict determines the order in the output.
+
+    Returns:
+        A properly formatted TOML line with a trailing newline
+    """
+    # If only version is specified, use simple format
+    if len(config) == 1 and "version" in config:
+        return f'{package_name} = "{config["version"]}"\n'
+
+    # Otherwise, use inline table format
+    parts = []
+    for key, value in config.items():
+        if key == "default-features" and not value:
+            parts.append("default-features = false")
+        elif key == "features":
+            parts.append(f'"features" = {json.dumps(value)}')
+        elif isinstance(value, str):
+            parts.append(f'"{key}" = "{value}"')
+        else:
+            # This shouldn't happen with our current usage
+            parts.append(f'"{key}" = {json.dumps(value)}')
+
+    return f'{package_name} = {{ {", ".join(parts)} }}\n'
+
+
 def update_cargo_toml(line_updater):
     """
     Updates the Cargo.toml file by applying the line_updater function to each line.
@@ -67,20 +113,27 @@ def update_cargo_toml(line_updater):
     is_parsing_lance_line = False
     for line in lines:
         if line.startswith("lance"):
-            # Update the line using the provided function
-            if line.strip().endswith("}"):
+            # Check if this is a single-line or multi-line entry
+            # Single-line entries either:
+            # 1. End with } (complete inline table)
+            # 2. End with " (simple version string)
+            # Multi-line entries start with { but don't end with }
+            if line.strip().endswith("}") or line.strip().endswith('"'):
+                # Single-line entry - process immediately
                 new_lines.append(line_updater(line))
-            else:
+            elif "{" in line and not line.strip().endswith("}"):
+                # Multi-line entry - start accumulating
                 lance_line = line
                 is_parsing_lance_line = True
+            else:
+                # Single-line entry without quotes or braces (shouldn't happen but handle it)
+                new_lines.append(line_updater(line))
         elif is_parsing_lance_line:
             lance_line += line
             if line.strip().endswith("}"):
                 new_lines.append(line_updater(lance_line))
                 lance_line = ""
                 is_parsing_lance_line = False
-            else:
-                print("doesn't end with }:", line)
         else:
             # Keep the line unchanged
             new_lines.append(line)
@@ -92,18 +145,25 @@ def update_cargo_toml(line_updater):
 def set_stable_version(version: str):
     """
     Sets lines to
-    lance = { "version" = "=0.29.0", "features" = ["dynamodb"] }
-    lance-io = "=0.29.0"
+    lance = { "version" = "=0.29.0", default-features = false, "features" = ["dynamodb"] }
+    lance-io = { "version" = "=0.29.0", default-features = false }
     ...
     """
 
     def line_updater(line: str) -> str:
         package_name = line.split("=", maxsplit=1)[0].strip()
+
+        # Build config in desired order: version, default-features, features
+        config = {"version": f"={version}"}
+
+        if extract_default_features(line):
+            config["default-features"] = False
+
         features = extract_features(line)
         if features:
-            return f'{package_name} = {{ "version" = "={version}", "features" = {json.dumps(features)} }}\n'
-        else:
-            return f'{package_name} = "={version}"\n'
+            config["features"] = features
+
+        return dict_to_toml_line(package_name, config)
 
     update_cargo_toml(line_updater)
 
@@ -111,19 +171,29 @@ def set_stable_version(version: str):
 def set_preview_version(version: str):
     """
     Sets lines to
-    lance = { "version" = "=0.29.0", "features" = ["dynamodb"], tag = "v0.29.0-beta.2", git="https://github.com/lancedb/lance.git" }
-    lance-io = { version = "=0.29.0", tag = "v0.29.0-beta.2", git="https://github.com/lancedb/lance.git" }
+    lance = { "version" = "=0.29.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
+    lance-io = { "version" = "=0.29.0", default-features = false, "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
     ...
     """
 
     def line_updater(line: str) -> str:
         package_name = line.split("=", maxsplit=1)[0].strip()
-        features = extract_features(line)
         base_version = version.split("-")[0]  # Get the base version without beta suffix
+
+        # Build config in desired order: version, default-features, features, tag, git
+        config = {"version": f"={base_version}"}
+
+        if extract_default_features(line):
+            config["default-features"] = False
+
+        features = extract_features(line)
         if features:
-            return f'{package_name} = {{ "version" = "={base_version}", "features" = {json.dumps(features)}, "tag" = "v{version}", "git" = "https://github.com/lancedb/lance.git" }}\n'
-        else:
-            return f'{package_name} = {{ "version" = "={base_version}", "tag" = "v{version}", "git" = "https://github.com/lancedb/lance.git" }}\n'
+            config["features"] = features
+
+        config["tag"] = f"v{version}"
+        config["git"] = "https://github.com/lancedb/lance.git"
+
+        return dict_to_toml_line(package_name, config)
 
     update_cargo_toml(line_updater)
 
@@ -131,18 +201,25 @@ def set_preview_version(version: str):
 def set_local_version():
     """
     Sets lines to
-    lance = { path = "../lance/rust/lance", features = ["dynamodb"] }
-    lance-io = { path = "../lance/rust/lance-io" }
+    lance = { "path" = "../lance/rust/lance", default-features = false, "features" = ["dynamodb"] }
+    lance-io = { "path" = "../lance/rust/lance-io", default-features = false }
     ...
     """
 
     def line_updater(line: str) -> str:
         package_name = line.split("=", maxsplit=1)[0].strip()
+
+        # Build config in desired order: path, default-features, features
+        config = {"path": f"../lance/rust/{package_name}"}
+
+        if extract_default_features(line):
+            config["default-features"] = False
+
         features = extract_features(line)
         if features:
-            return f'{package_name} = {{ "path" = "../lance/rust/{package_name}", "features" = {json.dumps(features)} }}\n'
-        else:
-            return f'{package_name} = {{ "path" = "../lance/rust/{package_name}" }}\n'
+            config["features"] = features
+
+        return dict_to_toml_line(package_name, config)
 
     update_cargo_toml(line_updater)
 
