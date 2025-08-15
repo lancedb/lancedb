@@ -341,13 +341,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None))]
+    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None))]
     pub fn create_index<'a>(
         self_: PyRef<'a, Self>,
         column: String,
         index: Option<Bound<'_, PyAny>>,
         replace: Option<bool>,
         wait_timeout: Option<Bound<'_, PyAny>>,
+        name: Option<String>,
+        train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
         let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
@@ -356,6 +358,12 @@ impl Table {
             .create_index_with_timeout(&[column], index, timeout);
         if let Some(replace) = replace {
             op = op.replace(replace);
+        }
+        if let Some(name) = name {
+            op = op.name(name);
+        }
+        if let Some(train) = train {
+            op = op.train(train);
         }
 
         future_into_py(self_.py(), async move {

@@ -689,6 +689,8 @@ class Table(ABC):
         sample_rate: int = 256,
         m: int = 20,
         ef_construction: int = 300,
+        name: Optional[str] = None,
+        train: bool = True,
     ):
         """Create an index on the table.
 
@@ -721,6 +723,11 @@ class Table(ABC):
             Only 4 and 8 are supported.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
+        name: str, optional
+            The name of the index. If not provided, a default name will be generated.
+        train: bool, default True
+            Whether to train the index with existing data. Vector indices always train
+            with existing data.
         """
         raise NotImplementedError
 
@@ -1929,6 +1936,9 @@ class LanceTable(Table):
         sample_rate: int = 256,
         m: int = 20,
         ef_construction: int = 300,
+        *,
+        name: Optional[str] = None,
+        train: bool = True,
     ):
         """Create an index on the table."""
         if accelerator is not None:
@@ -1992,6 +2002,8 @@ class LanceTable(Table):
                 vector_column_name,
                 replace=replace,
                 config=config,
+                name=name,
+                train=train,
             )
         )
 
@@ -3251,6 +3263,8 @@ class AsyncTable:
             Union[IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
         ] = None,
         wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
+        train: bool = True,
     ):
         """Create an index to speed up queries
 
@@ -3277,6 +3291,11 @@ class AsyncTable:
             creating an index object.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
+        name: str, optional
+            The name of the index. If not provided, a default name will be generated.
+        train: bool, default True
+            Whether to train the index with existing data. Vector indices always train
+            with existing data.
         """
         if config is not None:
             if not isinstance(
@@ -3288,7 +3307,12 @@ class AsyncTable:
                 )
         try:
             await self._inner.create_index(
-                column, index=config, replace=replace, wait_timeout=wait_timeout
+                column,
+                index=config,
+                replace=replace,
+                wait_timeout=wait_timeout,
+                name=name,
+                train=train,
             )
         except ValueError as e:
             if "not support the requested language" in str(e):

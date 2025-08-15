@@ -114,6 +114,8 @@ impl Table {
         column: String,
         replace: Option<bool>,
         wait_timeout_s: Option<i64>,
+        name: Option<String>,
+        train: Option<bool>,
     ) -> napi::Result<()> {
         let lancedb_index = if let Some(index) = index {
             index.consume()?
@@ -127,6 +129,12 @@ impl Table {
         if let Some(timeout) = wait_timeout_s {
             builder =
                 builder.wait_timeout(std::time::Duration::from_secs(timeout.try_into().unwrap()));
+        }
+        if let Some(name) = name {
+            builder = builder.name(name);
+        }
+        if let Some(train) = train {
+            builder = builder.train(train);
         }
         builder.execute().await.default_error()
     }

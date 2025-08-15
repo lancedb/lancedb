@@ -999,6 +999,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             "column": column
         });
 
+        // Add name parameter if provided (for backwards compatibility, only include if Some)
+        if let Some(ref name) = index.name {
+            body["name"] = serde_json::Value::String(name.clone());
+        }
+
+        // Warn if train=false is specified since it's not meaningful
+        if !index.train {
+            log::warn!(
+                "train=false has no effect remote tables. The index will be created empty and automatically populated in the background."
+            );
+        }
+
         match index.index {
             // TODO: Should we pass the actual index parameters? SaaS does not
             // yet support them.
@@ -1084,8 +1096,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_table_response(&request_id, response).await?;
 
         if let Some(wait_timeout) = index.wait_timeout {
-            let name = format!("{}_idx", column);
-            self.wait_for_index(&[&name], wait_timeout).await?;
+            let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
+            self.wait_for_index(&[&index_name], wait_timeout).await?;
         }
 
         Ok(())

@@ -194,6 +194,8 @@ class RemoteTable(Table):
         wait_timeout: Optional[timedelta] = None,
         *,
         num_bits: int = 8,
+        name: Optional[str] = None,
+        train: bool = True,
     ):
         """Create an index on the table.
         Currently, the only parameters that matter are
@@ -270,7 +272,11 @@ class RemoteTable(Table):
 
         LOOP.run(
             self._table.create_index(
-                vector_column_name, config=config, wait_timeout=wait_timeout
+                vector_column_name,
+                config=config,
+                wait_timeout=wait_timeout,
+                name=name,
+                train=train,
             )
         )
 
