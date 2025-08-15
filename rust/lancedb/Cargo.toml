@@ -125,5 +125,14 @@ name = "bedrock"
 required-features = ["bedrock"]
 
 [[example]]
+name = "simple"
+
+[[example]]
+name = "full_text_search"
+
+[[example]]
+name = "ivf_pq"
+
+[[example]]
 name = "hybrid_search"
 required-features = ["sentence-transformers"]
