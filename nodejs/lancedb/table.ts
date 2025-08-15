@@ -35,6 +35,7 @@ import {
 import {
   FullTextQuery,
   Query,
+  TakeQuery,
   VectorQuery,
   instanceOfFullTextQuery,
 } from "./query";
@@ -335,6 +336,20 @@ export abstract class Table {
    * @returns {Query} A builder that can be used to parameterize the query
    */
   abstract query(): Query;
+
+  /**
+   * Create a query that returns a subset of the rows in the table.
+   * @param offsets The offsets of the rows to return.
+   * @returns A builder that can be used to parameterize the query.
+   */
+  abstract takeOffsets(offsets: number[]): TakeQuery;
+
+  /**
+   * Create a query that returns a subset of the rows in the table.
+   * @param rowIds The row ids of the rows to return.
+   * @returns A builder that can be used to parameterize the query.
+   */
+  abstract takeRowIds(rowIds: number[]): TakeQuery;
 
   /**
    * Create a search query to find the nearest neighbors
@@ -663,6 +678,14 @@ export class LocalTable extends Table {
     timeoutSeconds: number,
   ): Promise<void> {
     await this.inner.waitForIndex(indexNames, timeoutSeconds);
+  }
+
+  takeOffsets(offsets: number[]): TakeQuery {
+    return new TakeQuery(this.inner.takeOffsets(offsets));
+  }
+
+  takeRowIds(rowIds: number[]): TakeQuery {
+    return new TakeQuery(this.inner.takeRowIds(rowIds));
   }
 
   query(): Query {

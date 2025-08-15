@@ -9,7 +9,8 @@
 A session for managing caches and object stores across LanceDB operations.
 
 Sessions allow you to configure cache sizes for index and metadata caches,
-which can significantly impact performance for large datasets.
+which can significantly impact memory use and performance. They can
+also be re-used across multiple connections to share the same cache state.
 
 ## Constructors
 
@@ -24,8 +25,11 @@ Create a new session with custom cache sizes.
 # Parameters
 
 - `index_cache_size_bytes`: The size of the index cache in bytes.
+  Index data is stored in memory in this cache to speed up queries.
   Defaults to 6GB if not specified.
 - `metadata_cache_size_bytes`: The size of the metadata cache in bytes.
+  The metadata cache stores file metadata and schema information in memory.
+  This cache improves scan and write performance.
   Defaults to 1GB if not specified.
 
 #### Parameters

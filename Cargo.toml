@@ -1,10 +1,5 @@
 [workspace]
-members = [
-    "rust/lancedb",
-    "nodejs",
-    "python",
-    "java/core/lancedb-jni",
-]
+members = ["rust/lancedb", "nodejs", "python", "java/core/lancedb-jni"]
 # Python package needs to be built by maturin.
 exclude = ["python"]
 resolver = "2"
@@ -20,16 +15,14 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.32.1", "features" = [
-    "dynamodb",
-], "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-io = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-index = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-linalg = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-table = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-testing = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-datafusion = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-encoding = { "version" = "=0.32.1", "tag" = "v0.32.1-beta.2", "git" = "https://github.com/lancedb/lance.git" }
+lance = { "version" = "=0.33.0", "features" = ["dynamodb"] }
+lance-io = "=0.33.0"
+lance-index = "=0.33.0"
+lance-linalg = "=0.33.0"
+lance-table = "=0.33.0"
+lance-testing = "=0.33.0"
+lance-datafusion = "=0.33.0"
+lance-encoding = "=0.33.0"
 # Note that this one does not include pyarrow
 arrow = { version = "55.1", optional = false }
 arrow-array = "55.1"
@@ -62,12 +55,11 @@ rand = "0.9"
 regex = "1.10"
 lazy_static = "1"
 semver = "1.0.25"
+crunchy = "0.2.4"
 # Temporary pins to work around downstream issues
 # https://github.com/apache/arrow-rs/commit/2fddf85afcd20110ce783ed5b4cdeb82293da30b
 chrono = "=0.4.41"
 # https://github.com/RustCrypto/formats/issues/1684
 base64ct = "=1.6.0"
-# Workaround for: https://github.com/eira-fransham/crunchy/issues/13
-crunchy = "=0.2.2"
 # Workaround for: https://github.com/Lokathor/bytemuck/issues/306
 bytemuck_derive = ">=1.8.1, <1.9.0"

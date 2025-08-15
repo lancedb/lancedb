@@ -290,7 +290,7 @@ def test_add_struct(mem_db: DBConnection):
         }
     )
     data = [{"s_list": [{"b": 1, "a": 2}, {"b": 4}]}]
-    table = mem_db.create_table("test", schema=schema)
+    table = mem_db.create_table("test2", schema=schema)
     table.add(data)
 
 

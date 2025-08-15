@@ -13,7 +13,7 @@ The following concepts are important to keep in mind:
 - Data is versioned, with each insert operation creating a new version of the dataset and an update to the manifest that tracks versions via metadata
 
 !!! note
-    1. First, each version contains metadata and just the new/updated data in your transaction. So if you have 100 versions, they aren't 100 duplicates of the same data. However, they do have 100x the metadata overhead of a single version, which can result in slower queries.  
+    1. First, each version contains metadata and just the new/updated data in your transaction. So if you have 100 versions, they aren't 100 duplicates of the same data. However, they do have 100x the metadata overhead of a single version, which can result in slower queries.
     2. Second, these versions exist to keep LanceDB scalable and consistent. We do not immediately blow away old versions when creating new ones because other clients might be in the middle of querying the old version. It's important to retain older versions for as long as they might be queried.
 
 ## What are fragments?
@@ -37,6 +37,10 @@ Depending on the use case and dataset, optimal compaction will have different re
 - It’s always better to use *batch* inserts rather than adding 1 row at a time (to avoid too small fragments). If single-row inserts are unavoidable, run compaction on a regular basis to merge them into larger fragments.
 - Keep the number of fragments under 100, which is suitable for most use cases (for *really* large datasets of >500M rows, more fragments might be needed)
 
+!!! note
+
+    LanceDB Cloud/Enterprise supports [auto-compaction](https://docs.lancedb.com/enterprise/architecture/architecture#write-path) which automatically optimizes fragments in the background as data changes.
+
 ## Deletion
 
 Although Lance allows you to delete rows from a dataset, it does not actually delete the data immediately. It simply marks the row as deleted in the `DataFile` that represents a fragment. For a given version of the dataset, each fragment can have up to one deletion file (if no rows were ever deleted from that fragment, it will not have a deletion file). This is important to keep in mind because it means that the data is still there, and can be recovered if needed, as long as that version still exists based on your backup policy.
@@ -50,13 +54,9 @@ Reindexing is the process of updating the index to account for new data, keeping
 
 Both LanceDB OSS and Cloud support reindexing, but the process (at least for now) is different for each, depending on the type of index.
 
-When a reindex job is triggered in the background, the entire data is reindexed, but in the interim as new queries come in, LanceDB will combine results from the existing index with exhaustive kNN search on the new data. This is done to ensure that you're still searching on all your data, but it does come at a performance cost. The more data that you add without reindexing, the impact on latency (due to exhaustive search) can be noticeable.
+In LanceDB OSS, re-indexing happens synchronously when you call either `create_index` or `optimize` on a table. In LanceDB Cloud, re-indexing happens asynchronously as you add and update data in your table.
 
-### Vector reindex
+By default, queries will search new data even if it has yet to be indexed. This is done using brute-force methods, such as kNN for vector search, and combined with the fast index search results. This is done to ensure that you're always searching over all your data, but it does come at a performance cost. Without reindexing, adding more data to a table will make queries slower and more expensive. This behavior can be disabled by setting the [fast_search](https://lancedb.github.io/lancedb/python/python/#lancedb.query.AsyncQuery.fast_search) parameter which will instruct the query to ignore un-indexed data.
 
-* LanceDB Cloud supports incremental reindexing, where a background process will trigger a new index build for you automatically when new data is added to a dataset
+* LanceDB Cloud/Enterprise supports [automatic incremental reindexing](https://docs.lancedb.com/core#vector-index) for vector, scalar, and FTS indices, where a background process will trigger a new index build for you automatically when new data is added or modified in a dataset
 * LanceDB OSS requires you to manually trigger a reindex operation -- we are working on adding incremental reindexing to LanceDB OSS as well
-
-### FTS reindex
-
-FTS reindexing is supported in both LanceDB OSS and Cloud, but requires that it's manually rebuilt once you have a significant enough amount of new data added that needs to be reindexed. We [updated](https://github.com/lancedb/lancedb/pull/762) Tantivy's default heap size from 128MB to 1GB in LanceDB to make it much faster to reindex, by up to 10x from the default settings.

@@ -15,7 +15,7 @@ use napi_derive::napi;
 use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
-use crate::query::{Query, VectorQuery};
+use crate::query::{Query, TakeQuery, VectorQuery};
 
 #[napi]
 pub struct Table {
@@ -185,6 +185,44 @@ impl Table {
     #[napi(catch_unwind)]
     pub fn query(&self) -> napi::Result<Query> {
         Ok(Query::new(self.inner_ref()?.query()))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn take_offsets(&self, offsets: Vec<i64>) -> napi::Result<TakeQuery> {
+        Ok(TakeQuery::new(
+            self.inner_ref()?.take_offsets(
+                offsets
+                    .into_iter()
+                    .map(|o| {
+                        u64::try_from(o).map_err(|e| {
+                            napi::Error::from_reason(format!(
+                                "Failed to convert offset to u64: {}",
+                                e
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn take_row_ids(&self, row_ids: Vec<i64>) -> napi::Result<TakeQuery> {
+        Ok(TakeQuery::new(
+            self.inner_ref()?.take_row_ids(
+                row_ids
+                    .into_iter()
+                    .map(|o| {
+                        u64::try_from(o).map_err(|e| {
+                            napi::Error::from_reason(format!(
+                                "Failed to convert row id to u64: {}",
+                                e
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ))
     }
 
     #[napi(catch_unwind)]

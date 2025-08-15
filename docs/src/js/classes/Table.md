@@ -674,6 +674,48 @@ console.log(tags); // { "v1": { version: 1, manifestSize: ... } }
 
 ***
 
+### takeOffsets()
+
+```ts
+abstract takeOffsets(offsets): TakeQuery
+```
+
+Create a query that returns a subset of the rows in the table.
+
+#### Parameters
+
+* **offsets**: `number`[]
+    The offsets of the rows to return.
+
+#### Returns
+
+[`TakeQuery`](TakeQuery.md)
+
+A builder that can be used to parameterize the query.
+
+***
+
+### takeRowIds()
+
+```ts
+abstract takeRowIds(rowIds): TakeQuery
+```
+
+Create a query that returns a subset of the rows in the table.
+
+#### Parameters
+
+* **rowIds**: `number`[]
+    The row ids of the rows to return.
+
+#### Returns
+
+[`TakeQuery`](TakeQuery.md)
+
+A builder that can be used to parameterize the query.
+
+***
+
 ### toArrow()
 
 ```ts
