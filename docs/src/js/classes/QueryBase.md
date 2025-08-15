@@ -15,12 +15,11 @@ Common methods supported by all query types
 
 ## Extended by
 
-- [`Query`](Query.md)
-- [`VectorQuery`](VectorQuery.md)
+- [`TakeQuery`](TakeQuery.md)
 
 ## Type Parameters
 
-• **NativeQueryType** *extends* `NativeQuery` \| `NativeVectorQuery`
+• **NativeQueryType** *extends* `NativeQuery` \| `NativeVectorQuery` \| `NativeTakeQuery`
 
 ## Implements
 
@@ -141,104 +140,6 @@ const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
 
 ***
 
-### fastSearch()
-
-```ts
-fastSearch(): this
-```
-
-Skip searching un-indexed data. This can make search faster, but will miss
-any data that is not yet indexed.
-
-Use [Table#optimize](Table.md#optimize) to index all un-indexed data.
-
-#### Returns
-
-`this`
-
-***
-
-### ~~filter()~~
-
-```ts
-filter(predicate): this
-```
-
-A filter statement to be applied to this query.
-
-#### Parameters
-
-* **predicate**: `string`
-
-#### Returns
-
-`this`
-
-#### See
-
-where
-
-#### Deprecated
-
-Use `where` instead
-
-***
-
-### fullTextSearch()
-
-```ts
-fullTextSearch(query, options?): this
-```
-
-#### Parameters
-
-* **query**: `string` \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
-
-* **options?**: `Partial`&lt;[`FullTextSearchOptions`](../interfaces/FullTextSearchOptions.md)&gt;
-
-#### Returns
-
-`this`
-
-***
-
-### limit()
-
-```ts
-limit(limit): this
-```
-
-Set the maximum number of results to return.
-
-By default, a plain search has no limit.  If this method is not
-called then every valid row from the table will be returned.
-
-#### Parameters
-
-* **limit**: `number`
-
-#### Returns
-
-`this`
-
-***
-
-### offset()
-
-```ts
-offset(offset): this
-```
-
-#### Parameters
-
-* **offset**: `number`
-
-#### Returns
-
-`this`
-
-***
-
 ### select()
 
 ```ts
@@ -325,37 +226,6 @@ Collect the results as an Arrow
 #### See
 
 ArrowTable.
-
-***
-
-### where()
-
-```ts
-where(predicate): this
-```
-
-A filter statement to be applied to this query.
-
-The filter should be supplied as an SQL query string.  For example:
-
-#### Parameters
-
-* **predicate**: `string`
-
-#### Returns
-
-`this`
-
-#### Example
-
-```ts
-x > 10
-y > 0 AND y < 100
-x > 5 OR y = 'test'
-
-Filtering performance can often be improved by creating a scalar index
-on the filter column(s).
-```
 
 ***
 

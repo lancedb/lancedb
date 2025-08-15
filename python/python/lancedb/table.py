@@ -51,6 +51,7 @@ from .query import (
     AsyncFTSQuery,
     AsyncHybridQuery,
     AsyncQuery,
+    AsyncTakeQuery,
     AsyncVectorQuery,
     FullTextQuery,
     LanceEmptyQueryBuilder,
@@ -58,6 +59,7 @@ from .query import (
     LanceHybridQueryBuilder,
     LanceQueryBuilder,
     LanceVectorQueryBuilder,
+    LanceTakeQueryBuilder,
     Query,
 )
 from .util import (
@@ -1104,6 +1106,66 @@ class Table(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
+        """
+        Take a list of offsets from the table.
+
+        Offsets are 0-indexed and relative to the current version of the table.  Offsets
+        are not stable.  A row with an offset of N may have a different offset in a
+        different version of the table (e.g. if an earlier row is deleted).
+
+        Offsets are mostly useful for sampling as the set of all valid offsets is easily
+        known in advance to be [0, len(table)).
+
+        No guarantees are made regarding the order in which results are returned.  If
+        you desire an output order that matches the order of the given offsets, you will
+        need to add the row offset column to the output and align it yourself.
+
+        Parameters
+        ----------
+        offsets: list[int]
+            The offsets to take.
+
+        Returns
+        -------
+        pa.RecordBatch
+            A record batch containing the rows at the given offsets.
+        """
+
+    @abstractmethod
+    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
+        """
+        Take a list of row ids from the table.
+
+        Row ids are not stable and are relative to the current version of the table.
+        They can change due to compaction and updates.
+
+        No guarantees are made regarding the order in which results are returned.  If
+        you desire an output order that matches the order of the given ids, you will
+        need to add the row id column to the output and align it yourself.
+
+        Unlike offsets, row ids are not 0-indexed and no assumptions should be made
+        about the possible range of row ids.  In order to use this method you must
+        first obtain the row ids by scanning or searching the table.
+
+        Even so, row ids are more stable than offsets and can be useful in some
+        situations.
+
+        There is an ongoing effort to make row ids stable which is tracked at
+        https://github.com/lancedb/lancedb/issues/1120
+
+        Parameters
+        ----------
+        row_ids: list[int]
+            The row ids to take.
+
+        Returns
+        -------
+        AsyncTakeQuery
+            A query object that can be executed to get the rows.
+        """
+
+    @abstractmethod
     def _execute_query(
         self,
         query: Query,
@@ -1647,6 +1709,12 @@ class LanceTable(Table):
     def version(self) -> int:
         """Get the current version of the table"""
         return LOOP.run(self._table.version())
+
+    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
+        return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+
+    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
+        return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
 
     @property
     def tags(self) -> Tags:
@@ -4029,6 +4097,58 @@ class AsyncTable:
         out state and the read_consistency_interval, if any, will apply.
         """
         await self._inner.restore(version)
+
+    def take_offsets(self, offsets: list[int]) -> AsyncTakeQuery:
+        """
+        Take a list of offsets from the table.
+
+        Offsets are 0-indexed and relative to the current version of the table.  Offsets
+        are not stable.  A row with an offset of N may have a different offset in a
+        different version of the table (e.g. if an earlier row is deleted).
+
+        Offsets are mostly useful for sampling as the set of all valid offsets is easily
+        known in advance to be [0, len(table)).
+
+        Parameters
+        ----------
+        offsets: list[int]
+            The offsets to take.
+
+        Returns
+        -------
+        pa.RecordBatch
+            A record batch containing the rows at the given offsets.
+        """
+        return AsyncTakeQuery(self._inner.take_offsets(offsets))
+
+    def take_row_ids(self, row_ids: list[int]) -> AsyncTakeQuery:
+        """
+        Take a list of row ids from the table.
+
+        Row ids are not stable and are relative to the current version of the table.
+        They can change due to compaction and updates.
+
+        Unlike offsets, row ids are not 0-indexed and no assumptions should be made
+        about the possible range of row ids.  In order to use this method you must
+        first obtain the row ids by scanning or searching the table.
+
+        Even so, row ids are more stable than offsets and can be useful in some
+        situations.
+
+        There is an ongoing effort to make row ids stable which is tracked at
+        https://github.com/lancedb/lancedb/issues/1120
+
+        Parameters
+        ----------
+        row_ids: list[int]
+            The row ids to take.
+
+        Returns
+        -------
+        AsyncTakeQuery
+            A query object that can be executed to get the rows.
+        """
+        return AsyncTakeQuery(self._inner.take_row_ids(row_ids))
 
     @property
     def tags(self) -> AsyncTags:

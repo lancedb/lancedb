@@ -59,6 +59,7 @@ export {
   Query,
   QueryBase,
   VectorQuery,
+  TakeQuery,
   QueryExecutionOptions,
   FullTextSearchOptions,
   RecordBatchIterator,

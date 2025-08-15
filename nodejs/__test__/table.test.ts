@@ -287,6 +287,12 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(res2[1].id).toEqual(data2.id);
     });
 
+    it("should support take queries", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      const res = await table.takeOffsets([1, 2]).toArrow();
+      expect(res.getChild("id")?.toJSON()).toEqual([2, 3]);
+    });
+
     it("should return the table as an instance of an arrow table", async () => {
       const arrowTbl = await table.toArrow();
       expect(arrowTbl).toBeInstanceOf(ArrowTable);

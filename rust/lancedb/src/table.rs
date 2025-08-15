@@ -62,8 +62,8 @@ use crate::index::{
 };
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{
-    IntoQueryVector, Query, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQuery,
-    VectorQueryRequest, DEFAULT_TOP_K,
+    IntoQueryVector, Query, QueryExecutionOptions, QueryFilter, QueryRequest, Select, TakeQuery,
+    VectorQuery, VectorQueryRequest, DEFAULT_TOP_K,
 };
 use crate::utils::{
     default_vector_column, supported_bitmap_data_type, supported_btree_data_type,
@@ -1076,6 +1076,54 @@ impl Table {
     /// ```
     pub fn query(&self) -> Query {
         Query::new(self.inner.clone())
+    }
+
+    /// Extract rows from the dataset using dataset offsets.
+    ///
+    /// Dataset offsets are 0-indexed and relative to the current version of the table.
+    /// They are not stable.  A row with an offset of N may have a different offset in a
+    /// different version of the table (e.g. if an earlier row is deleted).
+    ///
+    /// Offsets are useful for sampling as the set of all valid offsets is easily
+    /// known in advance to be [0, len(table)).
+    ///
+    /// No guarantees are made regarding the order in which results are returned.  If you
+    /// desire an output order that matches the order of the given offsets, you will need
+    /// to add the row offset column to the output and align it yourself.
+    ///
+    /// Parameters
+    /// ----------
+    /// offsets: list[int]
+    ///     The offsets to take.
+    ///
+    /// Returns
+    /// -------
+    /// pa.RecordBatch
+    ///     A record batch containing the rows at the given offsets.
+    pub fn take_offsets(&self, offsets: Vec<u64>) -> TakeQuery {
+        TakeQuery::from_offsets(self.inner.clone(), offsets)
+    }
+
+    /// Extract rows from the dataset using row ids.
+    ///
+    /// Row ids are not stable and are relative to the current version of the table.
+    /// They can change due to compaction and updates.
+    ///
+    /// Even so, row ids are more stable than offsets and can be useful in some situations.
+    ///
+    /// There is an ongoing effort to make row ids stable which is tracked at
+    /// https://github.com/lancedb/lancedb/issues/1120
+    ///
+    /// No guarantees are made regarding the order in which results are returned.  If you
+    /// desire an output order that matches the order of the given ids, you will need
+    /// to add the row id column to the output and align it yourself.
+    /// Parameters
+    /// ----------
+    /// row_ids: list[int]
+    ///     The row ids to take.
+    ///
+    pub fn take_row_ids(&self, row_ids: Vec<u64>) -> TakeQuery {
+        TakeQuery::from_row_ids(self.inner.clone(), row_ids)
     }
 
     /// Search the table with a given query vector.
