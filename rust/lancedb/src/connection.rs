@@ -9,6 +9,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatchReader;
 use arrow_schema::{Field, SchemaRef};
 use lance::dataset::ReadParams;
+#[cfg(feature = "aws")]
 use object_store::aws::AwsCredential;
 
 use crate::arrow::{IntoArrow, IntoArrowStream, SendableRecordBatchStream};
@@ -749,6 +750,7 @@ impl ConnectBuilder {
     }
 
     /// [`AwsCredential`] to use when connecting to S3.
+    #[cfg(feature = "aws")]
     #[deprecated(note = "Pass through storage_options instead")]
     pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
         self.request

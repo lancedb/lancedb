@@ -15,8 +15,8 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.33.0", "features" = ["dynamodb"] }
-lance-io = "=0.33.0"
+lance = { "version" = "=0.33.0", default-features = false, "features" = ["dynamodb"] }
+lance-io = { "version" = "=0.33.0", default-features = false }
 lance-index = "=0.33.0"
 lance-linalg = "=0.33.0"
 lance-table = "=0.33.0"
