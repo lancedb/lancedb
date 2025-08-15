@@ -55,7 +55,7 @@ When a reindex job is triggered in the background, the entire data is reindexed,
 ### Vector reindex
 
 * LanceDB Cloud supports incremental reindexing, where a background process will trigger a new index build for you automatically when new data is added to a dataset
-* LanceDB OSS requires you to manually trigger a reindex operation -- we are working on adding incremental reindexing to LanceDB OSS as well
+* LanceDB OSS requires you to manually trigger a reindex operation -- incremental indexing is available via the Lance API `lance_table.to_lance().optimize.optimize_indices()`. Incremental indexing means that any unindexed rows are added to the existing index. This is much faster than a full reindex because it does not involve kmeans training or reconstructing the graph from scratch (depending on your index type).
 
 ### FTS reindex
 
