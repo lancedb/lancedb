@@ -1721,7 +1721,7 @@ impl NativeTable {
                         /*num_bits=*/ 8,
                         num_sub_vectors as usize,
                         lance_linalg::distance::MetricType::L2,
-                        50, // max_iterations
+                        /*max_iterations=*/ 50,
                     );
                     Ok(Box::new(lance_idx_params))
                 } else if supported_btree_data_type(field.data_type()) {
