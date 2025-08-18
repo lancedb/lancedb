@@ -1419,6 +1419,114 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })?;
         Ok(stats)
     }
+
+    async fn table_metadata(&self) -> Result<HashMap<String, String>> {
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/metadata/get", self.name));
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        let metadata = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse table metadata: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+        Ok(metadata)
+    }
+
+    async fn update_table_metadata(
+        &self,
+        metadata: HashMap<String, Option<String>>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let mut request = self
+            .client
+            .post(&format!("/v1/table/{}/metadata/update", self.name));
+        if replace {
+            request = request.query(&[("replace", "true")]);
+        }
+        request = request.json(&metadata);
+
+        let (request_id, response) = self.send(request, true).await?;
+        self.check_table_response(&request_id, response).await?;
+
+        // Fetch the updated metadata
+        self.table_metadata().await
+    }
+
+    async fn schema_metadata(&self) -> Result<HashMap<String, String>> {
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/schema/metadata/get", self.name));
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        let metadata = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse schema metadata: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+        Ok(metadata)
+    }
+
+    async fn update_schema_metadata(
+        &self,
+        metadata: HashMap<String, Option<String>>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let mut request = self
+            .client
+            .post(&format!("/v1/table/{}/schema/metadata/update", self.name));
+        if replace {
+            request = request.query(&[("replace", "true")]);
+        }
+        request = request.json(&metadata);
+
+        let (request_id, response) = self.send(request, true).await?;
+        self.check_table_response(&request_id, response).await?;
+
+        // Fetch the updated schema metadata
+        self.schema_metadata().await
+    }
+
+    async fn table_config(&self) -> Result<HashMap<String, String>> {
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/config/get", self.name));
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        let config = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse table config: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+        Ok(config)
+    }
+
+    async fn update_table_config(
+        &self,
+        config: HashMap<String, Option<String>>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let mut request = self
+            .client
+            .post(&format!("/v1/table/{}/config/update", self.name));
+        if replace {
+            request = request.query(&[("replace", "true")]);
+        }
+        request = request.json(&config);
+
+        let (request_id, response) = self.send(request, true).await?;
+        self.check_table_response(&request_id, response).await?;
+
+        // Fetch the updated config
+        self.table_config().await
+    }
 }
 
 #[derive(Serialize)]
