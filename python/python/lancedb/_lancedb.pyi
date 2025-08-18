@@ -97,6 +97,7 @@ class Tags:
 class IndexConfig:
     index_type: str
     columns: List[str]
+    status: str
 
 async def connect(
     uri: str,
