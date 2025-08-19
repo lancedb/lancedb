@@ -31,6 +31,7 @@
 - [RecordBatchIterator](classes/RecordBatchIterator.md)
 - [Session](classes/Session.md)
 - [Table](classes/Table.md)
+- [TableMetadata](classes/TableMetadata.md)
 - [TagContents](classes/TagContents.md)
 - [Tags](classes/Tags.md)
 - [VectorColumnOptions](classes/VectorColumnOptions.md)

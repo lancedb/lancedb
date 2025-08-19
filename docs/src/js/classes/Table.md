@@ -23,6 +23,34 @@ collected.
 
 ## Accessors
 
+### metadata
+
+```ts
+get abstract metadata(): TableMetadata
+```
+
+Get a metadata manager for this table.
+
+Table metadata allows storing arbitrary key-value information about
+the table such as tags, descriptions, or configuration settings.
+
+#### Example
+
+```typescript
+await table.metadata.insert({ tag: "prod", description: "Production table" });
+const metadata = await table.metadata.get();
+console.log(metadata.tag); // "prod"
+await table.metadata.deleteKeys(["tag"]);
+```
+
+#### Returns
+
+[`TableMetadata`](TableMetadata.md)
+
+A metadata manager for this table
+
+***
+
 ### name
 
 ```ts

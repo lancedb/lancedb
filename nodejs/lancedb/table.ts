@@ -927,6 +927,8 @@ export interface ColumnAlteration {
  *
  * Table metadata allows storing arbitrary key-value information about
  * the table such as tags, descriptions, or configuration settings.
+ *
+ * @hideconstructor
  */
 export class TableMetadata {
   private table: _NativeTable;

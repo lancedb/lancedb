@@ -85,6 +85,7 @@ export {
 
 export {
   Table,
+  TableMetadata,
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
