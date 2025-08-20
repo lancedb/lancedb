@@ -309,10 +309,15 @@ def connect_namespace(
     Examples
     --------
     >>> import lancedb
+    >>> import pyarrow as pa
     >>> # Connect using GlueNamespace
     >>> db = lancedb.connect_namespace("glue", {"catalog_id": "123456789012"})
-    >>> # Create a table
-    >>> table = db.create_table("my_table", data=[{"vector": [1, 2], "id": 1}])
+    >>> # Create a table with schema
+    >>> schema = pa.schema([
+    ...     pa.field("id", pa.int64()),
+    ...     pa.field("vector", pa.list_(pa.float32(), 2))
+    ... ])
+    >>> table = db.create_table("my_table", schema=schema)
     >>> # List tables
     >>> db.table_names()
     ['my_table']
