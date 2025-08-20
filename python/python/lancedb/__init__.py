@@ -19,6 +19,7 @@ from .remote.db import RemoteDBConnection
 from .schema import vector
 from .table import AsyncTable
 from ._lancedb import Session
+from .namespace import connect_namespace, LanceNamespaceDBConnection
 
 
 def connect(
@@ -221,6 +222,7 @@ async def connect_async(
 __all__ = [
     "connect",
     "connect_async",
+    "connect_namespace",
     "AsyncConnection",
     "AsyncTable",
     "URI",
@@ -228,6 +230,7 @@ __all__ = [
     "vector",
     "DBConnection",
     "LanceDBConnection",
+    "LanceNamespaceDBConnection",
     "RemoteDBConnection",
     "Session",
     "__version__",
