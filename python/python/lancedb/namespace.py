@@ -10,7 +10,7 @@ through a namespace abstraction.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Union, override
+from typing import Dict, Iterable, List, Optional, Union
 import os
 
 from lancedb.db import DBConnection
@@ -18,6 +18,7 @@ from lancedb.table import LanceTable, Table
 from lancedb.util import validate_table_name
 from lancedb.common import validate_schema
 from lancedb.table import sanitize_create_table
+from overrides import override
 
 from lance_namespace import LanceNamespace, connect as namespace_connect
 from lance_namespace_urllib3_client.models import (
@@ -312,22 +313,6 @@ def connect_namespace(
     -------
     LanceNamespaceDBConnection
         A namespace-based connection to LanceDB
-
-    Examples
-    --------
-    >>> import lancedb
-    >>> import pyarrow as pa
-    >>> # Connect using GlueNamespace
-    >>> db = lancedb.connect_namespace("glue", {"catalog_id": "123456789012"})
-    >>> # Create a table with schema
-    >>> schema = pa.schema([
-    ...     pa.field("id", pa.int64()),
-    ...     pa.field("vector", pa.list_(pa.float32(), 2))
-    ... ])
-    >>> table = db.create_table("my_table", schema=schema)
-    >>> # List tables
-    >>> db.table_names()
-    ['my_table']
     """
     namespace = namespace_connect(impl, properties)
 
