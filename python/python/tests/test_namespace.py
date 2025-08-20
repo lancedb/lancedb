@@ -175,8 +175,7 @@ class TempNamespaceConfig:
         return self._root
 
 
-# Register our test namespace implementation
-NATIVE_IMPLS["temp"] = "tests.test_namespace.TempNamespace"
+NATIVE_IMPLS["temp"] = f"{TempNamespace.__module__}.TempNamespace"
 
 
 class TestNamespaceConnection:
