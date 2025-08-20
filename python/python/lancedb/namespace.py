@@ -210,9 +210,16 @@ class LanceNamespaceDBConnection(DBConnection):
     ) -> Table:
         request = DescribeTableRequest(id=[name])
         response = self._ns.describe_table(request)
+
+        merged_storage_options = dict()
+        if storage_options:
+            merged_storage_options.update(storage_options)
+        if response.storage_options:
+            merged_storage_options.update(response.storage_options)
+
         return self._lance_table_from_uri(
             response.location,
-            storage_options=storage_options,
+            storage_options=merged_storage_options,
             index_cache_size=index_cache_size,
         )
 
