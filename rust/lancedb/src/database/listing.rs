@@ -22,7 +22,8 @@ use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
 use super::{
-    BaseTable, CreateTableMode, CreateTableRequest, Database, DatabaseOptions, OpenTableRequest,
+    BaseTable, CreateNamespaceRequest, CreateTableMode, CreateTableRequest, Database,
+    DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
     TableNamesRequest,
 };
 
@@ -551,6 +552,7 @@ impl ListingDatabase {
     async fn handle_table_exists(
         &self,
         table_name: &str,
+        namespace: Vec<String>,
         mode: CreateTableMode,
         data_schema: &arrow_schema::Schema,
     ) -> Result<Arc<dyn BaseTable>> {
@@ -561,6 +563,7 @@ impl ListingDatabase {
             CreateTableMode::ExistOk(callback) => {
                 let req = OpenTableRequest {
                     name: table_name.to_string(),
+                    namespace: namespace.clone(),
                     index_cache_size: None,
                     lance_read_params: None,
                 };
@@ -584,7 +587,28 @@ impl ListingDatabase {
 
 #[async_trait::async_trait]
 impl Database for ListingDatabase {
+    async fn list_namespaces(&self, _request: ListNamespacesRequest) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn create_namespace(&self, _request: CreateNamespaceRequest) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "Namespace operations are not supported for listing database".into(),
+        })
+    }
+
+    async fn drop_namespace(&self, _request: DropNamespaceRequest) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "Namespace operations are not supported for listing database".into(),
+        })
+    }
+
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
+        if !request.namespace.is_empty() {
+            return Err(Error::NotSupported {
+                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+            });
+        }
         let mut f = self
             .object_store
             .read_dir(self.base_path.clone())
@@ -615,6 +639,11 @@ impl Database for ListingDatabase {
     }
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if !request.namespace.is_empty() {
+            return Err(Error::NotSupported {
+                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+            });
+        }
         let table_uri = self.table_uri(&request.name)?;
 
         let (storage_version_override, v2_manifest_override) =
@@ -637,14 +666,24 @@ impl Database for ListingDatabase {
         {
             Ok(table) => Ok(Arc::new(table)),
             Err(Error::TableAlreadyExists { .. }) => {
-                self.handle_table_exists(&request.name, request.mode, &data_schema)
-                    .await
+                self.handle_table_exists(
+                    &request.name,
+                    request.namespace.clone(),
+                    request.mode,
+                    &data_schema,
+                )
+                .await
             }
             Err(err) => Err(err),
         }
     }
 
     async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if !request.namespace.is_empty() {
+            return Err(Error::NotSupported {
+                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+            });
+        }
         let table_uri = self.table_uri(&request.name)?;
 
         // Only modify the storage options if we actually have something to
@@ -694,17 +733,44 @@ impl Database for ListingDatabase {
         Ok(native_table)
     }
 
-    async fn rename_table(&self, _old_name: &str, _new_name: &str) -> Result<()> {
+    async fn rename_table(
+        &self,
+        _cur_name: &str,
+        _new_name: &str,
+        cur_namespace: &[String],
+        new_namespace: &[String],
+    ) -> Result<()> {
+        if !cur_namespace.is_empty() {
+            return Err(Error::NotSupported {
+                message: "Namespace parameter is not supported for listing database.".into(),
+            });
+        }
+        if !new_namespace.is_empty() {
+            return Err(Error::NotSupported {
+                message: "Namespace parameter is not supported for listing database.".into(),
+            });
+        }
         Err(Error::NotSupported {
-            message: "rename_table is not supported in LanceDB OSS".to_string(),
+            message: "rename_table is not supported in LanceDB OSS".into(),
         })
     }
 
-    async fn drop_table(&self, name: &str) -> Result<()> {
+    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()> {
+        if !namespace.is_empty() {
+            return Err(Error::NotSupported {
+                message: "Namespace parameter is not supported for listing database.".into(),
+            });
+        }
         self.drop_tables(vec![name.to_string()]).await
     }
 
-    async fn drop_all_tables(&self) -> Result<()> {
+    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
+        // Check if namespace parameter is provided
+        if !namespace.is_empty() {
+            return Err(Error::NotSupported {
+                message: "Namespace parameter is not supported for listing database.".into(),
+            });
+        }
         let tables = self.table_names(TableNamesRequest::default()).await?;
         self.drop_tables(tables).await
     }

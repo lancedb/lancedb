@@ -379,6 +379,7 @@ mod tests {
             data: CreateTableData::Empty(TableDefinition::new_from_schema(dummy_schema)),
             mode: Default::default(),
             write_options: Default::default(),
+            namespace: vec![],
         })
         .await
         .unwrap();
@@ -414,6 +415,7 @@ mod tests {
             data: CreateTableData::Empty(TableDefinition::new_from_schema(dummy_schema)),
             mode: Default::default(),
             write_options: Default::default(),
+            namespace: vec![],
         })
         .await
         .unwrap();

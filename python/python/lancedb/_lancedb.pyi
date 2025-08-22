@@ -21,14 +21,28 @@ class Session:
 
 class Connection(object):
     uri: str
+    async def is_open(self): ...
+    async def close(self): ...
+    async def list_namespaces(
+        self,
+        namespace: List[str],
+        page_token: Optional[str],
+        limit: Optional[int],
+    ) -> List[str]: ...
+    async def create_namespace(self, namespace: List[str]) -> None: ...
+    async def drop_namespace(self, namespace: List[str]) -> None: ...
     async def table_names(
-        self, start_after: Optional[str], limit: Optional[int]
+        self,
+        namespace: List[str],
+        start_after: Optional[str],
+        limit: Optional[int],
     ) -> list[str]: ...
     async def create_table(
         self,
         name: str,
         mode: str,
         data: pa.RecordBatchReader,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
     ) -> Table: ...
     async def create_empty_table(
@@ -36,10 +50,25 @@ class Connection(object):
         name: str,
         mode: str,
         schema: pa.Schema,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
     ) -> Table: ...
-    async def rename_table(self, old_name: str, new_name: str) -> None: ...
-    async def drop_table(self, name: str) -> None: ...
+    async def open_table(
+        self,
+        name: str,
+        namespace: List[str] = [],
+        storage_options: Optional[Dict[str, str]] = None,
+        index_cache_size: Optional[int] = None,
+    ) -> Table: ...
+    async def rename_table(
+        self,
+        cur_name: str,
+        new_name: str,
+        cur_namespace: List[str] = [],
+        new_namespace: List[str] = [],
+    ) -> None: ...
+    async def drop_table(self, name: str, namespace: List[str] = []) -> None: ...
+    async def drop_all_tables(self, namespace: List[str] = []) -> None: ...
 
 class Table:
     def name(self) -> str: ...

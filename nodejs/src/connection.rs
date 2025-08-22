@@ -100,10 +100,12 @@ impl Connection {
     #[napi(catch_unwind)]
     pub async fn table_names(
         &self,
+        namespace: Vec<String>,
         start_after: Option<String>,
         limit: Option<u32>,
     ) -> napi::Result<Vec<String>> {
         let mut op = self.get_inner()?.table_names();
+        op = op.namespace(namespace);
         if let Some(start_after) = start_after {
             op = op.start_after(start_after);
         }
@@ -125,12 +127,15 @@ impl Connection {
         name: String,
         buf: Buffer,
         mode: String,
+        namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
     ) -> napi::Result<Table> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
         let mode = Self::parse_create_mode_str(&mode)?;
         let mut builder = self.get_inner()?.create_table(&name, batches).mode(mode);
+
+        builder = builder.namespace(namespace);
 
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
@@ -147,6 +152,7 @@ impl Connection {
         name: String,
         schema_buf: Buffer,
         mode: String,
+        namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
     ) -> napi::Result<Table> {
         let schema = ipc_file_to_schema(schema_buf.to_vec()).map_err(|e| {
@@ -157,6 +163,9 @@ impl Connection {
             .get_inner()?
             .create_empty_table(&name, schema)
             .mode(mode);
+
+        builder = builder.namespace(namespace);
+
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
                 builder = builder.storage_option(key, value);
@@ -170,10 +179,14 @@ impl Connection {
     pub async fn open_table(
         &self,
         name: String,
+        namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
         index_cache_size: Option<u32>,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.open_table(&name);
+
+        builder = builder.namespace(namespace);
+
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
                 builder = builder.storage_option(key, value);
@@ -188,12 +201,18 @@ impl Connection {
 
     /// Drop table with the name. Or raise an error if the table does not exist.
     #[napi(catch_unwind)]
-    pub async fn drop_table(&self, name: String) -> napi::Result<()> {
-        self.get_inner()?.drop_table(&name).await.default_error()
+    pub async fn drop_table(&self, name: String, namespace: Vec<String>) -> napi::Result<()> {
+        self.get_inner()?
+            .drop_table(&name, &namespace)
+            .await
+            .default_error()
     }
 
     #[napi(catch_unwind)]
-    pub async fn drop_all_tables(&self) -> napi::Result<()> {
-        self.get_inner()?.drop_all_tables().await.default_error()
+    pub async fn drop_all_tables(&self, namespace: Vec<String>) -> napi::Result<()> {
+        self.get_inner()?
+            .drop_all_tables(&namespace)
+            .await
+            .default_error()
     }
 }

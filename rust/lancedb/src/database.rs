@@ -34,9 +34,36 @@ pub trait DatabaseOptions {
     fn serialize_into_map(&self, map: &mut HashMap<String, String>);
 }
 
+/// A request to list namespaces in the database
+#[derive(Clone, Debug, Default)]
+pub struct ListNamespacesRequest {
+    /// The parent namespace to list namespaces in. Empty list represents root namespace.
+    pub namespace: Vec<String>,
+    /// If present, only return names that come lexicographically after the supplied value.
+    pub page_token: Option<String>,
+    /// The maximum number of namespace names to return
+    pub limit: Option<u32>,
+}
+
+/// A request to create a namespace
+#[derive(Clone, Debug)]
+pub struct CreateNamespaceRequest {
+    /// The namespace identifier to create
+    pub namespace: Vec<String>,
+}
+
+/// A request to drop a namespace
+#[derive(Clone, Debug)]
+pub struct DropNamespaceRequest {
+    /// The namespace identifier to drop
+    pub namespace: Vec<String>,
+}
+
 /// A request to list names of tables in the database
 #[derive(Clone, Debug, Default)]
 pub struct TableNamesRequest {
+    /// The namespace to list tables in. Empty list represents root namespace.
+    pub namespace: Vec<String>,
     /// If present, only return names that come lexicographically after the supplied
     /// value.
     ///
@@ -51,6 +78,8 @@ pub struct TableNamesRequest {
 #[derive(Clone, Debug)]
 pub struct OpenTableRequest {
     pub name: String,
+    /// The namespace to open the table from. Empty list represents root namespace.
+    pub namespace: Vec<String>,
     pub index_cache_size: Option<u32>,
     pub lance_read_params: Option<ReadParams>,
 }
@@ -125,6 +154,8 @@ impl StreamingWriteSource for CreateTableData {
 pub struct CreateTableRequest {
     /// The name of the new table
     pub name: String,
+    /// The namespace to create the table in. Empty list represents root namespace.
+    pub namespace: Vec<String>,
     /// Initial data to write to the table, can be None to create an empty table
     pub data: CreateTableData,
     /// The mode to use when creating the table
@@ -137,6 +168,7 @@ impl CreateTableRequest {
     pub fn new(name: String, data: CreateTableData) -> Self {
         Self {
             name,
+            namespace: vec![],
             data,
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
@@ -151,6 +183,12 @@ impl CreateTableRequest {
 pub trait Database:
     Send + Sync + std::any::Any + std::fmt::Debug + std::fmt::Display + 'static
 {
+    /// List immediate child namespace names in the given namespace
+    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>>;
+    /// Create a new namespace
+    async fn create_namespace(&self, request: CreateNamespaceRequest) -> Result<()>;
+    /// Drop a namespace
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<()>;
     /// List the names of tables in the database
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>>;
     /// Create a table in the database
@@ -158,10 +196,16 @@ pub trait Database:
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database
-    async fn rename_table(&self, old_name: &str, new_name: &str) -> Result<()>;
+    async fn rename_table(
+        &self,
+        cur_name: &str,
+        new_name: &str,
+        cur_namespace: &[String],
+        new_namespace: &[String],
+    ) -> Result<()>;
     /// Drop a table in the database
-    async fn drop_table(&self, name: &str) -> Result<()>;
+    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()>;
     /// Drop all tables in the database
-    async fn drop_all_tables(&self) -> Result<()>;
+    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;
 }

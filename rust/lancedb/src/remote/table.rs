@@ -70,7 +70,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
         let request = self
             .inner
             .client
-            .post(&format!("/v1/table/{}/tags/list/", self.inner.name));
+            .post(&format!("/v1/table/{}/tags/list/", self.inner.identifier));
         let (request_id, response) = self.inner.send(request, true).await?;
         let response = self
             .inner
@@ -104,7 +104,10 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
         let request = self
             .inner
             .client
-            .post(&format!("/v1/table/{}/tags/version/", self.inner.name))
+            .post(&format!(
+                "/v1/table/{}/tags/version/",
+                self.inner.identifier
+            ))
             .json(&serde_json::json!({ "tag": tag }));
 
         let (request_id, response) = self.inner.send(request, true).await?;
@@ -146,7 +149,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
         let request = self
             .inner
             .client
-            .post(&format!("/v1/table/{}/tags/create/", self.inner.name))
+            .post(&format!("/v1/table/{}/tags/create/", self.inner.identifier))
             .json(&serde_json::json!({
                 "tag": tag,
                 "version": version
@@ -163,7 +166,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
         let request = self
             .inner
             .client
-            .post(&format!("/v1/table/{}/tags/delete/", self.inner.name))
+            .post(&format!("/v1/table/{}/tags/delete/", self.inner.identifier))
             .json(&serde_json::json!({ "tag": tag }));
 
         let (request_id, response) = self.inner.send(request, true).await?;
@@ -177,7 +180,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
         let request = self
             .inner
             .client
-            .post(&format!("/v1/table/{}/tags/update/", self.inner.name))
+            .post(&format!("/v1/table/{}/tags/update/", self.inner.identifier))
             .json(&serde_json::json!({
                 "tag": tag,
                 "version": version
@@ -196,6 +199,8 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     #[allow(dead_code)]
     client: RestfulLanceDbClient<S>,
     name: String,
+    namespace: Vec<String>,
+    identifier: String,
     server_version: ServerVersion,
 
     version: RwLock<Option<u64>>,
@@ -205,11 +210,15 @@ impl<S: HttpSend> RemoteTable<S> {
     pub fn new(
         client: RestfulLanceDbClient<S>,
         name: String,
+        namespace: Vec<String>,
+        identifier: String,
         server_version: ServerVersion,
     ) -> Self {
         Self {
             client,
             name,
+            namespace,
+            identifier,
             server_version,
             version: RwLock::new(None),
         }
@@ -223,7 +232,7 @@ impl<S: HttpSend> RemoteTable<S> {
     async fn describe_version(&self, version: Option<u64>) -> Result<TableDescription> {
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/describe/", self.name));
+            .post(&format!("/v1/table/{}/describe/", self.identifier));
 
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
@@ -334,7 +343,7 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<reqwest::Response> {
         if response.status() == StatusCode::NOT_FOUND {
             return Err(Error::TableNotFound {
-                name: self.name.clone(),
+                name: self.identifier.clone(),
             });
         }
 
@@ -548,7 +557,9 @@ impl<S: HttpSend> RemoteTable<S> {
         query: &AnyQuery,
         options: &QueryExecutionOptions,
     ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
-        let mut request = self.client.post(&format!("/v1/table/{}/query/", self.name));
+        let mut request = self
+            .client
+            .post(&format!("/v1/table/{}/query/", self.identifier));
 
         if let Some(timeout) = options.timeout {
             // Also send to server, so it can abort the query if it takes too long.
@@ -615,7 +626,7 @@ struct TableDescription {
 
 impl<S: HttpSend> std::fmt::Display for RemoteTable<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RemoteTable({})", self.name)
+        write!(f, "RemoteTable({})", self.identifier)
     }
 }
 
@@ -634,7 +645,9 @@ mod test_utils {
             let client = client_with_handler(handler);
             Self {
                 client,
-                name,
+                name: name.clone(),
+                namespace: vec![],
+                identifier: name,
                 server_version: version.map(ServerVersion).unwrap_or_default(),
                 version: RwLock::new(None),
             }
@@ -649,6 +662,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn namespace(&self) -> &[String] {
+        &self.namespace
+    }
+
+    fn id(&self) -> &str {
+        &self.identifier
     }
     async fn version(&self) -> Result<u64> {
         self.describe().await.map(|desc| desc.version)
@@ -678,7 +699,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn restore(&self) -> Result<()> {
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/restore/", self.name));
+            .post(&format!("/v1/table/{}/restore/", self.identifier));
         let version = self.current_version().await;
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
@@ -692,7 +713,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn list_versions(&self) -> Result<Vec<Version>> {
         let request = self
             .client
-            .post(&format!("/v1/table/{}/version/list/", self.name));
+            .post(&format!("/v1/table/{}/version/list/", self.identifier));
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
 
@@ -723,7 +744,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/count_rows/", self.name));
+            .post(&format!("/v1/table/{}/count_rows/", self.identifier));
 
         let version = self.current_version().await;
 
@@ -759,7 +780,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/insert/", self.name))
+            .post(&format!("/v1/table/{}/insert/", self.identifier))
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
         match add.mode {
@@ -831,7 +852,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
         let base_request = self
             .client
-            .post(&format!("/v1/table/{}/explain_plan/", self.name));
+            .post(&format!("/v1/table/{}/explain_plan/", self.identifier));
 
         let query_bodies = self.prepare_query_bodies(query).await?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
@@ -880,7 +901,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     ) -> Result<String> {
         let request = self
             .client
-            .post(&format!("/v1/table/{}/analyze_plan/", self.name));
+            .post(&format!("/v1/table/{}/analyze_plan/", self.identifier));
 
         let query_bodies = self.prepare_query_bodies(query).await?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
@@ -919,7 +940,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
         let request = self
             .client
-            .post(&format!("/v1/table/{}/update/", self.name));
+            .post(&format!("/v1/table/{}/update/", self.identifier));
 
         let mut updates = Vec::new();
         for (column, expression) in update.columns {
@@ -958,7 +979,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "predicate": predicate });
         let request = self
             .client
-            .post(&format!("/v1/table/{}/delete/", self.name))
+            .post(&format!("/v1/table/{}/delete/", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
@@ -980,7 +1001,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
         let request = self
             .client
-            .post(&format!("/v1/table/{}/create_index/", self.name));
+            .post(&format!("/v1/table/{}/create_index/", self.identifier));
 
         let column = match index.columns.len() {
             0 => {
@@ -1121,7 +1142,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let query = MergeInsertRequest::try_from(params)?;
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/merge_insert/", self.name))
+            .post(&format!("/v1/table/{}/merge_insert/", self.identifier))
             .query(&query)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
@@ -1193,7 +1214,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 let body = serde_json::json!({ "new_columns": body });
                 let request = self
                     .client
-                    .post(&format!("/v1/table/{}/add_columns/", self.name))
+                    .post(&format!("/v1/table/{}/add_columns/", self.identifier))
                     .json(&body);
                 let (request_id, response) = self.send(request, true).await?;
                 let response = self.check_table_response(&request_id, response).await?;
@@ -1246,7 +1267,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "alterations": body });
         let request = self
             .client
-            .post(&format!("/v1/table/{}/alter_columns/", self.name))
+            .post(&format!("/v1/table/{}/alter_columns/", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
@@ -1271,7 +1292,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "columns": columns });
         let request = self
             .client
-            .post(&format!("/v1/table/{}/drop_columns/", self.name))
+            .post(&format!("/v1/table/{}/drop_columns/", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
@@ -1295,7 +1316,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // Make request to list the indices
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/index/list/", self.name));
+            .post(&format!("/v1/table/{}/index/list/", self.identifier));
         let version = self.current_version().await;
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
@@ -1351,7 +1372,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
         let mut request = self.client.post(&format!(
             "/v1/table/{}/index/{}/stats/",
-            self.name, index_name
+            self.identifier, index_name
         ));
         let version = self.current_version().await;
         let body = serde_json::json!({ "version": version });
@@ -1379,7 +1400,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn drop_index(&self, index_name: &str) -> Result<()> {
         let request = self.client.post(&format!(
             "/v1/table/{}/index/{}/drop/",
-            self.name, index_name
+            self.identifier, index_name
         ));
         let (request_id, response) = self.send(request, true).await?;
         if response.status() == StatusCode::NOT_FOUND {
@@ -1407,7 +1428,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn stats(&self) -> Result<TableStatistics> {
-        let request = self.client.post(&format!("/v1/table/{}/stats/", self.name));
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/stats/", self.identifier));
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
@@ -3081,5 +3104,175 @@ mod tests {
             http::Response::builder().status(status).body(body).unwrap()
         });
         table
+    }
+
+    #[tokio::test]
+    async fn test_table_with_namespace_identifier() {
+        // Test that a table created with namespace uses the correct identifier in API calls
+        let table = Table::new_with_handler("ns1$ns2$table1", |request| {
+            assert_eq!(request.method(), "POST");
+            // All API calls should use the full identifier in the path
+            assert_eq!(request.url().path(), "/v1/table/ns1$ns2$table1/describe/");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 1, "schema": { "fields": [] }}"#)
+                .unwrap()
+        });
+
+        // The name() method should return just the base name, not the full identifier
+        assert_eq!(table.name(), "ns1$ns2$table1");
+
+        // API operations should work correctly
+        let version = table.version().await.unwrap();
+        assert_eq!(version, 1);
+    }
+
+    #[tokio::test]
+    async fn test_query_with_namespace() {
+        let table = Table::new_with_handler("analytics$events", |request| {
+            match request.url().path() {
+                "/v1/table/analytics$events/query/" => {
+                    assert_eq!(request.method(), "POST");
+
+                    // Return empty arrow stream
+                    let data = RecordBatch::try_new(
+                        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+                        vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+                    )
+                    .unwrap();
+                    let body = write_ipc_file(&data);
+
+                    http::Response::builder()
+                        .status(200)
+                        .header("Content-Type", ARROW_FILE_CONTENT_TYPE)
+                        .body(body)
+                        .unwrap()
+                }
+                _ => {
+                    panic!("Unexpected path: {}", request.url().path());
+                }
+            }
+        });
+
+        let results = table.query().execute().await.unwrap();
+        let batches = results.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_add_data_with_namespace() {
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table = Table::new_with_handler("prod$metrics", move |mut request| {
+            if request.url().path() == "/v1/table/prod$metrics/insert/" {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    ARROW_STREAM_CONTENT_TYPE
+                );
+                let mut body_out = reqwest::Body::from(Vec::new());
+                std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+                sender.send(body_out).unwrap();
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 2}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table
+            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 2);
+
+        let body = receiver.recv().unwrap();
+        let body = collect_body(body).await;
+        let expected_body = write_ipc_stream(&data);
+        assert_eq!(&body, &expected_body);
+    }
+
+    #[tokio::test]
+    async fn test_create_index_with_namespace() {
+        let table = Table::new_with_handler("dev$users", |request| {
+            match request.url().path() {
+                "/v1/table/dev$users/create_index/" => {
+                    assert_eq!(request.method(), "POST");
+                    assert_eq!(
+                        request.headers().get("Content-Type").unwrap(),
+                        JSON_CONTENT_TYPE
+                    );
+
+                    // Verify the request body contains the column name
+                    if let Some(body) = request.body().unwrap().as_bytes() {
+                        let body = std::str::from_utf8(body).unwrap();
+                        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+                        assert_eq!(value["column"], "embedding");
+                        assert_eq!(value["index_type"], "IVF_PQ");
+                    }
+
+                    http::Response::builder().status(200).body("").unwrap()
+                }
+                "/v1/table/dev$users/describe/" => {
+                    // Needed for schema check in Auto index type
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 1, "schema": {"fields": [{"name": "embedding", "type": {"type": "list", "item": {"type": "float32"}}, "nullable": false}]}}"#)
+                        .unwrap()
+                }
+                _ => {
+                    panic!("Unexpected path: {}", request.url().path());
+                }
+            }
+        });
+
+        table
+            .create_index(&["embedding"], Index::IvfPq(IvfPqIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_columns_with_namespace() {
+        let table = Table::new_with_handler("test$schema_ops", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/test$schema_ops/drop_columns/"
+            );
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            if let Some(body) = request.body().unwrap().as_bytes() {
+                let body = std::str::from_utf8(body).unwrap();
+                let value: serde_json::Value = serde_json::from_str(body).unwrap();
+                let columns = value["columns"].as_array().unwrap();
+                assert_eq!(columns.len(), 2);
+                assert_eq!(columns[0], "old_col1");
+                assert_eq!(columns[1], "old_col2");
+            }
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 5}"#)
+                .unwrap()
+        });
+
+        let result = table.drop_columns(&["old_col1", "old_col2"]).await.unwrap();
+        assert_eq!(result.version, 5);
     }
 }

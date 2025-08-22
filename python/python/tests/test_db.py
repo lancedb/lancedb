@@ -728,3 +728,93 @@ def test_bypass_vector_index_sync(tmp_db: lancedb.DBConnection):
         table.search(sample_key).bypass_vector_index().explain_plan(verbose=True)
     )
     assert "KNN" in plan_without_index
+
+
+def test_local_namespace_operations(tmp_path):
+    """Test that local mode namespace operations behave as expected."""
+    # Create a local database connection
+    db = lancedb.connect(tmp_path)
+
+    # Test list_namespaces returns empty list
+    namespaces = list(db.list_namespaces())
+    assert namespaces == []
+
+    # Test list_namespaces with parameters still returns empty list
+    namespaces_with_params = list(
+        db.list_namespaces(namespace=["test"], page_token="token", limit=5)
+    )
+    assert namespaces_with_params == []
+
+
+def test_local_create_namespace_not_supported(tmp_path):
+    """Test that create_namespace is not supported in local mode."""
+    db = lancedb.connect(tmp_path)
+
+    with pytest.raises(
+        NotImplementedError,
+        match="Namespace operations are not supported for listing database",
+    ):
+        db.create_namespace(["test_namespace"])
+
+
+def test_local_drop_namespace_not_supported(tmp_path):
+    """Test that drop_namespace is not supported in local mode."""
+    db = lancedb.connect(tmp_path)
+
+    with pytest.raises(
+        NotImplementedError,
+        match="Namespace operations are not supported for listing database",
+    ):
+        db.drop_namespace(["test_namespace"])
+
+
+def test_local_table_operations_with_namespace_raise_error(tmp_path):
+    """
+    Test that table operations with namespace parameter
+    raise ValueError in local mode.
+    """
+    db = lancedb.connect(tmp_path)
+
+    # Create some test data
+    data = [{"vector": [1.0, 2.0], "item": "test"}]
+    schema = pa.schema(
+        [pa.field("vector", pa.list_(pa.float32(), 2)), pa.field("item", pa.string())]
+    )
+
+    # Test create_table with namespace - should raise ValueError
+    with pytest.raises(
+        NotImplementedError,
+        match="Namespace parameter is not supported for listing database",
+    ):
+        db.create_table(
+            "test_table_with_ns", data=data, schema=schema, namespace=["test_ns"]
+        )
+
+    # Create table normally for other tests
+    db.create_table("test_table", data=data, schema=schema)
+    assert "test_table" in db.table_names()
+
+    # Test open_table with namespace - should raise ValueError
+    with pytest.raises(
+        NotImplementedError,
+        match="Namespace parameter is not supported for listing database",
+    ):
+        db.open_table("test_table", namespace=["test_ns"])
+
+    # Test table_names with namespace - should raise ValueError
+    with pytest.raises(
+        NotImplementedError,
+        match="Namespace parameter is not supported for listing database",
+    ):
+        list(db.table_names(namespace=["test_ns"]))
+
+    # Test drop_table with namespace - should raise ValueError
+    with pytest.raises(
+        NotImplementedError,
+        match="Namespace parameter is not supported for listing database",
+    ):
+        db.drop_table("test_table", namespace=["test_ns"])
+
+    # Test table_names without namespace - should work normally
+    tables_root = list(db.table_names())
+    assert "test_table" in tables_root

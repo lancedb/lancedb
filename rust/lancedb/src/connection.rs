@@ -19,8 +19,9 @@ use crate::database::listing::{
     ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
 use crate::database::{
-    CreateTableData, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    OpenTableRequest, TableNamesRequest,
+    CreateNamespaceRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
+    DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
+    TableNamesRequest,
 };
 use crate::embeddings::{
     EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
@@ -64,6 +65,12 @@ impl TableNamesBuilder {
     /// The maximum number of table names to return
     pub fn limit(mut self, limit: u32) -> Self {
         self.request.limit = Some(limit);
+        self
+    }
+
+    /// Set the namespace to list tables from
+    pub fn namespace(mut self, namespace: Vec<String>) -> Self {
+        self.request.namespace = namespace;
         self
     }
 
@@ -348,6 +355,12 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
         );
         self
     }
+
+    /// Set the namespace for the table
+    pub fn namespace(mut self, namespace: Vec<String>) -> Self {
+        self.request.namespace = namespace;
+        self
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -367,6 +380,7 @@ impl OpenTableBuilder {
             parent,
             request: OpenTableRequest {
                 name,
+                namespace: vec![],
                 index_cache_size: None,
                 lance_read_params: None,
             },
@@ -439,6 +453,12 @@ impl OpenTableBuilder {
         for (key, value) in pairs {
             storage_options.insert(key.into(), value.into());
         }
+        self
+    }
+
+    /// Set the namespace for the table
+    pub fn namespace(mut self, namespace: Vec<String>) -> Self {
+        self.request.namespace = namespace;
         self
     }
 
@@ -564,9 +584,16 @@ impl Connection {
         &self,
         old_name: impl AsRef<str>,
         new_name: impl AsRef<str>,
+        cur_namespace: &[String],
+        new_namespace: &[String],
     ) -> Result<()> {
         self.internal
-            .rename_table(old_name.as_ref(), new_name.as_ref())
+            .rename_table(
+                old_name.as_ref(),
+                new_name.as_ref(),
+                cur_namespace,
+                new_namespace,
+            )
             .await
     }
 
@@ -574,8 +601,9 @@ impl Connection {
     ///
     /// # Arguments
     /// * `name` - The name of the table to drop
-    pub async fn drop_table(&self, name: impl AsRef<str>) -> Result<()> {
-        self.internal.drop_table(name.as_ref()).await
+    /// * `namespace` - The namespace to drop the table from
+    pub async fn drop_table(&self, name: impl AsRef<str>, namespace: &[String]) -> Result<()> {
+        self.internal.drop_table(name.as_ref(), namespace).await
     }
 
     /// Drop the database
@@ -583,12 +611,30 @@ impl Connection {
     /// This is the same as dropping all of the tables
     #[deprecated(since = "0.15.1", note = "Use `drop_all_tables` instead")]
     pub async fn drop_db(&self) -> Result<()> {
-        self.internal.drop_all_tables().await
+        self.internal.drop_all_tables(&[]).await
     }
 
     /// Drops all tables in the database
-    pub async fn drop_all_tables(&self) -> Result<()> {
-        self.internal.drop_all_tables().await
+    ///
+    /// # Arguments
+    /// * `namespace` - The namespace to drop all tables from. Empty slice represents root namespace.
+    pub async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
+        self.internal.drop_all_tables(namespace).await
+    }
+
+    /// List immediate child namespace names in the given namespace
+    pub async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>> {
+        self.internal.list_namespaces(request).await
+    }
+
+    /// Create a new namespace
+    pub async fn create_namespace(&self, request: CreateNamespaceRequest) -> Result<()> {
+        self.internal.create_namespace(request).await
+    }
+
+    /// Drop a namespace
+    pub async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<()> {
+        self.internal.drop_namespace(request).await
     }
 
     /// Get the in-memory embedding registry.
@@ -1220,12 +1266,12 @@ mod tests {
 
         // drop non-exist table
         assert!(matches!(
-            db.drop_table("invalid_table").await,
+            db.drop_table("invalid_table", &[]).await,
             Err(crate::Error::TableNotFound { .. }),
         ));
 
         create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
-        db.drop_table("table1").await.unwrap();
+        db.drop_table("table1", &[]).await.unwrap();
 
         let tables = db.table_names().execute().await.unwrap();
         assert_eq!(tables.len(), 0);

@@ -509,6 +509,10 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
     /// Get the name of the table.
     fn name(&self) -> &str;
+    /// Get the namespace of the table.
+    fn namespace(&self) -> &[String];
+    /// Get the id of the table
+    fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
     /// Count the number of rows in this table.
@@ -2004,6 +2008,16 @@ impl BaseTable for NativeTable {
     }
 
     fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn namespace(&self) -> &[String] {
+        // Native tables don't support namespaces yet, return empty slice for root namespace
+        &[]
+    }
+
+    fn id(&self) -> &str {
+        // For native tables, id is same as name since no namespace support
         self.name.as_str()
     }
 
