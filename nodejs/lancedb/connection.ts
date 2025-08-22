@@ -328,7 +328,7 @@ export class LocalConnection extends Connection {
     const data = dataOrNamespace as Record<string, unknown>[] | TableLike;
     const namespace = namespaceOrOptions as string[] | undefined;
     const createOptions = options;
-    
+
     return this._createTableImpl(name, data, namespace, createOptions);
   }
 
