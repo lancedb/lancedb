@@ -255,7 +255,7 @@ mod tests {
             .await
             .unwrap();
 
-        let initial_data = lance_datagen::gen()
+        let initial_data = lance_datagen::gen_batch()
             .col("some_value", lance_datagen::array::step::<Int32Type>())
             .into_ldb_stream(RowCount::from(100), BatchCount::from(10));
         let data_table = db
