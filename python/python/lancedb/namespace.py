@@ -142,12 +142,7 @@ class LanceNamespaceDBConnection(DBConnection):
         page_token: Optional[str] = None,
         limit: int = 10,
     ) -> Iterable[str]:
-        # Use namespace to list tables
-        # TODO: this is a bug in lance-namespace
-        #  needs to be removed after fix
-        request = ListTablesRequest(
-            id=None if not namespace else namespace, page_token=page_token, limit=limit
-        )
+        request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
         response = self._ns.list_tables(request)
         return response.tables if response.tables else []
 
@@ -295,10 +290,8 @@ class LanceNamespaceDBConnection(DBConnection):
         Iterable[str]
             Names of child namespaces.
         """
-        # TODO: this is a bug in lance-namespace
-        #  needs to be removed after fix
         request = ListNamespacesRequest(
-            id=None if not namespace else namespace, page_token=page_token, limit=limit
+            id=namespace, page_token=page_token, limit=limit
         )
         response = self._ns.list_namespaces(request)
         return response.namespaces if response.namespaces else []

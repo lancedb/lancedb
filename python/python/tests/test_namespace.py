@@ -61,7 +61,7 @@ class TempNamespace(LanceNamespace):
 
     def list_tables(self, request: ListTablesRequest) -> ListTablesResponse:
         """List all tables in the namespace."""
-        if request.id is None:
+        if not request.id:
             # List all tables in root namespace
             tables = [name for name in self.tables.keys() if "." not in name]
         else:
@@ -212,7 +212,7 @@ class TempNamespace(LanceNamespace):
 
     def list_namespaces(self, request: ListNamespacesRequest) -> ListNamespacesResponse:
         """List child namespaces."""
-        if request.id is None:
+        if not request.id:
             # List root-level namespaces
             namespaces = list(self.namespaces)
         elif len(request.id) == 1:
