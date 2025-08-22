@@ -26,6 +26,9 @@ from lance_namespace_urllib3_client.models import (
     DescribeTableRequest,
     CreateTableRequest,
     DropTableRequest,
+    ListNamespacesRequest,
+    CreateNamespaceRequest,
+    DropNamespaceRequest,
     JsonArrowSchema,
     JsonArrowField,
     JsonArrowDataType,
@@ -134,10 +137,17 @@ class LanceNamespaceDBConnection(DBConnection):
 
     @override
     def table_names(
-        self, page_token: Optional[str] = None, limit: int = 10
+        self,
+        namespace: List[str] = [],
+        page_token: Optional[str] = None,
+        limit: int = 10,
     ) -> Iterable[str]:
         # Use namespace to list tables
-        request = ListTablesRequest(id=None, page_token=page_token, limit=limit)
+        # TODO: this is a bug in lance-namespace
+        #  needs to be removed after fix
+        request = ListTablesRequest(
+            id=None if not namespace else namespace, page_token=page_token, limit=limit
+        )
         response = self._ns.list_tables(request)
         return response.tables if response.tables else []
 
@@ -153,6 +163,7 @@ class LanceNamespaceDBConnection(DBConnection):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
@@ -183,8 +194,9 @@ class LanceNamespaceDBConnection(DBConnection):
         # Convert PyArrow schema to JsonArrowSchema
         json_schema = _convert_pyarrow_schema_to_json(schema)
 
-        # Create table request
-        request = CreateTableRequest(id=[name], var_schema=json_schema)
+        # Create table request with namespace
+        table_id = (namespace or []) + [name]
+        request = CreateTableRequest(id=table_id, var_schema=json_schema)
 
         # Create empty Arrow IPC stream bytes
         import pyarrow.ipc as ipc
@@ -199,17 +211,21 @@ class LanceNamespaceDBConnection(DBConnection):
         request_data = buffer.getvalue()
 
         self._ns.create_table(request, request_data)
-        return self.open_table(name, storage_options=storage_options)
+        return self.open_table(
+            name, namespace=namespace, storage_options=storage_options
+        )
 
     @override
     def open_table(
         self,
         name: str,
         *,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
-        request = DescribeTableRequest(id=[name])
+        table_id = (namespace or []) + [name]
+        request = DescribeTableRequest(id=table_id)
         response = self._ns.describe_table(request)
 
         merged_storage_options = dict()
@@ -225,13 +241,20 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
     @override
-    def drop_table(self, name: str):
+    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
         # Use namespace drop_table directly
-        request = DropTableRequest(id=[name])
+        table_id = (namespace or []) + [name]
+        request = DropTableRequest(id=table_id)
         self._ns.drop_table(request)
 
     @override
-    def rename_table(self, cur_name: str, new_name: str):
+    def rename_table(
+        self,
+        cur_name: str,
+        new_name: str,
+        cur_namespace: Optional[List[str]] = None,
+        new_namespace: Optional[List[str]] = None,
+    ):
         raise NotImplementedError(
             "rename_table is not supported for namespace connections"
         )
@@ -243,9 +266,68 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
     @override
-    def drop_all_tables(self):
-        for table_name in self.table_names():
-            self.drop_table(table_name)
+    def drop_all_tables(self, namespace: Optional[List[str]] = None):
+        for table_name in self.table_names(namespace=namespace):
+            self.drop_table(table_name, namespace=namespace)
+
+    @override
+    def list_namespaces(
+        self,
+        namespace: List[str] = [],
+        page_token: Optional[str] = None,
+        limit: int = 10,
+    ) -> Iterable[str]:
+        """
+        List child namespaces under the given namespace.
+
+        Parameters
+        ----------
+        namespace : Optional[List[str]]
+            The parent namespace to list children from.
+            If None, lists root-level namespaces.
+        page_token : Optional[str]
+            Pagination token for listing results.
+        limit : int
+            Maximum number of namespaces to return.
+
+        Returns
+        -------
+        Iterable[str]
+            Names of child namespaces.
+        """
+        # TODO: this is a bug in lance-namespace
+        #  needs to be removed after fix
+        request = ListNamespacesRequest(
+            id=None if not namespace else namespace, page_token=page_token, limit=limit
+        )
+        response = self._ns.list_namespaces(request)
+        return response.namespaces if response.namespaces else []
+
+    @override
+    def create_namespace(self, namespace: List[str]) -> None:
+        """
+        Create a new namespace.
+
+        Parameters
+        ----------
+        namespace : List[str]
+            The namespace path to create.
+        """
+        request = CreateNamespaceRequest(id=namespace)
+        self._ns.create_namespace(request)
+
+    @override
+    def drop_namespace(self, namespace: List[str]) -> None:
+        """
+        Drop a namespace.
+
+        Parameters
+        ----------
+        namespace : List[str]
+            The namespace path to drop.
+        """
+        request = DropNamespaceRequest(id=namespace)
+        self._ns.drop_namespace(request)
 
     def _lance_table_from_uri(
         self,

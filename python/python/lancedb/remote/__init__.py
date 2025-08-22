@@ -118,6 +118,7 @@ class ClientConfig:
     retry_config: RetryConfig = field(default_factory=RetryConfig)
     timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
     extra_headers: Optional[dict] = None
+    id_delimiter: Optional[str] = None
 
     def __post_init__(self):
         if isinstance(self.retry_config, dict):

@@ -97,13 +97,71 @@ class RemoteDBConnection(DBConnection):
         return f"RemoteConnect(name={self.db_name})"
 
     @override
+    def list_namespaces(
+        self,
+        namespace: List[str] = [],
+        page_token: Optional[str] = None,
+        limit: int = 10,
+    ) -> Iterable[str]:
+        """List immediate child namespace names in the given namespace.
+
+        Parameters
+        ----------
+        namespace: List[str], optional
+            The parent namespace to list namespaces in.
+            None or empty list represents root namespace.
+        page_token: str, optional
+            The token to use for pagination. If not present, start from the beginning.
+        limit: int, default 10
+            The size of the page to return.
+
+        Returns
+        -------
+        Iterable of str
+            List of immediate child namespace names
+        """
+        return LOOP.run(
+            self._conn.list_namespaces(
+                namespace=namespace, page_token=page_token, limit=limit
+            )
+        )
+
+    @override
+    def create_namespace(self, namespace: List[str]) -> None:
+        """Create a new namespace.
+
+        Parameters
+        ----------
+        namespace: List[str]
+            The namespace identifier to create.
+        """
+        LOOP.run(self._conn.create_namespace(namespace=namespace))
+
+    @override
+    def drop_namespace(self, namespace: List[str]) -> None:
+        """Drop a namespace.
+
+        Parameters
+        ----------
+        namespace: List[str]
+            The namespace identifier to drop.
+        """
+        return LOOP.run(self._conn.drop_namespace(namespace=namespace))
+
+    @override
     def table_names(
-        self, page_token: Optional[str] = None, limit: int = 10
+        self,
+        namespace: List[str] = [],
+        page_token: Optional[str] = None,
+        limit: int = 10,
     ) -> Iterable[str]:
         """List the names of all tables in the database.
 
         Parameters
         ----------
+        namespace: List[str], default []
+            The namespace to list tables in.
+            Empty list represents root namespace.
         page_token: str
             The last token to start the new page.
         limit: int, default 10
@@ -113,13 +171,18 @@ class RemoteDBConnection(DBConnection):
         -------
         An iterator of table names.
         """
-        return LOOP.run(self._conn.table_names(start_after=page_token, limit=limit))
+        return LOOP.run(
+            self._conn.table_names(
+                namespace=namespace, start_after=page_token, limit=limit
+            )
+        )
 
     @override
     def open_table(
         self,
         name: str,
         *,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
@@ -129,6 +192,9 @@ class RemoteDBConnection(DBConnection):
         ----------
         name: str
             The name of the table.
+        namespace: List[str], optional
+            The namespace to open the table from.
+            None or empty list represents root namespace.
 
         Returns
         -------
@@ -142,7 +208,7 @@ class RemoteDBConnection(DBConnection):
                 " (there is no local cache to configure)"
             )
 
-        table = LOOP.run(self._conn.open_table(name))
+        table = LOOP.run(self._conn.open_table(name, namespace=namespace))
         return RemoteTable(table, self.db_name)
 
     @override
@@ -155,6 +221,8 @@ class RemoteDBConnection(DBConnection):
         fill_value: float = 0.0,
         mode: Optional[str] = None,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
+        *,
+        namespace: List[str] = [],
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -162,6 +230,9 @@ class RemoteDBConnection(DBConnection):
         ----------
         name: str
             The name of the table.
+        namespace: List[str], optional
+            The namespace to create the table in.
+            None or empty list represents root namespace.
         data: The data to initialize the table, *optional*
             User must provide at least one of `data` or `schema`.
             Acceptable types are:
@@ -262,6 +333,7 @@ class RemoteDBConnection(DBConnection):
             self._conn.create_table(
                 name,
                 data,
+                namespace=namespace,
                 mode=mode,
                 schema=schema,
                 on_bad_vectors=on_bad_vectors,
@@ -271,18 +343,27 @@ class RemoteDBConnection(DBConnection):
         return RemoteTable(table, self.db_name)
 
     @override
-    def drop_table(self, name: str):
+    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
         """Drop a table from the database.
 
         Parameters
         ----------
         name: str
             The name of the table.
+        namespace: List[str], optional
+            The namespace to drop the table from.
+            None or empty list represents root namespace.
         """
-        LOOP.run(self._conn.drop_table(name))
+        LOOP.run(self._conn.drop_table(name, namespace=namespace))
 
     @override
-    def rename_table(self, cur_name: str, new_name: str):
+    def rename_table(
+        self,
+        cur_name: str,
+        new_name: str,
+        cur_namespace: Optional[List[str]] = None,
+        new_namespace: Optional[List[str]] = None,
+    ):
         """Rename a table in the database.
 
         Parameters
@@ -292,7 +373,14 @@ class RemoteDBConnection(DBConnection):
         new_name: str
             The new name of the table.
         """
-        LOOP.run(self._conn.rename_table(cur_name, new_name))
+        LOOP.run(
+            self._conn.rename_table(
+                cur_name,
+                new_name,
+                cur_namespace=cur_namespace,
+                new_namespace=new_namespace,
+            )
+        )
 
     async def close(self):
         """Close the connection to the database."""

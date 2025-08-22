@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     // --8<-- [end:delete]
 
     // --8<-- [start:drop_table]
-    db.drop_table("my_table").await.unwrap();
+    db.drop_table("my_table", None).await.unwrap();
     // --8<-- [end:drop_table]
     Ok(())
 }

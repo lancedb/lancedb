@@ -158,18 +158,25 @@ export abstract class Connection {
    * List all the table names in this database.
    *
    * Tables will be returned in lexicographical order.
+   * @param {string[]} namespace - The namespace to list tables from (defaults to root namespace)
    * @param {Partial<TableNamesOptions>} options - options to control the
    * paging / start point
    *
    */
-  abstract tableNames(options?: Partial<TableNamesOptions>): Promise<string[]>;
+  abstract tableNames(
+    namespace?: string[],
+    options?: Partial<TableNamesOptions>,
+  ): Promise<string[]>;
 
   /**
    * Open a table in the database.
    * @param {string} name - The name of the table
+   * @param {string[]} namespace - The namespace of the table (defaults to root namespace)
+   * @param {Partial<OpenTableOptions>} options - Additional options
    */
   abstract openTable(
     name: string,
+    namespace?: string[],
     options?: Partial<OpenTableOptions>,
   ): Promise<Table>;
 
@@ -178,6 +185,7 @@ export abstract class Connection {
    * @param {object} options - The options object.
    * @param {string} options.name - The name of the table.
    * @param {Data} options.data - Non-empty Array of Records to be inserted into the table
+   * @param {string[]} namespace - The namespace to create the table in (defaults to root namespace)
    *
    */
   abstract createTable(
@@ -185,16 +193,20 @@ export abstract class Connection {
       name: string;
       data: Data;
     } & Partial<CreateTableOptions>,
+    namespace?: string[],
   ): Promise<Table>;
   /**
    * Creates a new Table and initialize it with new data.
    * @param {string} name - The name of the table.
    * @param {Record<string, unknown>[] | TableLike} data - Non-empty Array of Records
    * to be inserted into the table
+   * @param {string[]} namespace - The namespace to create the table in (defaults to root namespace)
+   * @param {Partial<CreateTableOptions>} options - Additional options
    */
   abstract createTable(
     name: string,
     data: Record<string, unknown>[] | TableLike,
+    namespace?: string[],
     options?: Partial<CreateTableOptions>,
   ): Promise<Table>;
 
@@ -202,23 +214,28 @@ export abstract class Connection {
    * Creates a new empty Table
    * @param {string} name - The name of the table.
    * @param {Schema} schema - The schema of the table
+   * @param {string[]} namespace - The namespace to create the table in (defaults to root namespace)
+   * @param {Partial<CreateTableOptions>} options - Additional options
    */
   abstract createEmptyTable(
     name: string,
     schema: import("./arrow").SchemaLike,
+    namespace?: string[],
     options?: Partial<CreateTableOptions>,
   ): Promise<Table>;
 
   /**
    * Drop an existing table.
    * @param {string} name The name of the table to drop.
+   * @param {string[]} namespace The namespace of the table (defaults to root namespace).
    */
-  abstract dropTable(name: string): Promise<void>;
+  abstract dropTable(name: string, namespace?: string[]): Promise<void>;
 
   /**
    * Drop all tables in the database.
+   * @param {string[]} namespace The namespace to drop tables from (defaults to root namespace).
    */
-  abstract dropAllTables(): Promise<void>;
+  abstract dropAllTables(namespace?: string[]): Promise<void>;
 }
 
 /** @hideconstructor */
@@ -243,16 +260,25 @@ export class LocalConnection extends Connection {
     return this.inner.display();
   }
 
-  async tableNames(options?: Partial<TableNamesOptions>): Promise<string[]> {
-    return this.inner.tableNames(options?.startAfter, options?.limit);
+  async tableNames(
+    namespace?: string[],
+    options?: Partial<TableNamesOptions>,
+  ): Promise<string[]> {
+    return this.inner.tableNames(
+      namespace ?? [],
+      options?.startAfter,
+      options?.limit,
+    );
   }
 
   async openTable(
     name: string,
+    namespace?: string[],
     options?: Partial<OpenTableOptions>,
   ): Promise<Table> {
     const innerTable = await this.inner.openTable(
       name,
+      namespace ?? [],
       cleanseStorageOptions(options?.storageOptions),
       options?.indexCacheSize,
     );
@@ -286,14 +312,32 @@ export class LocalConnection extends Connection {
     nameOrOptions:
       | string
       | ({ name: string; data: Data } & Partial<CreateTableOptions>),
-    data?: Record<string, unknown>[] | TableLike,
+    dataOrNamespace?: Record<string, unknown>[] | TableLike | string[],
+    namespaceOrOptions?: string[] | Partial<CreateTableOptions>,
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
     if (typeof nameOrOptions !== "string" && "name" in nameOrOptions) {
-      const { name, data, ...options } = nameOrOptions;
-
-      return this.createTable(name, data, options);
+      // First overload: createTable(options, namespace?)
+      const { name, data, ...createOptions } = nameOrOptions;
+      const namespace = dataOrNamespace as string[] | undefined;
+      return this._createTableImpl(name, data, namespace, createOptions);
     }
+
+    // Second overload: createTable(name, data, namespace?, options?)
+    const name = nameOrOptions;
+    const data = dataOrNamespace as Record<string, unknown>[] | TableLike;
+    const namespace = namespaceOrOptions as string[] | undefined;
+    const createOptions = options;
+    
+    return this._createTableImpl(name, data, namespace, createOptions);
+  }
+
+  private async _createTableImpl(
+    name: string,
+    data: Data,
+    namespace?: string[],
+    options?: Partial<CreateTableOptions>,
+  ): Promise<Table> {
     if (data === undefined) {
       throw new Error("data is required");
     }
@@ -302,9 +346,10 @@ export class LocalConnection extends Connection {
     const storageOptions = this.getStorageOptions(options);
 
     const innerTable = await this.inner.createTable(
-      nameOrOptions,
+      name,
       buf,
       mode,
+      namespace ?? [],
       storageOptions,
     );
 
@@ -314,6 +359,7 @@ export class LocalConnection extends Connection {
   async createEmptyTable(
     name: string,
     schema: import("./arrow").SchemaLike,
+    namespace?: string[],
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
     let mode: string = options?.mode ?? "create";
@@ -336,17 +382,18 @@ export class LocalConnection extends Connection {
       name,
       buf,
       mode,
+      namespace ?? [],
       storageOptions,
     );
     return new LocalTable(innerTable);
   }
 
-  async dropTable(name: string): Promise<void> {
-    return this.inner.dropTable(name);
+  async dropTable(name: string, namespace?: string[]): Promise<void> {
+    return this.inner.dropTable(name, namespace ?? []);
   }
 
-  async dropAllTables(): Promise<void> {
-    return this.inner.dropAllTables();
+  async dropAllTables(namespace?: string[]): Promise<void> {
+    return this.inner.dropAllTables(namespace ?? []);
   }
 }
 

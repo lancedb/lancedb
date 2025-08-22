@@ -14,8 +14,9 @@ use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
 use crate::database::{
-    CreateTableData, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    OpenTableRequest, TableNamesRequest,
+    CreateNamespaceRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
+    DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
+    TableNamesRequest,
 };
 use crate::error::Result;
 use crate::table::BaseTable;
@@ -245,10 +246,38 @@ impl From<&CreateTableMode> for &'static str {
     }
 }
 
+fn build_table_identifier(name: &str, namespace: &[String], delimiter: &str) -> String {
+    if !namespace.is_empty() {
+        let mut parts = namespace.to_vec();
+        parts.push(name.to_string());
+        parts.join(delimiter)
+    } else {
+        name.to_string()
+    }
+}
+
+fn build_namespace_identifier(namespace: &[String], delimiter: &str) -> String {
+    if namespace.is_empty() {
+        // According to the namespace spec, use delimiter to represent root namespace
+        delimiter.to_string()
+    } else {
+        namespace.join(delimiter)
+    }
+}
+
 #[async_trait]
 impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
-        let mut req = self.client.get("/v1/table/");
+        let mut req = if !request.namespace.is_empty() {
+            let namespace_id =
+                build_namespace_identifier(&request.namespace, &self.client.id_delimiter);
+            self.client
+                .get(&format!("/v1/namespace/{}/table/list", namespace_id))
+        } else {
+            // TODO: use new API for all listing operations once stable
+            self.client.get("/v1/table/")
+        };
+
         if let Some(limit) = request.limit {
             req = req.query(&[("limit", limit)]);
         }
@@ -264,9 +293,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .err_to_http(request_id)?
             .tables;
         for table in &tables {
+            let table_identifier =
+                build_table_identifier(table, &request.namespace, &self.client.id_delimiter);
             let remote_table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 table.clone(),
+                request.namespace.clone(),
+                table_identifier,
                 version.clone(),
             ));
             self.table_cache.insert(table.clone(), remote_table).await;
@@ -295,9 +328,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .await
             .unwrap()?;
 
+        let identifier =
+            build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
         let req = self
             .client
-            .post(&format!("/v1/table/{}/create/", request.name))
+            .post(&format!("/v1/table/{}/create/", identifier))
             .query(&[("mode", Into::<&str>::into(&request.mode))])
             .body(data_buffer)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
@@ -314,6 +349,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                     CreateTableMode::ExistOk(callback) => {
                         let req = OpenTableRequest {
                             name: request.name.clone(),
+                            namespace: request.namespace.clone(),
                             index_cache_size: None,
                             lance_read_params: None,
                         };
@@ -342,68 +378,154 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
         let rsp = self.client.check_response(&request_id, rsp).await?;
         let version = parse_server_version(&request_id, &rsp)?;
+        let table_identifier =
+            build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
         let table = Arc::new(RemoteTable::new(
             self.client.clone(),
             request.name.clone(),
+            request.namespace.clone(),
+            table_identifier,
             version,
         ));
-        self.table_cache
-            .insert(request.name.clone(), table.clone())
-            .await;
+        self.table_cache.insert(identifier, table.clone()).await;
 
         Ok(table)
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        let identifier =
+            build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
+
         // We describe the table to confirm it exists before moving on.
-        if let Some(table) = self.table_cache.get(&request.name).await {
+        if let Some(table) = self.table_cache.get(&identifier).await {
             Ok(table.clone())
         } else {
             let req = self
                 .client
-                .post(&format!("/v1/table/{}/describe/", request.name));
+                .post(&format!("/v1/table/{}/describe/", identifier));
             let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
             if rsp.status() == StatusCode::NOT_FOUND {
-                return Err(crate::Error::TableNotFound { name: request.name });
+                return Err(crate::Error::TableNotFound {
+                    name: identifier.clone(),
+                });
             }
             let rsp = self.client.check_response(&request_id, rsp).await?;
             let version = parse_server_version(&request_id, &rsp)?;
+            let table_identifier = build_table_identifier(
+                &request.name,
+                &request.namespace,
+                &self.client.id_delimiter,
+            );
             let table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 request.name.clone(),
+                request.namespace.clone(),
+                table_identifier,
                 version,
             ));
-            self.table_cache.insert(request.name, table.clone()).await;
+            self.table_cache.insert(identifier, table.clone()).await;
             Ok(table)
         }
     }
 
-    async fn rename_table(&self, current_name: &str, new_name: &str) -> Result<()> {
+    async fn rename_table(
+        &self,
+        current_name: &str,
+        new_name: &str,
+        cur_namespace: &[String],
+        new_namespace: &[String],
+    ) -> Result<()> {
+        let current_identifier =
+            build_table_identifier(current_name, cur_namespace, &self.client.id_delimiter);
+        let new_identifier =
+            build_table_identifier(new_name, new_namespace, &self.client.id_delimiter);
+
+        let mut body = serde_json::json!({ "new_table_name": new_name });
+        if !new_namespace.is_empty() {
+            body["new_namespace"] = serde_json::Value::Array(
+                new_namespace
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect(),
+            );
+        }
         let req = self
             .client
-            .post(&format!("/v1/table/{}/rename/", current_name));
-        let req = req.json(&serde_json::json!({ "new_table_name": new_name }));
+            .post(&format!("/v1/table/{}/rename/", current_identifier))
+            .json(&body);
         let (request_id, resp) = self.client.send(req).await?;
         self.client.check_response(&request_id, resp).await?;
-        let table = self.table_cache.remove(current_name).await;
+        let table = self.table_cache.remove(&current_identifier).await;
         if let Some(table) = table {
-            self.table_cache.insert(new_name.into(), table).await;
+            self.table_cache.insert(new_identifier, table).await;
         }
         Ok(())
     }
 
-    async fn drop_table(&self, name: &str) -> Result<()> {
-        let req = self.client.post(&format!("/v1/table/{}/drop/", name));
+    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()> {
+        let identifier = build_table_identifier(name, namespace, &self.client.id_delimiter);
+        let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
         let (request_id, resp) = self.client.send(req).await?;
         self.client.check_response(&request_id, resp).await?;
-        self.table_cache.remove(name).await;
+        self.table_cache.remove(&identifier).await;
         Ok(())
     }
 
-    async fn drop_all_tables(&self) -> Result<()> {
+    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
+        // TODO: Implement namespace-aware drop_all_tables
+        let _namespace = namespace; // Suppress unused warning for now
         Err(crate::Error::NotSupported {
-            message: "Dropping databases is not supported in the remote API".to_string(),
+            message: "Dropping all tables is not currently supported in the remote API".to_string(),
         })
+    }
+
+    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>> {
+        let namespace_id =
+            build_namespace_identifier(request.namespace.as_slice(), &self.client.id_delimiter);
+        let mut req = self
+            .client
+            .get(&format!("/v1/namespace/{}/list", namespace_id));
+        if let Some(limit) = request.limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(page_token) = request.page_token {
+            req = req.query(&[("page_token", page_token)]);
+        }
+
+        let (request_id, resp) = self.client.send(req).await?;
+        let resp = self.client.check_response(&request_id, resp).await?;
+
+        #[derive(Deserialize)]
+        struct ListNamespacesResponse {
+            namespaces: Vec<String>,
+        }
+
+        let parsed: ListNamespacesResponse = resp.json().await.map_err(|e| Error::Runtime {
+            message: format!("Failed to parse namespace response: {}", e),
+        })?;
+        Ok(parsed.namespaces)
+    }
+
+    async fn create_namespace(&self, request: CreateNamespaceRequest) -> Result<()> {
+        let namespace_id =
+            build_namespace_identifier(request.namespace.as_slice(), &self.client.id_delimiter);
+        let req = self
+            .client
+            .post(&format!("/v1/namespace/{}/create", namespace_id));
+        let (request_id, resp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, resp).await?;
+        Ok(())
+    }
+
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<()> {
+        let namespace_id =
+            build_namespace_identifier(request.namespace.as_slice(), &self.client.id_delimiter);
+        let req = self
+            .client
+            .post(&format!("/v1/namespace/{}/drop", namespace_id));
+        let (request_id, resp) = self.client.send(req).await?;
+        self.client.check_response(&request_id, resp).await?;
+        Ok(())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -711,7 +833,7 @@ mod tests {
 
             http::Response::builder().status(200).body("").unwrap()
         });
-        conn.drop_table("table1").await.unwrap();
+        conn.drop_table("table1", &[]).await.unwrap();
         // NOTE: the API will return 200 even if the table does not exist. So we shouldn't expect 404.
     }
 
@@ -731,7 +853,9 @@ mod tests {
 
             http::Response::builder().status(200).body("").unwrap()
         });
-        conn.rename_table("table1", "table2").await.unwrap();
+        conn.rename_table("table1", "table2", &[], &[])
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -741,6 +865,188 @@ mod tests {
             .region("us-east-1")
             .api_key("my-api-key")
             .storage_options(vec![("azure_storage_account_name", "my-storage-account")])
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_table_names_with_root_namespace() {
+        // When namespace is empty (root namespace), should use /v1/table/ for backwards compatibility
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/table/");
+            assert_eq!(request.url().query(), None);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["table1", "table2"]}"#)
+                .unwrap()
+        });
+        let names = conn
+            .table_names()
+            .namespace(vec![])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(names, vec!["table1", "table2"]);
+    }
+
+    #[tokio::test]
+    async fn test_table_names_with_namespace() {
+        // When namespace is non-empty, should use /v1/namespace/{id}/table/list
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/namespace/test/table/list");
+            assert_eq!(request.url().query(), None);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["table1", "table2"]}"#)
+                .unwrap()
+        });
+        let names = conn
+            .table_names()
+            .namespace(vec!["test".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(names, vec!["table1", "table2"]);
+    }
+
+    #[tokio::test]
+    async fn test_table_names_with_nested_namespace() {
+        // When namespace is vec!["ns1", "ns2"], should use /v1/namespace/ns1$ns2/table/list
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/namespace/ns1$ns2/table/list");
+            assert_eq!(request.url().query(), None);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["ns1$ns2$table1", "ns1$ns2$table2"]}"#)
+                .unwrap()
+        });
+        let names = conn
+            .table_names()
+            .namespace(vec!["ns1".to_string(), "ns2".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(names, vec!["ns1$ns2$table1", "ns1$ns2$table2"]);
+    }
+
+    #[tokio::test]
+    async fn test_open_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/ns1$ns2$table1/describe/");
+            assert_eq!(request.url().query(), None);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"table": "table1"}"#)
+                .unwrap()
+        });
+        let table = conn
+            .open_table("table1")
+            .namespace(vec!["ns1".to_string(), "ns2".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_create_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/ns1$table1/create/");
+            assert_eq!(
+                request
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .unwrap(),
+                ARROW_STREAM_CONTENT_TYPE.as_bytes()
+            );
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let reader = RecordBatchIterator::new([Ok(data.clone())], data.schema());
+        let table = conn
+            .create_table("table1", reader)
+            .namespace(vec!["ns1".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/ns1$ns2$table1/drop/");
+            assert_eq!(request.url().query(), None);
+            assert!(request.body().is_none());
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        conn.drop_table("table1", &["ns1".to_string(), "ns2".to_string()])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rename_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/ns1$table1/rename/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["new_table_name"], "table2");
+            assert_eq!(body["new_namespace"], serde_json::json!(["ns2"]));
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        conn.rename_table(
+            "table1",
+            "table2",
+            &["ns1".to_string()],
+            &["ns2".to_string()],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_empty_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/prod$data$metrics/create/");
+            assert_eq!(
+                request
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .unwrap(),
+                ARROW_STREAM_CONTENT_TYPE.as_bytes()
+            );
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        conn.create_empty_table("metrics", schema)
+            .namespace(vec!["prod".to_string(), "data".to_string()])
             .execute()
             .await
             .unwrap();
