@@ -200,6 +200,18 @@ export abstract class Connection {
    * @param {string} name - The name of the table.
    * @param {Record<string, unknown>[] | TableLike} data - Non-empty Array of Records
    * to be inserted into the table
+   * @param {Partial<CreateTableOptions>} options - Additional options (backwards compatibility)
+   */
+  abstract createTable(
+    name: string,
+    data: Record<string, unknown>[] | TableLike,
+    options?: Partial<CreateTableOptions>,
+  ): Promise<Table>;
+  /**
+   * Creates a new Table and initialize it with new data.
+   * @param {string} name - The name of the table.
+   * @param {Record<string, unknown>[] | TableLike} data - Non-empty Array of Records
+   * to be inserted into the table
    * @param {string[]} namespace - The namespace to create the table in (defaults to root namespace)
    * @param {Partial<CreateTableOptions>} options - Additional options
    */
@@ -210,6 +222,17 @@ export abstract class Connection {
     options?: Partial<CreateTableOptions>,
   ): Promise<Table>;
 
+  /**
+   * Creates a new empty Table
+   * @param {string} name - The name of the table.
+   * @param {Schema} schema - The schema of the table
+   * @param {Partial<CreateTableOptions>} options - Additional options (backwards compatibility)
+   */
+  abstract createEmptyTable(
+    name: string,
+    schema: import("./arrow").SchemaLike,
+    options?: Partial<CreateTableOptions>,
+  ): Promise<Table>;
   /**
    * Creates a new empty Table
    * @param {string} name - The name of the table.
@@ -326,8 +349,20 @@ export class LocalConnection extends Connection {
     // Second overload: createTable(name, data, namespace?, options?)
     const name = nameOrOptions;
     const data = dataOrNamespace as Record<string, unknown>[] | TableLike;
-    const namespace = namespaceOrOptions as string[] | undefined;
-    const createOptions = options;
+
+    // Detect if third argument is namespace array or options object
+    let namespace: string[] | undefined;
+    let createOptions: Partial<CreateTableOptions> | undefined;
+
+    if (Array.isArray(namespaceOrOptions)) {
+      // Third argument is namespace array
+      namespace = namespaceOrOptions;
+      createOptions = options;
+    } else {
+      // Third argument is options object (backwards compatibility)
+      namespace = undefined;
+      createOptions = namespaceOrOptions;
+    }
 
     return this._createTableImpl(name, data, namespace, createOptions);
   }
@@ -359,23 +394,37 @@ export class LocalConnection extends Connection {
   async createEmptyTable(
     name: string,
     schema: import("./arrow").SchemaLike,
-    namespace?: string[],
+    namespaceOrOptions?: string[] | Partial<CreateTableOptions>,
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
-    let mode: string = options?.mode ?? "create";
-    const existOk = options?.existOk ?? false;
+    // Detect if third argument is namespace array or options object
+    let namespace: string[] | undefined;
+    let createOptions: Partial<CreateTableOptions> | undefined;
+
+    if (Array.isArray(namespaceOrOptions)) {
+      // Third argument is namespace array
+      namespace = namespaceOrOptions;
+      createOptions = options;
+    } else {
+      // Third argument is options object (backwards compatibility)
+      namespace = undefined;
+      createOptions = namespaceOrOptions;
+    }
+
+    let mode: string = createOptions?.mode ?? "create";
+    const existOk = createOptions?.existOk ?? false;
 
     if (mode === "create" && existOk) {
       mode = "exist_ok";
     }
     let metadata: Map<string, string> | undefined = undefined;
-    if (options?.embeddingFunction !== undefined) {
-      const embeddingFunction = options.embeddingFunction;
+    if (createOptions?.embeddingFunction !== undefined) {
+      const embeddingFunction = createOptions.embeddingFunction;
       const registry = getRegistry();
       metadata = registry.getTableMetadata([embeddingFunction]);
     }
 
-    const storageOptions = this.getStorageOptions(options);
+    const storageOptions = this.getStorageOptions(createOptions);
     const table = makeEmptyTable(schema, metadata);
     const buf = await fromTableToBuffer(table);
     const innerTable = await this.inner.createEmptyTable(
