@@ -158,6 +158,15 @@ export abstract class Connection {
    * List all the table names in this database.
    *
    * Tables will be returned in lexicographical order.
+   * @param {Partial<TableNamesOptions>} options - options to control the
+   * paging / start point (backwards compatibility)
+   *
+   */
+  abstract tableNames(options?: Partial<TableNamesOptions>): Promise<string[]>;
+  /**
+   * List all the table names in this database.
+   *
+   * Tables will be returned in lexicographical order.
    * @param {string[]} namespace - The namespace to list tables from (defaults to root namespace)
    * @param {Partial<TableNamesOptions>} options - options to control the
    * paging / start point
@@ -284,13 +293,27 @@ export class LocalConnection extends Connection {
   }
 
   async tableNames(
-    namespace?: string[],
+    namespaceOrOptions?: string[] | Partial<TableNamesOptions>,
     options?: Partial<TableNamesOptions>,
   ): Promise<string[]> {
+    // Detect if first argument is namespace array or options object
+    let namespace: string[] | undefined;
+    let tableNamesOptions: Partial<TableNamesOptions> | undefined;
+
+    if (Array.isArray(namespaceOrOptions)) {
+      // First argument is namespace array
+      namespace = namespaceOrOptions;
+      tableNamesOptions = options;
+    } else {
+      // First argument is options object (backwards compatibility)
+      namespace = undefined;
+      tableNamesOptions = namespaceOrOptions;
+    }
+
     return this.inner.tableNames(
       namespace ?? [],
-      options?.startAfter,
-      options?.limit,
+      tableNamesOptions?.startAfter,
+      tableNamesOptions?.limit,
     );
   }
 
