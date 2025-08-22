@@ -595,7 +595,7 @@ mod tests {
     }
 
     fn test_data() -> SendableRecordBatchStream {
-        lance_datagen::gen()
+        lance_datagen::gen_batch()
             .with_seed(Seed::from(42))
             .col(ID_COLUMN, lance_datagen::array::step::<Int32Type>())
             .into_ldb_stream(RowCount::from(10), BatchCount::from(5))
@@ -719,7 +719,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hash_split() {
-        let data = lance_datagen::gen()
+        let data = lance_datagen::gen_batch()
             .with_seed(Seed::from(42))
             .col(
                 "hash1",
