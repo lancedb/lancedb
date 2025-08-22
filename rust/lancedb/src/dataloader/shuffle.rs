@@ -284,7 +284,7 @@ mod tests {
     use rand::SeedableRng;
 
     fn test_gen() -> BatchGeneratorBuilder {
-        lance_datagen::gen()
+        lance_datagen::gen_batch()
             .with_seed(Seed::from(42))
             .col("id", lance_datagen::array::step::<Int32Type>())
             .col(
