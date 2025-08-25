@@ -1150,7 +1150,7 @@ class Table(ABC):
         is a record batch (and so users should take care not to pass in too many
         offsets)
 
-        Note: this method is primarily intended to fulfill the dataset contract
+        Note: this method is primarily intended to fulfill the Dataset contract
         for pytorch.
 
         Parameters
