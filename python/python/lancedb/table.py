@@ -1113,7 +1113,9 @@ class Table(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
+    def take_offsets(
+        self, offsets: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
         """
         Take a list of offsets from the table.
 
@@ -1139,8 +1141,60 @@ class Table(ABC):
             A record batch containing the rows at the given offsets.
         """
 
+    def __getitems__(self, offsets: list[int]) -> pa.RecordBatch:
+        """
+        Take a list of offsets from the table and return as a record batch.
+
+        This method uses the `take_offsets` method to take the rows.  However, it
+        aligns the offsets to the passed in offsets.  This means the return type
+        is a record batch (and so users should take care not to pass in too many
+        offsets)
+
+        Note: this method is primarily intended to fulfill the Dataset contract
+        for pytorch.
+
+        Parameters
+        ----------
+        offsets: list[int]
+            The offsets to take.
+
+        Returns
+        -------
+        pa.RecordBatch
+            A record batch containing the rows at the given offsets.
+        """
+        # We don't know the order of the results at all.  So we calculate a permutation
+        # for ordering the given offsets.  Then we load the data with the _rowoffset
+        # column.  Then we sort by _rowoffset and apply the inverse of the permutation
+        # that we calculated.
+        #
+        # Note: this is potentially a lot of memory copy if we're operating on large
+        # batches :(
+        num_offsets = len(offsets)
+        indices = list(range(num_offsets))
+        permutation = sorted(indices, key=lambda idx: offsets[idx])
+        permutation_inv = [0] * num_offsets
+        for i in range(num_offsets):
+            permutation_inv[permutation[i]] = i
+
+        columns = self.schema.names
+        columns.append("_rowoffset")
+        tbl = (
+            self.take_offsets(offsets)
+            .select(columns)
+            .to_arrow()
+            .sort_by("_rowoffset")
+            .take(permutation_inv)
+            .combine_chunks()
+            .drop_columns(["_rowoffset"])
+        )
+
+        return tbl
+
     @abstractmethod
-    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
+    def take_row_ids(
+        self, row_ids: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
         """
         Take a list of row ids from the table.
 

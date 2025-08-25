@@ -5,6 +5,7 @@ from typing import List, Union
 import unittest.mock as mock
 from datetime import timedelta
 from pathlib import Path
+import random
 
 import lancedb
 from lancedb.db import AsyncConnection
@@ -1353,6 +1354,27 @@ def test_take_queries(tmp_path):
         5,
         17,
     ]
+
+
+def test_getitems(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pa.table(
+        {
+            "idx": range(100),
+        }
+    )
+    # Make two fragments
+    table = db.create_table("test", data)
+    table.add(pa.table({"idx": range(100, 200)}))
+
+    assert table.__getitems__([5, 2, 117]) == pa.table(
+        {
+            "idx": [5, 2, 117],
+        }
+    )
+
+    offsets = random.sample(range(200), 10)
+    assert table.__getitems__(offsets) == pa.table({"idx": offsets})
 
 
 @pytest.mark.asyncio
