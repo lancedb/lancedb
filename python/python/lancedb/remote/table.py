@@ -115,6 +115,7 @@ class RemoteTable(Table):
         *,
         replace: bool = False,
         wait_timeout: timedelta = None,
+        name: Optional[str] = None,
     ):
         """Creates a scalar index
         Parameters
@@ -139,7 +140,11 @@ class RemoteTable(Table):
 
         LOOP.run(
             self._table.create_index(
-                column, config=config, replace=replace, wait_timeout=wait_timeout
+                column,
+                config=config,
+                replace=replace,
+                wait_timeout=wait_timeout,
+                name=name,
             )
         )
 
@@ -161,6 +166,7 @@ class RemoteTable(Table):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        name: Optional[str] = None,
     ):
         config = FTS(
             with_position=with_position,
@@ -177,7 +183,11 @@ class RemoteTable(Table):
         )
         LOOP.run(
             self._table.create_index(
-                column, config=config, replace=replace, wait_timeout=wait_timeout
+                column,
+                config=config,
+                replace=replace,
+                wait_timeout=wait_timeout,
+                name=name,
             )
         )
 

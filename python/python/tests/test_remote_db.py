@@ -271,12 +271,21 @@ def test_table_add_in_threadpool():
 
 
 def test_table_create_indices():
+    # Track received index creation requests to validate name parameter
+    received_requests = []
+
     def handler(request):
         index_stats = dict(
             index_type="IVF_PQ", num_indexed_rows=1000, num_unindexed_rows=0
         )
 
         if request.path == "/v1/table/test/create_index/":
+            # Capture the request body to validate name parameter
+            content_len = int(request.headers.get("Content-Length", 0))
+            if content_len > 0:
+                body = request.rfile.read(content_len)
+                body_data = json.loads(body)
+                received_requests.append(body_data)
             request.send_response(200)
             request.end_headers()
         elif request.path == "/v1/table/test/create/?mode=create":
@@ -307,34 +316,34 @@ def test_table_create_indices():
                 dict(
                     indexes=[
                         {
-                            "index_name": "id_idx",
+                            "index_name": "custom_scalar_idx",
                             "columns": ["id"],
                         },
                         {
-                            "index_name": "text_idx",
+                            "index_name": "custom_fts_idx",
                             "columns": ["text"],
                         },
                         {
-                            "index_name": "vector_idx",
+                            "index_name": "custom_vector_idx",
                             "columns": ["vector"],
                         },
                     ]
                 )
             )
             request.wfile.write(payload.encode())
-        elif request.path == "/v1/table/test/index/id_idx/stats/":
+        elif request.path == "/v1/table/test/index/custom_scalar_idx/stats/":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
             payload = json.dumps(index_stats)
             request.wfile.write(payload.encode())
-        elif request.path == "/v1/table/test/index/text_idx/stats/":
+        elif request.path == "/v1/table/test/index/custom_fts_idx/stats/":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
             payload = json.dumps(index_stats)
             request.wfile.write(payload.encode())
-        elif request.path == "/v1/table/test/index/vector_idx/stats/":
+        elif request.path == "/v1/table/test/index/custom_vector_idx/stats/":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
@@ -351,16 +360,49 @@ def test_table_create_indices():
         # Parameters are well-tested through local and async tests.
         # This is a smoke-test.
         table = db.create_table("test", [{"id": 1}])
-        table.create_scalar_index("id", wait_timeout=timedelta(seconds=2))
-        table.create_fts_index("text", wait_timeout=timedelta(seconds=2))
-        table.create_index(
-            vector_column_name="vector", wait_timeout=timedelta(seconds=10)
+
+        # Test create_scalar_index with custom name
+        table.create_scalar_index(
+            "id", wait_timeout=timedelta(seconds=2), name="custom_scalar_idx"
         )
-        table.wait_for_index(["id_idx"], timedelta(seconds=2))
-        table.wait_for_index(["text_idx", "vector_idx"], timedelta(seconds=2))
-        table.drop_index("vector_idx")
-        table.drop_index("id_idx")
-        table.drop_index("text_idx")
+
+        # Test create_fts_index with custom name
+        table.create_fts_index(
+            "text", wait_timeout=timedelta(seconds=2), name="custom_fts_idx"
+        )
+
+        # Test create_index with custom name
+        table.create_index(
+            vector_column_name="vector",
+            wait_timeout=timedelta(seconds=10),
+            name="custom_vector_idx",
+        )
+
+        # Validate that the name parameter was passed correctly in requests
+        assert len(received_requests) == 3
+
+        # Check scalar index request has custom name
+        scalar_req = received_requests[0]
+        assert "name" in scalar_req
+        assert scalar_req["name"] == "custom_scalar_idx"
+
+        # Check FTS index request has custom name
+        fts_req = received_requests[1]
+        assert "name" in fts_req
+        assert fts_req["name"] == "custom_fts_idx"
+
+        # Check vector index request has custom name
+        vector_req = received_requests[2]
+        assert "name" in vector_req
+        assert vector_req["name"] == "custom_vector_idx"
+
+        table.wait_for_index(["custom_scalar_idx"], timedelta(seconds=2))
+        table.wait_for_index(
+            ["custom_fts_idx", "custom_vector_idx"], timedelta(seconds=2)
+        )
+        table.drop_index("custom_vector_idx")
+        table.drop_index("custom_scalar_idx")
+        table.drop_index("custom_fts_idx")
 
 
 def test_table_wait_for_index_timeout():
