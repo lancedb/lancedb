@@ -265,7 +265,7 @@ fn build_namespace_identifier(namespace: &[String], delimiter: &str) -> String {
     }
 }
 
-/// Build a secure cache key using binary encoding with length prefixes.
+/// Build a secure cache key using length prefixes.
 /// This format is completely unambiguous regardless of delimiter or content.
 /// Format: [u32_len][namespace1][u32_len][namespace2]...[u32_len][table_name]
 /// Returns a hex-encoded string for use as a cache key.
