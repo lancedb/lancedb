@@ -43,14 +43,69 @@ if TYPE_CHECKING:
 class DBConnection(EnforceOverrides):
     """An active LanceDB connection interface."""
 
+    def list_namespaces(
+        self,
+        namespace: List[str] = [],
+        page_token: Optional[str] = None,
+        limit: int = 10,
+    ) -> Iterable[str]:
+        """List immediate child namespace names in the given namespace.
+
+        Parameters
+        ----------
+        namespace: List[str], default []
+            The parent namespace to list namespaces in.
+            Empty list represents root namespace.
+        page_token: str, optional
+            The token to use for pagination. If not present, start from the beginning.
+        limit: int, default 10
+            The size of the page to return.
+
+        Returns
+        -------
+        Iterable of str
+            List of immediate child namespace names
+        """
+        return []
+
+    def create_namespace(self, namespace: List[str]) -> None:
+        """Create a new namespace.
+
+        Parameters
+        ----------
+        namespace: List[str]
+            The namespace identifier to create.
+        """
+        raise NotImplementedError(
+            "Namespace operations are not supported for this connection type"
+        )
+
+    def drop_namespace(self, namespace: List[str]) -> None:
+        """Drop a namespace.
+
+        Parameters
+        ----------
+        namespace: List[str]
+            The namespace identifier to drop.
+        """
+        raise NotImplementedError(
+            "Namespace operations are not supported for this connection type"
+        )
+
     @abstractmethod
     def table_names(
-        self, page_token: Optional[str] = None, limit: int = 10
+        self,
+        namespace: List[str] = [],
+        page_token: Optional[str] = None,
+        limit: int = 10,
     ) -> Iterable[str]:
         """List all tables in this database, in sorted order
 
         Parameters
         ----------
+        namespace: List[str], default []
+            The namespace to list tables in.
+            Empty list represents root namespace.
         page_token: str, optional
             The token to use for pagination. If not present, start from the beginning.
             Typically, this token is last table name from the previous page.
@@ -77,6 +132,7 @@ class DBConnection(EnforceOverrides):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
@@ -87,6 +143,9 @@ class DBConnection(EnforceOverrides):
         ----------
         name: str
             The name of the table.
+        namespace: List[str], default []
+            The namespace to create the table in.
+            Empty list represents root namespace.
         data: The data to initialize the table, *optional*
             User must provide at least one of `data` or `schema`.
             Acceptable types are:
@@ -238,6 +297,7 @@ class DBConnection(EnforceOverrides):
         self,
         name: str,
         *,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
@@ -247,6 +307,9 @@ class DBConnection(EnforceOverrides):
         ----------
         name: str
             The name of the table.
+        namespace: List[str], optional
+            The namespace to open the table from.
+            None or empty list represents root namespace.
         index_cache_size: int, default 256
             **Deprecated**: Use session-level cache configuration instead.
             Create a Session with custom cache sizes and pass it to lancedb.connect().
@@ -272,17 +335,26 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError
 
-    def drop_table(self, name: str):
+    def drop_table(self, name: str, namespace: List[str] = []):
         """Drop a table from the database.
 
         Parameters
         ----------
         name: str
             The name of the table.
+        namespace: List[str], default []
+            The namespace to drop the table from.
+            Empty list represents root namespace.
         """
         raise NotImplementedError
 
-    def rename_table(self, cur_name: str, new_name: str):
+    def rename_table(
+        self,
+        cur_name: str,
+        new_name: str,
+        cur_namespace: List[str] = [],
+        new_namespace: List[str] = [],
+    ):
         """Rename a table in the database.
 
         Parameters
@@ -291,6 +363,12 @@ class DBConnection(EnforceOverrides):
             The current name of the table.
         new_name: str
             The new name of the table.
+        cur_namespace: List[str], optional
+            The namespace of the current table.
+            None or empty list represents root namespace.
+        new_namespace: List[str], optional
+            The namespace to move the table to.
+            If not specified, defaults to the same as cur_namespace.
         """
         raise NotImplementedError
 
@@ -301,9 +379,15 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError
 
-    def drop_all_tables(self):
+    def drop_all_tables(self, namespace: List[str] = []):
         """
         Drop all tables from the database
+
+        Parameters
+        ----------
+        namespace: List[str], optional
+            The namespace to drop all tables from.
+            None or empty list represents root namespace.
         """
         raise NotImplementedError
 
@@ -405,17 +489,85 @@ class LanceDBConnection(DBConnection):
         return await conn.table_names(start_after=start_after, limit=limit)
 
     @override
+    def list_namespaces(
+        self,
+        namespace: List[str] = [],
+        page_token: Optional[str] = None,
+        limit: int = 10,
+    ) -> Iterable[str]:
+        """List immediate child namespace names in the given namespace.
+
+        Parameters
+        ----------
+        namespace: List[str], optional
+            The parent namespace to list namespaces in.
+            None or empty list represents root namespace.
+        page_token: str, optional
+            The token to use for pagination. If not present, start from the beginning.
+        limit: int, default 10
+            The size of the page to return.
+
+        Returns
+        -------
+        Iterable of str
+            List of immediate child namespace names
+        """
+        return LOOP.run(
+            self._conn.list_namespaces(
+                namespace=namespace, page_token=page_token, limit=limit
+            )
+        )
+
+    @override
+    def create_namespace(self, namespace: List[str]) -> None:
+        """Create a new namespace.
+
+        Parameters
+        ----------
+        namespace: List[str]
+            The namespace identifier to create.
+        """
+        LOOP.run(self._conn.create_namespace(namespace=namespace))
+
+    @override
+    def drop_namespace(self, namespace: List[str]) -> None:
+        """Drop a namespace.
+
+        Parameters
+        ----------
+        namespace: List[str]
+            The namespace identifier to drop.
+        """
+        return LOOP.run(self._conn.drop_namespace(namespace=namespace))
+
+    @override
     def table_names(
-        self, page_token: Optional[str] = None, limit: int = 10
+        self,
+        namespace: List[str] = [],
+        page_token: Optional[str] = None,
+        limit: int = 10,
     ) -> Iterable[str]:
         """Get the names of all tables in the database. The names are sorted.
+
+        Parameters
+        ----------
+        namespace: List[str], optional
+            The namespace to list tables in.
+        page_token: str, optional
+            The token to use for pagination.
+        limit: int, default 10
+            The maximum number of tables to return.
 
         Returns
         -------
         Iterator of str.
             A list of table names.
         """
-        return LOOP.run(self._conn.table_names(start_after=page_token, limit=limit))
+        return LOOP.run(
+            self._conn.table_names(
+                namespace=namespace, start_after=page_token, limit=limit
+            )
+        )
 
     def __len__(self) -> int:
         return len(self.table_names())
@@ -435,11 +587,17 @@ class LanceDBConnection(DBConnection):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ) -> LanceTable:
         """Create a table in the database.
+
+        Parameters
+        ----------
+        namespace: List[str], optional
+            The namespace to create the table in.
 
         See
         ---
@@ -459,6 +617,7 @@ class LanceDBConnection(DBConnection):
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
             embedding_functions=embedding_functions,
+            namespace=namespace,
             storage_options=storage_options,
         )
         return tbl
@@ -468,6 +627,7 @@ class LanceDBConnection(DBConnection):
         self,
         name: str,
         *,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> LanceTable:
@@ -477,6 +637,8 @@ class LanceDBConnection(DBConnection):
         ----------
         name: str
             The name of the table.
+        namespace: List[str], optional
+            The namespace to open the table from.
 
         Returns
         -------
@@ -496,26 +658,68 @@ class LanceDBConnection(DBConnection):
         return LanceTable.open(
             self,
             name,
+            namespace=namespace,
             storage_options=storage_options,
             index_cache_size=index_cache_size,
         )
 
     @override
-    def drop_table(self, name: str, ignore_missing: bool = False):
+    def drop_table(
+        self,
+        name: str,
+        namespace: List[str] = [],
+        ignore_missing: bool = False,
+    ):
         """Drop a table from the database.
 
         Parameters
         ----------
         name: str
             The name of the table.
+        namespace: List[str], optional
+            The namespace to drop the table from.
         ignore_missing: bool, default False
             If True, ignore if the table does not exist.
         """
-        LOOP.run(self._conn.drop_table(name, ignore_missing=ignore_missing))
+        LOOP.run(
+            self._conn.drop_table(
+                name, namespace=namespace, ignore_missing=ignore_missing
+            )
+        )
 
     @override
-    def drop_all_tables(self):
-        LOOP.run(self._conn.drop_all_tables())
+    def drop_all_tables(self, namespace: List[str] = []):
+        LOOP.run(self._conn.drop_all_tables(namespace=namespace))
+
+    @override
+    def rename_table(
+        self,
+        cur_name: str,
+        new_name: str,
+        cur_namespace: List[str] = [],
+        new_namespace: List[str] = [],
+    ):
+        """Rename a table in the database.
+
+        Parameters
+        ----------
+        cur_name: str
+            The current name of the table.
+        new_name: str
+            The new name of the table.
+        cur_namespace: List[str], optional
+            The namespace of the current table.
+        new_namespace: List[str], optional
+            The namespace to move the table to.
+        """
+        LOOP.run(
+            self._conn.rename_table(
+                cur_name,
+                new_name,
+                cur_namespace=cur_namespace,
+                new_namespace=new_namespace,
+            )
+        )
 
     @deprecation.deprecated(
         deprecated_in="0.15.1",
@@ -588,13 +792,67 @@ class AsyncConnection(object):
     def uri(self) -> str:
         return self._inner.uri
 
+    async def list_namespaces(
+        self,
+        namespace: List[str] = [],
+        page_token: Optional[str] = None,
+        limit: int = 10,
+    ) -> Iterable[str]:
+        """List immediate child namespace names in the given namespace.
+
+        Parameters
+        ----------
+        namespace: List[str], optional
+            The parent namespace to list namespaces in.
+            None or empty list represents root namespace.
+        page_token: str, optional
+            The token to use for pagination. If not present, start from the beginning.
+        limit: int, default 10
+            The size of the page to return.
+
+        Returns
+        -------
+        Iterable of str
+            List of immediate child namespace names (not full paths)
+        """
+        return await self._inner.list_namespaces(
+            namespace=namespace, page_token=page_token, limit=limit
+        )
+
+    async def create_namespace(self, namespace: List[str]) -> None:
+        """Create a new namespace.
+
+        Parameters
+        ----------
+        namespace: List[str]
+            The namespace identifier to create.
+        """
+        await self._inner.create_namespace(namespace)
+
+    async def drop_namespace(self, namespace: List[str]) -> None:
+        """Drop a namespace.
+
+        Parameters
+        ----------
+        namespace: List[str]
+            The namespace identifier to drop.
+        """
+        await self._inner.drop_namespace(namespace)
+
     async def table_names(
-        self, *, start_after: Optional[str] = None, limit: Optional[int] = None
+        self,
+        *,
+        namespace: List[str] = [],
+        start_after: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> Iterable[str]:
         """List all tables in this database, in sorted order
 
         Parameters
         ----------
+        namespace: List[str], optional
+            The namespace to list tables in.
+            None or empty list represents root namespace.
         start_after: str, optional
             If present, only return names that come lexicographically after the supplied
             value.
@@ -608,7 +866,9 @@ class AsyncConnection(object):
         -------
         Iterable of str
         """
-        return await self._inner.table_names(start_after=start_after, limit=limit)
+        return await self._inner.table_names(
+            namespace=namespace, start_after=start_after, limit=limit
+        )
 
     async def create_table(
         self,
@@ -621,6 +881,7 @@ class AsyncConnection(object):
         fill_value: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
         *,
+        namespace: List[str] = [],
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
@@ -629,6 +890,9 @@ class AsyncConnection(object):
         ----------
         name: str
             The name of the table.
+        namespace: List[str], default []
+            The namespace to create the table in.
+            Empty list represents root namespace.
         data: The data to initialize the table, *optional*
             User must provide at least one of `data` or `schema`.
             Acceptable types are:
@@ -807,6 +1071,7 @@ class AsyncConnection(object):
                 name,
                 mode,
                 schema,
+                namespace=namespace,
                 storage_options=storage_options,
             )
         else:
@@ -815,6 +1080,7 @@ class AsyncConnection(object):
                 name,
                 mode,
                 data,
+                namespace=namespace,
                 storage_options=storage_options,
             )
 
@@ -823,6 +1089,8 @@ class AsyncConnection(object):
     async def open_table(
         self,
         name: str,
+        *,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> AsyncTable:
@@ -832,6 +1100,9 @@ class AsyncConnection(object):
         ----------
         name: str
             The name of the table.
+        namespace: List[str], optional
+            The namespace to open the table from.
+            None or empty list represents root namespace.
         storage_options: dict, optional
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
@@ -855,42 +1126,77 @@ class AsyncConnection(object):
         -------
         A LanceTable object representing the table.
         """
-        table = await self._inner.open_table(name, storage_options, index_cache_size)
+        table = await self._inner.open_table(
+            name,
+            namespace=namespace,
+            storage_options=storage_options,
+            index_cache_size=index_cache_size,
+        )
         return AsyncTable(table)
 
-    async def rename_table(self, old_name: str, new_name: str):
+    async def rename_table(
+        self,
+        cur_name: str,
+        new_name: str,
+        cur_namespace: List[str] = [],
+        new_namespace: List[str] = [],
+    ):
         """Rename a table in the database.
 
         Parameters
         ----------
-        old_name: str
+        cur_name: str
             The current name of the table.
         new_name: str
             The new name of the table.
+        cur_namespace: List[str], optional
+            The namespace of the current table.
+            None or empty list represents root namespace.
+        new_namespace: List[str], optional
+            The namespace to move the table to.
+            If not specified, defaults to the same as cur_namespace.
         """
-        await self._inner.rename_table(old_name, new_name)
+        await self._inner.rename_table(
+            cur_name, new_name, cur_namespace=cur_namespace, new_namespace=new_namespace
+        )
 
-    async def drop_table(self, name: str, *, ignore_missing: bool = False):
+    async def drop_table(
+        self,
+        name: str,
+        *,
+        namespace: List[str] = [],
+        ignore_missing: bool = False,
+    ):
         """Drop a table from the database.
 
         Parameters
         ----------
         name: str
             The name of the table.
+        namespace: List[str], default []
+            The namespace to drop the table from.
+            Empty list represents root namespace.
         ignore_missing: bool, default False
             If True, ignore if the table does not exist.
         """
         try:
-            await self._inner.drop_table(name)
+            await self._inner.drop_table(name, namespace=namespace)
         except ValueError as e:
             if not ignore_missing:
                 raise e
             if f"Table '{name}' was not found" not in str(e):
                 raise e
 
-    async def drop_all_tables(self):
-        """Drop all tables from the database."""
-        await self._inner.drop_all_tables()
+    async def drop_all_tables(self, namespace: List[str] = []):
+        """Drop all tables from the database.
+
+        Parameters
+        ----------
+        namespace: List[str], optional
+            The namespace to drop all tables from.
+            None or empty list represents root namespace.
+        """
+        await self._inner.drop_all_tables(namespace=namespace)
 
     @deprecation.deprecated(
         deprecated_in="0.15.1",

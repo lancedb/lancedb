@@ -76,6 +76,7 @@ pub struct ClientConfig {
     pub retry_config: Option<RetryConfig>,
     pub timeout_config: Option<TimeoutConfig>,
     pub extra_headers: Option<HashMap<String, String>>,
+    pub id_delimiter: Option<String>,
 }
 
 impl From<TimeoutConfig> for lancedb::remote::TimeoutConfig {
@@ -115,6 +116,7 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
             retry_config: config.retry_config.map(Into::into).unwrap_or_default(),
             timeout_config: config.timeout_config.map(Into::into).unwrap_or_default(),
             extra_headers: config.extra_headers.unwrap_or_default(),
+            id_delimiter: config.id_delimiter,
         }
     }
 }

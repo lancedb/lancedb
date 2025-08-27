@@ -1700,13 +1700,16 @@ class LanceTable(Table):
         connection: "LanceDBConnection",
         name: str,
         *,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ):
         self._conn = connection
+        self._namespace = namespace
         self._table = LOOP.run(
             connection._conn.open_table(
                 name,
+                namespace=namespace,
                 storage_options=storage_options,
                 index_cache_size=index_cache_size,
             )
@@ -1717,8 +1720,8 @@ class LanceTable(Table):
         return self._table.name
 
     @classmethod
-    def open(cls, db, name, **kwargs):
-        tbl = cls(db, name, **kwargs)
+    def open(cls, db, name, *, namespace: List[str] = [], **kwargs):
+        tbl = cls(db, name, namespace=namespace, **kwargs)
 
         # check the dataset exists
         try:
@@ -2539,6 +2542,7 @@ class LanceTable(Table):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str | bool]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
@@ -2598,6 +2602,7 @@ class LanceTable(Table):
         """
         self = cls.__new__(cls)
         self._conn = db
+        self._namespace = namespace
 
         if data_storage_version is not None:
             warnings.warn(
@@ -2630,6 +2635,7 @@ class LanceTable(Table):
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
                 embedding_functions=embedding_functions,
+                namespace=namespace,
                 storage_options=storage_options,
             )
         )

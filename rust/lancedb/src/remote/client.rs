@@ -25,6 +25,9 @@ pub struct ClientConfig {
     pub user_agent: String,
     // TODO: how to configure request ids?
     pub extra_headers: HashMap<String, String>,
+    /// The delimiter to use when constructing object identifiers.
+    /// If not default, passes as query parameter.
+    pub id_delimiter: Option<String>,
 }
 
 impl Default for ClientConfig {
@@ -34,6 +37,7 @@ impl Default for ClientConfig {
             retry_config: RetryConfig::default(),
             user_agent: concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION")).into(),
             extra_headers: HashMap::new(),
+            id_delimiter: None,
         }
     }
 }
@@ -145,6 +149,7 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     host: String,
     pub(crate) retry_config: ResolvedRetryConfig,
     pub(crate) sender: S,
+    pub(crate) id_delimiter: String,
 }
 
 pub trait HttpSend: Clone + Send + Sync + std::fmt::Debug + 'static {
@@ -268,6 +273,7 @@ impl RestfulLanceDbClient<Sender> {
             host,
             retry_config,
             sender: Sender,
+            id_delimiter: client_config.id_delimiter.unwrap_or("$".to_string()),
         })
     }
 }
@@ -356,12 +362,22 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
 
     pub fn get(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
-        self.client.get(full_uri)
+        let builder = self.client.get(full_uri);
+        self.add_id_delimiter_query_param(builder)
     }
 
     pub fn post(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
-        self.client.post(full_uri)
+        let builder = self.client.post(full_uri);
+        self.add_id_delimiter_query_param(builder)
+    }
+
+    fn add_id_delimiter_query_param(&self, req: RequestBuilder) -> RequestBuilder {
+        if self.id_delimiter != "$" {
+            req.query(&[("delimiter", self.id_delimiter.clone())])
+        } else {
+            req
+        }
     }
 
     pub async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
@@ -594,6 +610,7 @@ pub mod test_utils {
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
+            id_delimiter: "$".to_string(),
         }
     }
 }
