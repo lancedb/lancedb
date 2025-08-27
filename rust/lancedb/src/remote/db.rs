@@ -299,10 +299,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 self.client.clone(),
                 table.clone(),
                 request.namespace.clone(),
-                table_identifier,
+                table_identifier.clone(),
                 version.clone(),
             ));
-            self.table_cache.insert(table.clone(), remote_table).await;
+            self.table_cache
+                .insert(table_identifier, remote_table)
+                .await;
         }
         Ok(tables)
     }
