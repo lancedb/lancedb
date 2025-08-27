@@ -94,7 +94,7 @@ impl napi::bindgen_prelude::FromNapiValue for Session {
         env: napi::sys::napi_env,
         napi_val: napi::sys::napi_value,
     ) -> napi::Result<Self> {
-        let object: napi::bindgen_prelude::ClassInstance<Session> =
+        let object: napi::bindgen_prelude::ClassInstance<Self> =
             napi::bindgen_prelude::ClassInstance::from_napi_value(env, napi_val)?;
         let copy = object.clone();
         Ok(copy)
