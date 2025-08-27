@@ -621,3 +621,78 @@ class TestNamespaceConnection:
 
         # Now dropping namespace should work
         db.drop_namespace(["test_namespace"])
+
+    def test_same_table_name_different_namespaces(self):
+        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+
+        # Create two namespaces
+        db.create_namespace(["namespace_a"])
+        db.create_namespace(["namespace_b"])
+
+        # Define schema
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+                pa.field("text", pa.string()),
+            ]
+        )
+
+        # Create table with same name in both namespaces
+        table_a = db.create_table(
+            "same_name_table", schema=schema, namespace=["namespace_a"]
+        )
+        table_b = db.create_table(
+            "same_name_table", schema=schema, namespace=["namespace_b"]
+        )
+
+        # Add different data to each table
+        data_a = [
+            {"id": 1, "vector": [1.0, 2.0], "text": "data_from_namespace_a"},
+            {"id": 2, "vector": [3.0, 4.0], "text": "also_from_namespace_a"},
+        ]
+        table_a.add(data_a)
+
+        data_b = [
+            {"id": 10, "vector": [10.0, 20.0], "text": "data_from_namespace_b"},
+            {"id": 20, "vector": [30.0, 40.0], "text": "also_from_namespace_b"},
+            {"id": 30, "vector": [50.0, 60.0], "text": "more_from_namespace_b"},
+        ]
+        table_b.add(data_b)
+
+        # Verify data in namespace_a table
+        opened_table_a = db.open_table("same_name_table", namespace=["namespace_a"])
+        result_a = opened_table_a.to_pandas().sort_values("id").reset_index(drop=True)
+        assert len(result_a) == 2
+        assert result_a["id"].tolist() == [1, 2]
+        assert result_a["text"].tolist() == [
+            "data_from_namespace_a",
+            "also_from_namespace_a",
+        ]
+        assert [v.tolist() for v in result_a["vector"]] == [[1.0, 2.0], [3.0, 4.0]]
+
+        # Verify data in namespace_b table
+        opened_table_b = db.open_table("same_name_table", namespace=["namespace_b"])
+        result_b = opened_table_b.to_pandas().sort_values("id").reset_index(drop=True)
+        assert len(result_b) == 3
+        assert result_b["id"].tolist() == [10, 20, 30]
+        assert result_b["text"].tolist() == [
+            "data_from_namespace_b",
+            "also_from_namespace_b",
+            "more_from_namespace_b",
+        ]
+        assert [v.tolist() for v in result_b["vector"]] == [
+            [10.0, 20.0],
+            [30.0, 40.0],
+            [50.0, 60.0],
+        ]
+
+        # Verify root namespace doesn't have this table
+        root_tables = list(db.table_names())
+        assert "same_name_table" not in root_tables
+
+        # Clean up
+        db.drop_table("same_name_table", namespace=["namespace_a"])
+        db.drop_table("same_name_table", namespace=["namespace_b"])
+        db.drop_namespace(["namespace_a"])
+        db.drop_namespace(["namespace_b"])
