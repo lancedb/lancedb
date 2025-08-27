@@ -15,14 +15,14 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.33.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-io = { "version" = "=0.33.0", default-features = false, "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-index = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-linalg = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-table = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-testing = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-datafusion = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-encoding = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
+lance = { "version" = "=0.34.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.34.0-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-io = { "version" = "=0.34.0", default-features = false, "tag" = "v0.34.0-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-index = { "version" = "=0.34.0", "tag" = "v0.34.0-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-linalg = { "version" = "=0.34.0", "tag" = "v0.34.0-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-table = { "version" = "=0.34.0", "tag" = "v0.34.0-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-testing = { "version" = "=0.34.0", "tag" = "v0.34.0-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-datafusion = { "version" = "=0.34.0", "tag" = "v0.34.0-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-encoding = { "version" = "=0.34.0", "tag" = "v0.34.0-beta.1", "git" = "https://github.com/lancedb/lance.git" }
 # Note that this one does not include pyarrow
 arrow = { version = "55.1", optional = false }
 arrow-array = "55.1"

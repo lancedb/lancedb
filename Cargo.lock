@@ -1399,7 +1399,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
 dependencies = [
- "nom",
+ "nom 7.1.3",
 ]
 
 [[package]]
@@ -2717,7 +2717,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74fef4569247a5f429d9156b9d0a2599914385dd189c539334c625d8099d90ab"
 dependencies = [
  "futures-core",
- "nom",
+ "nom 7.1.3",
  "pin-project-lite",
 ]
 
@@ -2743,6 +2743,12 @@ name = "fast-float"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95765f67b4b18863968b4a1bd5bb576f732b29a4a28c7cd84c09fa3e2875f33c"
+
+[[package]]
+name = "fast-float2"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8eb564c5c7423d25c886fb561d1e4ee69f72354d16918afa32c08811f6b6a55"
 
 [[package]]
 name = "fastdivide"
@@ -2837,8 +2843,8 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow-array",
  "rand 0.9.1",
@@ -3890,10 +3896,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1f93b8b1eb69c77f24bbb0afdf66f54b632ee39af40ca21c4365a1d7347e49"
 dependencies = [
  "jiff-static",
+ "jiff-tzdb-platform",
  "log",
  "portable-atomic",
  "portable-atomic-util",
  "serde",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3905,6 +3913,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.103",
+]
+
+[[package]]
+name = "jiff-tzdb"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1283705eb0a21404d2bfd6eef2a7593d240bc42a0bdb39db0ad6fa2ec026524"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
+dependencies = [
+ "jiff-tzdb",
 ]
 
 [[package]]
@@ -3950,9 +3973,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonb"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a452366d21e8d3cbca680c41388e01d6a88739afef7877961946a6da409f9ccd"
+dependencies = [
+ "byteorder",
+ "ethnum",
+ "fast-float2",
+ "itoa",
+ "jiff",
+ "nom 8.0.0",
+ "num-traits",
+ "ordered-float",
+ "rand 0.9.1",
+ "ryu",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lance"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4007,6 +4050,7 @@ dependencies = [
  "tantivy",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tracing",
  "url",
  "uuid",
@@ -4014,8 +4058,8 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4026,14 +4070,25 @@ dependencies = [
  "bytes",
  "getrandom 0.2.16",
  "half",
+ "jsonb",
  "num-traits",
  "rand 0.9.1",
 ]
 
 [[package]]
+name = "lance-bitpacking"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
+dependencies = [
+ "arrayref",
+ "paste",
+ "seq-macro",
+]
+
+[[package]]
 name = "lance-core"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4068,8 +4123,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4083,6 +4138,7 @@ dependencies = [
  "datafusion-functions",
  "datafusion-physical-expr",
  "futures",
+ "jsonb",
  "lance-arrow",
  "lance-core",
  "lance-datagen",
@@ -4097,8 +4153,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4115,11 +4171,9 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
- "arrayref",
- "arrow",
  "arrow-arith",
  "arrow-array",
  "arrow-buffer",
@@ -4136,16 +4190,15 @@ dependencies = [
  "hyperloglogplus",
  "itertools 0.13.0",
  "lance-arrow",
+ "lance-bitpacking",
  "lance-core",
  "log",
  "lz4",
  "num-traits",
- "paste",
  "prost",
  "prost-build",
  "prost-types",
  "rand 0.9.1",
- "seq-macro",
  "snafu",
  "tokio",
  "tracing",
@@ -4155,8 +4208,8 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4190,8 +4243,8 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4245,8 +4298,8 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4286,8 +4339,8 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4310,8 +4363,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4349,8 +4402,8 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "0.33.0"
-source = "git+https://github.com/lancedb/lance.git?tag=v0.33.0-beta.4#e37e9df2458e88c37205415bd00d950b7f936061"
+version = "0.34.0"
+source = "git+https://github.com/lancedb/lance.git?tag=v0.34.0-beta.1#7105e0cc3d0194f84adc3ed634d01b7d86d9e571"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4971,6 +5024,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nom"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "now"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5256,6 +5318,15 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "ordered-float"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2c1f9f56e534ac6a9b8a4600bdf0f530fb393b5f393e7b4d03489c3cf0c3f01"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "outref"
@@ -6534,7 +6605,7 @@ dependencies = [
  "futures-core",
  "futures-timer",
  "mime",
- "nom",
+ "nom 7.1.3",
  "pin-project-lite",
  "reqwest",
  "thiserror 1.0.69",
@@ -6942,6 +7013,7 @@ version = "1.0.140"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20068b6e96dc6c9bd23e01df8827e6c7e1f2fddd43c21810382803c136b99373"
 dependencies = [
+ "indexmap 2.9.0",
  "itoa",
  "memchr",
  "ryu",
@@ -7168,7 +7240,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5851699c4033c63636f7ea4cf7b7c1f1bf06d0cc03cfb42e711de5a5c46cf326"
 dependencies = [
  "base64 0.13.1",
- "nom",
+ "nom 7.1.3",
  "serde",
  "unicode-segmentation",
 ]
@@ -7505,7 +7577,7 @@ version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e810cdeeebca57fc3f7bfec5f85fdbea9031b2ac9b990eb5ff49b371d52bbe6a"
 dependencies = [
- "nom",
+ "nom 7.1.3",
  "serde",
  "serde_json",
 ]
