@@ -265,6 +265,29 @@ fn build_namespace_identifier(namespace: &[String], delimiter: &str) -> String {
     }
 }
 
+/// Build a secure cache key using binary encoding with length prefixes.
+/// This format is completely unambiguous regardless of delimiter or content.
+/// Format: [u32_len][namespace1][u32_len][namespace2]...[u32_len][table_name]
+/// Returns a hex-encoded string for use as a cache key.
+fn build_cache_key(name: &str, namespace: &[String]) -> String {
+    let mut key = Vec::new();
+
+    // Add each namespace component with length prefix
+    for ns in namespace {
+        let bytes = ns.as_bytes();
+        key.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        key.extend_from_slice(bytes);
+    }
+
+    // Add table name with length prefix
+    let name_bytes = name.as_bytes();
+    key.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+    key.extend_from_slice(name_bytes);
+
+    // Convert to hex string for use as a cache key
+    key.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 #[async_trait]
 impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
@@ -295,6 +318,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         for table in &tables {
             let table_identifier =
                 build_table_identifier(table, &request.namespace, &self.client.id_delimiter);
+            let cache_key = build_cache_key(table, &request.namespace);
             let remote_table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 table.clone(),
@@ -302,9 +326,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 table_identifier.clone(),
                 version.clone(),
             ));
-            self.table_cache
-                .insert(table_identifier, remote_table)
-                .await;
+            self.table_cache.insert(cache_key, remote_table).await;
         }
         Ok(tables)
     }
@@ -382,6 +404,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let version = parse_server_version(&request_id, &rsp)?;
         let table_identifier =
             build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
+        let cache_key = build_cache_key(&request.name, &request.namespace);
         let table = Arc::new(RemoteTable::new(
             self.client.clone(),
             request.name.clone(),
@@ -389,7 +412,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             table_identifier,
             version,
         ));
-        self.table_cache.insert(identifier, table.clone()).await;
+        self.table_cache.insert(cache_key, table.clone()).await;
 
         Ok(table)
     }
@@ -397,9 +420,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
         let identifier =
             build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
+        let cache_key = build_cache_key(&request.name, &request.namespace);
 
         // We describe the table to confirm it exists before moving on.
-        if let Some(table) = self.table_cache.get(&identifier).await {
+        if let Some(table) = self.table_cache.get(&cache_key).await {
             Ok(table.clone())
         } else {
             let req = self
@@ -425,7 +449,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 table_identifier,
                 version,
             ));
-            self.table_cache.insert(identifier, table.clone()).await;
+            let cache_key = build_cache_key(&request.name, &request.namespace);
+            self.table_cache.insert(cache_key, table.clone()).await;
             Ok(table)
         }
     }
@@ -439,8 +464,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<()> {
         let current_identifier =
             build_table_identifier(current_name, cur_namespace, &self.client.id_delimiter);
-        let new_identifier =
-            build_table_identifier(new_name, new_namespace, &self.client.id_delimiter);
+        let current_cache_key = build_cache_key(current_name, cur_namespace);
+        let new_cache_key = build_cache_key(new_name, new_namespace);
 
         let mut body = serde_json::json!({ "new_table_name": new_name });
         if !new_namespace.is_empty() {
@@ -457,19 +482,20 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .json(&body);
         let (request_id, resp) = self.client.send(req).await?;
         self.client.check_response(&request_id, resp).await?;
-        let table = self.table_cache.remove(&current_identifier).await;
+        let table = self.table_cache.remove(&current_cache_key).await;
         if let Some(table) = table {
-            self.table_cache.insert(new_identifier, table).await;
+            self.table_cache.insert(new_cache_key, table).await;
         }
         Ok(())
     }
 
     async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()> {
         let identifier = build_table_identifier(name, namespace, &self.client.id_delimiter);
+        let cache_key = build_cache_key(name, namespace);
         let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
         let (request_id, resp) = self.client.send(req).await?;
         self.client.check_response(&request_id, resp).await?;
-        self.table_cache.remove(&identifier).await;
+        self.table_cache.remove(&cache_key).await;
         Ok(())
     }
 
@@ -560,6 +586,7 @@ impl From<StorageOptions> for RemoteOptions {
 
 #[cfg(test)]
 mod tests {
+    use super::build_cache_key;
     use std::sync::{Arc, OnceLock};
 
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
@@ -571,6 +598,38 @@ mod tests {
         remote::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
         Connection, Error,
     };
+
+    #[test]
+    fn test_cache_key_security() {
+        // Test that cache keys are unique regardless of delimiter manipulation
+
+        // Case 1: Different delimiters should not affect cache key
+        let key1 = build_cache_key("table1", &["ns1".to_string(), "ns2".to_string()]);
+        let key2 = build_cache_key("table1", &["ns1$ns2".to_string()]);
+        assert_ne!(
+            key1, key2,
+            "Cache keys should differ for different namespace structures"
+        );
+
+        // Case 2: Table name containing delimiter should not cause collision
+        let key3 = build_cache_key("ns2$table1", &["ns1".to_string()]);
+        assert_ne!(
+            key1, key3,
+            "Cache key should be different when table name contains delimiter"
+        );
+
+        // Case 3: Empty namespace vs namespace with empty string
+        let key4 = build_cache_key("table1", &[]);
+        let key5 = build_cache_key("table1", &["".to_string()]);
+        assert_ne!(
+            key4, key5,
+            "Empty namespace should differ from namespace with empty string"
+        );
+
+        // Case 4: Verify same inputs produce same key (consistency)
+        let key6 = build_cache_key("table1", &["ns1".to_string(), "ns2".to_string()]);
+        assert_eq!(key1, key6, "Same inputs should produce same cache key");
+    }
 
     #[tokio::test]
     async fn test_retries() {
