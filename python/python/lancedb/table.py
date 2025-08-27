@@ -783,6 +783,7 @@ class Table(ABC):
         replace: bool = True,
         index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
     ):
         """Create a scalar index on a column.
 
@@ -797,6 +798,8 @@ class Table(ABC):
             The type of index to create.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
+        name: str, optional
+            The name of the index. If not provided, a default name will be generated.
         Examples
         --------
 
@@ -859,6 +862,7 @@ class Table(ABC):
         ngram_max_length: int = 3,
         prefix_only: bool = False,
         wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
     ):
         """Create a full-text search index on the table.
 
@@ -923,6 +927,8 @@ class Table(ABC):
             Whether to only index the prefix of the token for ngram tokenizer.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
+        name: str, optional
+            The name of the index. If not provided, a default name will be generated.
         """
         raise NotImplementedError
 
@@ -2102,6 +2108,7 @@ class LanceTable(Table):
         *,
         replace: bool = True,
         index_type: ScalarIndexType = "BTREE",
+        name: Optional[str] = None,
     ):
         if index_type == "BTREE":
             config = BTree()
@@ -2112,7 +2119,7 @@ class LanceTable(Table):
         else:
             raise ValueError(f"Unknown index type {index_type}")
         return LOOP.run(
-            self._table.create_index(column, replace=replace, config=config)
+            self._table.create_index(column, replace=replace, config=config, name=name)
         )
 
     def create_fts_index(
@@ -2136,6 +2143,7 @@ class LanceTable(Table):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        name: Optional[str] = None,
     ):
         if not use_tantivy:
             if not isinstance(field_names, str):
@@ -2173,6 +2181,7 @@ class LanceTable(Table):
                     field_names,
                     replace=replace,
                     config=config,
+                    name=name,
                 )
             )
             return

@@ -1274,11 +1274,13 @@ def test_create_scalar_index(mem_db: DBConnection):
         "my_table",
         data=test_data,
     )
+    # Test with default name
     table.create_scalar_index("x")
     indices = table.list_indices()
     assert len(indices) == 1
     scalar_index = indices[0]
     assert scalar_index.index_type == "BTree"
+    assert scalar_index.name == "x_idx"  # Default name
 
     # Confirm that prefiltering still works with the scalar index column
     results = table.search().where("x = 'c'").to_arrow()
@@ -1291,6 +1293,14 @@ def test_create_scalar_index(mem_db: DBConnection):
     table.drop_index(scalar_index.name)
     indices = table.list_indices()
     assert len(indices) == 0
+
+    # Test with custom name
+    table.create_scalar_index("y", name="custom_y_index")
+    indices = table.list_indices()
+    assert len(indices) == 1
+    scalar_index = indices[0]
+    assert scalar_index.index_type == "BTree"
+    assert scalar_index.name == "custom_y_index"
 
 
 def test_empty_query(mem_db: DBConnection):

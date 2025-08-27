@@ -157,7 +157,16 @@ def test_create_index_with_stemming(tmp_path, table):
 def test_create_inverted_index(table, use_tantivy, with_position):
     if use_tantivy and not with_position:
         pytest.skip("we don't support building a tantivy index without position")
-    table.create_fts_index("text", use_tantivy=use_tantivy, with_position=with_position)
+    table.create_fts_index(
+        "text",
+        use_tantivy=use_tantivy,
+        with_position=with_position,
+        name="custom_fts_index",
+    )
+    if not use_tantivy:
+        indices = table.list_indices()
+        fts_indices = [i for i in indices if i.index_type == "FTS"]
+        assert any(i.name == "custom_fts_index" for i in fts_indices)
 
 
 def test_populate_index(tmp_path, table):
