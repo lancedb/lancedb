@@ -2147,7 +2147,7 @@ mod tests {
 
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-            let mut expected_body = serde_json::json!({
+            let expected_body = serde_json::json!({
                 "prefilter": true,
                 "distance_type": "l2",
                 "nprobes": 20,
@@ -2156,12 +2156,11 @@ mod tests {
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "k": 10,
+                "vector": vector_f32_to_f64(&vec![0.1, 0.2, 0.3]),
                 "ef": Option::<usize>::None,
                 "refine_factor": null,
                 "version": null,
             });
-            // Pass vector separately to make sure it matches f32 precision.
-            expected_body["vector"] = vec![0.1f32, 0.2, 0.3].into();
             assert_eq!(body, expected_body);
 
             let response_body = write_ipc_file(&expected_data_ref);
@@ -2232,6 +2231,13 @@ mod tests {
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
     }
 
+    fn vector_f32_to_f64(vector: &[f32]) -> Vec<serde_json::Value> {
+        vector
+            .iter()
+            .map(|v| serde_json::Value::Number(serde_json::Number::from_f64(*v as f64).unwrap()))
+            .collect()
+    }
+
     #[tokio::test]
     async fn test_query_vector_all_params() {
         let table = Table::new_with_handler("my_table", |request| {
@@ -2244,7 +2250,7 @@ mod tests {
 
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-            let mut expected_body = serde_json::json!({
+            let expected_body = serde_json::json!({
                 "vector_column": "my_vector",
                 "prefilter": false,
                 "k": 42,
@@ -2255,14 +2261,13 @@ mod tests {
                 "nprobes": 12,
                 "minimum_nprobes": 12,
                 "maximum_nprobes": 12,
+                "vector": vector_f32_to_f64(&vec![0.1, 0.2, 0.3]),
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "ef": Option::<usize>::None,
                 "refine_factor": 2,
                 "version": null,
             });
-            // Pass vector separately to make sure it matches f32 precision.
-            expected_body["vector"] = vec![0.1f32, 0.2, 0.3].into();
             assert_eq!(body, expected_body);
 
             let data = RecordBatch::try_new(
