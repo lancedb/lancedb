@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import logging
 from functools import cached_property
 from typing import TYPE_CHECKING, List, Optional, Union
-import logging
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
@@ -50,6 +50,7 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
 
     # Set true to use Azure OpenAI API
     use_azure: bool = False
+    api_version: Optional[str] = None
 
     def ndims(self):
         return self._ndims
@@ -105,6 +106,10 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             }
             if self.name != "text-embedding-ada-002":
                 kwargs["dimensions"] = self.dim
+            if self.use_azure:
+                kwargs.pop("dimensions", None) if kwargs.get(
+                    "dimensions"
+                ) is None else None
 
             rs = self._openai_client.embeddings.create(**kwargs)
             valid_embeddings = {
@@ -130,8 +135,12 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             kwargs["organization"] = self.organization
         if self.api_key:
             kwargs["api_key"] = self.api_key
+        if self.api_version:
+            kwargs["api_version"] = self.api_version
 
         if self.use_azure:
+            kwargs["azure_endpoint"] = kwargs["base_url"]
+            del kwargs["base_url"]
             return openai.AzureOpenAI(**kwargs)
         else:
             return openai.OpenAI(**kwargs)
