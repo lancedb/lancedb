@@ -175,6 +175,18 @@ def test_table_names(tmp_db: lancedb.DBConnection):
     tmp_db.create_table("test3", data=data)
     assert tmp_db.table_names() == ["test1", "test2", "test3"]
 
+    # Test that positional arguments for page_token and limit
+    result = list(tmp_db.table_names("test1", 1))  # page_token="test1", limit=1
+    assert result == ["test2"], f"Expected ['test2'], got {result}"
+
+    # Test mixed positional and keyword arguments
+    result = list(tmp_db.table_names("test2", limit=2))
+    assert result == ["test3"], f"Expected ['test3'], got {result}"
+
+    # Test that namespace parameter can be passed as keyword
+    result = list(tmp_db.table_names(namespace=[]))
+    assert len(result) == 3
+
 
 @pytest.mark.asyncio
 async def test_table_names_async(tmp_path):

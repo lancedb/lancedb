@@ -138,9 +138,10 @@ class LanceNamespaceDBConnection(DBConnection):
     @override
     def table_names(
         self,
-        namespace: List[str] = [],
         page_token: Optional[str] = None,
         limit: int = 10,
+        *,
+        namespace: List[str] = [],
     ) -> Iterable[str]:
         request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
         response = self._ns.list_tables(request)
@@ -190,7 +191,7 @@ class LanceNamespaceDBConnection(DBConnection):
         json_schema = _convert_pyarrow_schema_to_json(schema)
 
         # Create table request with namespace
-        table_id = (namespace or []) + [name]
+        table_id = namespace + [name]
         request = CreateTableRequest(id=table_id, var_schema=json_schema)
 
         # Create empty Arrow IPC stream bytes
@@ -219,7 +220,7 @@ class LanceNamespaceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
-        table_id = (namespace or []) + [name]
+        table_id = namespace + [name]
         request = DescribeTableRequest(id=table_id)
         response = self._ns.describe_table(request)
 
@@ -236,9 +237,9 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
     @override
-    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
+    def drop_table(self, name: str, namespace: List[str] = []):
         # Use namespace drop_table directly
-        table_id = (namespace or []) + [name]
+        table_id = namespace + [name]
         request = DropTableRequest(id=table_id)
         self._ns.drop_table(request)
 
@@ -247,8 +248,8 @@ class LanceNamespaceDBConnection(DBConnection):
         self,
         cur_name: str,
         new_name: str,
-        cur_namespace: Optional[List[str]] = None,
-        new_namespace: Optional[List[str]] = None,
+        cur_namespace: List[str] = [],
+        new_namespace: List[str] = [],
     ):
         raise NotImplementedError(
             "rename_table is not supported for namespace connections"
@@ -261,7 +262,7 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
     @override
-    def drop_all_tables(self, namespace: Optional[List[str]] = None):
+    def drop_all_tables(self, namespace: List[str] = []):
         for table_name in self.table_names(namespace=namespace):
             self.drop_table(table_name, namespace=namespace)
 

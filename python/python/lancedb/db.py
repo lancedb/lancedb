@@ -95,9 +95,10 @@ class DBConnection(EnforceOverrides):
     @abstractmethod
     def table_names(
         self,
-        namespace: List[str] = [],
         page_token: Optional[str] = None,
         limit: int = 10,
+        *,
+        namespace: List[str] = [],
     ) -> Iterable[str]:
         """List all tables in this database, in sorted order
 
@@ -543,9 +544,10 @@ class LanceDBConnection(DBConnection):
     @override
     def table_names(
         self,
-        namespace: List[str] = [],
         page_token: Optional[str] = None,
         limit: int = 10,
+        *,
+        namespace: List[str] = [],
     ) -> Iterable[str]:
         """Get the names of all tables in the database. The names are sorted.
 
