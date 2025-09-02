@@ -943,20 +943,22 @@ class LanceQueryBuilder(ABC):
         >>> query = [100, 100]
         >>> plan = table.search(query).analyze_plan()
         >>> print(plan)  # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
-        AnalyzeExec verbose=true, metrics=[]
-          TracedExec, metrics=[]
-            ProjectionExec: expr=[...], metrics=[...]
-              GlobalLimitExec: skip=0, fetch=10, metrics=[...]
+        AnalyzeExec verbose=true, metrics=[], cumulative_cpu=...
+          TracedExec, metrics=[], cumulative_cpu=...
+            ProjectionExec: expr=[...], metrics=[...], cumulative_cpu=...
+              GlobalLimitExec: skip=0, fetch=10, metrics=[...], cumulative_cpu=...
                 FilterExec: _distance@2 IS NOT NULL,
-                metrics=[output_rows=..., elapsed_compute=...]
+                metrics=[output_rows=..., elapsed_compute=...], cumulative_cpu=...
                   SortExec: TopK(fetch=10), expr=[...],
                   preserve_partitioning=[...],
-                  metrics=[output_rows=..., elapsed_compute=..., row_replacements=...]
+                  metrics=[output_rows=..., elapsed_compute=..., row_replacements=...],
+                  cumulative_cpu=...
                     KNNVectorDistance: metric=l2,
-                    metrics=[output_rows=..., elapsed_compute=..., output_batches=...]
+                    metrics=[output_rows=..., elapsed_compute=..., output_batches=...],
+                    cumulative_cpu=...
                       LanceRead: uri=..., projection=[vector], ...
                       metrics=[output_rows=..., elapsed_compute=...,
-                      bytes_read=..., iops=..., requests=...]
+                      bytes_read=..., iops=..., requests=...], cumulative_cpu=...
 
         Returns
         -------
