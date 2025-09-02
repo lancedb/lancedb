@@ -151,9 +151,10 @@ class RemoteDBConnection(DBConnection):
     @override
     def table_names(
         self,
-        namespace: List[str] = [],
         page_token: Optional[str] = None,
         limit: int = 10,
+        *,
+        namespace: List[str] = [],
     ) -> Iterable[str]:
         """List the names of all tables in the database.
 
@@ -343,7 +344,7 @@ class RemoteDBConnection(DBConnection):
         return RemoteTable(table, self.db_name)
 
     @override
-    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
+    def drop_table(self, name: str, namespace: List[str] = []):
         """Drop a table from the database.
 
         Parameters
@@ -361,8 +362,8 @@ class RemoteDBConnection(DBConnection):
         self,
         cur_name: str,
         new_name: str,
-        cur_namespace: Optional[List[str]] = None,
-        new_namespace: Optional[List[str]] = None,
+        cur_namespace: List[str] = [],
+        new_namespace: List[str] = [],
     ):
         """Rename a table in the database.
 

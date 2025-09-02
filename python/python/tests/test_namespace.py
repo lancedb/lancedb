@@ -420,6 +420,10 @@ class TestNamespaceConnection:
         assert "table2" in table_names
         assert len(table_names) == 1
 
+        # Test that drop_table works without explicit namespace parameter
+        db.drop_table("table2")
+        assert len(list(db.table_names())) == 0
+
         # Should not be able to open dropped table
         with pytest.raises(RuntimeError):
             db.open_table("table1")
@@ -486,6 +490,11 @@ class TestNamespaceConnection:
 
         # Verify all tables are gone
         assert len(list(db.table_names())) == 0
+
+        # Test that table_names works with keyword-only namespace parameter
+        db.create_table("test_table", schema=schema)
+        result = list(db.table_names(namespace=[]))
+        assert "test_table" in result
 
     def test_table_operations(self):
         """Test various table operations through namespace."""
