@@ -9,7 +9,7 @@ use futures::{stream::BoxStream, TryFutureExt};
 use lance::io::WrappingObjectStore;
 use object_store::{
     path::Path, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOpts, PutOptions, PutPayload, PutResult, Result, UploadPart,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result, UploadPart,
 };
 
 use async_trait::async_trait;
@@ -73,7 +73,7 @@ impl ObjectStore for MirroringObjectStore {
     async fn put_multipart_opts(
         &self,
         location: &Path,
-        opts: PutMultipartOpts,
+        opts: PutMultipartOptions,
     ) -> Result<Box<dyn MultipartUpload>> {
         if location.primary_only() {
             return self.primary.put_multipart_opts(location, opts).await;

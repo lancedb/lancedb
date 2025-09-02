@@ -480,6 +480,7 @@ impl JsFullTextQuery {
     }
 
     #[napi(factory)]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn boolean_query(queries: Vec<(String, &JsFullTextQuery)>) -> napi::Result<Self> {
         let mut sub_queries = Vec::with_capacity(queries.len());
         for (occur, q) in queries {
