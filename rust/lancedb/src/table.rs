@@ -32,7 +32,7 @@ use lance::index::vector::VectorIndexParams;
 use lance::io::WrappingObjectStore;
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_datafusion::utils::StreamingWriteSource;
-use lance_index::scalar::{ScalarIndexParams, ScalarIndexType};
+use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
@@ -1778,7 +1778,9 @@ impl NativeTable {
                     );
                     Ok(Box::new(lance_idx_params))
                 } else if supported_btree_data_type(field.data_type()) {
-                    Ok(Box::new(ScalarIndexParams::new(ScalarIndexType::BTree)))
+                    Ok(Box::new(ScalarIndexParams::for_builtin(
+                        BuiltinIndexType::BTree,
+                    )))
                 } else {
                     return Err(Error::InvalidInput {
                         message: format!(
@@ -1791,15 +1793,21 @@ impl NativeTable {
             }
             Index::BTree(_) => {
                 Self::validate_index_type(field, "BTree", supported_btree_data_type)?;
-                Ok(Box::new(ScalarIndexParams::new(ScalarIndexType::BTree)))
+                Ok(Box::new(ScalarIndexParams::for_builtin(
+                    BuiltinIndexType::BTree,
+                )))
             }
             Index::Bitmap(_) => {
                 Self::validate_index_type(field, "Bitmap", supported_bitmap_data_type)?;
-                Ok(Box::new(ScalarIndexParams::new(ScalarIndexType::Bitmap)))
+                Ok(Box::new(ScalarIndexParams::for_builtin(
+                    BuiltinIndexType::Bitmap,
+                )))
             }
             Index::LabelList(_) => {
                 Self::validate_index_type(field, "LabelList", supported_label_list_data_type)?;
-                Ok(Box::new(ScalarIndexParams::new(ScalarIndexType::LabelList)))
+                Ok(Box::new(ScalarIndexParams::for_builtin(
+                    BuiltinIndexType::LabelList,
+                )))
             }
             Index::FTS(fts_opts) => {
                 Self::validate_index_type(field, "FTS", supported_fts_data_type)?;
