@@ -36,6 +36,7 @@ lance-table = { workspace = true }
 lance-linalg = { workspace = true }
 lance-testing = { workspace = true }
 lance-encoding = { workspace = true }
+lance-namespace-reqwest-client = { workspace = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
@@ -75,7 +76,6 @@ candle-transformers = { version = "0.9.1", optional = true }
 candle-nn = { version = "0.9.1", optional = true }
 tokenizers = { version = "0.19.1", optional = true }
 semver = { workspace = true }
-lance-namespace-reqwest-client = { path = "../../../lance-namespace/rust/lance-namespace-reqwest-client" }
 
 # For a workaround, see workspace Cargo.toml
 crunchy.workspace = true
