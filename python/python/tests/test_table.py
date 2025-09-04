@@ -672,9 +672,7 @@ def test_shallow_clone(tmp_path):
 
     # Clone the table to a new table (latest version by default)
     cloned_table = source_table.shallow_clone(
-        target_conn=db,
-        target_table_name="cloned_table",
-        target_namespace=[]
+        target_conn=db, target_table_name="cloned_table", target_namespace=[]
     )
 
     # Verify cloned table has the same data
@@ -689,10 +687,7 @@ def test_shallow_clone(tmp_path):
 
     # Clone a specific version
     cloned_v1_table = source_table.shallow_clone(
-        target_conn=db,
-        target_table_name="cloned_v1",
-        target_namespace=[],
-        version=1
+        target_conn=db, target_table_name="cloned_v1", target_namespace=[], version=1
     )
 
     # Verify the cloned table has data from version 1
@@ -705,7 +700,7 @@ def test_shallow_clone(tmp_path):
         target_conn=db,
         target_table_name="cloned_tag",
         target_namespace=[],
-        version="v2_tag"
+        version="v2_tag",
     )
 
     # Verify the cloned table has data from the tagged version
@@ -750,9 +745,7 @@ async def test_async_shallow_clone(tmp_path):
 
     # Clone the table to a new table (latest version by default)
     cloned_table = await source_table.shallow_clone(
-        target_conn=db_async,
-        target_table_name="cloned_table",
-        target_namespace=[]
+        target_conn=db_async, target_table_name="cloned_table", target_namespace=[]
     )
 
     # Verify cloned table has the same data
@@ -770,7 +763,7 @@ async def test_async_shallow_clone(tmp_path):
         target_conn=db_async,
         target_table_name="cloned_v1",
         target_namespace=[],
-        version=1
+        version=1,
     )
 
     # Verify the cloned table has data from version 1
@@ -783,7 +776,7 @@ async def test_async_shallow_clone(tmp_path):
         target_conn=db_async,
         target_table_name="cloned_tag",
         target_namespace=[],
-        version="v2_tag"
+        version="v2_tag",
     )
 
     # Verify the cloned table has data from the tagged version

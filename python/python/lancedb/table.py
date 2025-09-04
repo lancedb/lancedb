@@ -1773,9 +1773,8 @@ class LanceTable(Table):
 
     @classmethod
     def _from_async_table(
-            cls,
-            connection: "LanceDBConnection",
-            async_table: "AsyncTable"):
+        cls, connection: "LanceDBConnection", async_table: "AsyncTable"
+    ):
         """Create a LanceTable from an already opened AsyncTable.
 
         This is an internal method used by operations that return new tables
