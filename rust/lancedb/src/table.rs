@@ -29,6 +29,7 @@ use lance::dataset::{
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::index::vector::VectorIndexParams;
+use lance::io::ObjectStoreParams;
 use lance::io::WrappingObjectStore;
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_datafusion::utils::StreamingWriteSource;
@@ -49,7 +50,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::arrow::IntoArrow;
-use crate::connection::NoData;
+use crate::connection::{Connection, NoData};
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::index::vector::{suggested_num_partitions_for_hnsw, VectorIndex};
@@ -608,6 +609,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<()>;
     /// Get statistics on the table
     async fn stats(&self) -> Result<TableStatistics>;
+    /// Shallow clone the table to a new table in the target connection.
+    async fn shallow_clone(
+        &self,
+        target_conn: &Connection,
+        target_table_name: &str,
+        target_namespace: &[String],
+        version: Option<lance::dataset::refs::Ref>,
+    ) -> Result<Table>;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -1381,6 +1390,30 @@ impl Table {
     /// Retrieve statistics on the table
     pub async fn stats(&self) -> Result<TableStatistics> {
         self.inner.stats().await
+    }
+
+    /// Shallow clone a table to a new table in the target connection.
+    ///
+    /// The shallow clone operation creates a new table in the target connection that shares
+    /// the underlying data files with the source table. This is useful for creating
+    /// table copies without duplicating data.
+    ///
+    /// # Arguments
+    ///
+    /// * `target_conn` - The target database connection
+    /// * `target_table_name` - The name of the table to create
+    /// * `target_namespace` - The namespace for the new table
+    /// * `version` - The version of the table to clone (or tag). Defaults to latest version.
+    pub async fn shallow_clone(
+        &self,
+        target_conn: &Connection,
+        target_table_name: &str,
+        target_namespace: &[String],
+        version: Option<lance::dataset::refs::Ref>,
+    ) -> Result<Table> {
+        self.inner
+            .shallow_clone(target_conn, target_table_name, target_namespace, version)
+            .await
     }
 }
 
@@ -2695,6 +2728,58 @@ impl BaseTable for NativeTable {
             fragment_stats: frag_stats,
         };
         Ok(stats)
+    }
+
+    async fn shallow_clone(
+        &self,
+        target_conn: &Connection,
+        target_table_name: &str,
+        target_namespace: &[String],
+        version: Option<lance::dataset::refs::Ref>,
+    ) -> Result<Table> {
+        // Get a mutable reference to the dataset
+        let mut dataset = self.dataset.get_mut().await?;
+
+        // Determine the version to clone (default to latest if not specified)
+        let version_ref = match version {
+            Some(v) => v,
+            None => lance::dataset::refs::Ref::Version(dataset.version().version),
+        };
+
+        // Build the target URI from connection and table name
+        let target_uri = if target_namespace.is_empty() {
+            format!("{}/{}", target_conn.uri(), target_table_name)
+        } else {
+            format!(
+                "{}/{}/{}",
+                target_conn.uri(),
+                target_namespace.join("/"),
+                target_table_name
+            )
+        };
+
+        // Use default storage params for now
+        // TODO: Get storage options from target connection when available
+        let store_params = ObjectStoreParams::default();
+
+        // Perform the shallow clone operation
+        let cloned_dataset = dataset
+            .shallow_clone(&target_uri, version_ref, store_params)
+            .await?;
+
+        // Create a new NativeTable wrapper for the cloned dataset
+        let cloned_table = NativeTable {
+            name: target_table_name.to_string(),
+            uri: target_uri.clone(),
+            dataset: dataset::DatasetConsistencyWrapper::new_latest(
+                cloned_dataset,
+                self.read_consistency_interval,
+            ),
+            read_consistency_interval: self.read_consistency_interval,
+        };
+
+        // Return the Table wrapper
+        Ok(Table::new(Arc::new(cloned_table)))
     }
 }
 
@@ -4222,6 +4307,90 @@ mod tests {
                 },
             }
         )
+    }
+
+    #[tokio::test]
+    async fn test_shallow_clone() {
+        use arrow_array::{Int32Array, RecordBatch, StringArray};
+        use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        // Create a source table with some data
+        let schema = Arc::new(ArrowSchema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])),
+                Arc::new(StringArray::from(vec!["a", "b", "c", "d", "e"])),
+            ],
+        )
+        .unwrap();
+
+        let batches = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+        let table = conn
+            .create_table("source_table", batches)
+            .execute()
+            .await
+            .unwrap();
+
+        // Add more data to create multiple versions
+        let batch2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![6, 7, 8])),
+                Arc::new(StringArray::from(vec!["f", "g", "h"])),
+            ],
+        )
+        .unwrap();
+        table
+            .add(RecordBatchIterator::new(vec![Ok(batch2)], schema))
+            .execute()
+            .await
+            .unwrap();
+
+        // Clone the table to the same connection with a new name
+        let cloned_table = table
+            .shallow_clone(&conn, "cloned_table", &[], None)
+            .await
+            .unwrap();
+
+        // Verify the cloned table has the same data
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 8);
+        assert_eq!(cloned_table.name(), "cloned_table");
+
+        // Verify schema matches
+        let source_schema = table.schema().await.unwrap();
+        let cloned_schema = cloned_table.schema().await.unwrap();
+        assert_eq!(source_schema, cloned_schema);
+
+        // Clone a specific version
+        let version = table.version().await.unwrap();
+        table.checkout(version - 1).await.unwrap();
+        let old_version_count = table.count_rows(None).await.unwrap();
+        table.checkout_latest().await.unwrap();
+
+        let cloned_v1_table = table
+            .shallow_clone(
+                &conn,
+                "cloned_v1_table",
+                &[],
+                Some(lance::dataset::refs::Ref::Version(version - 1)),
+            )
+            .await
+            .unwrap();
+
+        // Verify the cloned table has data from the old version
+        assert_eq!(
+            cloned_v1_table.count_rows(None).await.unwrap(),
+            old_version_count
+        );
     }
 
     #[tokio::test]

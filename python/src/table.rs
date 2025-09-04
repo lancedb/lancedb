@@ -815,6 +815,23 @@ impl Table {
             Ok(())
         })
     }
+
+    // Note: This is a placeholder - Python API will need to be redesigned
+    // to pass connection object properly
+    pub fn shallow_clone(
+        _self_: PyRef<'_, Self>,
+        _target_table_name: String,
+        _target_namespace: Vec<String>,
+        _version: Option<LanceVersion>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        // This is a simplified implementation that doesn't properly handle
+        // the connection parameter. The Python layer should be redesigned
+        // to pass the target connection properly.
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "shallow_clone is not yet implemented in Python bindings. \
+             The API needs to be redesigned to accept a target connection.",
+        ))
+    }
 }
 
 #[derive(FromPyObject)]

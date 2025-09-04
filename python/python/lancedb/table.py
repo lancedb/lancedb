@@ -1637,6 +1637,37 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def shallow_clone(
+        self,
+        target_conn: "DBConnection",
+        target_table_name: str,
+        target_namespace: List[str] = [],
+        version: Optional[Union[int, str]] = None,
+    ) -> "Table":
+        """Shallow clone the table to a new table in the target connection.
+        
+        The shallow clone operation creates a new table in the target connection that shares
+        the underlying data files with the source table. This is useful for creating
+        table copies without duplicating data.
+        
+        Parameters
+        ----------
+        target_conn : DBConnection
+            The target database connection
+        target_table_name : str
+            The name of the table to create
+        target_namespace : List[str], default []
+            The namespace for the new table
+        version : Optional[Union[int, str]], default None
+            The version of the table to clone (or tag). Defaults to latest version.
+        
+        Returns
+        -------
+        Table
+            The cloned table
+        """
+
+    @abstractmethod
     def list_versions(self) -> List[Dict[str, Any]]:
         """List all versions of the table"""
 
@@ -1918,6 +1949,53 @@ class LanceTable(Table):
         if version is not None:
             LOOP.run(self._table.checkout(version))
         LOOP.run(self._table.restore())
+
+    def shallow_clone(
+        self,
+        target_conn: "LanceDBConnection",
+        target_table_name: str,
+        target_namespace: List[str] = [],
+        version: Optional[Union[int, str]] = None,
+    ) -> "LanceTable":
+        """Shallow clone the table to a new table in the target connection.
+        
+        The shallow clone operation creates a new table in the target connection that shares
+        the underlying data files with the source table. This is useful for creating
+        table copies without duplicating data.
+        
+        Note: This feature is not yet fully implemented in the Python bindings.
+        
+        Parameters
+        ----------
+        target_conn : LanceDBConnection
+            The target database connection
+        target_table_name : str
+            The name of the table to create
+        target_namespace : List[str], default []
+            The namespace for the new table
+        version : Optional[Union[int, str]], default None
+            The version of the table to clone (or tag). Defaults to latest version.
+        
+        Returns
+        -------
+        LanceTable
+            The cloned table
+        
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", [
+        ...     {"vector": [1.1, 0.9], "type": "vector"}])
+        >>> cloned_table = table.shallow_clone(db, "cloned_table")
+        >>> cloned_table.to_pandas()
+               vector    type
+        0  [1.1, 0.9]  vector
+        """
+        raise NotImplementedError(
+            "shallow_clone is not yet fully implemented in Python bindings. "
+            "The Rust core needs to be updated to properly handle the connection parameter."
+        )
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
@@ -4190,6 +4268,53 @@ class AsyncTable:
         out state and the read_consistency_interval, if any, will apply.
         """
         await self._inner.restore(version)
+
+    async def shallow_clone(
+        self,
+        target_conn: "AsyncConnection",
+        target_table_name: str,
+        target_namespace: List[str] = [],
+        version: Optional[int | str] = None,
+    ) -> "AsyncTable":
+        """
+        Shallow clone the table to a new table in the target connection.
+        
+        The shallow clone operation creates a new table in the target connection that shares
+        the underlying data files with the source table. This is useful for creating
+        table copies without duplicating data.
+        
+        Note: This feature is not yet fully implemented in the Python bindings.
+        
+        Parameters
+        ----------
+        target_conn : AsyncConnection
+            The target database connection
+        target_table_name : str
+            The name of the table to create
+        target_namespace : List[str], default []
+            The namespace for the new table
+        version : Optional[int | str], default None
+            The version of the table to clone (or tag). Defaults to latest version.
+        
+        Returns
+        -------
+        AsyncTable
+            The cloned table
+        
+        Examples
+        --------
+        >>> async def clone_table():
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     table = await db.open_table("my_table")
+        ...     cloned = await table.shallow_clone(db, "cloned_table")
+        ...     print(await cloned.count_rows())
+        >>> import asyncio
+        >>> asyncio.run(clone_table())
+        """
+        raise NotImplementedError(
+            "shallow_clone is not yet fully implemented in Python bindings. "
+            "The Rust core needs to be updated to properly handle the connection parameter."
+        )
 
     def take_offsets(self, offsets: list[int]) -> AsyncTakeQuery:
         """
