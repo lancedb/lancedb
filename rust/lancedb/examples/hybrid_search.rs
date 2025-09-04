@@ -62,10 +62,8 @@ async fn main() -> Result<()> {
             .as_any()
             .downcast_ref::<StringArray>()
             .unwrap();
-        for text in out.iter() {
-            if let Some(text) = text {
-                println!("Result: {}", text);
-            }
+        for text in out.iter().flatten() {
+            println!("Result: {}", text);
         }
     }
 
