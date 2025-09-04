@@ -364,10 +364,10 @@ impl Table {
     ) -> napi::Result<Table> {
         let source_table = self.inner_ref()?;
         let target_connection = target_conn.get_inner()?;
-        
+
         // Convert version/tag parameters
         let version_num = version.map(|v| v as u64);
-        
+
         // Call the shallow_clone method
         let cloned_table = source_table
             .shallow_clone(
@@ -379,7 +379,7 @@ impl Table {
             )
             .await
             .default_error()?;
-        
+
         Ok(Table::new(cloned_table))
     }
 
