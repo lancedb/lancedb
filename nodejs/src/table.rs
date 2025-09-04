@@ -354,6 +354,36 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn shallow_clone(
+        &self,
+        target_conn: &crate::connection::Connection,
+        target_table_name: String,
+        target_namespace: Vec<String>,
+        version: Option<i64>,
+        tag: Option<String>,
+    ) -> napi::Result<Table> {
+        let source_table = self.inner_ref()?;
+        let target_connection = target_conn.get_inner()?;
+        
+        // Convert version/tag parameters
+        let version_num = version.map(|v| v as u64);
+        
+        // Call the shallow_clone method
+        let cloned_table = source_table
+            .shallow_clone(
+                target_connection,
+                &target_table_name,
+                &target_namespace,
+                version_num,
+                tag,
+            )
+            .await
+            .default_error()?;
+        
+        Ok(Table::new(cloned_table))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn tags(&self) -> napi::Result<Tags> {
         Ok(Tags {
             inner: self.inner_ref()?.clone(),

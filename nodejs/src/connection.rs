@@ -23,7 +23,7 @@ impl Connection {
         Self { inner: Some(inner) }
     }
 
-    fn get_inner(&self) -> napi::Result<&LanceDBConnection> {
+    pub(crate) fn get_inner(&self) -> napi::Result<&LanceDBConnection> {
         self.inner
             .as_ref()
             .ok_or_else(|| napi::Error::from_reason("Connection is closed"))
