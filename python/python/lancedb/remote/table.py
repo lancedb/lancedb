@@ -26,6 +26,7 @@ from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 
+from python.python.lancedb import LanceDBConnection
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
 from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
 
@@ -647,6 +648,18 @@ class RemoteTable(Table):
     def migrate_v2_manifest_paths(self):
         raise NotImplementedError(
             "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
+        )
+
+    def shallow_clone(
+        self,
+        target_conn: "LanceDBConnection",
+        target_table_name: str,
+        target_namespace: List[str] = [],
+        version: Optional[Union[int, str]] = None,
+    ) -> "Table":
+        """Shallow clone is not yet supported for remote tables."""
+        raise NotImplementedError(
+            "shallow_clone() is not yet supported on the LanceDB Cloud"
         )
 
 

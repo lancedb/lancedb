@@ -645,6 +645,161 @@ async def test_async_tags(mem_db_async: AsyncConnection):
     )
 
 
+def test_shallow_clone(tmp_path):
+    # Use a temporary directory instead of memory database
+    # because shallow_clone may not work properly with in-memory databases
+    db = lancedb.connect(tmp_path)
+
+    # Create source table with some data
+    source_table = db.create_table(
+        "source_table",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+
+    # Add more data to create multiple versions
+    source_table.add(
+        data=[
+            {"vector": [1.0, 2.0], "item": "baz", "price": 30.0},
+            {"vector": [7.0, 8.0], "item": "qux", "price": 40.0},
+        ],
+    )
+
+    version_2_count = source_table.count_rows()
+    assert version_2_count == 4
+
+    # Clone the table to a new table (latest version by default)
+    cloned_table = source_table.shallow_clone(
+        target_conn=db,
+        target_table_name="cloned_table",
+        target_namespace=[]
+    )
+
+    # Verify cloned table has the same data
+    assert cloned_table.name == "cloned_table"
+    assert cloned_table.count_rows() == version_2_count
+    assert cloned_table.schema == source_table.schema
+
+    # Verify both tables exist
+    table_names = db.table_names()
+    assert "source_table" in table_names
+    assert "cloned_table" in table_names
+
+    # Clone a specific version
+    cloned_v1_table = source_table.shallow_clone(
+        target_conn=db,
+        target_table_name="cloned_v1",
+        target_namespace=[],
+        version=1
+    )
+
+    # Verify the cloned table has data from version 1
+    assert cloned_v1_table.name == "cloned_v1"
+    assert cloned_v1_table.count_rows() == 2
+
+    # Create a tag and clone using the tag
+    source_table.tags.create("v2_tag", 2)
+    cloned_tag_table = source_table.shallow_clone(
+        target_conn=db,
+        target_table_name="cloned_tag",
+        target_namespace=[],
+        version="v2_tag"
+    )
+
+    # Verify the cloned table has data from the tagged version
+    assert cloned_tag_table.name == "cloned_tag"
+    assert cloned_tag_table.count_rows() == version_2_count
+
+    # Verify that modifications to cloned table don't affect source table
+    cloned_table.add(
+        data=[
+            {"vector": [9.0, 10.0], "item": "new_item", "price": 50.0},
+        ],
+    )
+    assert cloned_table.count_rows() == version_2_count + 1
+    assert source_table.count_rows() == version_2_count
+
+
+@pytest.mark.asyncio
+async def test_async_shallow_clone(tmp_path):
+    # Use a temporary directory instead of memory database
+    # because shallow_clone may not work properly with in-memory databases
+    db_async = await lancedb.connect_async(tmp_path)
+
+    # Create source table with some data
+    source_table = await db_async.create_table(
+        "source_table",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+
+    # Add more data to create multiple versions
+    await source_table.add(
+        data=[
+            {"vector": [1.0, 2.0], "item": "baz", "price": 30.0},
+            {"vector": [7.0, 8.0], "item": "qux", "price": 40.0},
+        ],
+    )
+
+    version_2_count = await source_table.count_rows()
+    assert version_2_count == 4
+
+    # Clone the table to a new table (latest version by default)
+    cloned_table = await source_table.shallow_clone(
+        target_conn=db_async,
+        target_table_name="cloned_table",
+        target_namespace=[]
+    )
+
+    # Verify cloned table has the same data
+    assert cloned_table.name == "cloned_table"
+    assert await cloned_table.count_rows() == version_2_count
+    assert await cloned_table.schema() == await source_table.schema()
+
+    # Verify both tables exist
+    table_names = await db_async.table_names()
+    assert "source_table" in table_names
+    assert "cloned_table" in table_names
+
+    # Clone a specific version
+    cloned_v1_table = await source_table.shallow_clone(
+        target_conn=db_async,
+        target_table_name="cloned_v1",
+        target_namespace=[],
+        version=1
+    )
+
+    # Verify the cloned table has data from version 1
+    assert cloned_v1_table.name == "cloned_v1"
+    assert await cloned_v1_table.count_rows() == 2
+
+    # Create a tag and clone using the tag
+    await source_table.tags.create("v2_tag", 2)
+    cloned_tag_table = await source_table.shallow_clone(
+        target_conn=db_async,
+        target_table_name="cloned_tag",
+        target_namespace=[],
+        version="v2_tag"
+    )
+
+    # Verify the cloned table has data from the tagged version
+    assert cloned_tag_table.name == "cloned_tag"
+    assert await cloned_tag_table.count_rows() == version_2_count
+
+    # Verify that modifications to cloned table don't affect source table
+    await cloned_table.add(
+        data=[
+            {"vector": [9.0, 10.0], "item": "new_item", "price": 50.0},
+        ],
+    )
+    assert await cloned_table.count_rows() == version_2_count + 1
+    assert await source_table.count_rows() == version_2_count
+
+
 @patch("lancedb.table.AsyncTable.create_index")
 def test_create_index_method(mock_create_index, mem_db: DBConnection):
     table = mem_db.create_table(

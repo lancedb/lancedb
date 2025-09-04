@@ -100,8 +100,9 @@ class Table:
     async def restore(self, version: Optional[Union[int, str]] = None): ...
     async def shallow_clone(
         self,
+        target_conn: Connection,
         target_table_name: str,
-        target_namespace: List[str] = [],
+        target_namespace: List[str],
         version: Optional[Union[int, str]] = None,
     ) -> "Table": ...
     async def list_indices(self) -> list[IndexConfig]: ...

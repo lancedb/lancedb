@@ -18,6 +18,7 @@ use futures::{FutureExt, StreamExt, TryFutureExt};
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
+use lance::dataset::refs::Ref;
 use lance::dataset::scanner::Scanner;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
@@ -40,6 +41,7 @@ use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
+use lance_namespace_reqwest_client::models::CreateEmptyTableRequest;
 use lance_table::format::Manifest;
 use lance_table::io::commit::ManifestNamingScheme;
 use log::info;
@@ -1403,16 +1405,34 @@ impl Table {
     /// * `target_conn` - The target database connection
     /// * `target_table_name` - The name of the table to create
     /// * `target_namespace` - The namespace for the new table
-    /// * `version` - The version of the table to clone (or tag). Defaults to latest version.
+    /// * `version` - Optional version number to clone
+    /// * `tag` - Optional tag name to clone
     pub async fn shallow_clone(
         &self,
         target_conn: &Connection,
         target_table_name: &str,
         target_namespace: &[String],
-        version: Option<lance::dataset::refs::Ref>,
-    ) -> Result<Table> {
+        version: Option<u64>,
+        tag: Option<String>,
+    ) -> Result<Self> {
+        let version_ref = match (version, tag) {
+            (Some(v), None) => Some(Ref::Version(v)),
+            (None, Some(t)) => Some(Ref::Tag(t)),
+            (None, None) => None,
+            (Some(_), Some(_)) => {
+                return Err(Error::InvalidInput {
+                    message: "Cannot specify both version and tag".to_string(),
+                })
+            }
+        };
+
         self.inner
-            .shallow_clone(target_conn, target_table_name, target_namespace, version)
+            .shallow_clone(
+                target_conn,
+                target_table_name,
+                target_namespace,
+                version_ref,
+            )
             .await
     }
 }
@@ -2737,49 +2757,46 @@ impl BaseTable for NativeTable {
         target_namespace: &[String],
         version: Option<lance::dataset::refs::Ref>,
     ) -> Result<Table> {
-        // Get a mutable reference to the dataset
-        let mut dataset = self.dataset.get_mut().await?;
+        crate::utils::validate_table_name(target_table_name)?;
+        let mut table_id = target_namespace.to_vec();
+        table_id.push(target_table_name.to_string());
+        let create_request = CreateEmptyTableRequest {
+            id: Some(table_id),
+            location: None,
+            properties: None,
+        };
 
-        // Determine the version to clone (default to latest if not specified)
+        let create_response = target_conn
+            .database()
+            .create_empty_table(create_request)
+            .await?;
+
+        let target_uri = create_response.location.ok_or_else(|| Error::Runtime {
+            message: "create_empty_table did not return a location".to_string(),
+        })?;
+
+        let mut dataset = self.dataset.get_mut().await?;
         let version_ref = match version {
             Some(v) => v,
             None => lance::dataset::refs::Ref::Version(dataset.version().version),
         };
 
-        // Build the target URI from connection and table name
-        let target_uri = if target_namespace.is_empty() {
-            format!("{}/{}", target_conn.uri(), target_table_name)
-        } else {
-            format!(
-                "{}/{}/{}",
-                target_conn.uri(),
-                target_namespace.join("/"),
-                target_table_name
-            )
+        let store_params = ObjectStoreParams {
+            storage_options: create_response.storage_options,
+            ..Default::default()
         };
 
-        // Use default storage params for now
-        // TODO: Get storage options from target connection when available
-        let store_params = ObjectStoreParams::default();
-
-        // Perform the shallow clone operation
-        let cloned_dataset = dataset
+        dataset
             .shallow_clone(&target_uri, version_ref, store_params)
             .await?;
 
-        // Create a new NativeTable wrapper for the cloned dataset
-        let cloned_table = NativeTable {
-            name: target_table_name.to_string(),
-            uri: target_uri.clone(),
-            dataset: dataset::DatasetConsistencyWrapper::new_latest(
-                cloned_dataset,
-                self.read_consistency_interval,
-            ),
-            read_consistency_interval: self.read_consistency_interval,
-        };
+        let cloned_table = target_conn
+            .open_table(target_table_name)
+            .namespace(target_namespace.to_vec())
+            .execute()
+            .await?;
 
-        // Return the Table wrapper
-        Ok(Table::new(Arc::new(cloned_table)))
+        Ok(cloned_table)
     }
 }
 
@@ -4357,13 +4374,18 @@ mod tests {
 
         // Clone the table to the same connection with a new name
         let cloned_table = table
-            .shallow_clone(&conn, "cloned_table", &[], None)
+            .shallow_clone(&conn, "cloned_table", &[], None, None)
             .await
             .unwrap();
 
         // Verify the cloned table has the same data
         assert_eq!(cloned_table.count_rows(None).await.unwrap(), 8);
         assert_eq!(cloned_table.name(), "cloned_table");
+
+        // Verify both tables exist in the database
+        let table_names = conn.table_names().execute().await.unwrap();
+        assert!(table_names.contains(&"source_table".to_string()));
+        assert!(table_names.contains(&"cloned_table".to_string()));
 
         // Verify schema matches
         let source_schema = table.schema().await.unwrap();
@@ -4377,12 +4399,7 @@ mod tests {
         table.checkout_latest().await.unwrap();
 
         let cloned_v1_table = table
-            .shallow_clone(
-                &conn,
-                "cloned_v1_table",
-                &[],
-                Some(lance::dataset::refs::Ref::Version(version - 1)),
-            )
+            .shallow_clone(&conn, "cloned_v1_table", &[], Some(version - 1), None)
             .await
             .unwrap();
 

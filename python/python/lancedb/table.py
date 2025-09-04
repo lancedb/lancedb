@@ -25,6 +25,7 @@ from typing import (
 )
 from urllib.parse import urlparse
 
+from python.python.lancedb import AsyncConnection
 from . import __version__
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP
@@ -1639,20 +1640,20 @@ class Table(ABC):
     @abstractmethod
     def shallow_clone(
         self,
-        target_conn: "DBConnection",
+        target_conn: "LanceDBConnection",
         target_table_name: str,
         target_namespace: List[str] = [],
         version: Optional[Union[int, str]] = None,
     ) -> "Table":
         """Shallow clone the table to a new table in the target connection.
-        
-        The shallow clone operation creates a new table in the target connection that shares
-        the underlying data files with the source table. This is useful for creating
-        table copies without duplicating data.
-        
+
+        The shallow clone operation creates a new table in the target connection that
+        shares the underlying data files with the source table. This is useful for
+        creating table copies without duplicating data.
+
         Parameters
         ----------
-        target_conn : DBConnection
+        target_conn : LanceDBConnection
             The target database connection
         target_table_name : str
             The name of the table to create
@@ -1660,7 +1661,7 @@ class Table(ABC):
             The namespace for the new table
         version : Optional[Union[int, str]], default None
             The version of the table to clone (or tag). Defaults to latest version.
-        
+
         Returns
         -------
         Table
@@ -1769,6 +1770,22 @@ class LanceTable(Table):
             raise e
 
         return tbl
+
+    @classmethod
+    def _from_async_table(
+            cls,
+            connection: "LanceDBConnection",
+            async_table: "AsyncTable"):
+        """Create a LanceTable from an already opened AsyncTable.
+
+        This is an internal method used by operations that return new tables
+        like shallow_clone.
+        """
+        instance = object.__new__(cls)
+        instance._conn = connection
+        instance._namespace = []  # Will be set from the async_table if needed
+        instance._table = async_table
+        return instance
 
     @cached_property
     def _dataset_path(self) -> str:
@@ -1958,13 +1975,13 @@ class LanceTable(Table):
         version: Optional[Union[int, str]] = None,
     ) -> "LanceTable":
         """Shallow clone the table to a new table in the target connection.
-        
-        The shallow clone operation creates a new table in the target connection that shares
-        the underlying data files with the source table. This is useful for creating
-        table copies without duplicating data.
-        
+
+        The shallow clone operation creates a new table in the target connection that
+        shares the underlying data files with the source table. This is useful for
+        creating table copies without duplicating data.
+
         Note: This feature is not yet fully implemented in the Python bindings.
-        
+
         Parameters
         ----------
         target_conn : LanceDBConnection
@@ -1975,12 +1992,12 @@ class LanceTable(Table):
             The namespace for the new table
         version : Optional[Union[int, str]], default None
             The version of the table to clone (or tag). Defaults to latest version.
-        
+
         Returns
         -------
         LanceTable
             The cloned table
-        
+
         Examples
         --------
         >>> import lancedb
@@ -1992,10 +2009,12 @@ class LanceTable(Table):
                vector    type
         0  [1.1, 0.9]  vector
         """
-        raise NotImplementedError(
-            "shallow_clone is not yet fully implemented in Python bindings. "
-            "The Rust core needs to be updated to properly handle the connection parameter."
+        cloned_inner = LOOP.run(
+            self._table.shallow_clone(
+                target_conn._conn, target_table_name, target_namespace, version
+            )
         )
+        return LanceTable._from_async_table(target_conn, cloned_inner)
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
@@ -4278,13 +4297,11 @@ class AsyncTable:
     ) -> "AsyncTable":
         """
         Shallow clone the table to a new table in the target connection.
-        
-        The shallow clone operation creates a new table in the target connection that shares
-        the underlying data files with the source table. This is useful for creating
-        table copies without duplicating data.
-        
-        Note: This feature is not yet fully implemented in the Python bindings.
-        
+
+        The shallow clone operation creates a new table in the target connection that
+        shares the underlying data files with the source table. This is useful for
+        creating table copies without duplicating data.
+
         Parameters
         ----------
         target_conn : AsyncConnection
@@ -4295,12 +4312,12 @@ class AsyncTable:
             The namespace for the new table
         version : Optional[int | str], default None
             The version of the table to clone (or tag). Defaults to latest version.
-        
+
         Returns
         -------
         AsyncTable
             The cloned table
-        
+
         Examples
         --------
         >>> async def clone_table():
@@ -4311,10 +4328,10 @@ class AsyncTable:
         >>> import asyncio
         >>> asyncio.run(clone_table())
         """
-        raise NotImplementedError(
-            "shallow_clone is not yet fully implemented in Python bindings. "
-            "The Rust core needs to be updated to properly handle the connection parameter."
+        cloned_inner = await self._inner.shallow_clone(
+            target_conn._inner, target_table_name, target_namespace, version
         )
+        return AsyncTable(cloned_inner)
 
     def take_offsets(self, offsets: list[int]) -> AsyncTakeQuery:
         """

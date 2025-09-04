@@ -11,6 +11,7 @@ use lance::dataset::{ReadParams, WriteMode};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
+use lance_namespace_reqwest_client::models::{CreateEmptyTableRequest, CreateEmptyTableResponse};
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
@@ -676,6 +677,30 @@ impl Database for ListingDatabase {
             }
             Err(err) => Err(err),
         }
+    }
+
+    async fn create_empty_table(
+        &self,
+        request: CreateEmptyTableRequest,
+    ) -> Result<CreateEmptyTableResponse> {
+        let table_name = request
+            .id
+            .as_ref()
+            .and_then(|id| id.last())
+            .ok_or_else(|| Error::InvalidInput {
+                message: "Table ID must be provided and non-empty".to_string(),
+            })?;
+
+        if request.id.as_ref().map(|id| id.len() > 1).unwrap_or(false) {
+            return Err(Error::NotSupported {
+                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+            });
+        }
+
+        let mut response = CreateEmptyTableResponse::new();
+        response.location = Some(self.table_uri(table_name)?);
+        response.storage_options = Some(self.storage_options.clone());
+        Ok(response)
     }
 
     async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
