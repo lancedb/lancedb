@@ -26,9 +26,13 @@ from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 
-from python.python.lancedb import LanceDBConnection
+from typing import TYPE_CHECKING
+
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
 from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
+
+if TYPE_CHECKING:
+    from ..db import LanceDBConnection
 
 
 class RemoteTable(Table):
