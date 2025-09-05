@@ -25,7 +25,6 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-from python.python.lancedb import AsyncConnection
 from . import __version__
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP
