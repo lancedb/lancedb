@@ -8,6 +8,7 @@ use napi_derive::*;
 
 mod connection;
 mod error;
+mod header;
 mod index;
 mod iterator;
 pub mod merge;

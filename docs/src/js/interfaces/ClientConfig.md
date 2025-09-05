@@ -16,6 +16,14 @@ optional extraHeaders: Record<string, string>;
 
 ***
 
+### idDelimiter?
+
+```ts
+optional idDelimiter: string;
+```
+
+***
+
 ### retryConfig?
 
 ```ts

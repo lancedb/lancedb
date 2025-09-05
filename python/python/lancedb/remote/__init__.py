@@ -8,7 +8,15 @@ from typing import List, Optional
 
 from lancedb import __version__
 
-__all__ = ["TimeoutConfig", "RetryConfig", "TlsConfig", "ClientConfig"]
+from .header import HeaderProvider
+
+__all__ = [
+    "TimeoutConfig",
+    "RetryConfig",
+    "TlsConfig",
+    "ClientConfig",
+    "HeaderProvider",
+]
 
 
 @dataclass
@@ -143,6 +151,7 @@ class ClientConfig:
     extra_headers: Optional[dict] = None
     id_delimiter: Optional[str] = None
     tls_config: Optional[TlsConfig] = None
+    header_provider: Optional["HeaderProvider"] = None
 
     def __post_init__(self):
         if isinstance(self.retry_config, dict):

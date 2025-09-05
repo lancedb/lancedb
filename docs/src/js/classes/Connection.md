@@ -45,6 +45,8 @@ Any attempt to use the connection after it is closed will result in an error.
 
 ### createEmptyTable()
 
+#### createEmptyTable(name, schema, options)
+
 ```ts
 abstract createEmptyTable(
    name,
@@ -54,7 +56,7 @@ abstract createEmptyTable(
 
 Creates a new empty Table
 
-#### Parameters
+##### Parameters
 
 * **name**: `string`
     The name of the table.
@@ -63,8 +65,39 @@ Creates a new empty Table
     The schema of the table
 
 * **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
+    Additional options (backwards compatibility)
 
-#### Returns
+##### Returns
+
+`Promise`&lt;[`Table`](Table.md)&gt;
+
+#### createEmptyTable(name, schema, namespace, options)
+
+```ts
+abstract createEmptyTable(
+   name,
+   schema,
+   namespace?,
+   options?): Promise<Table>
+```
+
+Creates a new empty Table
+
+##### Parameters
+
+* **name**: `string`
+    The name of the table.
+
+* **schema**: [`SchemaLike`](../type-aliases/SchemaLike.md)
+    The schema of the table
+
+* **namespace?**: `string`[]
+    The namespace to create the table in (defaults to root namespace)
+
+* **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
+    Additional options
+
+##### Returns
 
 `Promise`&lt;[`Table`](Table.md)&gt;
 
@@ -72,10 +105,10 @@ Creates a new empty Table
 
 ### createTable()
 
-#### createTable(options)
+#### createTable(options, namespace)
 
 ```ts
-abstract createTable(options): Promise<Table>
+abstract createTable(options, namespace?): Promise<Table>
 ```
 
 Creates a new Table and initialize it with new data.
@@ -84,6 +117,9 @@ Creates a new Table and initialize it with new data.
 
 * **options**: `object` & `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
     The options object.
+
+* **namespace?**: `string`[]
+    The namespace to create the table in (defaults to root namespace)
 
 ##### Returns
 
@@ -110,6 +146,38 @@ Creates a new Table and initialize it with new data.
     to be inserted into the table
 
 * **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
+    Additional options (backwards compatibility)
+
+##### Returns
+
+`Promise`&lt;[`Table`](Table.md)&gt;
+
+#### createTable(name, data, namespace, options)
+
+```ts
+abstract createTable(
+   name,
+   data,
+   namespace?,
+   options?): Promise<Table>
+```
+
+Creates a new Table and initialize it with new data.
+
+##### Parameters
+
+* **name**: `string`
+    The name of the table.
+
+* **data**: [`TableLike`](../type-aliases/TableLike.md) \| `Record`&lt;`string`, `unknown`&gt;[]
+    Non-empty Array of Records
+    to be inserted into the table
+
+* **namespace?**: `string`[]
+    The namespace to create the table in (defaults to root namespace)
+
+* **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
+    Additional options
 
 ##### Returns
 
@@ -134,10 +202,15 @@ Return a brief description of the connection
 ### dropAllTables()
 
 ```ts
-abstract dropAllTables(): Promise<void>
+abstract dropAllTables(namespace?): Promise<void>
 ```
 
 Drop all tables in the database.
+
+#### Parameters
+
+* **namespace?**: `string`[]
+    The namespace to drop tables from (defaults to root namespace).
 
 #### Returns
 
@@ -148,7 +221,7 @@ Drop all tables in the database.
 ### dropTable()
 
 ```ts
-abstract dropTable(name): Promise<void>
+abstract dropTable(name, namespace?): Promise<void>
 ```
 
 Drop an existing table.
@@ -157,6 +230,9 @@ Drop an existing table.
 
 * **name**: `string`
     The name of the table to drop.
+
+* **namespace?**: `string`[]
+    The namespace of the table (defaults to root namespace).
 
 #### Returns
 
@@ -181,7 +257,10 @@ Return true if the connection has not been closed
 ### openTable()
 
 ```ts
-abstract openTable(name, options?): Promise<Table>
+abstract openTable(
+   name,
+   namespace?,
+   options?): Promise<Table>
 ```
 
 Open a table in the database.
@@ -191,7 +270,11 @@ Open a table in the database.
 * **name**: `string`
     The name of the table
 
+* **namespace?**: `string`[]
+    The namespace of the table (defaults to root namespace)
+
 * **options?**: `Partial`&lt;[`OpenTableOptions`](../interfaces/OpenTableOptions.md)&gt;
+    Additional options
 
 #### Returns
 
@@ -201,6 +284,8 @@ Open a table in the database.
 
 ### tableNames()
 
+#### tableNames(options)
+
 ```ts
 abstract tableNames(options?): Promise<string[]>
 ```
@@ -209,12 +294,35 @@ List all the table names in this database.
 
 Tables will be returned in lexicographical order.
 
-#### Parameters
+##### Parameters
+
+* **options?**: `Partial`&lt;[`TableNamesOptions`](../interfaces/TableNamesOptions.md)&gt;
+    options to control the
+    paging / start point (backwards compatibility)
+
+##### Returns
+
+`Promise`&lt;`string`[]&gt;
+
+#### tableNames(namespace, options)
+
+```ts
+abstract tableNames(namespace?, options?): Promise<string[]>
+```
+
+List all the table names in this database.
+
+Tables will be returned in lexicographical order.
+
+##### Parameters
+
+* **namespace?**: `string`[]
+    The namespace to list tables from (defaults to root namespace)
 
 * **options?**: `Partial`&lt;[`TableNamesOptions`](../interfaces/TableNamesOptions.md)&gt;
     options to control the
     paging / start point
 
-#### Returns
+##### Returns
 
 `Promise`&lt;`string`[]&gt;
