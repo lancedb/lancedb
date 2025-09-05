@@ -689,6 +689,30 @@ pub mod test_utils {
             header_provider: None,
         }
     }
+
+    pub fn client_with_handler_and_config<T>(
+        handler: impl Fn(reqwest::Request) -> http::response::Response<T> + Send + Sync + 'static,
+        config: ClientConfig,
+    ) -> RestfulLanceDbClient<MockSender>
+    where
+        T: Into<reqwest::Body>,
+    {
+        let wrapper = move |req: reqwest::Request| {
+            let response = handler(req);
+            response.into()
+        };
+
+        RestfulLanceDbClient {
+            client: reqwest::Client::new(),
+            host: "http://localhost".to_string(),
+            retry_config: config.retry_config.try_into().unwrap(),
+            sender: MockSender {
+                f: Arc::new(wrapper),
+            },
+            id_delimiter: config.id_delimiter.unwrap_or_else(|| "$".to_string()),
+            header_provider: config.header_provider,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -776,36 +800,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_header_provider_basic() {
-        let mut headers = HashMap::new();
-        headers.insert("X-Custom-Header".to_string(), "test-value".to_string());
-        headers.insert("Authorization".to_string(), "Bearer token123".to_string());
-
-        let provider = TestHeaderProvider::new(headers.clone());
-        let result = provider.get_headers().await.unwrap();
-        
-        assert_eq!(result, headers);
-    }
-
-    #[tokio::test]
-    async fn test_header_provider_error() {
-        let provider = ErrorHeaderProvider;
-        let result = provider.get_headers().await;
-        
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            Error::Runtime { message } => {
-                assert_eq!(message, "Failed to get headers");
-            }
-            _ => panic!("Expected Runtime error"),
-        }
-    }
-
-    #[tokio::test]
     async fn test_client_config_with_header_provider() {
         let mut headers = HashMap::new();
         headers.insert("X-API-Key".to_string(), "secret-key".to_string());
-        
+
         let provider = TestHeaderProvider::new(headers);
         let client_config = ClientConfig {
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
@@ -820,15 +818,15 @@ mod tests {
         // Create a mock client with header provider
         let mut headers = HashMap::new();
         headers.insert("X-Dynamic".to_string(), "dynamic-value".to_string());
-        
+
         let provider = TestHeaderProvider::new(headers);
-        
+
         // Create a simple request
         let request = reqwest::Request::new(
             reqwest::Method::GET,
             "https://example.com/test".parse().unwrap(),
         );
-        
+
         // Create client with header provider
         let client = RestfulLanceDbClient {
             client: reqwest::Client::new(),
@@ -838,10 +836,10 @@ mod tests {
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
         };
-        
+
         // Apply dynamic headers
         let updated_request = client.apply_dynamic_headers(request).await.unwrap();
-        
+
         // Check that the header was added
         assert_eq!(
             updated_request.headers().get("X-Dynamic").unwrap(),
@@ -855,16 +853,15 @@ mod tests {
         let mut headers = HashMap::new();
         headers.insert("Authorization".to_string(), "Bearer new-token".to_string());
         headers.insert("X-Custom".to_string(), "custom-value".to_string());
-        
+
         let provider = TestHeaderProvider::new(headers);
-        
+
         // Create request with existing Authorization header
-        let mut request_builder = reqwest::Client::new()
-            .get("https://example.com/test");
+        let mut request_builder = reqwest::Client::new().get("https://example.com/test");
         request_builder = request_builder.header("Authorization", "Bearer old-token");
         request_builder = request_builder.header("X-Existing", "existing-value");
         let request = request_builder.build().unwrap();
-        
+
         // Create client with header provider
         let client = RestfulLanceDbClient {
             client: reqwest::Client::new(),
@@ -874,10 +871,10 @@ mod tests {
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
         };
-        
+
         // Apply dynamic headers
         let updated_request = client.apply_dynamic_headers(request).await.unwrap();
-        
+
         // Check that dynamic headers override existing ones
         assert_eq!(
             updated_request.headers().get("Authorization").unwrap(),
@@ -897,12 +894,12 @@ mod tests {
     #[tokio::test]
     async fn test_apply_dynamic_headers_with_error_provider() {
         let provider = ErrorHeaderProvider;
-        
+
         let request = reqwest::Request::new(
             reqwest::Method::GET,
             "https://example.com/test".parse().unwrap(),
         );
-        
+
         let client = RestfulLanceDbClient {
             client: reqwest::Client::new(),
             host: "https://example.com".to_string(),
@@ -911,12 +908,12 @@ mod tests {
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
         };
-        
+
         // Header provider errors should fail the request
         // This is important for security - if auth headers can't be fetched, don't proceed
         let result = client.apply_dynamic_headers(request).await;
         assert!(result.is_err());
-        
+
         match result.unwrap_err() {
             Error::Runtime { message } => {
                 assert_eq!(message, "Failed to get headers");

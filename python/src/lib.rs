@@ -18,9 +18,9 @@ use table::{
 };
 
 pub mod arrow;
-pub mod header;
 pub mod connection;
 pub mod error;
+pub mod header;
 pub mod index;
 pub mod query;
 pub mod session;
