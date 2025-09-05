@@ -4315,16 +4315,6 @@ class AsyncTable:
         -------
         AsyncTable
             The cloned table
-
-        Examples
-        --------
-        >>> async def clone_table():
-        ...     db = await lancedb.connect_async("./.lancedb")
-        ...     table = await db.open_table("my_table")
-        ...     cloned = await table.shallow_clone(db, "cloned_table")
-        ...     print(await cloned.count_rows())
-        >>> import asyncio
-        >>> asyncio.run(clone_table())
         """
         cloned_inner = await self._inner.shallow_clone(
             target_conn._inner, target_table_name, target_namespace, version
