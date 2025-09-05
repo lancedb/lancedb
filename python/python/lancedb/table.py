@@ -88,7 +88,7 @@ if TYPE_CHECKING:
         MergeResult,
         UpdateResult,
     )
-    from .db import LanceDBConnection
+    from .db import AsyncConnection, LanceDBConnection
     from .index import IndexConfig
     import pandas
     import PIL
