@@ -117,6 +117,7 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
             timeout_config: config.timeout_config.map(Into::into).unwrap_or_default(),
             extra_headers: config.extra_headers.unwrap_or_default(),
             id_delimiter: config.id_delimiter,
+            header_provider: None, // NodeJS doesn't support header providers yet
         }
     }
 }
