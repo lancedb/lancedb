@@ -1442,6 +1442,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })?;
         Ok(stats)
     }
+
+    async fn shallow_clone(
+        &self,
+        _target_conn: &crate::connection::Connection,
+        _target_table_name: &str,
+        _target_namespace: &[String],
+        _version: Option<lance::dataset::refs::Ref>,
+    ) -> Result<crate::table::Table> {
+        Err(Error::NotSupported {
+            message: "Shallow clone is not yet supported for remote tables".to_string(),
+        })
+    }
 }
 
 #[derive(Serialize)]

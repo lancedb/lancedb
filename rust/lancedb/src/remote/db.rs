@@ -8,6 +8,7 @@ use arrow_array::RecordBatchIterator;
 use async_trait::async_trait;
 use http::StatusCode;
 use lance_io::object_store::StorageOptions;
+use lance_namespace_reqwest_client::models::{CreateEmptyTableRequest, CreateEmptyTableResponse};
 use moka::future::Cache;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
@@ -415,6 +416,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.table_cache.insert(cache_key, table.clone()).await;
 
         Ok(table)
+    }
+
+    async fn create_empty_table(
+        &self,
+        _request: CreateEmptyTableRequest,
+    ) -> Result<CreateEmptyTableResponse> {
+        // For now, remote databases don't support create_empty_table
+        // This would need to be implemented with a proper remote API endpoint
+        Err(Error::NotSupported {
+            message: "create_empty_table is not yet supported for remote databases".to_string(),
+        })
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {

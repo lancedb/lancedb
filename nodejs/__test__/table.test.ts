@@ -1943,3 +1943,88 @@ describe("column name options", () => {
     expect(results2.length).toBe(10);
   });
 });
+
+describe("Table shallow clone", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("should shallow clone a table", async () => {
+    const db = await connect(tmpDir.name);
+
+    // Create source table with some data
+    const sourceTableName = "source_table_clone";
+    const sourceTable = await db.createTable({
+      name: sourceTableName,
+      data: makeArrowTable([
+        { id: 1, vector: [0.1, 0.2], item: "foo", price: 10.0 },
+        { id: 2, vector: [0.3, 0.4], item: "bar", price: 20.0 },
+      ]),
+    });
+
+    // Add more data to create multiple versions
+    await sourceTable.add([
+      { id: 3, vector: [0.5, 0.6], item: "baz", price: 30.0 },
+      { id: 4, vector: [0.7, 0.8], item: "qux", price: 40.0 },
+    ]);
+
+    const version2Count = await sourceTable.countRows();
+    expect(version2Count).toBe(4);
+
+    // Clone the table to a new table (latest version by default)
+    const clonedTable = await sourceTable.shallowClone(db, "cloned_table", []);
+
+    // Verify cloned table has the same data
+    expect(clonedTable.name).toBe("cloned_table");
+    expect(await clonedTable.countRows()).toBe(version2Count);
+
+    const sourceSchema = await sourceTable.schema();
+    const clonedSchema = await clonedTable.schema();
+    expect(clonedSchema.fields.length).toBe(sourceSchema.fields.length);
+
+    // Verify both tables exist
+    const tableNames = await db.tableNames();
+    expect(tableNames).toContain(sourceTableName);
+    expect(tableNames).toContain("cloned_table");
+
+    // Clone a specific version
+    const clonedV1Table = await sourceTable.shallowClone(
+      db,
+      "cloned_v1",
+      [],
+      1,
+    );
+
+    // Verify the cloned table has data from version 1
+    expect(clonedV1Table.name).toBe("cloned_v1");
+    expect(await clonedV1Table.countRows()).toBe(2);
+
+    // Create a tag and clone using the tag
+    const tags = await sourceTable.tags();
+    await tags.create("v2_tag", 2);
+    const clonedTagTable = await sourceTable.shallowClone(
+      db,
+      "cloned_tag",
+      [],
+      undefined,
+      "v2_tag",
+    );
+
+    // Verify the cloned table has data from the tagged version
+    expect(clonedTagTable.name).toBe("cloned_tag");
+    expect(await clonedTagTable.countRows()).toBe(version2Count);
+
+    // Verify that modifications to cloned table don't affect source table
+    await clonedTable.add([
+      { id: 5, vector: [0.9, 1.0], item: "new_item", price: 50.0 },
+    ]);
+    expect(await clonedTable.countRows()).toBe(version2Count + 1);
+    expect(await sourceTable.countRows()).toBe(version2Count);
+  });
+});

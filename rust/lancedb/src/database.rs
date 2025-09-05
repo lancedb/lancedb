@@ -23,6 +23,7 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::stream;
 use lance::dataset::ReadParams;
 use lance_datafusion::utils::StreamingWriteSource;
+use lance_namespace_reqwest_client::models::{CreateEmptyTableRequest, CreateEmptyTableResponse};
 
 use crate::arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt};
 use crate::error::Result;
@@ -193,6 +194,15 @@ pub trait Database:
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>>;
     /// Create a table in the database
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>>;
+    /// Creating an empty table in the database that has no actual
+    /// table version, schema, metadata or data in storage yet.
+    /// It is used to set up the table in the database,
+    /// returns the table location and storage options that can be used
+    /// to write to the table to create actual table metadata and data in storage.
+    async fn create_empty_table(
+        &self,
+        request: CreateEmptyTableRequest,
+    ) -> Result<CreateEmptyTableResponse>;
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database

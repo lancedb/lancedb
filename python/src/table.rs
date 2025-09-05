@@ -24,6 +24,14 @@ use pyo3::{
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
+/// Represents a version of a table - either a version number or a tag name
+#[derive(FromPyObject)]
+#[pyo3(from_item_all)]
+pub enum LanceVersion {
+    Version(u64),
+    Tag(String),
+}
+
 /// Statistics about a compaction operation.
 #[pyclass(get_all)]
 #[derive(Clone, Debug)]
@@ -815,12 +823,49 @@ impl Table {
             Ok(())
         })
     }
-}
 
-#[derive(FromPyObject)]
-pub enum LanceVersion {
-    Version(u64),
-    Tag(String),
+    // Note: This is a placeholder - Python API will need to be redesigned
+    #[pyo3(signature = (target_conn, target_table_name, target_namespace, version=None))]
+    pub fn shallow_clone<'py>(
+        self_: PyRef<'py, Self>,
+        py: Python<'py>,
+        target_conn: &Bound<'py, PyAny>,
+        target_table_name: String,
+        target_namespace: Vec<String>,
+        version: Option<LanceVersion>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let table = self_
+            .inner
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Table is closed"))?
+            .clone();
+
+        // Extract the Connection from the Python object
+        let conn_obj: PyRef<crate::connection::Connection> = target_conn.extract()?;
+        let target_conn = conn_obj.get_inner()?.clone();
+
+        // Convert LanceVersion to version/tag parameters
+        let (version_num, tag_name) = match version {
+            Some(LanceVersion::Version(v)) => (Some(v), None),
+            Some(LanceVersion::Tag(t)) => (None, Some(t)),
+            None => (None, None),
+        };
+
+        future_into_py(py, async move {
+            let new_table = table
+                .shallow_clone(
+                    &target_conn,
+                    &target_table_name,
+                    &target_namespace,
+                    version_num,
+                    tag_name,
+                )
+                .await
+                .infer_error()?;
+
+            Ok(Self::new(new_table))
+        })
+    }
 }
 
 #[derive(FromPyObject)]

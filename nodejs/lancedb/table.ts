@@ -13,6 +13,7 @@ import {
   isMultiVector,
   tableFromIPC,
 } from "./arrow";
+import type { Connection, LocalConnection } from "./connection";
 
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
@@ -486,6 +487,27 @@ export abstract class Table {
    */
   abstract restore(): Promise<void>;
   /**
+   * Shallow clone the table to a new table in the target connection.
+   *
+   * The shallow clone operation creates a new table in the target connection that shares
+   * the underlying data files with the source table. This is useful for creating
+   * table copies without duplicating data.
+   *
+   * @param targetConn - The target database connection
+   * @param targetTableName - The name of the table to create
+   * @param targetNamespace - The namespace for the new table (default [])
+   * @param version - Optional version number to clone
+   * @param tag - Optional tag name to clone
+   * @returns A new Table object representing the cloned table
+   */
+  abstract shallowClone(
+    targetConn: Connection,
+    targetTableName: string,
+    targetNamespace?: string[],
+    version?: number,
+    tag?: string,
+  ): Promise<Table>;
+  /**
    * Optimize the on-disk data and indices for better performance.
    *
    * Modeled after ``VACUUM`` in PostgreSQL.
@@ -817,6 +839,25 @@ export class LocalTable extends Table {
 
   async restore(): Promise<void> {
     await this.inner.restore();
+  }
+
+  async shallowClone(
+    targetConn: Connection,
+    targetTableName: string,
+    targetNamespace: string[] = [],
+    version?: number,
+    tag?: string,
+  ): Promise<Table> {
+    // Access the inner native connection from LocalConnection
+    const nativeConn = (targetConn as LocalConnection).inner;
+    const clonedTable = await this.inner.shallowClone(
+      nativeConn,
+      targetTableName,
+      targetNamespace,
+      version,
+      tag,
+    );
+    return new LocalTable(clonedTable);
   }
 
   async tags(): Promise<Tags> {
