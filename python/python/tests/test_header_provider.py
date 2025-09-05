@@ -9,12 +9,8 @@ import threading
 from typing import Dict
 from unittest.mock import MagicMock, patch
 
-from lancedb.remote import (
-    ClientConfig, 
-    HeaderProvider, 
-    StaticHeaderProvider, 
-    OAuthProvider
-)
+from lancedb.remote import ClientConfig, HeaderProvider
+from lancedb.remote.header import StaticHeaderProvider, OAuthProvider
 
 
 class TestStaticHeaderProvider:

@@ -11,10 +11,10 @@ from lancedb import __version__
 if TYPE_CHECKING:
     from .header import HeaderProvider
 
-# Import auth providers for convenience
-from .header import HeaderProvider, StaticHeaderProvider, OAuthProvider
+# Import HeaderProvider interface
+from .header import HeaderProvider
 
-__all__ = ["TimeoutConfig", "RetryConfig", "ClientConfig", "HeaderProvider", "StaticHeaderProvider", "OAuthProvider"]
+__all__ = ["TimeoutConfig", "RetryConfig", "ClientConfig", "HeaderProvider"]
 
 
 @dataclass

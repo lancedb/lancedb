@@ -7,15 +7,18 @@ This module provides a flexible header management framework for LanceDB remote c
 allowing users to implement custom header strategies for authentication, request tracking,
 custom metadata, or any other header-based requirements.
 
+The module includes the HeaderProvider abstract base class and example implementations
+(StaticHeaderProvider and OAuthProvider) that demonstrate common patterns.
+
 The HeaderProvider interface is designed to be called before each request to the remote
 server, enabling dynamic header scenarios where values may need to be
 refreshed, rotated, or computed on-demand.
 
 Examples
 --------
-Basic usage with static API key:
+Basic usage with static API key (example implementation):
 >>> from lancedb.remote import ClientConfig
->>> from lancedb.remote.header import StaticHeaderProvider
+>>> from lancedb.remote.header import StaticHeaderProvider  # Example implementation
 >>> import lancedb
 >>>
 >>> provider = StaticHeaderProvider({"X-API-Key": "your-api-key"})
@@ -108,10 +111,11 @@ class HeaderProvider(ABC):
 
 
 class StaticHeaderProvider(HeaderProvider):
-    """A simple header provider that returns static headers.
+    """Example implementation: A simple header provider that returns static headers.
     
-    This is useful for cases where headers don't change during the session,
-    but you want to use the HeaderProvider interface for consistency.
+    This is an example implementation showing how to create a HeaderProvider
+    for cases where headers don't change during the session. Users can use this
+    as a reference for implementing their own providers.
     
     Parameters
     ----------
@@ -151,11 +155,11 @@ class StaticHeaderProvider(HeaderProvider):
 
 
 class OAuthProvider(HeaderProvider):
-    """Example OAuth token provider with automatic refresh.
+    """Example implementation: OAuth token provider with automatic refresh.
     
-    This provider manages OAuth tokens and automatically refreshes them
-    when they expire. Users should implement the token refresh logic
-    according to their OAuth provider's requirements.
+    This is an example implementation showing how to manage OAuth tokens
+    with automatic refresh when they expire. Users can use this as a reference
+    for implementing their own OAuth or token-based authentication providers.
     
     Parameters
     ----------
