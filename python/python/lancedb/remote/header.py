@@ -17,31 +17,34 @@ refreshed, rotated, or computed on-demand.
 
 Examples
 --------
-Basic usage with static API key (example implementation):
->>> from lancedb.remote import ClientConfig
->>> from lancedb.remote.header import StaticHeaderProvider  # Example implementation
->>> import lancedb
->>>
->>> provider = StaticHeaderProvider({"X-API-Key": "your-api-key"})
->>> config = ClientConfig(header_provider=provider)
->>> db = await lancedb.connect("db://my-database", client_config=config)
+Basic usage with static API key (example implementation)::
 
-OAuth with automatic token refresh:
->>> def fetch_oauth_token():
->>>     # Your OAuth token fetching logic here
->>>     response = oauth_client.get_token()
->>>     return {"access_token": response.token, "expires_in": 3600}
->>>
->>> provider = OAuthProvider(fetch_oauth_token, refresh_buffer_seconds=300)
->>> config = ClientConfig(header_provider=provider)
->>> db = await lancedb.connect("db://my-database", client_config=config)
+    from lancedb.remote import ClientConfig
+    from lancedb.remote.header import StaticHeaderProvider
+    import lancedb
 
-Custom provider implementation:
->>> class CustomProvider(HeaderProvider):
->>>     def get_headers(self) -> Dict[str, str]:
->>>         # Your custom logic here
->>>         token = self.fetch_token_from_service()
->>>         return {"Authorization": f"Custom {token}"}
+    provider = StaticHeaderProvider({"X-API-Key": "your-api-key"})
+    config = ClientConfig(header_provider=provider)
+    db = await lancedb.connect("db://my-database", client_config=config)
+
+OAuth with automatic token refresh::
+
+    def fetch_oauth_token():
+        # Your OAuth token fetching logic here
+        response = oauth_client.get_token()
+        return {"access_token": response.token, "expires_in": 3600}
+
+    provider = OAuthProvider(fetch_oauth_token, refresh_buffer_seconds=300)
+    config = ClientConfig(header_provider=provider)
+    db = await lancedb.connect("db://my-database", client_config=config)
+
+Custom provider implementation::
+
+    class CustomProvider(HeaderProvider):
+        def get_headers(self) -> Dict[str, str]:
+            # Your custom logic here
+            token = self.fetch_token_from_service()
+            return {"Authorization": f"Custom {token}"}
 """
 
 from abc import ABC, abstractmethod
