@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import asyncio
+import concurrent.futures
 import os
 import pytest
+import time
+import threading
 from typing import Dict
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from lancedb.remote import (
     ClientConfig, 
@@ -22,34 +24,24 @@ class TestStaticHeaderProvider:
         provider = StaticHeaderProvider(headers)
         assert provider._headers == headers
     
-    @pytest.mark.asyncio
-    async def test_get_headers_async(self):
-        """Test async get_headers returns correct headers."""
+    def test_get_headers(self):
+        """Test get_headers returns correct headers."""
         headers = {"X-API-Key": "test-key", "X-Custom": "value"}
         provider = StaticHeaderProvider(headers)
         
-        result = await provider.get_headers()
+        result = provider.get_headers()
         assert result == headers
         
         # Ensure it returns a copy
         result["X-Modified"] = "modified"
-        result2 = await provider.get_headers()
+        result2 = provider.get_headers()
         assert "X-Modified" not in result2
-    
-    def test_get_headers_sync(self):
-        """Test sync get_headers_sync returns correct headers."""
-        headers = {"X-API-Key": "test-key", "X-Custom": "value"}
-        provider = StaticHeaderProvider(headers)
-        
-        result = provider.get_headers_sync()
-        assert result == headers
 
 
 class TestOAuthProvider:
-    @pytest.mark.asyncio
-    async def test_init(self):
+    def test_init(self):
         """Test OAuthProvider initialization."""
-        async def fetcher():
+        def fetcher():
             return {"access_token": "token123", "expires_in": 3600}
         
         provider = OAuthProvider(fetcher)
@@ -58,26 +50,24 @@ class TestOAuthProvider:
         assert provider._current_token is None
         assert provider._token_expires_at is None
     
-    @pytest.mark.asyncio
-    async def test_get_headers_first_time(self):
+    def test_get_headers_first_time(self):
         """Test get_headers fetches token on first call."""
-        async def fetcher():
+        def fetcher():
             return {"access_token": "token123", "expires_in": 3600}
         
         provider = OAuthProvider(fetcher)
-        headers = await provider.get_headers()
+        headers = provider.get_headers()
         
         assert headers == {"Authorization": "Bearer token123"}
         assert provider._current_token == "token123"
         assert provider._token_expires_at is not None
     
-    @pytest.mark.asyncio
-    async def test_token_refresh(self):
+    def test_token_refresh(self):
         """Test token refresh when expired."""
         call_count = 0
         tokens = ["token1", "token2"]
         
-        async def fetcher():
+        def fetcher():
             nonlocal call_count
             token = tokens[call_count]
             call_count += 1
@@ -86,51 +76,49 @@ class TestOAuthProvider:
         provider = OAuthProvider(fetcher, refresh_buffer_seconds=0)
         
         # First call
-        headers1 = await provider.get_headers()
+        headers1 = provider.get_headers()
         assert headers1 == {"Authorization": "Bearer token1"}
         
         # Wait for token to expire
-        await asyncio.sleep(1.1)
+        time.sleep(1.1)
         
         # Second call should refresh
-        headers2 = await provider.get_headers()
+        headers2 = provider.get_headers()
         assert headers2 == {"Authorization": "Bearer token2"}
         assert call_count == 2
     
-    @pytest.mark.asyncio
-    async def test_no_expiry_info(self):
+    def test_no_expiry_info(self):
         """Test handling tokens without expiry information."""
-        async def fetcher():
+        def fetcher():
             return {"access_token": "permanent_token"}
         
         provider = OAuthProvider(fetcher)
-        headers = await provider.get_headers()
+        headers = provider.get_headers()
         
         assert headers == {"Authorization": "Bearer permanent_token"}
         assert provider._token_expires_at is None
         
         # Should not refresh on second call
-        headers2 = await provider.get_headers()
+        headers2 = provider.get_headers()
         assert headers2 == {"Authorization": "Bearer permanent_token"}
     
-    @pytest.mark.asyncio
-    async def test_missing_access_token(self):
+    def test_missing_access_token(self):
         """Test error handling when access_token is missing."""
-        async def fetcher():
+        def fetcher():
             return {"expires_in": 3600}  # Missing access_token
         
         provider = OAuthProvider(fetcher)
         
         with pytest.raises(ValueError, match="Token fetcher did not return 'access_token'"):
-            await provider.get_headers()
+            provider.get_headers()
     
-    def test_sync_version(self):
-        """Test synchronous get_headers_sync method."""
-        async def fetcher():
+    def test_sync_method(self):
+        """Test synchronous get_headers method."""
+        def fetcher():
             return {"access_token": "sync_token", "expires_in": 3600}
         
         provider = OAuthProvider(fetcher)
-        headers = provider.get_headers_sync()
+        headers = provider.get_headers()
         
         assert headers == {"Authorization": "Bearer sync_token"}
 
@@ -152,22 +140,15 @@ class TestClientConfigIntegration:
 class CustomProvider(HeaderProvider):
     """Custom provider for testing abstract class."""
     
-    async def get_headers(self) -> Dict[str, str]:
+    def get_headers(self) -> Dict[str, str]:
         return {"X-Custom": "custom-value"}
 
 
 class TestCustomHeaderProvider:
-    @pytest.mark.asyncio
-    async def test_custom_provider(self):
+    def test_custom_provider(self):
         """Test custom HeaderProvider implementation."""
         provider = CustomProvider()
-        headers = await provider.get_headers()
-        assert headers == {"X-Custom": "custom-value"}
-    
-    def test_custom_provider_sync(self):
-        """Test custom provider sync method uses default implementation."""
-        provider = CustomProvider()
-        headers = provider.get_headers_sync()
+        headers = provider.get_headers()
         assert headers == {"X-Custom": "custom-value"}
 
 
@@ -178,28 +159,27 @@ class ErrorProvider(HeaderProvider):
         self.error_message = error_message
         self.call_count = 0
     
-    async def get_headers(self) -> Dict[str, str]:
+    def get_headers(self) -> Dict[str, str]:
         self.call_count += 1
         raise RuntimeError(self.error_message)
 
 
 class TestErrorHandling:
-    @pytest.mark.asyncio
-    async def test_provider_error_propagation(self):
+    def test_provider_error_propagation(self):
         """Test that errors from header provider are properly propagated."""
         provider = ErrorProvider("Authentication failed")
         
         with pytest.raises(RuntimeError, match="Authentication failed"):
-            await provider.get_headers()
+            provider.get_headers()
         
         assert provider.call_count == 1
     
-    def test_provider_error_sync(self):
-        """Test that sync method also propagates errors."""
+    def test_provider_error(self):
+        """Test that errors are propagated."""
         provider = ErrorProvider("Sync error")
         
         with pytest.raises(RuntimeError, match="Sync error"):
-            provider.get_headers_sync()
+            provider.get_headers()
 
 
 class ConcurrentProvider(HeaderProvider):
@@ -207,25 +187,25 @@ class ConcurrentProvider(HeaderProvider):
     
     def __init__(self):
         self.counter = 0
-        self.lock = asyncio.Lock()
+        self.lock = threading.Lock()
     
-    async def get_headers(self) -> Dict[str, str]:
-        async with self.lock:
+    def get_headers(self) -> Dict[str, str]:
+        with self.lock:
             self.counter += 1
-            # Simulate some async work
-            await asyncio.sleep(0.01)
+            # Simulate some work
+            time.sleep(0.01)
             return {"X-Request-Id": str(self.counter)}
 
 
 class TestConcurrency:
-    @pytest.mark.asyncio
-    async def test_concurrent_header_fetches(self):
+    def test_concurrent_header_fetches(self):
         """Test that header provider can handle concurrent requests."""
         provider = ConcurrentProvider()
         
         # Create multiple concurrent requests
-        tasks = [provider.get_headers() for _ in range(10)]
-        results = await asyncio.gather(*tasks)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(provider.get_headers) for _ in range(10)]
+            results = [f.result() for f in futures]
         
         # Each request should get a unique counter value
         request_ids = [int(r["X-Request-Id"]) for r in results]
@@ -233,15 +213,14 @@ class TestConcurrency:
         assert min(request_ids) == 1
         assert max(request_ids) == 10
     
-    @pytest.mark.asyncio
-    async def test_oauth_concurrent_refresh(self):
+    def test_oauth_concurrent_refresh(self):
         """Test that OAuth provider handles concurrent refresh requests safely."""
         call_count = 0
         
-        async def slow_token_fetch():
+        def slow_token_fetch():
             nonlocal call_count
             call_count += 1
-            await asyncio.sleep(0.1)  # Simulate slow token fetch
+            time.sleep(0.1)  # Simulate slow token fetch
             return {
                 "access_token": f"token-{call_count}",
                 "expires_in": 3600
@@ -250,8 +229,9 @@ class TestConcurrency:
         provider = OAuthProvider(slow_token_fetch)
         
         # Force multiple concurrent refreshes
-        tasks = [provider.get_headers() for _ in range(5)]
-        results = await asyncio.gather(*tasks)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(provider.get_headers) for _ in range(5)]
+            results = [f.result() for f in futures]
         
         # All requests should get the same token (only one refresh should happen)
         tokens = [r["Authorization"] for r in results]

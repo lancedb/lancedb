@@ -29,15 +29,15 @@ impl PyHeaderProvider {
             .ok_or_else(|| "HeaderProvider has been dropped".to_string())?;
 
         Python::with_gil(|py| {
-            // Try to call the sync version first for simplicity in Rust context
-            let result = provider.call_method0(py, "get_headers_sync");
+            // Call the get_headers method
+            let result = provider.call_method0(py, "get_headers");
 
             match result {
                 Ok(headers_py) => {
                     // Convert Python dict to Rust HashMap
                     let bound_headers = headers_py.bind(py);
                     let dict: &Bound<PyDict> = bound_headers.downcast().map_err(|e| {
-                        format!("HeaderProvider.get_headers_sync must return a dict: {}", e)
+                        format!("HeaderProvider.get_headers must return a dict: {}", e)
                     })?;
 
                     let mut headers = HashMap::new();

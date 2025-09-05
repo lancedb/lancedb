@@ -23,9 +23,9 @@ Basic usage with static API key:
 >>> db = await lancedb.connect("db://my-database", client_config=config)
 
 OAuth with automatic token refresh:
->>> async def fetch_oauth_token():
+>>> def fetch_oauth_token():
 >>>     # Your OAuth token fetching logic here
->>>     response = await oauth_client.get_token()
+>>>     response = oauth_client.get_token()
 >>>     return {"access_token": response.token, "expires_in": 3600}
 >>>
 >>> provider = OAuthProvider(fetch_oauth_token, refresh_buffer_seconds=300)
@@ -34,16 +34,16 @@ OAuth with automatic token refresh:
 
 Custom provider implementation:
 >>> class CustomProvider(HeaderProvider):
->>>     async def get_headers(self) -> Dict[str, str]:
+>>>     def get_headers(self) -> Dict[str, str]:
 >>>         # Your custom logic here
->>>         token = await self.fetch_token_from_service()
+>>>         token = self.fetch_token_from_service()
 >>>         return {"Authorization": f"Custom {token}"}
 """
 
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, Callable, Any
-import asyncio
 import time
+import threading
 
 
 class HeaderProvider(ABC):
@@ -73,7 +73,7 @@ class HeaderProvider(ABC):
     ...     def __init__(self, jwt_token: str):
     ...         self.token = jwt_token
     ...     
-    ...     async def get_headers(self) -> Dict[str, str]:
+    ...     def get_headers(self) -> Dict[str, str]:
     ...         return {"Authorization": f"Bearer {self.token}"}
     
     Provider with rotating API keys:
@@ -81,13 +81,13 @@ class HeaderProvider(ABC):
     ...     def __init__(self, key_manager):
     ...         self.key_manager = key_manager
     ...     
-    ...     async def get_headers(self) -> Dict[str, str]:
-    ...         current_key = await self.key_manager.get_current_key()
+    ...     def get_headers(self) -> Dict[str, str]:
+    ...         current_key = self.key_manager.get_current_key()
     ...         return {"X-API-Key": current_key}
     """
     
     @abstractmethod
-    async def get_headers(self) -> Dict[str, str]:
+    def get_headers(self) -> Dict[str, str]:
         """Get the latest headers to be added to requests.
         
         This method is called before each request to the remote LanceDB server.
@@ -105,23 +105,6 @@ class HeaderProvider(ABC):
             and the request will fail.
         """
         pass
-    
-    def get_headers_sync(self) -> Dict[str, str]:
-        """Synchronous version of get_headers for compatibility.
-        
-        This method runs the async get_headers in a new event loop.
-        Override this if you need different sync behavior.
-        
-        Returns
-        -------
-        Dict[str, str]
-            Dictionary of header names to values.
-        """
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(self.get_headers())
-        finally:
-            loop.close()
 
 
 class StaticHeaderProvider(HeaderProvider):
@@ -142,7 +125,7 @@ class StaticHeaderProvider(HeaderProvider):
     ...     "X-API-Key": "my-secret-key",
     ...     "X-Custom-Header": "custom-value"
     ... })
-    >>> await provider.get_headers()
+    >>> provider.get_headers()
     {'X-API-Key': 'my-secret-key', 'X-Custom-Header': 'custom-value'}
     """
     
@@ -156,7 +139,7 @@ class StaticHeaderProvider(HeaderProvider):
         """
         self._headers = headers.copy()
     
-    async def get_headers(self) -> Dict[str, str]:
+    def get_headers(self) -> Dict[str, str]:
         """Return the static headers.
         
         Returns
@@ -177,24 +160,23 @@ class OAuthProvider(HeaderProvider):
     Parameters
     ----------
     token_fetcher : Callable[[], Dict[str, Any]]
-        Async function that fetches a new token. Should return a dict with
+        Function that fetches a new token. Should return a dict with
         'access_token' and optionally 'expires_in' (seconds until expiration).
     refresh_buffer_seconds : int, optional
         Number of seconds before expiration to trigger refresh. Default is 300 (5 minutes).
     
     Examples
     --------
-    >>> import aiohttp
-    >>> async def fetch_token():
-    ...     async with aiohttp.ClientSession() as session:
-    ...         async with session.post(
-    ...             "https://oauth.example.com/token",
-    ...             data={"grant_type": "client_credentials", "client_id": "...", "client_secret": "..."}
-    ...         ) as response:
-    ...             return await response.json()
+    >>> import requests
+    >>> def fetch_token():
+    ...     response = requests.post(
+    ...         "https://oauth.example.com/token",
+    ...         data={"grant_type": "client_credentials", "client_id": "...", "client_secret": "..."}
+    ...     )
+    ...     return response.json()
     >>> 
     >>> provider = OAuthProvider(fetch_token)
-    >>> headers = await provider.get_headers()
+    >>> headers = provider.get_headers()
     >>> print(headers["Authorization"])
     Bearer eyJ0eXAiOiJKV1QiLCJhbGc...
     """
@@ -209,7 +191,7 @@ class OAuthProvider(HeaderProvider):
         Parameters
         ----------
         token_fetcher : Callable[[], Any]
-            Async function to fetch new tokens. Should return dict with
+            Function to fetch new tokens. Should return dict with
             'access_token' and optionally 'expires_in'.
         refresh_buffer_seconds : int, optional
             Seconds before expiry to refresh token. Default 300.
@@ -218,14 +200,14 @@ class OAuthProvider(HeaderProvider):
         self._refresh_buffer = refresh_buffer_seconds
         self._current_token: Optional[str] = None
         self._token_expires_at: Optional[float] = None
-        self._refresh_lock = asyncio.Lock()
+        self._refresh_lock = threading.Lock()
     
-    async def _refresh_token_if_needed(self) -> None:
+    def _refresh_token_if_needed(self) -> None:
         """Refresh the token if it's expired or close to expiring."""
-        async with self._refresh_lock:
-            # Check again inside the lock in case another coroutine refreshed
+        with self._refresh_lock:
+            # Check again inside the lock in case another thread refreshed
             if self._needs_refresh():
-                token_data = await self._token_fetcher()
+                token_data = self._token_fetcher()
                 
                 self._current_token = token_data.get("access_token")
                 if not self._current_token:
@@ -251,7 +233,7 @@ class OAuthProvider(HeaderProvider):
         # Refresh if we're within the buffer time of expiration
         return time.time() >= (self._token_expires_at - self._refresh_buffer)
     
-    async def get_headers(self) -> Dict[str, str]:
+    def get_headers(self) -> Dict[str, str]:
         """Get OAuth headers, refreshing token if needed.
         
         Returns
@@ -264,7 +246,7 @@ class OAuthProvider(HeaderProvider):
         Exception
             If unable to fetch or refresh token.
         """
-        await self._refresh_token_if_needed()
+        self._refresh_token_if_needed()
         
         if not self._current_token:
             raise RuntimeError("Failed to obtain OAuth token")
