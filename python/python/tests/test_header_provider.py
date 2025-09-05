@@ -35,6 +35,7 @@ class TestStaticHeaderProvider:
 class TestOAuthProvider:
     def test_init(self):
         """Test OAuthProvider initialization."""
+
         def fetcher():
             return {"access_token": "token123", "expires_in": 3600}
 
@@ -46,6 +47,7 @@ class TestOAuthProvider:
 
     def test_get_headers_first_time(self):
         """Test get_headers fetches token on first call."""
+
         def fetcher():
             return {"access_token": "token123", "expires_in": 3600}
 
@@ -83,6 +85,7 @@ class TestOAuthProvider:
 
     def test_no_expiry_info(self):
         """Test handling tokens without expiry information."""
+
         def fetcher():
             return {"access_token": "permanent_token"}
 
@@ -98,6 +101,7 @@ class TestOAuthProvider:
 
     def test_missing_access_token(self):
         """Test error handling when access_token is missing."""
+
         def fetcher():
             return {"expires_in": 3600}  # Missing access_token
 
@@ -110,6 +114,7 @@ class TestOAuthProvider:
 
     def test_sync_method(self):
         """Test synchronous get_headers method."""
+
         def fetcher():
             return {"access_token": "sync_token", "expires_in": 3600}
 
@@ -217,10 +222,7 @@ class TestConcurrency:
             nonlocal call_count
             call_count += 1
             time.sleep(0.1)  # Simulate slow token fetch
-            return {
-                "access_token": f"token-{call_count}",
-                "expires_in": 3600
-            }
+            return {"access_token": f"token-{call_count}", "expires_in": 3600}
 
         provider = OAuthProvider(slow_token_fetch)
 

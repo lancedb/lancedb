@@ -189,9 +189,7 @@ class OAuthProvider(HeaderProvider):
     """
 
     def __init__(
-        self,
-        token_fetcher: Callable[[], Any],
-        refresh_buffer_seconds: int = 300
+        self, token_fetcher: Callable[[], Any], refresh_buffer_seconds: int = 300
     ):
         """Initialize the OAuth provider.
 
@@ -258,7 +256,4 @@ class OAuthProvider(HeaderProvider):
         if not self._current_token:
             raise RuntimeError("Failed to obtain OAuth token")
 
-        return {
-            "Authorization": f"Bearer {self._current_token}"
-        }
-
+        return {"Authorization": f"Bearer {self._current_token}"}

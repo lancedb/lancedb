@@ -912,14 +912,11 @@ async def test_header_provider_with_static_headers():
         request.wfile.write(b'{"tables": ["test_table"]}')
 
     # Create a static header provider
-    provider = StaticHeaderProvider({
-        "X-API-Key": "test-api-key",
-        "X-Custom-Header": "custom-value"
-    })
+    provider = StaticHeaderProvider(
+        {"X-API-Key": "test-api-key", "X-Custom-Header": "custom-value"}
+    )
 
-    async with mock_lancedb_connection_async(
-        handler, header_provider=provider
-    ) as db:
+    async with mock_lancedb_connection_async(handler, header_provider=provider) as db:
         table_names = await db.table_names()
         assert table_names == ["test_table"]
 
@@ -936,7 +933,7 @@ async def test_header_provider_with_oauth():
         token_counter["count"] += 1
         return {
             "access_token": f"bearer-token-{token_counter['count']}",
-            "expires_in": 3600
+            "expires_in": 3600,
         }
 
     def handler(request):
@@ -956,9 +953,7 @@ async def test_header_provider_with_oauth():
     # Create OAuth provider
     provider = OAuthProvider(token_fetcher)
 
-    async with mock_lancedb_connection_async(
-        handler, header_provider=provider
-    ) as db:
+    async with mock_lancedb_connection_async(handler, header_provider=provider) as db:
         # Multiple requests should use the same cached token
         await db.table_names()
         table = await db.open_table("test")
@@ -983,7 +978,7 @@ def test_header_provider_with_sync_connection():
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
-            request.wfile.write(b'{}')
+            request.wfile.write(b"{}")
         elif request.path == "/v1/table/test/describe/":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
@@ -994,7 +989,7 @@ def test_header_provider_with_sync_connection():
                     "fields": [
                         {"name": "id", "type": {"type": "int64"}, "nullable": False}
                     ]
-                }
+                },
             }
             request.wfile.write(json.dumps(payload).encode())
         elif request.path == "/v1/table/test/insert/":
@@ -1006,10 +1001,9 @@ def test_header_provider_with_sync_connection():
             request.end_headers()
             request.wfile.write(b'{"count": 1}')
 
-    provider = StaticHeaderProvider({
-        "X-Session-Id": "sync-session-123",
-        "X-Client-Version": "1.0.0"
-    })
+    provider = StaticHeaderProvider(
+        {"X-Session-Id": "sync-session-123", "X-Client-Version": "1.0.0"}
+    )
 
     # Create connection with custom client config
     with http.server.HTTPServer(
@@ -1050,6 +1044,7 @@ async def test_custom_header_provider_implementation():
 
     class CustomAuthProvider(HeaderProvider):
         """Custom provider that generates request-specific headers."""
+
         def __init__(self):
             self.request_count = 0
 
@@ -1058,7 +1053,7 @@ async def test_custom_header_provider_implementation():
             return {
                 "X-Request-Id": f"req-{self.request_count}",
                 "X-Auth-Token": f"custom-token-{self.request_count}",
-                "X-Timestamp": str(int(time.time()))
+                "X-Timestamp": str(int(time.time())),
             }
 
     received_headers = []
@@ -1068,7 +1063,7 @@ async def test_custom_header_provider_implementation():
         headers = {
             "X-Request-Id": request.headers.get("X-Request-Id"),
             "X-Auth-Token": request.headers.get("X-Auth-Token"),
-            "X-Timestamp": request.headers.get("X-Timestamp")
+            "X-Timestamp": request.headers.get("X-Timestamp"),
         }
         received_headers.append(headers)
 
@@ -1079,9 +1074,7 @@ async def test_custom_header_provider_implementation():
 
     provider = CustomAuthProvider()
 
-    async with mock_lancedb_connection_async(
-        handler, header_provider=provider
-    ) as db:
+    async with mock_lancedb_connection_async(handler, header_provider=provider) as db:
         # Make multiple requests
         await db.table_names()
         await db.table_names()
@@ -1104,6 +1097,7 @@ async def test_header_provider_error_handling():
 
     class FailingProvider(HeaderProvider):
         """Provider that fails to get headers."""
+
         def get_headers(self):
             raise RuntimeError("Failed to fetch authentication token")
 
@@ -1117,9 +1111,7 @@ async def test_header_provider_error_handling():
     provider = FailingProvider()
 
     # The connection should be created successfully
-    async with mock_lancedb_connection_async(
-        handler, header_provider=provider
-    ) as db:
+    async with mock_lancedb_connection_async(handler, header_provider=provider) as db:
         # But operations should fail due to header provider error
         try:
             result = await db.table_names()
@@ -1130,10 +1122,9 @@ async def test_header_provider_error_handling():
             assert result == []
         except Exception as e:
             # If an error is raised, it should be related to the header provider
-            assert (
-                "Failed to fetch authentication token" in str(e)
-                or "get_headers" in str(e)
-            )
+            assert "Failed to fetch authentication token" in str(
+                e
+            ) or "get_headers" in str(e)
 
 
 @pytest.mark.asyncio
@@ -1152,13 +1143,11 @@ async def test_header_provider_overrides_static_headers():
         request.end_headers()
         request.wfile.write(b'{"tables": []}')
 
-    provider = StaticHeaderProvider({
-        "X-API-Key": "provider-key"
-    })
+    provider = StaticHeaderProvider({"X-API-Key": "provider-key"})
 
     async with mock_lancedb_connection_async(
         handler,
         header_provider=provider,
-        extra_headers={"X-API-Key": "static-key", "X-Extra": "extra-value"}
+        extra_headers={"X-API-Key": "static-key", "X-Extra": "extra-value"},
     ) as db:
         await db.table_names()
