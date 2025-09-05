@@ -71,22 +71,24 @@ class HeaderProvider(ABC):
     only raise exceptions for unrecoverable errors.
     Examples
     --------
-    Simple JWT token provider:
-    >>> class JWTProvider(HeaderProvider):
-    ...     def __init__(self, jwt_token: str):
-    ...         self.token = jwt_token
-    ...
-    ...     def get_headers(self) -> Dict[str, str]:
-    ...         return {"Authorization": f"Bearer {self.token}"}
+    Simple JWT token provider::
 
-    Provider with rotating API keys:
-    >>> class RotatingKeyProvider(HeaderProvider):
-    ...     def __init__(self, key_manager):
-    ...         self.key_manager = key_manager
-    ...
-    ...     def get_headers(self) -> Dict[str, str]:
-    ...         current_key = self.key_manager.get_current_key()
-    ...         return {"X-API-Key": current_key}
+        class JWTProvider(HeaderProvider):
+            def __init__(self, jwt_token: str):
+                self.token = jwt_token
+
+            def get_headers(self) -> Dict[str, str]:
+                return {"Authorization": f"Bearer {self.token}"}
+
+    Provider with rotating API keys::
+
+        class RotatingKeyProvider(HeaderProvider):
+            def __init__(self, key_manager):
+                self.key_manager = key_manager
+
+            def get_headers(self) -> Dict[str, str]:
+                current_key = self.key_manager.get_current_key()
+                return {"X-API-Key": current_key}
     """
 
     @abstractmethod
@@ -123,13 +125,15 @@ class StaticHeaderProvider(HeaderProvider):
         Static headers to return for every request.
     Examples
     --------
-    >>> from lancedb.remote.header import StaticHeaderProvider
-    >>> provider = StaticHeaderProvider({
-    ...     "X-API-Key": "my-secret-key",
-    ...     "X-Custom-Header": "custom-value"
-    ... })
-    >>> provider.get_headers()
-    {'X-API-Key': 'my-secret-key', 'X-Custom-Header': 'custom-value'}
+    Create a static header provider::
+
+        from lancedb.remote.header import StaticHeaderProvider
+        provider = StaticHeaderProvider({
+            "X-API-Key": "my-secret-key",
+            "X-Custom-Header": "custom-value"
+        })
+        headers = provider.get_headers()
+        # Returns: {'X-API-Key': 'my-secret-key', 'X-Custom-Header': 'custom-value'}
     """
 
     def __init__(self, headers: Dict[str, str]):
@@ -170,22 +174,24 @@ class OAuthProvider(HeaderProvider):
         (5 minutes).
     Examples
     --------
-    >>> import requests
-    >>> def fetch_token():
-    ...     response = requests.post(
-    ...         "https://oauth.example.com/token",
-    ...         data={
-    ...             "grant_type": "client_credentials",
-    ...             "client_id": "...",
-    ...             "client_secret": "..."
-    ...         }
-    ...     )
-    ...     return response.json()
-    >>>
-    >>> provider = OAuthProvider(fetch_token)
-    >>> headers = provider.get_headers()
-    >>> print(headers["Authorization"])
-    Bearer eyJ0eXAiOiJKV1QiLCJhbGc...
+    OAuth token provider with automatic refresh::
+
+        import requests
+
+        def fetch_token():
+            response = requests.post(
+                "https://oauth.example.com/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": "your-client-id",
+                    "client_secret": "your-client-secret"
+                }
+            )
+            return response.json()
+
+        provider = OAuthProvider(fetch_token)
+        headers = provider.get_headers()
+        # Returns: {"Authorization": "Bearer <your-token>"}
     """
 
     def __init__(
