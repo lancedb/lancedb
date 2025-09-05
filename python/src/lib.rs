@@ -18,7 +18,7 @@ use table::{
 };
 
 pub mod arrow;
-pub mod auth;
+pub mod header;
 pub mod connection;
 pub mod error;
 pub mod index;

@@ -1,21 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Authentication providers for LanceDB remote connections.
+"""Header providers for LanceDB remote connections.
 
-This module provides a flexible authentication framework for LanceDB remote connections,
-allowing users to implement custom authentication strategies such as OAuth, JWT tokens,
-API keys, or any other header-based authentication mechanism.
+This module provides a flexible header management framework for LanceDB remote connections,
+allowing users to implement custom header strategies for authentication, request tracking,
+custom metadata, or any other header-based requirements.
 
 The HeaderProvider interface is designed to be called before each request to the remote
-server, enabling dynamic authentication scenarios where credentials may need to be
-refreshed or rotated.
+server, enabling dynamic header scenarios where values may need to be
+refreshed, rotated, or computed on-demand.
 
 Examples
 --------
 Basic usage with static API key:
 >>> from lancedb.remote import ClientConfig
->>> from lancedb.remote.auth import StaticHeaderProvider
+>>> from lancedb.remote.header import StaticHeaderProvider
 >>> import lancedb
 >>>
 >>> provider = StaticHeaderProvider({"X-API-Key": "your-api-key"})
@@ -49,10 +49,10 @@ import time
 class HeaderProvider(ABC):
     """Abstract base class for providing custom headers for each request.
     
-    Users can implement this interface to provide dynamic headers for authentication,
-    such as refreshing OAuth tokens, rotating API keys, or implementing custom
-    authentication schemes. The provider is called before each request to ensure
-    fresh credentials are always used.
+    Users can implement this interface to provide dynamic headers for various purposes
+    such as authentication (OAuth tokens, API keys), request tracking (correlation IDs),
+    custom metadata, or any other header-based requirements. The provider is called 
+    before each request to ensure fresh header values are always used.
     
     Thread Safety
     -------------
@@ -137,7 +137,7 @@ class StaticHeaderProvider(HeaderProvider):
     
     Examples
     --------
-    >>> from lancedb.remote.auth import StaticHeaderProvider
+    >>> from lancedb.remote.header import StaticHeaderProvider
     >>> provider = StaticHeaderProvider({
     ...     "X-API-Key": "my-secret-key",
     ...     "X-Custom-Header": "custom-value"

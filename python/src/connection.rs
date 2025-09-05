@@ -351,7 +351,7 @@ impl From<PyClientTimeoutConfig> for lancedb::remote::TimeoutConfig {
 #[cfg(feature = "remote")]
 impl From<PyClientConfig> for lancedb::remote::ClientConfig {
     fn from(value: PyClientConfig) -> Self {
-        use crate::auth::PyHeaderProvider;
+        use crate::header::PyHeaderProvider;
 
         let header_provider = value.header_provider.map(|provider| {
             let py_provider = PyHeaderProvider::new(provider);

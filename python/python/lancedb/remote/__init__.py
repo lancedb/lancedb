@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, List, Optional
 from lancedb import __version__
 
 if TYPE_CHECKING:
-    from .auth import HeaderProvider
+    from .header import HeaderProvider
 
 # Import auth providers for convenience
-from .auth import HeaderProvider, StaticHeaderProvider, OAuthProvider
+from .header import HeaderProvider, StaticHeaderProvider, OAuthProvider
 
 __all__ = ["TimeoutConfig", "RetryConfig", "ClientConfig", "HeaderProvider", "StaticHeaderProvider", "OAuthProvider"]
 
