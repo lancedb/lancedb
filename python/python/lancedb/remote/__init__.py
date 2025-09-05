@@ -4,14 +4,10 @@
 
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING, List, Optional
+from typing import List, Optional
 
 from lancedb import __version__
 
-if TYPE_CHECKING:
-    from .header import HeaderProvider
-
-# Import HeaderProvider interface
 from .header import HeaderProvider
 
 __all__ = ["TimeoutConfig", "RetryConfig", "ClientConfig", "HeaderProvider"]
