@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use async_trait::async_trait;
 use http::HeaderName;
 use log::debug;
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     Body, Request, RequestBuilder, Response,
 };
-use std::{collections::HashMap, future::Future, str::FromStr, time::Duration};
+use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
 
 use crate::error::{Error, Result};
 use crate::remote::db::RemoteOptions;
@@ -15,8 +16,15 @@ use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
+/// Trait for providing custom headers for each request
+#[async_trait]
+pub trait HeaderProvider: Send + Sync + std::fmt::Debug {
+    /// Get the latest headers to be added to the request
+    async fn get_headers(&self) -> Result<HashMap<String, String>>;
+}
+
 /// Configuration for the LanceDB Cloud HTTP client.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ClientConfig {
     pub timeout_config: TimeoutConfig,
     pub retry_config: RetryConfig,
@@ -28,6 +36,24 @@ pub struct ClientConfig {
     /// The delimiter to use when constructing object identifiers.
     /// If not default, passes as query parameter.
     pub id_delimiter: Option<String>,
+    /// Provider for custom headers to be added to each request
+    pub header_provider: Option<Arc<dyn HeaderProvider>>,
+}
+
+impl std::fmt::Debug for ClientConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientConfig")
+            .field("timeout_config", &self.timeout_config)
+            .field("retry_config", &self.retry_config)
+            .field("user_agent", &self.user_agent)
+            .field("extra_headers", &self.extra_headers)
+            .field("id_delimiter", &self.id_delimiter)
+            .field(
+                "header_provider",
+                &self.header_provider.as_ref().map(|_| "Some(...)"),
+            )
+            .finish()
+    }
 }
 
 impl Default for ClientConfig {
@@ -38,6 +64,7 @@ impl Default for ClientConfig {
             user_agent: concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION")).into(),
             extra_headers: HashMap::new(),
             id_delimiter: None,
+            header_provider: None,
         }
     }
 }
@@ -143,13 +170,29 @@ pub struct RetryConfig {
 // We use the `HttpSend` trait to abstract over the `reqwest::Client` so that
 // we can mock responses in tests. Based on the patterns from this blog post:
 // https://write.as/balrogboogie/testing-reqwest-based-clients
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     client: reqwest::Client,
     host: String,
     pub(crate) retry_config: ResolvedRetryConfig,
     pub(crate) sender: S,
     pub(crate) id_delimiter: String,
+    pub(crate) header_provider: Option<Arc<dyn HeaderProvider>>,
+}
+
+impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestfulLanceDbClient")
+            .field("host", &self.host)
+            .field("retry_config", &self.retry_config)
+            .field("sender", &self.sender)
+            .field("id_delimiter", &self.id_delimiter)
+            .field(
+                "header_provider",
+                &self.header_provider.as_ref().map(|_| "Some(...)"),
+            )
+            .finish()
+    }
 }
 
 pub trait HttpSend: Clone + Send + Sync + std::fmt::Debug + 'static {
@@ -267,13 +310,17 @@ impl RestfulLanceDbClient<Sender> {
             None => format!("https://{}.{}.api.lancedb.com", db_name, region),
         };
         debug!("Created client for host: {}", host);
-        let retry_config = client_config.retry_config.try_into()?;
+        let retry_config = client_config.retry_config.clone().try_into()?;
         Ok(Self {
             client,
             host,
             retry_config,
             sender: Sender,
-            id_delimiter: client_config.id_delimiter.unwrap_or("$".to_string()),
+            id_delimiter: client_config
+                .id_delimiter
+                .clone()
+                .unwrap_or("$".to_string()),
+            header_provider: client_config.header_provider,
         })
     }
 }
@@ -380,10 +427,37 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
     }
 
+    /// Apply dynamic headers from the header provider if configured
+    async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
+        if let Some(ref provider) = self.header_provider {
+            match provider.get_headers().await {
+                Ok(headers) => {
+                    let request_headers = request.headers_mut();
+                    for (key, value) in headers {
+                        if let Ok(header_name) = HeaderName::from_str(&key) {
+                            if let Ok(header_value) = HeaderValue::from_str(&value) {
+                                request_headers.insert(header_name, header_value);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Log error but continue - don't fail the request if header provider fails
+                    debug!("Failed to get dynamic headers: {}", e);
+                }
+            }
+        }
+        Ok(request)
+    }
+
     pub async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
         let request_id = self.extract_request_id(&mut request);
+
+        // Apply dynamic headers before sending
+        request = self.apply_dynamic_headers(request).await?;
+
         self.log_request(&request, &request_id);
 
         let response = self
@@ -439,6 +513,10 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             let (c, request) = req_builder.build_split();
             let mut request = request.unwrap();
             self.set_request_id(&mut request, &request_id.clone());
+
+            // Apply dynamic headers before each retry attempt
+            request = self.apply_dynamic_headers(request).await?;
+
             self.log_request(&request, &request_id);
 
             let response = self.sender.send(&c, request).await.map(|r| (r.status(), r));
@@ -611,6 +689,7 @@ pub mod test_utils {
                 f: Arc::new(wrapper),
             },
             id_delimiter: "$".to_string(),
+            header_provider: None,
         }
     }
 }

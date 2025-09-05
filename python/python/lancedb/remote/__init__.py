@@ -4,11 +4,17 @@
 
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from lancedb import __version__
 
-__all__ = ["TimeoutConfig", "RetryConfig", "ClientConfig"]
+if TYPE_CHECKING:
+    from .auth import HeaderProvider
+
+# Import auth providers for convenience
+from .auth import HeaderProvider, StaticHeaderProvider, OAuthProvider
+
+__all__ = ["TimeoutConfig", "RetryConfig", "ClientConfig", "HeaderProvider", "StaticHeaderProvider", "OAuthProvider"]
 
 
 @dataclass
@@ -119,6 +125,7 @@ class ClientConfig:
     timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
     extra_headers: Optional[dict] = None
     id_delimiter: Optional[str] = None
+    header_provider: Optional["HeaderProvider"] = None
 
     def __post_init__(self):
         if isinstance(self.retry_config, dict):
