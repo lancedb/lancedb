@@ -1,0 +1,31 @@
+# This file should be copied to /home/yuvalif/lancedb/c/Cargo.toml
+
+[package]
+name = "lancedb-c"
+version = "0.21.2"
+edition = "2021"
+description = "C bindings for LanceDB"
+license = "Apache-2.0"
+repository = "https://github.com/lancedb/lancedb"
+keywords = ["database", "vector", "search", "c", "ffi"]
+categories = ["database", "api-bindings"]
+rust-version = "1.75.0"
+
+[lib]
+name = "lancedb"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+lancedb = { path = "../rust/lancedb", default-features = false }
+tokio = { version = "1.23", features = ["rt-multi-thread"] }
+libc = "0.2"
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-data = { workspace = true }
+futures = { workspace = true }
+chrono = { workspace = true }
+
+[features]
+default = ["remote"]
+remote = ["lancedb/remote"]
