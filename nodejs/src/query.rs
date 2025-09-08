@@ -90,10 +90,7 @@ impl Query {
 
     #[napi]
     pub fn disable_scoring_autoprojection(&mut self) {
-        self.inner = self
-            .inner
-            .clone()
-            .disable_scoring_autoprojection();
+        self.inner = self.inner.clone().disable_scoring_autoprojection();
     }
 
     #[napi(catch_unwind)]
@@ -275,10 +272,7 @@ impl VectorQuery {
 
     #[napi]
     pub fn disable_scoring_autoprojection(&mut self) {
-        self.inner = self
-            .inner
-            .clone()
-            .disable_scoring_autoprojection();
+        self.inner = self.inner.clone().disable_scoring_autoprojection();
     }
 
     #[napi]
