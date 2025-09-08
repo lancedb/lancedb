@@ -448,6 +448,15 @@ pub trait QueryBase {
     /// the scores are converted to ranks and then normalized. If "Score", the
     /// scores are normalized directly.
     fn norm(self, norm: NormalizeMethod) -> Self;
+
+    /// Disable autoprojection of scoring columns.
+    ///
+    /// When an explicit projection is provided that does not include scoring
+    /// columns (e.g. `_score` for FTS or `_distance` for vector search), the
+    /// current default behavior is to auto-include those columns and emit a
+    /// deprecation warning. Calling this adopts the future behavior and avoids
+    /// the warning.
+    fn disable_scoring_autoprojection(self) -> Self;
 }
 
 pub trait HasQuery {
@@ -505,6 +514,11 @@ impl<T: HasQuery> QueryBase for T {
 
     fn norm(mut self, norm: NormalizeMethod) -> Self {
         self.mut_query().norm = Some(norm);
+        self
+    }
+
+    fn disable_scoring_autoprojection(mut self) -> Self {
+        self.mut_query().disable_scoring_autoprojection = true;
         self
     }
 }
@@ -645,6 +659,10 @@ pub struct QueryRequest {
 
     /// Configure how query results are normalized when doing hybrid search
     pub norm: Option<NormalizeMethod>,
+
+    /// If true, do not auto-include scoring columns when they are
+    /// omitted from an explicit projection.
+    pub disable_scoring_autoprojection: bool,
 }
 
 impl Default for QueryRequest {
@@ -660,6 +678,7 @@ impl Default for QueryRequest {
             prefilter: true,
             reranker: None,
             norm: None,
+            disable_scoring_autoprojection: false,
         }
     }
 }
