@@ -121,6 +121,10 @@ impl ExecutionPlan for MetadataEraserExec {
                 as SendableRecordBatchStream,
         )
     }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Statistics> {
+        self.input.partition_statistics(partition)
+    }
 }
 
 #[derive(Debug)]
@@ -227,6 +231,7 @@ pub mod tests {
         prelude::{SessionConfig, SessionContext},
     };
     use datafusion_catalog::TableProvider;
+    use datafusion_common::stats::Precision;
     use datafusion_execution::SendableRecordBatchStream;
     use datafusion_expr::{col, lit, LogicalPlan, LogicalPlanBuilder};
     use futures::{StreamExt, TryStreamExt};
@@ -508,5 +513,25 @@ pub mod tests {
             .unwrap();
 
         TestFixture::check_plan(plan, "").await;
+    }
+
+    #[tokio::test]
+    async fn test_metadata_eraser_propagates_statistics() {
+        let fixture = TestFixture::new().await;
+
+        let plan =
+            LogicalPlanBuilder::scan("foo", provider_as_source(fixture.adapter.clone()), None)
+                .unwrap()
+                .build()
+                .unwrap();
+
+        let ctx = SessionContext::new();
+        let physical_plan = ctx.state().create_physical_plan(&plan).await.unwrap();
+
+        assert_eq!(physical_plan.name(), "MetadataEraserExec");
+
+        let partition_stats = physical_plan.partition_statistics(None).unwrap();
+
+        assert!(matches!(partition_stats.num_rows, Precision::Exact(10)));
     }
 }
