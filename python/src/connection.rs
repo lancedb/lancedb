@@ -301,6 +301,7 @@ pub struct PyClientConfig {
     timeout_config: Option<PyClientTimeoutConfig>,
     extra_headers: Option<HashMap<String, String>>,
     id_delimiter: Option<String>,
+    tls_config: Option<PyClientTlsConfig>,
 }
 
 #[derive(FromPyObject)]
@@ -319,6 +320,14 @@ pub struct PyClientTimeoutConfig {
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
     pool_idle_timeout: Option<Duration>,
+}
+
+#[derive(FromPyObject)]
+pub struct PyClientTlsConfig {
+    cert_file: Option<String>,
+    key_file: Option<String>,
+    ssl_ca_cert: Option<String>,
+    assert_hostname: bool,
 }
 
 #[cfg(feature = "remote")]
@@ -348,6 +357,18 @@ impl From<PyClientTimeoutConfig> for lancedb::remote::TimeoutConfig {
 }
 
 #[cfg(feature = "remote")]
+impl From<PyClientTlsConfig> for lancedb::remote::TlsConfig {
+    fn from(value: PyClientTlsConfig) -> Self {
+        Self {
+            cert_file: value.cert_file,
+            key_file: value.key_file,
+            ssl_ca_cert: value.ssl_ca_cert,
+            assert_hostname: value.assert_hostname,
+        }
+    }
+}
+
+#[cfg(feature = "remote")]
 impl From<PyClientConfig> for lancedb::remote::ClientConfig {
     fn from(value: PyClientConfig) -> Self {
         Self {
@@ -356,6 +377,7 @@ impl From<PyClientConfig> for lancedb::remote::ClientConfig {
             timeout_config: value.timeout_config.map(Into::into).unwrap_or_default(),
             extra_headers: value.extra_headers.unwrap_or_default(),
             id_delimiter: value.id_delimiter,
+            tls_config: value.tls_config.map(Into::into),
         }
     }
 }

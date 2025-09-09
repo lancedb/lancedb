@@ -69,6 +69,20 @@ pub struct RetryConfig {
     pub statuses: Option<Vec<u16>>,
 }
 
+/// TLS/mTLS configuration for the remote HTTP client.
+#[napi(object)]
+#[derive(Debug, Default)]
+pub struct TlsConfig {
+    /// Path to the client certificate file (PEM format) for mTLS authentication.
+    pub cert_file: Option<String>,
+    /// Path to the client private key file (PEM format) for mTLS authentication.
+    pub key_file: Option<String>,
+    /// Path to the CA certificate file (PEM format) for server verification.
+    pub ssl_ca_cert: Option<String>,
+    /// Whether to verify the hostname in the server's certificate.
+    pub assert_hostname: Option<bool>,
+}
+
 #[napi(object)]
 #[derive(Debug, Default)]
 pub struct ClientConfig {
@@ -77,6 +91,7 @@ pub struct ClientConfig {
     pub timeout_config: Option<TimeoutConfig>,
     pub extra_headers: Option<HashMap<String, String>>,
     pub id_delimiter: Option<String>,
+    pub tls_config: Option<TlsConfig>,
 }
 
 impl From<TimeoutConfig> for lancedb::remote::TimeoutConfig {
@@ -107,6 +122,17 @@ impl From<RetryConfig> for lancedb::remote::RetryConfig {
     }
 }
 
+impl From<TlsConfig> for lancedb::remote::TlsConfig {
+    fn from(config: TlsConfig) -> Self {
+        Self {
+            cert_file: config.cert_file,
+            key_file: config.key_file,
+            ssl_ca_cert: config.ssl_ca_cert,
+            assert_hostname: config.assert_hostname.unwrap_or(true),
+        }
+    }
+}
+
 impl From<ClientConfig> for lancedb::remote::ClientConfig {
     fn from(config: ClientConfig) -> Self {
         Self {
@@ -117,6 +143,7 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
             timeout_config: config.timeout_config.map(Into::into).unwrap_or_default(),
             extra_headers: config.extra_headers.unwrap_or_default(),
             id_delimiter: config.id_delimiter,
+            tls_config: config.tls_config.map(Into::into),
         }
     }
 }

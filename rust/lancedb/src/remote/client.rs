@@ -15,6 +15,19 @@ use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
+/// Configuration for TLS/mTLS settings.
+#[derive(Clone, Debug, Default)]
+pub struct TlsConfig {
+    /// Path to the client certificate file (PEM format)
+    pub cert_file: Option<String>,
+    /// Path to the client private key file (PEM format)
+    pub key_file: Option<String>,
+    /// Path to the CA certificate file for server verification (PEM format)
+    pub ssl_ca_cert: Option<String>,
+    /// Whether to verify the hostname in the server's certificate
+    pub assert_hostname: bool,
+}
+
 /// Configuration for the LanceDB Cloud HTTP client.
 #[derive(Clone, Debug)]
 pub struct ClientConfig {
@@ -28,6 +41,8 @@ pub struct ClientConfig {
     /// The delimiter to use when constructing object identifiers.
     /// If not default, passes as query parameter.
     pub id_delimiter: Option<String>,
+    /// TLS configuration for mTLS support
+    pub tls_config: Option<TlsConfig>,
 }
 
 impl Default for ClientConfig {
@@ -38,6 +53,7 @@ impl Default for ClientConfig {
             user_agent: concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION")).into(),
             extra_headers: HashMap::new(),
             id_delimiter: None,
+            tls_config: None,
         }
     }
 }
@@ -245,6 +261,49 @@ impl RestfulLanceDbClient<Sender> {
         if let Some(timeout) = timeout {
             client_builder = client_builder.timeout(timeout);
         }
+
+        // Configure mTLS if TlsConfig is provided
+        if let Some(tls_config) = &client_config.tls_config {
+            // Load client certificate and key for mTLS
+            if let (Some(cert_file), Some(key_file)) = (&tls_config.cert_file, &tls_config.key_file)
+            {
+                let cert = std::fs::read(cert_file).map_err(|err| Error::Other {
+                    message: format!("Failed to read certificate file: {}", cert_file),
+                    source: Some(Box::new(err)),
+                })?;
+                let key = std::fs::read(key_file).map_err(|err| Error::Other {
+                    message: format!("Failed to read key file: {}", key_file),
+                    source: Some(Box::new(err)),
+                })?;
+
+                let identity = reqwest::Identity::from_pem(&[&cert[..], &key[..]].concat())
+                    .map_err(|err| Error::Other {
+                        message: "Failed to create client identity from certificate and key".into(),
+                        source: Some(Box::new(err)),
+                    })?;
+                client_builder = client_builder.identity(identity);
+            }
+
+            // Load CA certificate for server verification
+            if let Some(ca_cert_file) = &tls_config.ssl_ca_cert {
+                let ca_cert = std::fs::read(ca_cert_file).map_err(|err| Error::Other {
+                    message: format!("Failed to read CA certificate file: {}", ca_cert_file),
+                    source: Some(Box::new(err)),
+                })?;
+
+                let ca_cert =
+                    reqwest::Certificate::from_pem(&ca_cert).map_err(|err| Error::Other {
+                        message: "Failed to create CA certificate from PEM".into(),
+                        source: Some(Box::new(err)),
+                    })?;
+                client_builder = client_builder.add_root_certificate(ca_cert);
+            }
+
+            // Configure hostname verification
+            client_builder =
+                client_builder.danger_accept_invalid_hostnames(!tls_config.assert_hostname);
+        }
+
         let client = client_builder
             .default_headers(Self::default_headers(
                 api_key,
@@ -660,5 +719,51 @@ mod tests {
             client_config.timeout_config.timeout,
             Some(Duration::from_secs(120))
         );
+    }
+
+    #[test]
+    fn test_tls_config_default() {
+        let config = TlsConfig::default();
+        assert!(config.cert_file.is_none());
+        assert!(config.key_file.is_none());
+        assert!(config.ssl_ca_cert.is_none());
+        assert!(!config.assert_hostname);
+    }
+
+    #[test]
+    fn test_tls_config_with_mtls() {
+        let tls_config = TlsConfig {
+            cert_file: Some("/path/to/cert.pem".to_string()),
+            key_file: Some("/path/to/key.pem".to_string()),
+            ssl_ca_cert: Some("/path/to/ca.pem".to_string()),
+            assert_hostname: true,
+        };
+
+        assert_eq!(tls_config.cert_file, Some("/path/to/cert.pem".to_string()));
+        assert_eq!(tls_config.key_file, Some("/path/to/key.pem".to_string()));
+        assert_eq!(tls_config.ssl_ca_cert, Some("/path/to/ca.pem".to_string()));
+        assert!(tls_config.assert_hostname);
+    }
+
+    #[test]
+    fn test_client_config_with_tls() {
+        let tls_config = TlsConfig {
+            cert_file: Some("/path/to/cert.pem".to_string()),
+            key_file: Some("/path/to/key.pem".to_string()),
+            ssl_ca_cert: None,
+            assert_hostname: false,
+        };
+
+        let client_config = ClientConfig {
+            tls_config: Some(tls_config.clone()),
+            ..Default::default()
+        };
+
+        assert!(client_config.tls_config.is_some());
+        let config_tls = client_config.tls_config.unwrap();
+        assert_eq!(config_tls.cert_file, Some("/path/to/cert.pem".to_string()));
+        assert_eq!(config_tls.key_file, Some("/path/to/key.pem".to_string()));
+        assert!(config_tls.ssl_ca_cert.is_none());
+        assert!(!config_tls.assert_hostname);
     }
 }
