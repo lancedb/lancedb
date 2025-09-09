@@ -59,7 +59,6 @@ reqwest = { version = "0.12.0", default-features = false, features = [
     "json",
     "macos-system-configuration",
     "stream",
-    "native-tls",
 ], optional = true }
 rand = { version = "0.9", features = ["small_rng"], optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
