@@ -500,6 +500,7 @@ pub mod tests {
             plan,
             "MetadataEraserExec
              ProjectionExec:...
+             CooperativeExec...
              LanceRead:...",
         )
         .await;
