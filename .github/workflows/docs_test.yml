@@ -25,6 +25,7 @@ jobs:
   test-python:
     name: Test doc python code
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
     - name: Checkout
       uses: actions/checkout@v4
