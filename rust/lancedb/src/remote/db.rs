@@ -212,8 +212,9 @@ impl RemoteDatabase {
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
-    use crate::remote::client::test_utils::client_with_handler;
     use crate::remote::client::test_utils::MockSender;
+    use crate::remote::client::test_utils::{client_with_handler, client_with_handler_and_config};
+    use crate::remote::ClientConfig;
 
     impl RemoteDatabase<MockSender> {
         pub fn new_mock<F, T>(handler: F) -> Self
@@ -222,6 +223,18 @@ mod test_utils {
             T: Into<reqwest::Body>,
         {
             let client = client_with_handler(handler);
+            Self {
+                client,
+                table_cache: Cache::new(0),
+            }
+        }
+
+        pub fn new_mock_with_config<F, T>(handler: F, config: ClientConfig) -> Self
+        where
+            F: Fn(reqwest::Request) -> http::Response<T> + Send + Sync + 'static,
+            T: Into<reqwest::Body>,
+        {
+            let client = client_with_handler_and_config(handler, config);
             Self {
                 client,
                 table_cache: Cache::new(0),
@@ -587,6 +600,7 @@ impl From<StorageOptions> for RemoteOptions {
 #[cfg(test)]
 mod tests {
     use super::build_cache_key;
+    use std::collections::HashMap;
     use std::sync::{Arc, OnceLock};
 
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
@@ -595,7 +609,7 @@ mod tests {
     use crate::connection::ConnectBuilder;
     use crate::{
         database::CreateTableMode,
-        remote::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
+        remote::{ClientConfig, HeaderProvider, ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
         Connection, Error,
     };
 
@@ -1111,5 +1125,100 @@ mod tests {
             .execute()
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_header_provider_in_request() {
+        // Test HeaderProvider implementation that adds custom headers
+        #[derive(Debug, Clone)]
+        struct TestHeaderProvider {
+            headers: HashMap<String, String>,
+        }
+
+        #[async_trait::async_trait]
+        impl HeaderProvider for TestHeaderProvider {
+            async fn get_headers(&self) -> crate::Result<HashMap<String, String>> {
+                Ok(self.headers.clone())
+            }
+        }
+
+        // Create a test header provider with custom headers
+        let mut headers = HashMap::new();
+        headers.insert("X-Custom-Auth".to_string(), "test-token".to_string());
+        headers.insert("X-Request-Id".to_string(), "test-123".to_string());
+        let provider = Arc::new(TestHeaderProvider { headers }) as Arc<dyn HeaderProvider>;
+
+        // Create client config with the header provider
+        let client_config = ClientConfig {
+            header_provider: Some(provider),
+            ..Default::default()
+        };
+
+        // Create connection with handler that verifies the headers are present
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                // Verify that our custom headers are present
+                assert_eq!(
+                    request.headers().get("X-Custom-Auth").unwrap(),
+                    "test-token"
+                );
+                assert_eq!(request.headers().get("X-Request-Id").unwrap(), "test-123");
+
+                // Also check standard headers are still there
+                assert_eq!(request.method(), &reqwest::Method::GET);
+                assert_eq!(request.url().path(), "/v1/table/");
+
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tables": ["table1", "table2"]}"#)
+                    .unwrap()
+            },
+            client_config,
+        );
+
+        // Make a request that should include the custom headers
+        let names = conn.table_names().execute().await.unwrap();
+        assert_eq!(names, vec!["table1", "table2"]);
+    }
+
+    #[tokio::test]
+    async fn test_header_provider_error_handling() {
+        // Test HeaderProvider that returns an error
+        #[derive(Debug)]
+        struct ErrorHeaderProvider;
+
+        #[async_trait::async_trait]
+        impl HeaderProvider for ErrorHeaderProvider {
+            async fn get_headers(&self) -> crate::Result<HashMap<String, String>> {
+                Err(crate::Error::Runtime {
+                    message: "Failed to fetch auth token".to_string(),
+                })
+            }
+        }
+
+        let provider = Arc::new(ErrorHeaderProvider) as Arc<dyn HeaderProvider>;
+        let client_config = ClientConfig {
+            header_provider: Some(provider),
+            ..Default::default()
+        };
+
+        // Create connection - handler won't be called because header provider fails
+        let conn = Connection::new_with_handler_and_config(
+            move |_request| -> http::Response<&'static str> {
+                panic!("Handler should not be called when header provider fails");
+            },
+            client_config,
+        );
+
+        // Request should fail due to header provider error
+        let result = conn.table_names().execute().await;
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            crate::Error::Runtime { message } => {
+                assert_eq!(message, "Failed to fetch auth token");
+            }
+            _ => panic!("Expected Runtime error from header provider"),
+        }
     }
 }

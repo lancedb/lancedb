@@ -15,6 +15,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 arrow = { version = "55.1", features = ["pyarrow"] }
+async-trait = "0.1"
 lancedb = { path = "../rust/lancedb", default-features = false }
 env_logger.workspace = true
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }

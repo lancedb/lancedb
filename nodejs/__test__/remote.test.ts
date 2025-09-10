@@ -7,9 +7,46 @@ import {
   ClientConfig,
   Connection,
   ConnectionOptions,
+  NativeJsHeaderProvider,
   TlsConfig,
   connect,
 } from "../lancedb";
+import {
+  HeaderProvider,
+  OAuthHeaderProvider,
+  StaticHeaderProvider,
+} from "../lancedb/header";
+
+// Test-only header providers
+class CustomProvider extends HeaderProvider {
+  getHeaders(): Record<string, string> {
+    return { "X-Custom": "custom-value" };
+  }
+}
+
+class ErrorProvider extends HeaderProvider {
+  private errorMessage: string;
+  public callCount: number = 0;
+
+  constructor(errorMessage: string = "Test error") {
+    super();
+    this.errorMessage = errorMessage;
+  }
+
+  getHeaders(): Record<string, string> {
+    this.callCount++;
+    throw new Error(this.errorMessage);
+  }
+}
+
+class ConcurrentProvider extends HeaderProvider {
+  private counter: number = 0;
+
+  getHeaders(): Record<string, string> {
+    this.counter++;
+    return { "X-Request-Id": String(this.counter) };
+  }
+}
 
 async function withMockDatabase(
   listener: RequestListener,
@@ -235,6 +272,349 @@ describe("remote connection", () => {
       expect(connectionOptions.clientConfig?.tlsConfig).toBeDefined();
       expect(connectionOptions.clientConfig?.tlsConfig?.certFile).toBe(
         "/path/to/cert.pem",
+      );
+    });
+  });
+
+  describe("header providers", () => {
+    it("should work with StaticHeaderProvider", async () => {
+      const provider = new StaticHeaderProvider({
+        authorization: "Bearer test-token",
+        "X-Custom": "value",
+      });
+
+      const headers = provider.getHeaders();
+      expect(headers).toEqual({
+        authorization: "Bearer test-token",
+        "X-Custom": "value",
+      });
+
+      // Test that it returns a copy
+      headers["X-Modified"] = "modified";
+      const headers2 = provider.getHeaders();
+      expect(headers2).not.toHaveProperty("X-Modified");
+    });
+
+    it("should pass headers from StaticHeaderProvider to requests", async () => {
+      const provider = new StaticHeaderProvider({
+        "X-Custom-Auth": "secret-token",
+        "X-Request-Source": "test-suite",
+      });
+
+      await withMockDatabase(
+        (req, res) => {
+          expect(req.headers["x-custom-auth"]).toEqual("secret-token");
+          expect(req.headers["x-request-source"]).toEqual("test-suite");
+
+          const body = JSON.stringify({ tables: [] });
+          res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+        },
+        async () => {
+          // Use actual header provider mechanism instead of extraHeaders
+          const conn = await connect(
+            "db://dev",
+            {
+              apiKey: "fake",
+              hostOverride: "http://localhost:8000",
+            },
+            undefined, // session
+            provider, // headerProvider
+          );
+
+          const tableNames = await conn.tableNames();
+          expect(tableNames).toEqual([]);
+        },
+      );
+    });
+
+    it("should work with CustomProvider", () => {
+      const provider = new CustomProvider();
+      const headers = provider.getHeaders();
+      expect(headers).toEqual({ "X-Custom": "custom-value" });
+    });
+
+    it("should handle ErrorProvider errors", () => {
+      const provider = new ErrorProvider("Authentication failed");
+
+      expect(() => provider.getHeaders()).toThrow("Authentication failed");
+      expect(provider.callCount).toBe(1);
+
+      // Test that error is thrown each time
+      expect(() => provider.getHeaders()).toThrow("Authentication failed");
+      expect(provider.callCount).toBe(2);
+    });
+
+    it("should work with ConcurrentProvider", () => {
+      const provider = new ConcurrentProvider();
+
+      const headers1 = provider.getHeaders();
+      const headers2 = provider.getHeaders();
+      const headers3 = provider.getHeaders();
+
+      expect(headers1).toEqual({ "X-Request-Id": "1" });
+      expect(headers2).toEqual({ "X-Request-Id": "2" });
+      expect(headers3).toEqual({ "X-Request-Id": "3" });
+    });
+
+    describe("OAuthHeaderProvider", () => {
+      it("should initialize correctly", () => {
+        const fetcher = () => ({
+          accessToken: "token123",
+          expiresIn: 3600,
+        });
+
+        const provider = new OAuthHeaderProvider(fetcher);
+        expect(provider).toBeInstanceOf(HeaderProvider);
+      });
+
+      it("should fetch token on first use", async () => {
+        let callCount = 0;
+        const fetcher = () => {
+          callCount++;
+          return {
+            accessToken: "token123",
+            expiresIn: 3600,
+          };
+        };
+
+        const provider = new OAuthHeaderProvider(fetcher);
+
+        // Need to manually refresh first due to sync limitation
+        await provider.refreshToken();
+
+        const headers = provider.getHeaders();
+        expect(headers).toEqual({ authorization: "Bearer token123" });
+        expect(callCount).toBe(1);
+
+        // Second call should not fetch again
+        const headers2 = provider.getHeaders();
+        expect(headers2).toEqual({ authorization: "Bearer token123" });
+        expect(callCount).toBe(1);
+      });
+
+      it("should handle tokens without expiry", async () => {
+        const fetcher = () => ({
+          accessToken: "permanent_token",
+        });
+
+        const provider = new OAuthHeaderProvider(fetcher);
+        await provider.refreshToken();
+
+        const headers = provider.getHeaders();
+        expect(headers).toEqual({ authorization: "Bearer permanent_token" });
+      });
+
+      it("should throw error when access_token is missing", async () => {
+        const fetcher = () =>
+          ({
+            expiresIn: 3600,
+          }) as { accessToken?: string; expiresIn?: number };
+
+        const provider = new OAuthHeaderProvider(
+          fetcher as () => {
+            accessToken: string;
+            expiresIn?: number;
+          },
+        );
+
+        await expect(provider.refreshToken()).rejects.toThrow(
+          "Token fetcher did not return 'accessToken'",
+        );
+      });
+
+      it("should handle async token fetchers", async () => {
+        const fetcher = async () => {
+          // Simulate async operation
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return {
+            accessToken: "async_token",
+            expiresIn: 3600,
+          };
+        };
+
+        const provider = new OAuthHeaderProvider(fetcher);
+        await provider.refreshToken();
+
+        const headers = provider.getHeaders();
+        expect(headers).toEqual({ authorization: "Bearer async_token" });
+      });
+    });
+
+    it("should merge header provider headers with extra headers", async () => {
+      const provider = new StaticHeaderProvider({
+        "X-From-Provider": "provider-value",
+      });
+
+      await withMockDatabase(
+        (req, res) => {
+          expect(req.headers["x-from-provider"]).toEqual("provider-value");
+          expect(req.headers["x-extra-header"]).toEqual("extra-value");
+
+          const body = JSON.stringify({ tables: [] });
+          res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+        },
+        async () => {
+          // Use header provider with additional extraHeaders
+          const conn = await connect(
+            "db://dev",
+            {
+              apiKey: "fake",
+              hostOverride: "http://localhost:8000",
+              clientConfig: {
+                extraHeaders: {
+                  "X-Extra-Header": "extra-value",
+                },
+              },
+            },
+            undefined, // session
+            provider, // headerProvider
+          );
+
+          const tableNames = await conn.tableNames();
+          expect(tableNames).toEqual([]);
+        },
+      );
+    });
+  });
+
+  describe("header provider integration", () => {
+    it("should work with TypeScript StaticHeaderProvider", async () => {
+      let requestCount = 0;
+
+      await withMockDatabase(
+        (req, res) => {
+          requestCount++;
+
+          // Check headers are present on each request
+          expect(req.headers["authorization"]).toEqual("Bearer test-token-123");
+          expect(req.headers["x-custom"]).toEqual("custom-value");
+
+          // Return different responses based on the endpoint
+          if (req.url === "/v1/table/test_table/describe/") {
+            const body = JSON.stringify({
+              name: "test_table",
+              schema: { fields: [] },
+            });
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(body);
+          } else {
+            const body = JSON.stringify({ tables: ["test_table"] });
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(body);
+          }
+        },
+        async () => {
+          // Create provider with static headers
+          const provider = new StaticHeaderProvider({
+            authorization: "Bearer test-token-123",
+            "X-Custom": "custom-value",
+          });
+
+          // Connect with the provider
+          const conn = await connect(
+            "db://dev",
+            {
+              apiKey: "fake",
+              hostOverride: "http://localhost:8000",
+            },
+            undefined, // session
+            provider, // headerProvider
+          );
+
+          // Make multiple requests to verify headers are sent each time
+          const tables1 = await conn.tableNames();
+          expect(tables1).toEqual(["test_table"]);
+
+          const tables2 = await conn.tableNames();
+          expect(tables2).toEqual(["test_table"]);
+
+          // Verify headers were sent with each request
+          expect(requestCount).toBeGreaterThanOrEqual(2);
+        },
+      );
+    });
+
+    it("should work with JavaScript function provider", async () => {
+      let requestId = 0;
+
+      await withMockDatabase(
+        (req, res) => {
+          // Check dynamic header is present
+          expect(req.headers["x-request-id"]).toBeDefined();
+          expect(req.headers["x-request-id"]).toMatch(/^req-\d+$/);
+
+          const body = JSON.stringify({ tables: [] });
+          res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+        },
+        async () => {
+          // Create a JavaScript function that returns dynamic headers
+          const getHeaders = async () => {
+            requestId++;
+            return {
+              "X-Request-Id": `req-${requestId}`,
+              "X-Timestamp": new Date().toISOString(),
+            };
+          };
+
+          // Connect with the function directly
+          const conn = await connect(
+            "db://dev",
+            {
+              apiKey: "fake",
+              hostOverride: "http://localhost:8000",
+            },
+            undefined, // session
+            getHeaders, // headerProvider
+          );
+
+          // Make requests - each should have different headers
+          const tables = await conn.tableNames();
+          expect(tables).toEqual([]);
+        },
+      );
+    });
+
+    it("should support OAuth-like token refresh pattern", async () => {
+      let tokenVersion = 0;
+
+      await withMockDatabase(
+        (req, res) => {
+          // Verify authorization header
+          const authHeader = req.headers["authorization"];
+          expect(authHeader).toBeDefined();
+          expect(authHeader).toMatch(/^Bearer token-v\d+$/);
+
+          const body = JSON.stringify({ tables: [] });
+          res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+        },
+        async () => {
+          // Simulate OAuth token fetcher
+          const fetchToken = async () => {
+            tokenVersion++;
+            return {
+              authorization: `Bearer token-v${tokenVersion}`,
+            };
+          };
+
+          // Connect with the function directly
+          const conn = await connect(
+            "db://dev",
+            {
+              apiKey: "fake",
+              hostOverride: "http://localhost:8000",
+            },
+            undefined, // session
+            fetchToken, // headerProvider
+          );
+
+          // Each request will fetch a new token
+          await conn.tableNames();
+
+          // Token should be different on next request
+          await conn.tableNames();
+        },
       );
     });
   });

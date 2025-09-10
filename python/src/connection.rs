@@ -7,7 +7,7 @@ use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::From
 use lancedb::{connection::Connection as LanceConnection, database::CreateTableMode};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
-    pyclass, pyfunction, pymethods, Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
+    pyclass, pyfunction, pymethods, Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -302,6 +302,7 @@ pub struct PyClientConfig {
     extra_headers: Option<HashMap<String, String>>,
     id_delimiter: Option<String>,
     tls_config: Option<PyClientTlsConfig>,
+    header_provider: Option<Py<PyAny>>,
 }
 
 #[derive(FromPyObject)]
@@ -371,6 +372,13 @@ impl From<PyClientTlsConfig> for lancedb::remote::TlsConfig {
 #[cfg(feature = "remote")]
 impl From<PyClientConfig> for lancedb::remote::ClientConfig {
     fn from(value: PyClientConfig) -> Self {
+        use crate::header::PyHeaderProvider;
+
+        let header_provider = value.header_provider.map(|provider| {
+            let py_provider = PyHeaderProvider::new(provider);
+            Arc::new(py_provider) as Arc<dyn lancedb::remote::HeaderProvider>
+        });
+
         Self {
             user_agent: value.user_agent,
             retry_config: value.retry_config.map(Into::into).unwrap_or_default(),
@@ -378,6 +386,7 @@ impl From<PyClientConfig> for lancedb::remote::ClientConfig {
             extra_headers: value.extra_headers.unwrap_or_default(),
             id_delimiter: value.id_delimiter,
             tls_config: value.tls_config.map(Into::into),
+            header_provider,
         }
     }
 }

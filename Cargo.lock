@@ -4738,6 +4738,7 @@ name = "lancedb-python"
 version = "0.25.1-beta.0"
 dependencies = [
  "arrow",
+ "async-trait",
  "env_logger",
  "futures",
  "lancedb",
