@@ -21,6 +21,7 @@ export {
   ClientConfig,
   TimeoutConfig,
   RetryConfig,
+  TlsConfig,
   OptimizeStats,
   CompactionStats,
   RemovalStats,
