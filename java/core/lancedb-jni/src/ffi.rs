@@ -16,6 +16,7 @@ pub trait JNIEnvExt {
     fn get_integers(&mut self, obj: &JObject) -> Result<Vec<i32>>;
 
     /// Get strings from Java List<String> object.
+    #[allow(dead_code)]
     fn get_strings(&mut self, obj: &JObject) -> Result<Vec<String>>;
 
     /// Get strings from Java String[] object.

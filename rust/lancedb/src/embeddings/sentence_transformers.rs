@@ -407,11 +407,11 @@ impl EmbeddingFunction for SentenceTransformersEmbeddings {
         "sentence-transformers"
     }
 
-    fn source_type(&self) -> crate::Result<std::borrow::Cow<arrow_schema::DataType>> {
+    fn source_type(&self) -> crate::Result<std::borrow::Cow<'_, arrow_schema::DataType>> {
         Ok(Cow::Owned(DataType::Utf8))
     }
 
-    fn dest_type(&self) -> crate::Result<std::borrow::Cow<arrow_schema::DataType>> {
+    fn dest_type(&self) -> crate::Result<std::borrow::Cow<'_, arrow_schema::DataType>> {
         let (n_dims, dtype) = self.compute_ndims_and_dtype()?;
         Ok(Cow::Owned(DataType::new_fixed_size_list(
             dtype,
