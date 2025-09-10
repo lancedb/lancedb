@@ -251,6 +251,13 @@ class HnswPq:
         results. In most cases, there is no benefit to setting this higher than 500.
         This value should be set to a value that is not less than `ef` in the
         search phase.
+
+    target_partition_size, default is 1,048,576
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
@@ -261,6 +268,7 @@ class HnswPq:
     sample_rate: int = 256
     m: int = 20
     ef_construction: int = 300
+    target_partition_size: Optional[int] = None
 
 
 @dataclass
@@ -351,6 +359,12 @@ class HnswSq:
         This value should be set to a value that is not less than `ef` in the search
         phase.
 
+    target_partition_size, default is 1,048,576
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
@@ -359,6 +373,7 @@ class HnswSq:
     sample_rate: int = 256
     m: int = 20
     ef_construction: int = 300
+    target_partition_size: Optional[int] = None
 
 
 @dataclass
@@ -444,12 +459,20 @@ class IvfFlat:
         cases the default should be sufficient.
 
         The default value is 256.
+
+    target_partition_size, default is 8192
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot", "hamming"] = "l2"
     num_partitions: Optional[int] = None
     max_iterations: int = 50
     sample_rate: int = 256
+    target_partition_size: Optional[int] = None
 
 
 @dataclass
@@ -564,6 +587,13 @@ class IvfPq:
         cases the default should be sufficient.
 
         The default value is 256.
+
+    target_partition_size, default is 8192
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
@@ -572,6 +602,7 @@ class IvfPq:
     num_bits: int = 8
     max_iterations: int = 50
     sample_rate: int = 256
+    target_partition_size: Optional[int] = None
 
 
 __all__ = [

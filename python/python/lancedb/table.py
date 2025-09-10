@@ -691,6 +691,7 @@ class Table(ABC):
         ef_construction: int = 300,
         name: Optional[str] = None,
         train: bool = True,
+        target_partition_size: Optional[int] = None,
     ):
         """Create an index on the table.
 
@@ -2002,6 +2003,7 @@ class LanceTable(Table):
         *,
         name: Optional[str] = None,
         train: bool = True,
+        target_partition_size: Optional[int] = None,
     ):
         """Create an index on the table."""
         if accelerator is not None:
@@ -2018,6 +2020,7 @@ class LanceTable(Table):
                 num_bits=num_bits,
                 m=m,
                 ef_construction=ef_construction,
+                target_partition_size=target_partition_size,
             )
             self.checkout_latest()
             return
@@ -2027,6 +2030,7 @@ class LanceTable(Table):
                 num_partitions=num_partitions,
                 max_iterations=max_iterations,
                 sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
             )
         elif index_type == "IVF_PQ":
             config = IvfPq(
@@ -2036,6 +2040,7 @@ class LanceTable(Table):
                 num_bits=num_bits,
                 max_iterations=max_iterations,
                 sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
             )
         elif index_type == "IVF_HNSW_PQ":
             config = HnswPq(
@@ -2047,6 +2052,7 @@ class LanceTable(Table):
                 sample_rate=sample_rate,
                 m=m,
                 ef_construction=ef_construction,
+                target_partition_size=target_partition_size,
             )
         elif index_type == "IVF_HNSW_SQ":
             config = HnswSq(
@@ -2056,6 +2062,7 @@ class LanceTable(Table):
                 sample_rate=sample_rate,
                 m=m,
                 ef_construction=ef_construction,
+                target_partition_size=target_partition_size,
             )
         else:
             raise ValueError(f"Unknown index type {index_type}")

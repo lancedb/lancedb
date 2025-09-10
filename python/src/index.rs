@@ -63,6 +63,9 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_partitions) = params.num_partitions {
                     ivf_flat_builder = ivf_flat_builder.num_partitions(num_partitions);
                 }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    ivf_flat_builder = ivf_flat_builder.target_partition_size(target_partition_size);
+                }
                 Ok(LanceDbIndex::IvfFlat(ivf_flat_builder))
             },
             "IvfPq" => {
@@ -75,6 +78,9 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .num_bits(params.num_bits);
                 if let Some(num_partitions) = params.num_partitions {
                     ivf_pq_builder = ivf_pq_builder.num_partitions(num_partitions);
+                }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    ivf_pq_builder = ivf_pq_builder.target_partition_size(target_partition_size);
                 }
                 if let Some(num_sub_vectors) = params.num_sub_vectors {
                     ivf_pq_builder = ivf_pq_builder.num_sub_vectors(num_sub_vectors);
@@ -94,6 +100,9 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_partitions) = params.num_partitions {
                     hnsw_pq_builder = hnsw_pq_builder.num_partitions(num_partitions);
                 }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    hnsw_pq_builder = hnsw_pq_builder.target_partition_size(target_partition_size);
+                }
                 if let Some(num_sub_vectors) = params.num_sub_vectors {
                     hnsw_pq_builder = hnsw_pq_builder.num_sub_vectors(num_sub_vectors);
                 }
@@ -110,6 +119,9 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .ef_construction(params.ef_construction);
                 if let Some(num_partitions) = params.num_partitions {
                     hnsw_sq_builder = hnsw_sq_builder.num_partitions(num_partitions);
+                }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    hnsw_sq_builder = hnsw_sq_builder.target_partition_size(target_partition_size);
                 }
                 Ok(LanceDbIndex::IvfHnswSq(hnsw_sq_builder))
             },
@@ -144,6 +156,7 @@ struct IvfFlatParams {
     num_partitions: Option<u32>,
     max_iterations: u32,
     sample_rate: u32,
+    target_partition_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]
@@ -154,6 +167,7 @@ struct IvfPqParams {
     num_bits: u32,
     max_iterations: u32,
     sample_rate: u32,
+    target_partition_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]
@@ -166,6 +180,7 @@ struct IvfHnswPqParams {
     sample_rate: u32,
     m: u32,
     ef_construction: u32,
+    target_partition_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]
@@ -176,6 +191,7 @@ struct IvfHnswSqParams {
     sample_rate: u32,
     m: u32,
     ef_construction: u32,
+    target_partition_size: Option<u32>,
 }
 
 #[pyclass(get_all)]
