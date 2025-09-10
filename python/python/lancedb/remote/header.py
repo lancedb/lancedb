@@ -14,37 +14,6 @@ The module includes the HeaderProvider abstract base class and example implement
 The HeaderProvider interface is designed to be called before each request to the remote
 server, enabling dynamic header scenarios where values may need to be
 refreshed, rotated, or computed on-demand.
-
-Examples
---------
-Basic usage with static API key (example implementation)::
-
-    from lancedb.remote import ClientConfig
-    from lancedb.remote.header import StaticHeaderProvider
-    import lancedb
-
-    provider = StaticHeaderProvider({"X-API-Key": "your-api-key"})
-    config = ClientConfig(header_provider=provider)
-    db = await lancedb.connect("db://my-database", client_config=config)
-
-OAuth with automatic token refresh::
-
-    def fetch_oauth_token():
-        # Your OAuth token fetching logic here
-        response = oauth_client.get_token()
-        return {"access_token": response.token, "expires_in": 3600}
-
-    provider = OAuthProvider(fetch_oauth_token, refresh_buffer_seconds=300)
-    config = ClientConfig(header_provider=provider)
-    db = await lancedb.connect("db://my-database", client_config=config)
-
-Custom provider implementation::
-
-    class CustomProvider(HeaderProvider):
-        def get_headers(self) -> Dict[str, str]:
-            # Your custom logic here
-            token = self.fetch_token_from_service()
-            return {"Authorization": f"Custom {token}"}
 """
 
 from abc import ABC, abstractmethod
@@ -66,27 +35,6 @@ class HeaderProvider(ABC):
     If get_headers() raises an exception, the request will fail. Implementations
     should handle recoverable errors internally (e.g., retry token refresh) and
     only raise exceptions for unrecoverable errors.
-
-    Examples
-    --------
-    Simple JWT token provider::
-
-        class JWTProvider(HeaderProvider):
-            def __init__(self, jwt_token: str):
-                self.token = jwt_token
-
-            def get_headers(self) -> Dict[str, str]:
-                return {"Authorization": f"Bearer {self.token}"}
-
-    Provider with rotating API keys::
-
-        class RotatingKeyProvider(HeaderProvider):
-            def __init__(self, key_manager):
-                self.key_manager = key_manager
-
-            def get_headers(self) -> Dict[str, str]:
-                current_key = self.key_manager.get_current_key()
-                return {"X-API-Key": current_key}
     """
 
     @abstractmethod
@@ -121,17 +69,6 @@ class StaticHeaderProvider(HeaderProvider):
     ----------
     headers : Dict[str, str]
         Static headers to return for every request.
-    Examples
-    --------
-    Create a static header provider::
-
-        from lancedb.remote.header import StaticHeaderProvider
-        provider = StaticHeaderProvider({
-            "X-API-Key": "my-secret-key",
-            "X-Custom-Header": "custom-value"
-        })
-        headers = provider.get_headers()
-        # Returns: {'X-API-Key': 'my-secret-key', 'X-Custom-Header': 'custom-value'}
     """
 
     def __init__(self, headers: Dict[str, str]):
@@ -170,26 +107,6 @@ class OAuthProvider(HeaderProvider):
     refresh_buffer_seconds : int, optional
         Number of seconds before expiration to trigger refresh. Default is 300
         (5 minutes).
-    Examples
-    --------
-    OAuth token provider with automatic refresh::
-
-        import requests
-
-        def fetch_token():
-            response = requests.post(
-                "https://oauth.example.com/token",
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": "your-client-id",
-                    "client_secret": "your-client-secret"
-                }
-            )
-            return response.json()
-
-        provider = OAuthProvider(fetch_token)
-        headers = provider.get_headers()
-        # Returns: {"Authorization": "Bearer <your-token>"}
     """
 
     def __init__(
