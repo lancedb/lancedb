@@ -24,7 +24,7 @@ env:
 jobs:
   test-python:
     name: Test doc python code
-    runs-on: ubuntu-24.04
+    runs-on: warp-ubuntu-2204-x64-8x
     timeout-minutes: 60
     steps:
     - name: Checkout
@@ -49,7 +49,6 @@ jobs:
       uses: swatinem/rust-cache@v2
     - name: Build Python
       working-directory: docs/test
-      timeout-minutes: 60
       run:
         python -m pip install --extra-index-url https://pypi.fury.io/lancedb/ -r requirements.txt
     - name: Create test files
