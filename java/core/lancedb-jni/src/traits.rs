@@ -6,6 +6,7 @@ use jni::JNIEnv;
 
 use crate::Result;
 
+#[allow(dead_code)]
 pub trait FromJObject<T> {
     fn extract(&self) -> Result<T>;
 }
@@ -39,6 +40,7 @@ impl FromJObject<f64> for JObject<'_> {
     }
 }
 
+#[allow(dead_code)]
 pub trait FromJString {
     fn extract(&self, env: &mut JNIEnv) -> Result<String>;
 }
@@ -66,6 +68,7 @@ pub trait JMapExt {
     fn get_f64(&self, env: &mut JNIEnv, key: &str) -> Result<Option<f64>>;
 }
 
+#[allow(dead_code)]
 fn get_map_value<T>(env: &mut JNIEnv, map: &JMap, key: &str) -> Result<Option<T>>
 where
     for<'a> JObject<'a>: FromJObject<T>,

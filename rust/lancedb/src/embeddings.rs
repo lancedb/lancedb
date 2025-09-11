@@ -45,10 +45,10 @@ use crate::{
 pub trait EmbeddingFunction: std::fmt::Debug + Send + Sync {
     fn name(&self) -> &str;
     /// The type of the input data
-    fn source_type(&self) -> Result<Cow<DataType>>;
+    fn source_type(&self) -> Result<Cow<'_, DataType>>;
     /// The type of the output data
     /// This should **always** match the output of the `embed` function
-    fn dest_type(&self) -> Result<Cow<DataType>>;
+    fn dest_type(&self) -> Result<Cow<'_, DataType>>;
     /// Compute the embeddings for the source column in the database
     fn compute_source_embeddings(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>>;
     /// Compute the embeddings for a given user query

@@ -255,7 +255,7 @@ impl Connection {
 #[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn connect(
-    py: Python,
+    py: Python<'_>,
     uri: String,
     api_key: Option<String>,
     region: Option<String>,

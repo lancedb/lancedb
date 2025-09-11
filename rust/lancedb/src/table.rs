@@ -242,17 +242,15 @@ pub struct OptimizeStats {
 /// Describes what happens when a vector either contains NaN or
 /// does not have enough values
 #[derive(Clone, Debug, Default)]
+#[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
 enum BadVectorHandling {
     /// An error is returned
     #[default]
     Error,
-    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
     /// The offending row is droppped
     Drop,
-    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
     /// The invalid/missing items are replaced by fill_value
     Fill(f32),
-    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
     /// The invalid items are replaced by NULL
     None,
 }
