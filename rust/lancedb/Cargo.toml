@@ -90,7 +90,7 @@ aws-sdk-dynamodb = { version = "1.38.0" }
 aws-sdk-s3 = { version = "1.38.0" }
 aws-sdk-kms = { version = "1.37" }
 aws-config = { version = "1.0" }
-aws-smithy-runtime = { version = "1.3" }
+aws-smithy-runtime = { version = "1.9.1" }
 datafusion.workspace = true
 http-body = "1"                                        # Matching reqwest
 rstest = "0.23.0"
