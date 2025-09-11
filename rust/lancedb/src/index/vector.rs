@@ -112,6 +112,15 @@ macro_rules! impl_ivf_params_setter {
             self.max_iterations = max_iterations;
             self
         }
+
+        /// The target size of each partition.
+        ///
+        /// This value controls the tradeoff between search performance and accuracy.
+        /// The higher the value the faster the search but the less accurate the results will be.
+        pub fn target_partition_size(mut self, target_partition_size: u32) -> Self {
+            self.target_partition_size = Some(target_partition_size);
+            self
+        }
     };
 }
 
@@ -182,6 +191,7 @@ pub struct IvfFlatIndexBuilder {
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
 }
 
 impl Default for IvfFlatIndexBuilder {
@@ -191,6 +201,7 @@ impl Default for IvfFlatIndexBuilder {
             num_partitions: None,
             sample_rate: 256,
             max_iterations: 50,
+            target_partition_size: None,
         }
     }
 }
@@ -228,6 +239,7 @@ pub struct IvfPqIndexBuilder {
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
 
     // PQ
     pub(crate) num_sub_vectors: Option<u32>,
@@ -243,6 +255,7 @@ impl Default for IvfPqIndexBuilder {
             num_bits: None,
             sample_rate: 256,
             max_iterations: 50,
+            target_partition_size: None,
         }
     }
 }
@@ -293,6 +306,7 @@ pub struct IvfHnswPqIndexBuilder {
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
 
     // HNSW
     pub(crate) m: u32,
@@ -314,6 +328,7 @@ impl Default for IvfHnswPqIndexBuilder {
             max_iterations: 50,
             m: 20,
             ef_construction: 300,
+            target_partition_size: None,
         }
     }
 }
@@ -341,6 +356,7 @@ pub struct IvfHnswSqIndexBuilder {
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
 
     // HNSW
     pub(crate) m: u32,
@@ -358,6 +374,7 @@ impl Default for IvfHnswSqIndexBuilder {
             max_iterations: 50,
             m: 20,
             ef_construction: 300,
+            target_partition_size: None,
         }
     }
 }

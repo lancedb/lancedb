@@ -674,6 +674,45 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         "vector", replace=True, config=expected_config, name=None, train=True
     )
 
+    # Test with target_partition_size
+    table.create_index(
+        metric="l2",
+        num_sub_vectors=96,
+        vector_column_name="vector",
+        replace=True,
+        index_cache_size=256,
+        num_bits=4,
+        target_partition_size=8192,
+    )
+    expected_config = IvfPq(
+        distance_type="l2",
+        num_sub_vectors=96,
+        num_bits=4,
+        target_partition_size=8192,
+    )
+    mock_create_index.assert_called_with(
+        "vector", replace=True, config=expected_config, name=None, train=True
+    )
+
+    # target_partition_size has a default value,
+    # so `num_partitions` and `target_partition_size` are not required
+    table.create_index(
+        metric="l2",
+        num_sub_vectors=96,
+        vector_column_name="vector",
+        replace=True,
+        index_cache_size=256,
+        num_bits=4,
+    )
+    expected_config = IvfPq(
+        distance_type="l2",
+        num_sub_vectors=96,
+        num_bits=4,
+    )
+    mock_create_index.assert_called_with(
+        "vector", replace=True, config=expected_config, name=None, train=True
+    )
+
     table.create_index(
         vector_column_name="my_vector",
         metric="dot",
