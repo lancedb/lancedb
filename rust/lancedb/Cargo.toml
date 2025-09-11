@@ -86,10 +86,10 @@ rand = { version = "0.9", features = ["small_rng"] }
 random_word = { version = "0.4.3", features = ["en"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 walkdir = "2"
-aws-sdk-dynamodb = { version = "1.92.0" }
-aws-sdk-s3 = { version = "1.105.0" }
-aws-sdk-kms = { version = "1.86.0" }
-aws-config = { version = "1.8.6" }
+aws-sdk-dynamodb = { version = "1.55.0" }
+aws-sdk-s3 = { version = "1.55.0" }
+aws-sdk-kms = { version = "1.48.0" }
+aws-config = { version = "1.5.10" }
 aws-smithy-runtime = { version = "1.9.1" }
 datafusion.workspace = true
 http-body = "1"                                        # Matching reqwest
