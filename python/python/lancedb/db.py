@@ -698,7 +698,7 @@ class LanceDBConnection(DBConnection):
         -------
         A LanceTable object representing the cloned table.
         """
-        table = LOOP.run(
+        LOOP.run(
             self._conn.clone_table(
                 target_table_name,
                 source_uri,
@@ -708,7 +708,11 @@ class LanceDBConnection(DBConnection):
                 is_shallow=is_shallow,
             )
         )
-        return LanceTable(table)
+        return LanceTable.open(
+            self,
+            target_table_name,
+            namespace=target_namespace,
+        )
 
     @override
     def drop_table(

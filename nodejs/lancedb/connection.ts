@@ -268,6 +268,27 @@ export abstract class Connection {
    * @param {string[]} namespace The namespace to drop tables from (defaults to root namespace).
    */
   abstract dropAllTables(namespace?: string[]): Promise<void>;
+
+  /**
+   * Clone a table from a source table.
+   * @param {string} targetTableName - The name of the target table to create.
+   * @param {string} sourceUri - The URI of the source table to clone from.
+   * @param {object} options - Clone options.
+   * @param {string[]} options.targetNamespace - The namespace for the target table (defaults to root namespace).
+   * @param {number} options.sourceVersion - The version of the source table to clone.
+   * @param {string} options.sourceTag - The tag of the source table to clone.
+   * @param {boolean} options.isShallow - Whether to perform a shallow clone (defaults to true).
+   */
+  abstract cloneTable(
+    targetTableName: string,
+    sourceUri: string,
+    options?: {
+      targetNamespace?: string[];
+      sourceVersion?: number;
+      sourceTag?: string;
+      isShallow?: boolean;
+    },
+  ): Promise<Table>;
 }
 
 /** @hideconstructor */
