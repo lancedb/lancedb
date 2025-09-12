@@ -839,3 +839,694 @@ impl Database for ListingDatabase {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection::ConnectRequest;
+    use crate::database::{CreateTableData, CreateTableMode, CreateTableRequest};
+    use crate::table::{Table, TableDefinition};
+    use arrow_array::{Int32Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use tempfile::tempdir;
+
+    async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        (tempdir, db)
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_basic() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "source_table".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Empty(TableDefinition::new_from_schema(schema.clone())),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Get the source table URI
+        let source_uri = db.table_uri("source_table").unwrap();
+
+        // Clone the table
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned_table".to_string(),
+                target_namespace: vec![],
+                source_uri: source_uri.clone(),
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Verify both tables exist
+        let table_names = db.table_names(TableNamesRequest::default()).await.unwrap();
+        assert!(table_names.contains(&"source_table".to_string()));
+        assert!(table_names.contains(&"cloned_table".to_string()));
+
+        // Verify schemas match
+        assert_eq!(
+            source_table.schema().await.unwrap(),
+            cloned_table.schema().await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_data() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with actual data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "source_with_data".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let source_uri = db.table_uri("source_with_data").unwrap();
+
+        // Clone the table
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned_with_data".to_string(),
+                target_namespace: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Verify data counts match
+        let source_count = source_table.count_rows(None).await.unwrap();
+        let cloned_count = cloned_table.count_rows(None).await.unwrap();
+        assert_eq!(source_count, cloned_count);
+        assert_eq!(source_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_storage_options() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with storage options
+        let mut options = HashMap::new();
+        options.insert("test_option".to_string(), "test_value".to_string());
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options.clone(),
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        // Create source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        let source_uri = db.table_uri("source").unwrap();
+
+        // Clone should work with storage options
+        let cloned = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await;
+
+        assert!(cloned.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_deep_not_supported() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        let source_uri = db.table_uri("source").unwrap();
+
+        // Try deep clone (should fail)
+        let result = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: false, // Request deep clone
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::NotSupported { message } if message.contains("Deep clone")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_namespace_not_supported() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        let source_uri = db.table_uri("source").unwrap();
+
+        // Try clone with namespace (should fail for listing database)
+        let result = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace: vec!["namespace".to_string()], // Non-empty namespace
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::NotSupported { message } if message.contains("Namespace parameter is not supported")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_invalid_target_name() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        let source_uri = db.table_uri("source").unwrap();
+
+        // Try clone with invalid target name
+        let result = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "invalid/name".to_string(), // Invalid name with slash
+                target_namespace: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_source_not_found() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Try to clone from non-existent source
+        let result = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace: vec![],
+                source_uri: "/nonexistent/table.lance".to_string(),
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_version_and_tag_error() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        let source_uri = db.table_uri("source").unwrap();
+
+        // Try clone with both version and tag (should fail)
+        let result = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace: vec![],
+                source_uri,
+                source_version: Some(1),
+                source_tag: Some("v1.0".to_string()),
+                is_shallow: true,
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidInput { message } if message.contains("Cannot specify both source_version and source_tag")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_specific_version() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]));
+
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch1)],
+            schema.clone(),
+        ));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "versioned_source".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Get the initial version
+        let initial_version = source_table.version().await.unwrap();
+
+        // Add more data to create a new version
+        let batch2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![3, 4])),
+                Arc::new(StringArray::from(vec!["c", "d"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table_obj = Table::new(source_table.clone());
+        source_table_obj
+            .add(Box::new(arrow_array::RecordBatchIterator::new(
+                vec![Ok(batch2)],
+                schema.clone(),
+            )))
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify source table now has 4 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
+
+        let source_uri = db.table_uri("versioned_source").unwrap();
+
+        // Clone from the initial version (should have only 2 rows)
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned_from_version".to_string(),
+                target_namespace: vec![],
+                source_uri,
+                source_version: Some(initial_version),
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Verify cloned table has only the initial 2 rows
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 2);
+
+        // Source table should still have 4 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_tag() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]));
+
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch1)],
+            schema.clone(),
+        ));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "tagged_source".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Create a tag for the current version
+        let source_table_obj = Table::new(source_table.clone());
+        let mut tags = source_table_obj.tags().await.unwrap();
+        tags.create("v1.0", source_table.version().await.unwrap())
+            .await
+            .unwrap();
+
+        // Add more data after the tag
+        let batch2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![3, 4])),
+                Arc::new(StringArray::from(vec!["c", "d"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table_obj = Table::new(source_table.clone());
+        source_table_obj
+            .add(Box::new(arrow_array::RecordBatchIterator::new(
+                vec![Ok(batch2)],
+                schema.clone(),
+            )))
+            .execute()
+            .await
+            .unwrap();
+
+        // Source table should have 4 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
+
+        let source_uri = db.table_uri("tagged_source").unwrap();
+
+        // Clone from the tag (should have only 2 rows)
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned_from_tag".to_string(),
+                target_namespace: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: Some("v1.0".to_string()),
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Verify cloned table has only the tagged version's 2 rows
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_cloned_tables_evolve_independently() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]));
+
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch1)],
+            schema.clone(),
+        ));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "independent_source".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let source_uri = db.table_uri("independent_source").unwrap();
+
+        // Clone the table
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "independent_clone".to_string(),
+                target_namespace: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Both should start with 2 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 2);
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 2);
+
+        // Add data to the cloned table
+        let batch_clone = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![3, 4, 5])),
+                Arc::new(StringArray::from(vec!["c", "d", "e"])),
+            ],
+        )
+        .unwrap();
+
+        let cloned_table_obj = Table::new(cloned_table.clone());
+        cloned_table_obj
+            .add(Box::new(arrow_array::RecordBatchIterator::new(
+                vec![Ok(batch_clone)],
+                schema.clone(),
+            )))
+            .execute()
+            .await
+            .unwrap();
+
+        // Add different data to the source table
+        let batch_source = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![10, 11])),
+                Arc::new(StringArray::from(vec!["x", "y"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table_obj = Table::new(source_table.clone());
+        source_table_obj
+            .add(Box::new(arrow_array::RecordBatchIterator::new(
+                vec![Ok(batch_source)],
+                schema.clone(),
+            )))
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify they have evolved independently
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4); // 2 + 2
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 5); // 2 + 3
+    }
+
+    #[tokio::test]
+    async fn test_clone_latest_version() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch1 =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1, 2]))])
+                .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch1)],
+            schema.clone(),
+        ));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "latest_version_source".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Add more data to create new versions
+        for i in 0..3 {
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![i * 10, i * 10 + 1]))],
+            )
+            .unwrap();
+
+            let source_table_obj = Table::new(source_table.clone());
+            source_table_obj
+                .add(Box::new(arrow_array::RecordBatchIterator::new(
+                    vec![Ok(batch)],
+                    schema.clone(),
+                )))
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        // Source should have 8 rows total (2 + 2 + 2 + 2)
+        let source_count = source_table.count_rows(None).await.unwrap();
+        assert_eq!(source_count, 8);
+
+        let source_uri = db.table_uri("latest_version_source").unwrap();
+
+        // Clone without specifying version or tag (should get latest)
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned_latest".to_string(),
+                target_namespace: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Cloned table should have all 8 rows from the latest version
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 8);
+    }
+}
