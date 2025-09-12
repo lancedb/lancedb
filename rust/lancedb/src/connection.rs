@@ -471,7 +471,14 @@ impl OpenTableBuilder {
     }
 }
 
-/// Builder for cloning a table
+/// Builder for cloning a table.
+///
+/// A shallow clone creates a new table that shares the underlying data files
+/// with the source table but has its own independent manifest. Both the source
+/// and cloned tables can evolve independently while initially sharing the same
+/// data, deletion, and index files.
+///
+/// Use this builder to configure the clone operation before executing it.
 pub struct CloneTableBuilder {
     parent: Arc<dyn Database>,
     request: CloneTableRequest,

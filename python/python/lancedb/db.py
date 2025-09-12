@@ -677,6 +677,11 @@ class LanceDBConnection(DBConnection):
     ) -> LanceTable:
         """Clone a table from a source table.
 
+        A shallow clone creates a new table that shares the underlying data files
+        with the source table but has its own independent manifest. This allows
+        both the source and cloned tables to evolve independently while initially
+        sharing the same data, deletion, and index files.
+
         Parameters
         ----------
         target_table_name: str
@@ -1197,6 +1202,11 @@ class AsyncConnection(object):
     ) -> AsyncTable:
         """Clone a table from a source table.
 
+        A shallow clone creates a new table that shares the underlying data files
+        with the source table but has its own independent manifest. This allows
+        both the source and cloned tables to evolve independently while initially
+        sharing the same data, deletion, and index files.
+
         Parameters
         ----------
         target_table_name: str
@@ -1216,7 +1226,7 @@ class AsyncConnection(object):
 
         Returns
         -------
-        A LanceTable object representing the cloned table.
+        An AsyncTable object representing the cloned table.
         """
         table = await self._inner.clone_table(
             target_table_name,

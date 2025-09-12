@@ -271,6 +271,12 @@ export abstract class Connection {
 
   /**
    * Clone a table from a source table.
+   *
+   * A shallow clone creates a new table that shares the underlying data files
+   * with the source table but has its own independent manifest. This allows
+   * both the source and cloned tables to evolve independently while initially
+   * sharing the same data, deletion, and index files.
+   *
    * @param {string} targetTableName - The name of the target table to create.
    * @param {string} sourceUri - The URI of the source table to clone from.
    * @param {object} options - Clone options.
