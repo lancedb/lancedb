@@ -699,7 +699,7 @@ impl Database for ListingDatabase {
             storage_options: Some(self.storage_options.clone()),
             ..Default::default()
         };
-        let mut read_params = ReadParams {
+        let read_params = ReadParams {
             store_options: Some(storage_params.clone()),
             session: Some(self.session.clone()),
             ..Default::default()
