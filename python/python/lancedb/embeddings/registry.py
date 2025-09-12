@@ -122,7 +122,7 @@ class EmbeddingFunctionRegistry:
             obj["vector_column"]: EmbeddingFunctionConfig(
                 vector_column=obj["vector_column"],
                 source_column=obj["source_column"],
-                function=self.get(obj["name"])(**obj["model"]),
+                function=self.get(obj["name"]).create(**obj["model"]),
             )
             for obj in raw_list
         }
