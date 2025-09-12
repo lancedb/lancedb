@@ -835,28 +835,28 @@ def test_local_table_operations_with_namespace_raise_error(tmp_path):
 def test_clone_table_latest_version(tmp_path):
     """Test cloning a table with the latest version (default behavior)"""
     import os
-    
+
     db = lancedb.connect(tmp_path)
-    
+
     # Create source table with some data
     data = [
         {"id": 1, "text": "hello", "vector": [1.0, 2.0]},
         {"id": 2, "text": "world", "vector": [3.0, 4.0]},
     ]
     source_table = db.create_table("source", data=data)
-    
+
     # Add more data to create a new version
     more_data = [{"id": 3, "text": "test", "vector": [5.0, 6.0]}]
     source_table.add(more_data)
-    
+
     # Clone the table (should get latest version with 3 rows)
     source_uri = os.path.join(tmp_path, "source.lance")
     cloned_table = db.clone_table("cloned", source_uri)
-    
+
     # Verify cloned table has all 3 rows
     assert cloned_table.count_rows() == 3
     assert "cloned" in db.table_names()
-    
+
     # Verify data matches
     cloned_data = cloned_table.to_pandas()
     assert len(cloned_data) == 3
@@ -866,30 +866,30 @@ def test_clone_table_latest_version(tmp_path):
 def test_clone_table_specific_version(tmp_path):
     """Test cloning a table from a specific version"""
     import os
-    
+
     db = lancedb.connect(tmp_path)
-    
+
     # Create source table with initial data
     data = [
         {"id": 1, "text": "hello", "vector": [1.0, 2.0]},
         {"id": 2, "text": "world", "vector": [3.0, 4.0]},
     ]
     source_table = db.create_table("source", data=data)
-    
+
     # Get the initial version
     initial_version = source_table.version
-    
+
     # Add more data to create a new version
     more_data = [{"id": 3, "text": "test", "vector": [5.0, 6.0]}]
     source_table.add(more_data)
-    
+
     # Verify source now has 3 rows
     assert source_table.count_rows() == 3
-    
+
     # Clone from the initial version (should have only 2 rows)
     source_uri = os.path.join(tmp_path, "source.lance")
     cloned_table = db.clone_table("cloned", source_uri, source_version=initial_version)
-    
+
     # Verify cloned table has only the initial 2 rows
     assert cloned_table.count_rows() == 2
     cloned_data = cloned_table.to_pandas()
@@ -899,30 +899,30 @@ def test_clone_table_specific_version(tmp_path):
 def test_clone_table_with_tag(tmp_path):
     """Test cloning a table from a tagged version"""
     import os
-    
+
     db = lancedb.connect(tmp_path)
-    
+
     # Create source table with initial data
     data = [
         {"id": 1, "text": "hello", "vector": [1.0, 2.0]},
         {"id": 2, "text": "world", "vector": [3.0, 4.0]},
     ]
     source_table = db.create_table("source", data=data)
-    
+
     # Create a tag for the current version
     source_table.tags.create("v1.0", source_table.version)
-    
+
     # Add more data after the tag
     more_data = [{"id": 3, "text": "test", "vector": [5.0, 6.0]}]
     source_table.add(more_data)
-    
+
     # Verify source now has 3 rows
     assert source_table.count_rows() == 3
-    
+
     # Clone from the tagged version (should have only 2 rows)
     source_uri = os.path.join(tmp_path, "source.lance")
     cloned_table = db.clone_table("cloned", source_uri, source_tag="v1.0")
-    
+
     # Verify cloned table has only the tagged version's 2 rows
     assert cloned_table.count_rows() == 2
     cloned_data = cloned_table.to_pandas()
@@ -932,16 +932,16 @@ def test_clone_table_with_tag(tmp_path):
 def test_clone_table_deep_clone_fails(tmp_path):
     """Test that deep clone raises an unsupported error"""
     import os
-    
+
     db = lancedb.connect(tmp_path)
-    
+
     # Create source table with some data
     data = [
         {"id": 1, "text": "hello", "vector": [1.0, 2.0]},
         {"id": 2, "text": "world", "vector": [3.0, 4.0]},
     ]
     db.create_table("source", data=data)
-    
+
     # Try to create a deep clone (should fail)
     source_uri = os.path.join(tmp_path, "source.lance")
     with pytest.raises(Exception, match="Deep clone is not yet implemented"):

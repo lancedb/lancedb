@@ -220,15 +220,15 @@ describe("clone table functionality", () => {
       { id: 2, text: "world", vector: [3.0, 4.0] },
     ];
     const sourceTable = await db.createTable("source", data);
-    
+
     // Add more data to create a new version
     const moreData = [{ id: 3, text: "test", vector: [5.0, 6.0] }];
     await sourceTable.add(moreData);
-    
+
     // Clone the table (should get latest version with 3 rows)
     const sourceUri = `${tmpDir.name}/source.lance`;
     const clonedTable = await db.cloneTable("cloned", sourceUri);
-    
+
     // Verify cloned table has all 3 rows
     expect(await clonedTable.countRows()).toBe(3);
     expect((await db.tableNames()).includes("cloned")).toBe(true);
@@ -241,23 +241,23 @@ describe("clone table functionality", () => {
       { id: 2, text: "world", vector: [3.0, 4.0] },
     ];
     const sourceTable = await db.createTable("source", data);
-    
+
     // Get the initial version
     const initialVersion = await sourceTable.version();
-    
+
     // Add more data to create a new version
     const moreData = [{ id: 3, text: "test", vector: [5.0, 6.0] }];
     await sourceTable.add(moreData);
-    
+
     // Verify source now has 3 rows
     expect(await sourceTable.countRows()).toBe(3);
-    
+
     // Clone from the initial version (should have only 2 rows)
     const sourceUri = `${tmpDir.name}/source.lance`;
-    const clonedTable = await db.cloneTable("cloned", sourceUri, { 
-      sourceVersion: initialVersion 
+    const clonedTable = await db.cloneTable("cloned", sourceUri, {
+      sourceVersion: initialVersion,
     });
-    
+
     // Verify cloned table has only the initial 2 rows
     expect(await clonedTable.countRows()).toBe(2);
   });
@@ -269,24 +269,24 @@ describe("clone table functionality", () => {
       { id: 2, text: "world", vector: [3.0, 4.0] },
     ];
     const sourceTable = await db.createTable("source", data);
-    
+
     // Create a tag for the current version
     const tags = await sourceTable.tags();
     await tags.create("v1.0", await sourceTable.version());
-    
+
     // Add more data after the tag
     const moreData = [{ id: 3, text: "test", vector: [5.0, 6.0] }];
     await sourceTable.add(moreData);
-    
+
     // Verify source now has 3 rows
     expect(await sourceTable.countRows()).toBe(3);
-    
+
     // Clone from the tagged version (should have only 2 rows)
     const sourceUri = `${tmpDir.name}/source.lance`;
-    const clonedTable = await db.cloneTable("cloned", sourceUri, { 
-      sourceTag: "v1.0" 
+    const clonedTable = await db.cloneTable("cloned", sourceUri, {
+      sourceTag: "v1.0",
     });
-    
+
     // Verify cloned table has only the tagged version's 2 rows
     expect(await clonedTable.countRows()).toBe(2);
   });
@@ -298,11 +298,11 @@ describe("clone table functionality", () => {
       { id: 2, text: "world", vector: [3.0, 4.0] },
     ];
     await db.createTable("source", data);
-    
+
     // Try to create a deep clone (should fail)
     const sourceUri = `${tmpDir.name}/source.lance`;
     await expect(
-      db.cloneTable("cloned", sourceUri, { isShallow: false })
+      db.cloneTable("cloned", sourceUri, { isShallow: false }),
     ).rejects.toThrow("Deep clone is not yet implemented");
   });
 });
