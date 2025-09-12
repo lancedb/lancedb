@@ -443,21 +443,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
-        // Validate that both version and tag are not specified
-        if request.source_version.is_some() && request.source_tag.is_some() {
-            return Err(Error::InvalidInput {
-                message: "Cannot specify both source_version and source_tag".to_string(),
-            });
-        }
-
-        // Build the table identifier for the URL
-        let identifier = build_table_identifier(
+        let table_identifier = build_table_identifier(
             &request.target_table_name,
             &request.target_namespace,
             &self.client.id_delimiter,
         );
 
-        // Create the remote request body
         let remote_request = RemoteCloneTableRequest {
             source_location: request.source_uri,
             source_version: request.source_version,
@@ -467,7 +458,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
         let req = self
             .client
-            .post(&format!("/v1/table/{}/clone", identifier))
+            .post(&format!("/v1/table/{}/clone", table_identifier.clone()))
             .json(&remote_request);
 
         let (request_id, rsp) = self.client.send(req).await?;
@@ -482,15 +473,18 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             });
         }
 
-        // Open and return the cloned table
-        let open_request = OpenTableRequest {
-            name: request.target_table_name.clone(),
-            namespace: request.target_namespace.clone(),
-            index_cache_size: None,
-            lance_read_params: None,
-        };
+        let version = parse_server_version(&request_id, &rsp)?;
+        let cache_key = build_cache_key(&request.target_table_name, &request.target_namespace);
+        let table = Arc::new(RemoteTable::new(
+            self.client.clone(),
+            request.target_table_name.clone(),
+            request.target_namespace.clone(),
+            table_identifier,
+            version,
+        ));
+        self.table_cache.insert(cache_key, table.clone()).await;
 
-        self.open_table(open_request).await
+        Ok(table)
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
