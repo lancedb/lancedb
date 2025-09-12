@@ -176,6 +176,36 @@ impl CreateTableRequest {
     }
 }
 
+/// A request to clone a table
+#[derive(Clone, Debug)]
+pub struct CloneTableRequest {
+    /// The name of the target table to create
+    pub target_table_name: String,
+    /// The namespace for the target table. Empty list represents root namespace.
+    pub target_namespace: Vec<String>,
+    /// The URI of the source table to clone from
+    pub source_uri: String,
+    /// Optional version of the source table to clone
+    pub source_version: Option<u64>,
+    /// Optional tag of the source table to clone
+    pub source_tag: Option<String>,
+    /// Whether to perform a shallow clone (true) or deep clone (false). Defaults to true.
+    pub is_shallow: bool,
+}
+
+impl CloneTableRequest {
+    pub fn new(target_table_name: String, source_uri: String) -> Self {
+        Self {
+            target_table_name,
+            target_namespace: vec![],
+            source_uri,
+            source_version: None,
+            source_tag: None,
+            is_shallow: true,
+        }
+    }
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
@@ -193,6 +223,8 @@ pub trait Database:
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>>;
     /// Create a table in the database
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>>;
+    /// Clone a table in the database
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database

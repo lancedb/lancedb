@@ -332,6 +332,28 @@ export class LocalConnection extends Connection {
     return new LocalTable(innerTable);
   }
 
+  async cloneTable(
+    targetTableName: string,
+    sourceUri: string,
+    options?: {
+      targetNamespace?: string[];
+      sourceVersion?: number;
+      sourceTag?: string;
+      isShallow?: boolean;
+    },
+  ): Promise<Table> {
+    const innerTable = await this.inner.cloneTable(
+      targetTableName,
+      sourceUri,
+      options?.targetNamespace ?? [],
+      options?.sourceVersion ?? null,
+      options?.sourceTag ?? null,
+      options?.isShallow ?? true,
+    );
+
+    return new LocalTable(innerTable);
+  }
+
   private getStorageOptions(
     options?: Partial<CreateTableOptions>,
   ): Record<string, string> | undefined {

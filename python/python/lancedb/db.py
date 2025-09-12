@@ -665,6 +665,51 @@ class LanceDBConnection(DBConnection):
             index_cache_size=index_cache_size,
         )
 
+    def clone_table(
+        self,
+        target_table_name: str,
+        source_uri: str,
+        *,
+        target_namespace: List[str] = [],
+        source_version: Optional[int] = None,
+        source_tag: Optional[str] = None,
+        is_shallow: bool = True,
+    ) -> LanceTable:
+        """Clone a table from a source table.
+
+        Parameters
+        ----------
+        target_table_name: str
+            The name of the target table to create.
+        source_uri: str
+            The URI of the source table to clone from.
+        target_namespace: List[str], optional
+            The namespace for the target table.
+            None or empty list represents root namespace.
+        source_version: int, optional
+            The version of the source table to clone.
+        source_tag: str, optional
+            The tag of the source table to clone.
+        is_shallow: bool, default True
+            Whether to perform a shallow clone (True) or deep clone (False).
+            Currently only shallow clone is supported.
+
+        Returns
+        -------
+        A LanceTable object representing the cloned table.
+        """
+        table = LOOP.run(
+            self._conn.clone_table(
+                target_table_name,
+                source_uri,
+                target_namespace=target_namespace,
+                source_version=source_version,
+                source_tag=source_tag,
+                is_shallow=is_shallow,
+            )
+        )
+        return LanceTable(table)
+
     @override
     def drop_table(
         self,
@@ -1133,6 +1178,49 @@ class AsyncConnection(object):
             namespace=namespace,
             storage_options=storage_options,
             index_cache_size=index_cache_size,
+        )
+        return AsyncTable(table)
+
+    async def clone_table(
+        self,
+        target_table_name: str,
+        source_uri: str,
+        *,
+        target_namespace: List[str] = [],
+        source_version: Optional[int] = None,
+        source_tag: Optional[str] = None,
+        is_shallow: bool = True,
+    ) -> AsyncTable:
+        """Clone a table from a source table.
+
+        Parameters
+        ----------
+        target_table_name: str
+            The name of the target table to create.
+        source_uri: str
+            The URI of the source table to clone from.
+        target_namespace: List[str], optional
+            The namespace for the target table.
+            None or empty list represents root namespace.
+        source_version: int, optional
+            The version of the source table to clone.
+        source_tag: str, optional
+            The tag of the source table to clone.
+        is_shallow: bool, default True
+            Whether to perform a shallow clone (True) or deep clone (False).
+            Currently only shallow clone is supported.
+
+        Returns
+        -------
+        A LanceTable object representing the cloned table.
+        """
+        table = await self._inner.clone_table(
+            target_table_name,
+            source_uri,
+            target_namespace=target_namespace,
+            source_version=source_version,
+            source_tag=source_tag,
+            is_shallow=is_shallow,
         )
         return AsyncTable(table)
 

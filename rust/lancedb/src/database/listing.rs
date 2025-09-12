@@ -22,8 +22,8 @@ use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
 use super::{
-    BaseTable, CreateNamespaceRequest, CreateTableMode, CreateTableRequest, Database,
-    DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
+    BaseTable, CloneTableRequest, CreateNamespaceRequest, CreateTableMode, CreateTableRequest,
+    Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
     TableNamesRequest,
 };
 
@@ -676,6 +676,71 @@ impl Database for ListingDatabase {
             }
             Err(err) => Err(err),
         }
+    }
+
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if !request.target_namespace.is_empty() {
+            return Err(Error::NotSupported {
+                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+            });
+        }
+
+        // Validate that both version and tag are not specified
+        if request.source_version.is_some() && request.source_tag.is_some() {
+            return Err(Error::InvalidInput {
+                message: "Cannot specify both source_version and source_tag".to_string(),
+            });
+        }
+
+        // Check if deep clone is requested (not supported yet)
+        if !request.is_shallow {
+            return Err(Error::NotSupported {
+                message: "Deep clone is not yet implemented".to_string(),
+            });
+        }
+
+        crate::utils::validate_table_name(&request.target_table_name)?;
+
+        // Open the source dataset
+        let source_dataset = Arc::new(
+            lance::dataset::Dataset::open(&request.source_uri)
+                .await
+                .map_err(|e| Error::Lance { source: e })?,
+        );
+
+        // Determine which version to clone
+        let version_ref = match (request.source_version, request.source_tag) {
+            (Some(v), None) => lance::dataset::refs::Ref::Version(v),
+            (None, Some(tag)) => lance::dataset::refs::Ref::Tag(tag),
+            (None, None) => lance::dataset::refs::Ref::Version(source_dataset.version().version),
+            _ => unreachable!("Already validated above"),
+        };
+
+        // Build the target URI
+        let target_uri = self.table_uri(&request.target_table_name)?;
+
+        // Create a mutable dataset for cloning
+        let mut source_dataset_mut = lance::dataset::Dataset::open(&request.source_uri)
+            .await
+            .map_err(|e| Error::Lance { source: e })?;
+
+        // Perform the shallow clone
+        source_dataset_mut
+            .shallow_clone(&target_uri, version_ref, Default::default())
+            .await
+            .map_err(|e| Error::Lance { source: e })?;
+
+        // Open and return the cloned table
+        let cloned_table = NativeTable::open_with_params(
+            &target_uri,
+            &request.target_table_name,
+            self.store_wrapper.clone(),
+            None,
+            self.read_consistency_interval,
+        )
+        .await?;
+
+        Ok(Arc::new(cloned_table))
     }
 
     async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {

@@ -14,9 +14,9 @@ use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
 use crate::database::{
-    CreateNamespaceRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
-    DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
-    TableNamesRequest,
+    CloneTableRequest, CreateNamespaceRequest, CreateTableData, CreateTableMode,
+    CreateTableRequest, Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest,
+    OpenTableRequest, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::table::BaseTable;
@@ -26,6 +26,18 @@ use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClie
 use super::table::RemoteTable;
 use super::util::{batches_to_ipc_bytes, parse_server_version};
 use super::ARROW_STREAM_CONTENT_TYPE;
+
+// Request structure for the remote clone table API
+#[derive(serde::Serialize)]
+struct RemoteCloneTableRequest {
+    source_location: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_shallow: Option<bool>,
+}
 
 // the versions of the server that we support
 // for any new feature that we need to change the SDK behavior, we should bump the server version,
@@ -428,6 +440,57 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         self.table_cache.insert(cache_key, table.clone()).await;
 
         Ok(table)
+    }
+
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Validate that both version and tag are not specified
+        if request.source_version.is_some() && request.source_tag.is_some() {
+            return Err(Error::InvalidInput {
+                message: "Cannot specify both source_version and source_tag".to_string(),
+            });
+        }
+
+        // Build the table identifier for the URL
+        let identifier = build_table_identifier(
+            &request.target_table_name,
+            &request.target_namespace,
+            &self.client.id_delimiter,
+        );
+
+        // Create the remote request body
+        let remote_request = RemoteCloneTableRequest {
+            source_location: request.source_uri,
+            source_version: request.source_version,
+            source_tag: request.source_tag,
+            is_shallow: Some(request.is_shallow),
+        };
+
+        let req = self
+            .client
+            .post(&format!("/v1/table/{}/clone", identifier))
+            .json(&remote_request);
+
+        let (request_id, rsp) = self.client.send(req).await?;
+
+        let status = rsp.status();
+        if status != StatusCode::OK {
+            let body = rsp.text().await.err_to_http(request_id.clone())?;
+            return Err(crate::Error::Http {
+                source: format!("Failed to clone table: {}", body).into(),
+                request_id,
+                status_code: Some(status),
+            });
+        }
+
+        // Open and return the cloned table
+        let open_request = OpenTableRequest {
+            name: request.target_table_name.clone(),
+            namespace: request.target_namespace.clone(),
+            index_cache_size: None,
+            lance_read_params: None,
+        };
+
+        self.open_table(open_request).await
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
