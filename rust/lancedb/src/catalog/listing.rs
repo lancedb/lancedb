@@ -322,7 +322,9 @@ mod tests {
         (tempdir, catalog)
     }
 
-    use crate::database::{CreateTableData, CreateTableRequest, TableNamesRequest};
+    use crate::database::{
+        CreateTableData, CreateTableMode, CreateTableRequest, TableNamesRequest,
+    };
     use crate::table::TableDefinition;
     use arrow_schema::Field;
     use std::path::PathBuf;
@@ -620,5 +622,124 @@ mod tests {
 
         let result = ListingCatalog::connect(&request).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clone_table() {
+        let (_tempdir, catalog) = setup_catalog().await;
+
+        // Create a database first
+        let db = catalog
+            .create_database(CreateDatabaseRequest {
+                name: "test_db".into(),
+                mode: CreateDatabaseMode::Create,
+                options: HashMap::new(),
+            })
+            .await
+            .unwrap();
+
+        // Create a source table with some data
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            Field::new("id", arrow_schema::DataType::Int32, false),
+            Field::new("name", arrow_schema::DataType::Utf8, false),
+        ]));
+
+        db.create_table(CreateTableRequest {
+            name: "source_table".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema.clone())),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        // Get the source table URI
+        let source_uri = format!("{}/test_db/source_table.lance", catalog.uri());
+
+        // Clone the table using the database's clone_table method
+        let cloned_table = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned_table".to_string(),
+                target_namespace: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Verify the cloned table exists
+        let table_names = db.table_names(TableNamesRequest::default()).await.unwrap();
+        assert!(table_names.contains(&"source_table".to_string()));
+        assert!(table_names.contains(&"cloned_table".to_string()));
+
+        // Verify the cloned table has the same schema
+        let source_table = db
+            .open_table(crate::database::OpenTableRequest {
+                name: "source_table".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            source_table.schema().await.unwrap(),
+            cloned_table.schema().await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_deep_clone_unsupported() {
+        let (_tempdir, catalog) = setup_catalog().await;
+
+        let db = catalog
+            .create_database(CreateDatabaseRequest {
+                name: "test_db".into(),
+                mode: CreateDatabaseMode::Create,
+                options: HashMap::new(),
+            })
+            .await
+            .unwrap();
+
+        // Create a source table
+        let schema = Arc::new(arrow_schema::Schema::new(vec![Field::new(
+            "id",
+            arrow_schema::DataType::Int32,
+            false,
+        )]));
+
+        db.create_table(CreateTableRequest {
+            name: "source_table".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        let source_uri = format!("{}/test_db/source_table.lance", catalog.uri());
+
+        // Try to perform a deep clone (should fail)
+        let result = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned_table".to_string(),
+                target_namespace: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: false, // Request deep clone
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::Error::NotSupported { message } if message.contains("Deep clone")
+        ));
     }
 }

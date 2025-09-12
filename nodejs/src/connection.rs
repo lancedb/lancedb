@@ -213,6 +213,36 @@ impl Connection {
         Ok(Table::new(tbl))
     }
 
+    #[napi(catch_unwind)]
+    pub async fn clone_table(
+        &self,
+        target_table_name: String,
+        source_uri: String,
+        target_namespace: Vec<String>,
+        source_version: Option<i64>,
+        source_tag: Option<String>,
+        is_shallow: bool,
+    ) -> napi::Result<Table> {
+        let mut builder = self
+            .get_inner()?
+            .clone_table(&target_table_name, &source_uri);
+
+        builder = builder.target_namespace(target_namespace);
+
+        if let Some(version) = source_version {
+            builder = builder.source_version(version as u64);
+        }
+
+        if let Some(tag) = source_tag {
+            builder = builder.source_tag(tag);
+        }
+
+        builder = builder.is_shallow(is_shallow);
+
+        let tbl = builder.execute().await.default_error()?;
+        Ok(Table::new(tbl))
+    }
+
     /// Drop table with the name. Or raise an error if the table does not exist.
     #[napi(catch_unwind)]
     pub async fn drop_table(&self, name: String, namespace: Vec<String>) -> napi::Result<()> {
