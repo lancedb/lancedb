@@ -4698,6 +4698,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "lancedb-c"
+version = "0.21.2"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-data",
+ "arrow-schema",
+ "chrono",
+ "futures",
+ "lancedb",
+ "libc",
+ "tokio",
+]
+
+[[package]]
 name = "lancedb-jni"
 version = "0.10.0"
 dependencies = [
