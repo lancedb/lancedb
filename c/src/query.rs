@@ -123,6 +123,10 @@ pub unsafe extern "C" fn lancedb_vector_query_new(
 }
 
 /// Set limit for query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_query_new`
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_query_limit(
     query: *mut LanceDBQuery,
@@ -140,6 +144,10 @@ pub unsafe extern "C" fn lancedb_query_limit(
 }
 
 /// Set offset for query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_query_new`
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_query_offset(
     query: *mut LanceDBQuery,
@@ -157,6 +165,12 @@ pub unsafe extern "C" fn lancedb_query_offset(
 }
 
 /// Set columns to select
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_query_new`
+/// - `columns` must be an array of valid null-terminated C strings
+/// - `num_columns` must match the actual number of strings in the array
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_query_select(
     query: *mut LanceDBQuery,
@@ -194,6 +208,11 @@ pub unsafe extern "C" fn lancedb_query_select(
 }
 
 /// Set WHERE filter for query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_query_new`
+/// - `filter` must be a valid null-terminated C string containing SQL WHERE clause
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_query_where_filter(
     query: *mut LanceDBQuery,
@@ -218,6 +237,10 @@ pub unsafe extern "C" fn lancedb_query_where_filter(
 }
 
 /// Set limit for vector query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_vector_query_new`
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_vector_query_limit(
     query: *mut LanceDBVectorQuery,
@@ -235,6 +258,10 @@ pub unsafe extern "C" fn lancedb_vector_query_limit(
 }
 
 /// Set offset for vector query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_vector_query_new`
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_vector_query_offset(
     query: *mut LanceDBVectorQuery,
@@ -252,6 +279,11 @@ pub unsafe extern "C" fn lancedb_vector_query_offset(
 }
 
 /// Set vector column for vector query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_vector_query_new`
+/// - `column` must be a valid null-terminated C string containing the column name
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_vector_query_column(
     query: *mut LanceDBVectorQuery,
@@ -276,6 +308,12 @@ pub unsafe extern "C" fn lancedb_vector_query_column(
 }
 
 /// Set columns to select for vector query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_vector_query_new`
+/// - `columns` must be an array of valid null-terminated C strings
+/// - `num_columns` must match the actual number of strings in the array
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_vector_query_select(
     query: *mut LanceDBVectorQuery,
@@ -313,6 +351,11 @@ pub unsafe extern "C" fn lancedb_vector_query_select(
 }
 
 /// Set WHERE filter for vector query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_vector_query_new`
+/// - `filter` must be a valid null-terminated C string containing SQL WHERE clause
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_vector_query_where_filter(
     query: *mut LanceDBVectorQuery,
@@ -337,6 +380,10 @@ pub unsafe extern "C" fn lancedb_vector_query_where_filter(
 }
 
 /// Set distance type for vector query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_vector_query_new`
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_vector_query_distance_type(
     query: *mut LanceDBVectorQuery,
@@ -354,6 +401,10 @@ pub unsafe extern "C" fn lancedb_vector_query_distance_type(
 }
 
 /// Set number of probes for vector query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_vector_query_new`
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_vector_query_nprobes(
     query: *mut LanceDBVectorQuery,
@@ -371,6 +422,10 @@ pub unsafe extern "C" fn lancedb_vector_query_nprobes(
 }
 
 /// Set refine factor for vector query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_vector_query_new`
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_vector_query_refine_factor(
     query: *mut LanceDBVectorQuery,
@@ -388,6 +443,10 @@ pub unsafe extern "C" fn lancedb_vector_query_refine_factor(
 }
 
 /// Set ef parameter for HNSW vector query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_vector_query_new`
+/// - `error_message` can be NULL to ignore detailed error messages
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_vector_query_ef(
     query: *mut LanceDBVectorQuery,
@@ -405,6 +464,10 @@ pub unsafe extern "C" fn lancedb_vector_query_ef(
 }
 
 /// Execute query and return streaming result
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_query_new`
+/// - This function consumes the query pointer; do not use it after calling
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_query_execute(
     query: *mut LanceDBQuery,
@@ -445,6 +508,10 @@ pub unsafe extern "C" fn lancedb_query_execute(
 }
 
 /// Execute vector query and return streaming result
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_vector_query_new`
+/// - This function consumes the query pointer; do not use it after calling
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_vector_query_execute(
     query: *mut LanceDBVectorQuery,
@@ -507,6 +574,13 @@ pub unsafe extern "C" fn lancedb_vector_query_execute(
 }
 
 /// Convert query result to Arrow RecordBatch array
+///
+/// # Safety
+/// - `result` must be a valid pointer returned from query execution functions
+/// - `batches_out`, `schema_out`, `count_out` must be valid pointers to receive results
+/// - `error_message` can be NULL to ignore detailed error messages
+/// - This function consumes the result pointer; do not use it after calling
+/// - Caller must free returned arrays with `lancedb_free_arrow_arrays` and schema with `lancedb_free_arrow_schema`
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_query_result_to_arrow(
     result: *mut LanceDBQueryResult,
@@ -578,12 +652,16 @@ pub unsafe extern "C" fn lancedb_query_result_to_arrow(
         }
         Err(_) => {
             set_unknown_error_message(error_message);
-            return LanceDBError::Unknown;
+            LanceDBError::Unknown
         }
     }
 }
 
 /// Free a Query
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_query_new`
+/// - `query` must not be used after calling this function
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_query_free(query: *mut LanceDBQuery) {
     if !query.is_null() {
@@ -592,6 +670,10 @@ pub unsafe extern "C" fn lancedb_query_free(query: *mut LanceDBQuery) {
 }
 
 /// Free a VectorQuery
+///
+/// # Safety
+/// - `query` must be a valid pointer returned from `lancedb_vector_query_new`
+/// - `query` must not be used after calling this function
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_vector_query_free(query: *mut LanceDBVectorQuery) {
     if !query.is_null() {
@@ -600,6 +682,10 @@ pub unsafe extern "C" fn lancedb_vector_query_free(query: *mut LanceDBVectorQuer
 }
 
 /// Free a QueryResult
+///
+/// # Safety
+/// - `result` must be a valid pointer returned from query execution functions
+/// - `result` must not be used after calling this function
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_query_result_free(result: *mut LanceDBQueryResult) {
     if !result.is_null() {
@@ -608,6 +694,11 @@ pub unsafe extern "C" fn lancedb_query_result_free(result: *mut LanceDBQueryResu
 }
 
 /// Free Arrow arrays returned by query result functions
+///
+/// # Safety
+/// - `batches` must be a pointer returned by `lancedb_query_result_to_arrow`
+/// - `count` must match the count returned by `lancedb_query_result_to_arrow`
+/// - `batches` must not be used after calling this function
 #[no_mangle]
 pub unsafe extern "C" fn lancedb_free_arrow_arrays(
     batches: *mut *mut arrow_array::ffi::FFI_ArrowArray,

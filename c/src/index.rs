@@ -537,12 +537,9 @@ pub unsafe extern "C" fn lancedb_table_drop_index(
         return LanceDBError::InvalidArgument;
     }
 
-    let index_name_str = match CStr::from_ptr(index_name).to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            set_invalid_argument_message(error_message);
-            return LanceDBError::InvalidArgument;
-        }
+    let Ok(index_name_str) = CStr::from_ptr(index_name).to_str() else {
+        set_invalid_argument_message(error_message);
+        return LanceDBError::InvalidArgument;
     };
 
     let tbl = &(*table).inner;

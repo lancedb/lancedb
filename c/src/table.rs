@@ -123,12 +123,9 @@ pub unsafe extern "C" fn lancedb_table_merge_insert(
             return LanceDBError::InvalidArgument;
         }
 
-        let col_str = match CStr::from_ptr(col_ptr).to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                set_invalid_argument_message(error_message);
-                return LanceDBError::InvalidArgument;
-            }
+        let Ok(col_str) = CStr::from_ptr(col_ptr).to_str() else {
+            set_invalid_argument_message(error_message);
+            return LanceDBError::InvalidArgument;
         };
         column_names.push(col_str);
     }
@@ -138,10 +135,9 @@ pub unsafe extern "C" fn lancedb_table_merge_insert(
 
     // Take ownership of the data reader
     let data_box = Box::from_raw(data);
-    let column_refs: Vec<&str> = column_names.iter().map(|s| s.as_ref()).collect();
 
     match runtime.block_on(async {
-        let mut merge_builder = tbl.merge_insert(&column_refs);
+        let mut merge_builder = tbl.merge_insert(&column_names);
 
         // Apply configuration if provided
         if !config.is_null() {
@@ -282,10 +278,8 @@ pub unsafe extern "C" fn lancedb_record_batch_reader_from_arrow(
     let record_batch = match arrow_array::ffi::from_ffi(array_ffi, &*schema) {
         Ok(array_data) => {
             // Convert the imported array data to a StructArray, then to RecordBatch
-            match StructArray::try_from(array_data) {
-                Ok(struct_array) => RecordBatch::from(&struct_array),
-                Err(_) => return ptr::null_mut(),
-            }
+            let struct_array = StructArray::from(array_data);
+            RecordBatch::from(&struct_array)
         }
         Err(_) => return ptr::null_mut(),
     };
@@ -374,10 +368,7 @@ pub unsafe extern "C" fn lancedb_table_version(table: *const LanceDBTable) -> u6
     let tbl = &(*table).inner;
     let runtime = get_runtime();
 
-    match runtime.block_on(tbl.version()) {
-        Ok(version) => version,
-        Err(_) => 0,
-    }
+    runtime.block_on(tbl.version()).unwrap_or(0)
 }
 
 /// Count rows in table
@@ -422,12 +413,9 @@ pub unsafe extern "C" fn lancedb_table_delete(
         return LanceDBError::InvalidArgument;
     }
 
-    let predicate_str = match CStr::from_ptr(predicate).to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            set_invalid_argument_message(error_message);
-            return LanceDBError::InvalidArgument;
-        }
+    let Ok(predicate_str) = CStr::from_ptr(predicate).to_str() else {
+        set_invalid_argument_message(error_message);
+        return LanceDBError::InvalidArgument;
     };
 
     let tbl = &(*table).inner;

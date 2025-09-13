@@ -19,10 +19,10 @@ pub enum LanceDBDistanceType {
 impl From<LanceDBDistanceType> for DistanceType {
     fn from(dt: LanceDBDistanceType) -> Self {
         match dt {
-            LanceDBDistanceType::L2 => DistanceType::L2,
-            LanceDBDistanceType::Cosine => DistanceType::Cosine,
-            LanceDBDistanceType::Dot => DistanceType::Dot,
-            LanceDBDistanceType::Hamming => DistanceType::Hamming,
+            LanceDBDistanceType::L2 => Self::L2,
+            LanceDBDistanceType::Cosine => Self::Cosine,
+            LanceDBDistanceType::Dot => Self::Dot,
+            LanceDBDistanceType::Hamming => Self::Hamming,
         }
     }
 }

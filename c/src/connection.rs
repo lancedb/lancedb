@@ -59,9 +59,8 @@ pub unsafe extern "C" fn lancedb_connect(uri: *const c_char) -> *mut LanceDBConn
         return ptr::null_mut();
     }
 
-    let c_str = match CStr::from_ptr(uri).to_str() {
-        Ok(s) => s,
-        Err(_) => return ptr::null_mut(), // Invalid UTF-8
+    let Ok(c_str) = CStr::from_ptr(uri).to_str() else {
+        return ptr::null_mut();
     };
 
     let builder = connect(c_str);
@@ -162,12 +161,9 @@ pub unsafe extern "C" fn lancedb_table_create(
         return LanceDBError::InvalidArgument;
     }
 
-    let table_name_str = match CStr::from_ptr(table_name).to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            set_invalid_argument_message(error_message);
-            return LanceDBError::InvalidArgument;
-        }
+    let Ok(table_name_str) = CStr::from_ptr(table_name).to_str() else {
+        set_invalid_argument_message(error_message);
+        return LanceDBError::InvalidArgument;
     };
 
     let conn = &(*connection).inner;
@@ -315,9 +311,8 @@ pub unsafe extern "C" fn lancedb_connection_open_table(
         return ptr::null_mut();
     }
 
-    let c_str = match CStr::from_ptr(table_name).to_str() {
-        Ok(s) => s,
-        Err(_) => return ptr::null_mut(),
+    let Ok(c_str) = CStr::from_ptr(table_name).to_str() else {
+        return ptr::null_mut();
     };
 
     let conn = &(*connection).inner;
@@ -352,12 +347,9 @@ pub unsafe extern "C" fn lancedb_connection_drop_table(
         return LanceDBError::InvalidArgument;
     }
 
-    let c_str = match CStr::from_ptr(table_name).to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            set_invalid_argument_message(error_message);
-            return LanceDBError::InvalidArgument;
-        }
+    let Ok(c_str) = CStr::from_ptr(table_name).to_str() else {
+        set_invalid_argument_message(error_message);
+        return LanceDBError::InvalidArgument;
     };
 
     let conn = &(*connection).inner;
@@ -390,20 +382,14 @@ pub unsafe extern "C" fn lancedb_connection_rename_table(
         return LanceDBError::InvalidArgument;
     }
 
-    let old_str = match CStr::from_ptr(old_name).to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            set_invalid_argument_message(error_message);
-            return LanceDBError::InvalidArgument;
-        }
+    let Ok(old_str) = CStr::from_ptr(old_name).to_str() else {
+        set_invalid_argument_message(error_message);
+        return LanceDBError::InvalidArgument;
     };
 
-    let new_str = match CStr::from_ptr(new_name).to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            set_invalid_argument_message(error_message);
-            return LanceDBError::InvalidArgument;
-        }
+    let Ok(new_str) = CStr::from_ptr(new_name).to_str() else {
+        set_invalid_argument_message(error_message);
+        return LanceDBError::InvalidArgument;
     };
 
     let conn = &(*connection).inner;
