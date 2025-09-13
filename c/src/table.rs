@@ -13,11 +13,13 @@ use std::ptr;
 use arrow_array::{Array, RecordBatch, RecordBatchReader, StructArray};
 use arrow_schema::{ArrowError, Schema};
 use futures::TryStreamExt;
-use lancedb::query::{QueryBase, ExecutableQuery};
+use lancedb::query::{ExecutableQuery, QueryBase};
 
 use crate::connection::{get_runtime, LanceDBTable};
-use crate::error::{handle_error, set_invalid_argument_message, set_unknown_error_message, LanceDBError};
-use crate::types::{LanceDBRecordBatchReader, LanceDBMergeInsertConfig};
+use crate::error::{
+    handle_error, set_invalid_argument_message, set_unknown_error_message, LanceDBError,
+};
+use crate::types::{LanceDBMergeInsertConfig, LanceDBRecordBatchReader};
 
 /// Get table schema as Arrow C ABI
 ///
@@ -46,7 +48,8 @@ pub unsafe extern "C" fn lancedb_table_arrow_schema(
     match runtime.block_on(tbl.schema()) {
         Ok(schema) => {
             // Convert to Arrow C ABI
-            let ffi_schema = Box::new(arrow_schema::ffi::FFI_ArrowSchema::try_from(&*schema).unwrap());
+            let ffi_schema =
+                Box::new(arrow_schema::ffi::FFI_ArrowSchema::try_from(&*schema).unwrap());
             *schema_out = Box::into_raw(ffi_schema);
             LanceDBError::Success
         }
@@ -161,7 +164,6 @@ pub unsafe extern "C" fn lancedb_table_merge_insert(
         Err(e) => handle_error(&e, error_message),
     }
 }
-
 
 /// Cleanup old versions of the table
 ///
@@ -346,7 +348,9 @@ pub unsafe extern "C" fn lancedb_record_batch_reader_free(reader: *mut LanceDBRe
 /// - `schema` must be a valid pointer returned by LanceDB functions
 /// - `schema` must not be used after calling this function
 #[no_mangle]
-pub unsafe extern "C" fn lancedb_free_arrow_schema(schema: *mut arrow_schema::ffi::FFI_ArrowSchema) {
+pub unsafe extern "C" fn lancedb_free_arrow_schema(
+    schema: *mut arrow_schema::ffi::FFI_ArrowSchema,
+) {
     if !schema.is_null() {
         let _ = Box::from_raw(schema);
     }
@@ -461,8 +465,14 @@ pub unsafe extern "C" fn lancedb_table_nearest_to(
     count_out: *mut usize,
     error_message: *mut *mut c_char,
 ) -> LanceDBError {
-    if table.is_null() || vector.is_null() || dimension == 0 || limit == 0 ||
-       result_arrays.is_null() || result_schema.is_null() || count_out.is_null() {
+    if table.is_null()
+        || vector.is_null()
+        || dimension == 0
+        || limit == 0
+        || result_arrays.is_null()
+        || result_schema.is_null()
+        || count_out.is_null()
+    {
         set_invalid_argument_message(error_message);
         return LanceDBError::InvalidArgument;
     }
@@ -485,9 +495,7 @@ pub unsafe extern "C" fn lancedb_table_nearest_to(
     };
 
     match runtime.block_on(async {
-        let mut query = tbl.query()
-            .limit(limit)
-            .nearest_to(vec_data)?;
+        let mut query = tbl.query().limit(limit).nearest_to(vec_data)?;
 
         if let Some(col) = column_name {
             query = query.column(col);
@@ -518,7 +526,9 @@ pub unsafe extern "C" fn lancedb_table_nearest_to(
             *result_schema = Box::into_raw(ffi_schema);
 
             // Allocate array for Arrow C ABI array structures
-            let arrays_ptr = libc::malloc(count * std::mem::size_of::<*mut arrow_array::ffi::FFI_ArrowArray>()) as *mut *mut arrow_array::ffi::FFI_ArrowArray;
+            let arrays_ptr =
+                libc::malloc(count * std::mem::size_of::<*mut arrow_array::ffi::FFI_ArrowArray>())
+                    as *mut *mut arrow_array::ffi::FFI_ArrowArray;
             if arrays_ptr.is_null() {
                 // Clean up schema on allocation failure
                 let _ = Box::from_raw(*result_schema);
@@ -541,4 +551,3 @@ pub unsafe extern "C" fn lancedb_table_nearest_to(
         Err(e) => handle_error(&e, error_message),
     }
 }
-

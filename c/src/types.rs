@@ -3,7 +3,7 @@
 
 //! Common types shared across LanceDB C bindings modules
 
-use arrow_array::{RecordBatchReader};
+use arrow_array::RecordBatchReader;
 use lancedb::DistanceType;
 
 /// Distance type enum for C API
@@ -38,7 +38,7 @@ impl LanceDBRecordBatchReader {
     pub fn new(reader: Box<dyn RecordBatchReader + Send>) -> Self {
         Self { inner: reader }
     }
-    
+
     /// Extract the inner reader (consumes self)
     pub fn into_inner(self) -> Box<dyn RecordBatchReader + Send> {
         self.inner
@@ -49,7 +49,6 @@ impl LanceDBRecordBatchReader {
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct LanceDBMergeInsertConfig {
-    pub when_matched_update_all: i32,     // Update all columns for matched records (1 = true, 0 = false)
+    pub when_matched_update_all: i32, // Update all columns for matched records (1 = true, 0 = false)
     pub when_not_matched_insert_all: i32, // Insert all new records (1 = true, 0 = false)
 }
-

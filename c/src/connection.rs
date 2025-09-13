@@ -6,15 +6,17 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
-use std::sync::OnceLock;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
-use arrow_schema::{Schema};
+use arrow_schema::Schema;
 use lancedb::connection::{connect, ConnectBuilder, Connection};
 use lancedb::Table;
 
-use crate::error::{handle_error, set_invalid_argument_message, set_unknown_error_message, LanceDBError};
+use crate::error::{
+    handle_error, set_invalid_argument_message, set_unknown_error_message, LanceDBError,
+};
 use crate::types::LanceDBRecordBatchReader;
 
 /// Opaque handle to a ConnectBuilder
@@ -175,9 +177,11 @@ pub unsafe extern "C" fn lancedb_table_create(
         // Import schema from Arrow C ABI
         let schema = match Schema::try_from(&*schema_ptr) {
             Ok(s) => Arc::new(s),
-            Err(_) => return Err(lancedb::error::Error::InvalidInput {
-                message: "Failed to import Arrow schema from C ABI".to_string(),
-            }),
+            Err(_) => {
+                return Err(lancedb::error::Error::InvalidInput {
+                    message: "Failed to import Arrow schema from C ABI".to_string(),
+                })
+            }
         };
 
         let batch_reader: Box<dyn RecordBatchReader + Send> = if reader.is_null() {
@@ -193,7 +197,9 @@ pub unsafe extern "C" fn lancedb_table_create(
             reader_box.into_inner()
         };
 
-        conn.create_table(table_name_str, batch_reader).execute().await
+        conn.create_table(table_name_str, batch_reader)
+            .execute()
+            .await
     }) {
         Ok(table) => {
             let boxed_table = Box::new(LanceDBTable { inner: table });
@@ -459,4 +465,3 @@ pub unsafe extern "C" fn lancedb_table_free(table: *mut LanceDBTable) {
         let _ = Box::from_raw(table);
     }
 }
-

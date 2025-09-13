@@ -6,16 +6,22 @@
 //! This module provides complete index management operations
 
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int, c_float};
+use std::os::raw::{c_char, c_float, c_int};
 use std::ptr;
 
+use lancedb::index::scalar::{
+    BTreeIndexBuilder, BitmapIndexBuilder, FtsIndexBuilder, LabelListIndexBuilder,
+};
+use lancedb::index::vector::{
+    IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
+};
 use lancedb::index::Index;
-use lancedb::index::scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder, FtsIndexBuilder};
-use lancedb::index::vector::{IvfFlatIndexBuilder, IvfPqIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder};
 
 use crate::connection::{get_runtime, LanceDBTable};
+use crate::error::{
+    handle_error, set_invalid_argument_message, set_unknown_error_message, LanceDBError,
+};
 use crate::types::LanceDBDistanceType;
-use crate::error::{handle_error, set_invalid_argument_message, set_unknown_error_message, LanceDBError};
 
 /// Index type enum for C API
 #[repr(C)]
@@ -36,13 +42,13 @@ pub enum LanceDBIndexType {
 #[repr(C)]
 #[derive(Clone)]
 pub struct LanceDBVectorIndexConfig {
-    pub num_partitions: c_int,        // Number of partitions for IVF indices (-1 = auto)
-    pub num_sub_vectors: c_int,       // Number of sub-vectors for PQ indices (-1 = auto)
-    pub max_iterations: c_int,        // Maximum training iterations (-1 = default)
-    pub sample_rate: c_float,         // Sampling rate for training (0.0 = default)
+    pub num_partitions: c_int, // Number of partitions for IVF indices (-1 = auto)
+    pub num_sub_vectors: c_int, // Number of sub-vectors for PQ indices (-1 = auto)
+    pub max_iterations: c_int, // Maximum training iterations (-1 = default)
+    pub sample_rate: c_float,  // Sampling rate for training (0.0 = default)
     pub distance_type: LanceDBDistanceType, // Distance metric
-    pub accelerator: *const c_char,   // GPU accelerator ("cuda", "mps", or NULL for CPU)
-    pub replace: c_int,               // Replace existing index (1 = true, 0 = false)
+    pub accelerator: *const c_char, // GPU accelerator ("cuda", "mps", or NULL for CPU)
+    pub replace: c_int,        // Replace existing index (1 = true, 0 = false)
 }
 
 impl Default for LanceDBVectorIndexConfig {
@@ -63,7 +69,7 @@ impl Default for LanceDBVectorIndexConfig {
 #[repr(C)]
 #[derive(Clone)]
 pub struct LanceDBScalarIndexConfig {
-    pub replace: c_int,               // Replace existing index (1 = true, 0 = false)
+    pub replace: c_int,                 // Replace existing index (1 = true, 0 = false)
     pub force_update_statistics: c_int, // Force update statistics (1 = true, 0 = false)
 }
 
@@ -82,12 +88,12 @@ impl Default for LanceDBScalarIndexConfig {
 pub struct LanceDBFtsIndexConfig {
     pub base_tokenizer: *const c_char, // Base tokenizer ("simple", "whitespace", etc.)
     pub language: *const c_char,       // Language for stemming ("en", "es", etc.)
-    pub max_tokens: c_int,            // Maximum tokens per document (-1 = no limit)
-    pub lowercase: c_int,             // Convert to lowercase (1 = true, 0 = false)
-    pub stem: c_int,                  // Apply stemming (1 = true, 0 = false)
-    pub remove_stop_words: c_int,     // Remove stop words (1 = true, 0 = false)
-    pub ascii_folding: c_int,         // Apply ASCII folding (1 = true, 0 = false)
-    pub replace: c_int,               // Replace existing index (1 = true, 0 = false)
+    pub max_tokens: c_int,             // Maximum tokens per document (-1 = no limit)
+    pub lowercase: c_int,              // Convert to lowercase (1 = true, 0 = false)
+    pub stem: c_int,                   // Apply stemming (1 = true, 0 = false)
+    pub remove_stop_words: c_int,      // Remove stop words (1 = true, 0 = false)
+    pub ascii_folding: c_int,          // Apply ASCII folding (1 = true, 0 = false)
+    pub replace: c_int,                // Replace existing index (1 = true, 0 = false)
 }
 
 impl Default for LanceDBFtsIndexConfig {
@@ -187,7 +193,7 @@ pub unsafe extern "C" fn lancedb_table_create_vector_index(
             // Note: accelerator configuration is simplified
             let _ = cfg.accelerator;
             Index::IvfFlat(builder)
-        },
+        }
         LanceDBIndexType::IvfPq => {
             let mut builder = IvfPqIndexBuilder::default();
             if cfg.num_partitions > 0 {
@@ -207,7 +213,7 @@ pub unsafe extern "C" fn lancedb_table_create_vector_index(
             // Note: accelerator configuration is simplified
             let _ = cfg.accelerator;
             Index::IvfPq(builder)
-        },
+        }
         LanceDBIndexType::IvfHnswPq => {
             let mut builder = IvfHnswPqIndexBuilder::default();
             if cfg.num_partitions > 0 {
@@ -227,7 +233,7 @@ pub unsafe extern "C" fn lancedb_table_create_vector_index(
             // Note: accelerator configuration is simplified
             let _ = cfg.accelerator;
             Index::IvfHnswPq(builder)
-        },
+        }
         LanceDBIndexType::IvfHnswSq => {
             let mut builder = IvfHnswSqIndexBuilder::default();
             if cfg.num_partitions > 0 {
@@ -244,7 +250,7 @@ pub unsafe extern "C" fn lancedb_table_create_vector_index(
             // Note: accelerator configuration is simplified
             let _ = cfg.accelerator;
             Index::IvfHnswSq(builder)
-        },
+        }
         _ => {
             set_invalid_argument_message(error_message);
             return LanceDBError::InvalidArgument;
@@ -323,13 +329,9 @@ pub unsafe extern "C" fn lancedb_table_create_scalar_index(
             // Note: force_update_statistics is not available in current API
             let _ = cfg.force_update_statistics;
             Index::BTree(builder)
-        },
-        LanceDBIndexType::Bitmap => {
-            Index::Bitmap(BitmapIndexBuilder::default())
-        },
-        LanceDBIndexType::LabelList => {
-            Index::LabelList(LabelListIndexBuilder::default())
-        },
+        }
+        LanceDBIndexType::Bitmap => Index::Bitmap(BitmapIndexBuilder::default()),
+        LanceDBIndexType::LabelList => Index::LabelList(LabelListIndexBuilder::default()),
         _ => {
             set_invalid_argument_message(error_message);
             return LanceDBError::InvalidArgument;
@@ -481,7 +483,8 @@ pub unsafe extern "C" fn lancedb_table_list_indices(
             }
 
             // Allocate array of string pointers
-            let indices_array = libc::malloc(count * std::mem::size_of::<*mut c_char>()) as *mut *mut c_char;
+            let indices_array =
+                libc::malloc(count * std::mem::size_of::<*mut c_char>()) as *mut *mut c_char;
             if indices_array.is_null() {
                 set_unknown_error_message(error_message);
                 return LanceDBError::Unknown;
@@ -513,7 +516,6 @@ pub unsafe extern "C" fn lancedb_table_list_indices(
         Err(e) => handle_error(&e, error_message),
     }
 }
-
 
 /// Drop an index
 ///

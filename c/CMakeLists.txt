@@ -84,6 +84,14 @@ add_custom_target(clean-all
   COMMENT "Cleaning all build artifacts..."
 )
 
+# Check target for code quality
+add_custom_target(check
+  COMMAND cargo fmt --check
+  COMMAND cargo clippy
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  COMMENT "Running Rust formatting and linting checks..."
+)
+
 message(STATUS "=== LanceDB C/C++ Bindings Configuration ===")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Rust library path: ${RUST_LIB_PATH}")

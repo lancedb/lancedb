@@ -10,8 +10,8 @@ use std::os::raw::{c_char, c_float};
 use std::ptr;
 use std::sync::Arc;
 
-use arrow_array::{RecordBatch, StructArray, Array};
 use arrow_array::ffi::FFI_ArrowArray;
+use arrow_array::{Array, RecordBatch, StructArray};
 use arrow_data::ArrayData;
 use futures::TryStreamExt;
 
@@ -19,8 +19,8 @@ use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use lancedb::{DistanceType, Table};
 
 use crate::connection::{get_runtime, LanceDBTable};
-use crate::types::LanceDBDistanceType;
 use crate::error::{set_invalid_argument_message, set_unknown_error_message, LanceDBError};
+use crate::types::LanceDBDistanceType;
 
 /// Opaque handle to a LanceDB Query
 #[repr(C)]
@@ -51,7 +51,8 @@ pub struct LanceDBVectorQuery {
 /// Query result handle for streaming results
 #[repr(C)]
 pub struct LanceDBQueryResult {
-    inner: Box<dyn futures::Stream<Item = Result<RecordBatch, lancedb::error::Error>> + Send + Unpin>,
+    inner:
+        Box<dyn futures::Stream<Item = Result<RecordBatch, lancedb::error::Error>> + Send + Unpin>,
 }
 
 /// Create a new query for the given table
@@ -186,7 +187,9 @@ pub unsafe extern "C" fn lancedb_query_select(
         column_names.push(col_str);
     }
 
-    (*query).select = Some(Select::columns(&column_names.iter().map(|s| s.as_str()).collect::<Vec<_>>()));
+    (*query).select = Some(Select::columns(
+        &column_names.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    ));
     LanceDBError::Success
 }
 
@@ -303,7 +306,9 @@ pub unsafe extern "C" fn lancedb_vector_query_select(
         column_names.push(col_str);
     }
 
-    (*query).select = Some(Select::columns(&column_names.iter().map(|s| s.as_str()).collect::<Vec<_>>()));
+    (*query).select = Some(Select::columns(
+        &column_names.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    ));
     LanceDBError::Success
 }
 
@@ -452,7 +457,11 @@ pub unsafe extern "C" fn lancedb_vector_query_execute(
     let runtime = get_runtime();
 
     match runtime.block_on(async {
-        let mut rust_query = match query_box.table.query().nearest_to(query_box.query_vector.clone()) {
+        let mut rust_query = match query_box
+            .table
+            .query()
+            .nearest_to(query_box.query_vector.clone())
+        {
             Ok(q) => q,
             Err(e) => return Err(e),
         };
@@ -496,9 +505,6 @@ pub unsafe extern "C" fn lancedb_vector_query_execute(
         Err(_) => ptr::null_mut(),
     }
 }
-
-
-
 
 /// Convert query result to Arrow RecordBatch array
 #[no_mangle]
@@ -548,7 +554,9 @@ pub unsafe extern "C" fn lancedb_query_result_to_arrow(
             *schema_out = Box::into_raw(ffi_schema);
 
             // Allocate array for Arrow C ABI array structures
-            let arrays_ptr = libc::malloc(count * std::mem::size_of::<*mut arrow_array::ffi::FFI_ArrowArray>()) as *mut *mut arrow_array::ffi::FFI_ArrowArray;
+            let arrays_ptr =
+                libc::malloc(count * std::mem::size_of::<*mut arrow_array::ffi::FFI_ArrowArray>())
+                    as *mut *mut arrow_array::ffi::FFI_ArrowArray;
             if arrays_ptr.is_null() {
                 // Clean up schema on allocation failure
                 let _ = Box::from_raw(*schema_out);

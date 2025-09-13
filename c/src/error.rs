@@ -3,7 +3,7 @@
 
 //! Error handling utility functions for LanceDB C bindings
 
-use std::ffi::{CString};
+use std::ffi::CString;
 use std::os::raw::c_char;
 use std::ptr;
 
@@ -44,7 +44,9 @@ pub(crate) fn error_to_error_code(error: &lancedb::error::Error) -> LanceDBError
         lancedb::error::Error::DatabaseNotFound { .. } => LanceDBError::DatabaseNotFound,
         lancedb::error::Error::DatabaseAlreadyExists { .. } => LanceDBError::DatabaseAlreadyExists,
         lancedb::error::Error::IndexNotFound { .. } => LanceDBError::IndexNotFound,
-        lancedb::error::Error::EmbeddingFunctionNotFound { .. } => LanceDBError::EmbeddingFunctionNotFound,
+        lancedb::error::Error::EmbeddingFunctionNotFound { .. } => {
+            LanceDBError::EmbeddingFunctionNotFound
+        }
         lancedb::error::Error::TableAlreadyExists { .. } => LanceDBError::TableAlreadyExists,
         lancedb::error::Error::CreateDir { .. } => LanceDBError::CreateDir,
         lancedb::error::Error::Schema { .. } => LanceDBError::Schema,
@@ -136,4 +138,3 @@ pub unsafe extern "C" fn lancedb_free_string(str: *mut c_char) {
         let _ = CString::from_raw(str);
     }
 }
-

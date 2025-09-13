@@ -8,16 +8,16 @@
 //! opaque handles, explicit error codes, and manual memory management.
 
 pub mod connection;
-pub mod table;
-pub mod query;
-pub mod index;
-pub mod types;
 pub mod error;
+pub mod index;
+pub mod query;
+pub mod table;
+pub mod types;
 
 // Re-export all public FFI functions
 pub use connection::*;
-pub use table::*;
-pub use query::*;
-pub use index::*;
-pub use types::*;
 pub use error::*;
+pub use index::*;
+pub use query::*;
+pub use table::*;
+pub use types::*;
