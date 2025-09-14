@@ -259,7 +259,7 @@ int main() {
   auto empty_table = create_empty_table(db);
   lancedb_table_free(empty_table);
 
-  if (const LanceDBError result = lancedb_connection_drop_table(db, "my_table", nullptr); result != LANCEDB_SUCCESS) {
+  if (const LanceDBError result = lancedb_connection_drop_table(db, "my_table", nullptr, nullptr); result != LANCEDB_SUCCESS) {
     std::cerr << "error dropping table, error: " << lancedb_error_to_message(result) << std::endl;
   } else {
     std::cout << "dropped table my_table" << std::endl;

@@ -300,6 +300,7 @@ LanceDBTable* lancedb_connection_open_table(
  *
  * @param connection - pointer to LanceDBConnection
  * @param table_name - null-terminated C string containing the table name
+ * @param _namespace - null-terminated C string containing the namespace (NULL for no namespace)
  * @param error_message - optional pointer to receive detailed error message (NULL to ignore)
  * @return Error code indicating success or failure
  *
@@ -309,6 +310,7 @@ LanceDBTable* lancedb_connection_open_table(
 LanceDBError lancedb_connection_drop_table(
     const LanceDBConnection* connection,
     const char* table_name,
+    const char* _namespace,
     char** error_message
 );
 
@@ -318,6 +320,8 @@ LanceDBError lancedb_connection_drop_table(
  * @param connection - pointer to LanceDBConnection
  * @param old_name - null-terminated C string containing the current table name
  * @param new_name - null-terminated C string containing the new table name
+ * @param cur_namespace - null-terminated C string containing the current namespace (NULL for no namespace)
+ * @param new_namespace - null-terminated C string containing the new namespace (NULL for no namespace)
  * @param error_message - optional pointer to receive detailed error message (NULL to ignore)
  * @return Error code indicating success or failure
  *
@@ -329,6 +333,8 @@ LanceDBError lancedb_connection_rename_table(
     const LanceDBConnection* connection,
     const char* old_name,
     const char* new_name,
+    const char* cur_namespace,
+    const char* new_namespace,
     char** error_message
 );
 
@@ -336,6 +342,7 @@ LanceDBError lancedb_connection_rename_table(
  * Drop all tables in the database
  *
  * @param connection - pointer to LanceDBConnection
+ * @param _namespace - null-terminated C string containing the namespace (NULL for no namespace)
  * @param error_message - optional pointer to receive detailed error message (NULL to ignore)
  * @return Error code indicating success or failure
  *
@@ -344,8 +351,77 @@ LanceDBError lancedb_connection_rename_table(
  */
 LanceDBError lancedb_connection_drop_all_tables(
     const LanceDBConnection* connection,
+    const char* _namespace,
     char** error_message
 );
+
+/* ========== NAMESPACE OPERATIONS ========== */
+
+/**
+ * Create a new namespace
+ *
+ * @param connection - pointer to LanceDBConnection
+ * @param namespace_name - null-terminated C string containing the namespace name
+ * @param error_message - optional pointer to receive detailed error message (NULL to ignore)
+ * @return Error code indicating success or failure
+ *
+ * If error_message is provided and an error occurs, the caller must free
+ * the error message with lancedb_free_string().
+ */
+LanceDBError lancedb_connection_create_namespace(
+    const LanceDBConnection* connection,
+    const char* namespace_name,
+    char** error_message
+);
+
+/**
+ * Drop a namespace
+ *
+ * @param connection - pointer to LanceDBConnection
+ * @param namespace_name - null-terminated C string containing the namespace name
+ * @param error_message - optional pointer to receive detailed error message (NULL to ignore)
+ * @return Error code indicating success or failure
+ *
+ * If error_message is provided and an error occurs, the caller must free
+ * the error message with lancedb_free_string().
+ */
+LanceDBError lancedb_connection_drop_namespace(
+    const LanceDBConnection* connection,
+    const char* namespace_name,
+    char** error_message
+);
+
+/**
+ * List all namespaces in the database
+ *
+ * @param connection - pointer to LanceDBConnection
+ * @param namespace_parent - null-terminated C string containing the parent namespace (NULL for root)
+ * @param namespaces_out - pointer to receive array of string pointers
+ * @param count_out - pointer to receive count of namespace names
+ * @param error_message - optional pointer to receive detailed error message (NULL to ignore)
+ * @return Error code indicating success or failure
+ *
+ * The caller is responsible for freeing the returned strings and array
+ * using lancedb_free_namespace_list(). If error_message is provided and an error
+ * occurs, the caller must free the error message with lancedb_free_string().
+ */
+LanceDBError lancedb_connection_list_namespaces(
+    const LanceDBConnection* connection,
+    const char* namespace_parent,
+    char*** namespaces_out,
+    size_t* count_out,
+    char** error_message
+);
+
+/**
+ * Free namespace list array returned by lancedb_connection_list_namespaces
+ *
+ * @param namespaces - pointer to array returned by lancedb_connection_list_namespaces()
+ * @param count - count returned by lancedb_connection_list_namespaces()
+ *
+ * After calling this function, the namespaces pointer must not be used.
+ */
+void lancedb_free_namespace_list(char** namespaces, size_t count);
 
 /**
  * Free a Connection

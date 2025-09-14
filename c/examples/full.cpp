@@ -536,7 +536,7 @@ int main() {
         std::cout << "after upsert table: " << table_names[i] << " has: " << row_count << " rows" << std::endl;
 
         // drop the table
-        if (LanceDBError result = lancedb_connection_drop_table(db, table_names[i], nullptr); result != LANCEDB_SUCCESS) {
+        if (LanceDBError result = lancedb_connection_drop_table(db, table_names[i], nullptr, nullptr); result != LANCEDB_SUCCESS) {
           std::cerr << "error dropping table: " << table_names[i] << ", error: " << lancedb_error_to_message(result) << std::endl;
         } else {
           std::cout << "dropped table: " << table_names[i] << std::endl;
@@ -554,7 +554,7 @@ int main() {
   }
 
   lancedb_free_table_names(table_names, name_count);
-  if (const LanceDBError result = lancedb_connection_drop_all_tables(db, nullptr); result != LANCEDB_SUCCESS) {
+  if (const LanceDBError result = lancedb_connection_drop_all_tables(db, nullptr, nullptr); result != LANCEDB_SUCCESS) {
     std::cerr << "error dropping all tables, error: " << lancedb_error_to_message(result) << std::endl;
   } else {
     std::cout << "dropped all tables" << std::endl;
