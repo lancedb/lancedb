@@ -65,7 +65,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
     it("be displayable", async () => {
       expect(table.display()).toMatch(
-        /NativeTable\(some_table, uri=.*, read_consistency_interval=None\)/,
+        /NativeTable\(some_table, uri=.*, read_consistency_interval=None\)/
       );
       table.close();
       expect(table.display()).toBe("ClosedTable(some_table)");
@@ -195,7 +195,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new arrow.Field(
             "vector",
             new arrow.FixedSizeList(512, new arrow.Field("item", floatType)),
-            true,
+            true
           ),
         ]);
 
@@ -209,20 +209,19 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         } catch (e) {
           expect(e).toBeUndefined();
         }
-      },
+      }
     );
 
-    // TODO: https://github.com/lancedb/lancedb/issues/1832
-    it.skip("should be able to omit nullable fields", async () => {
+    it("should be able to omit nullable fields", async () => {
       const db = await connect(tmpDir.name);
       const schema = new arrow.Schema([
         new arrow.Field(
           "vector",
           new arrow.FixedSizeList(
             2,
-            new arrow.Field("item", new arrow.Float64()),
+            new arrow.Field("item", new arrow.Float64())
           ),
-          true,
+          true
         ),
         new arrow.Field("item", new arrow.Utf8(), true),
         new arrow.Field("price", new arrow.Float64(), false),
@@ -272,7 +271,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       const data2 = { x: null, id: "bar" };
       await expect(table.add([data2])).rejects.toThrow(
-        "declared as non-nullable but contains null values",
+        "declared as non-nullable but contains null values"
       );
 
       // But we can alter columns to make them nullable
@@ -331,7 +330,38 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const table = await db.createTable("my_table", data);
       expect(await table.countRows()).toEqual(2);
     });
-  },
+
+    it("should allow undefined and omitted nullable vector fields", async () => {
+      // Test for the bug: can't pass undefined or omit vector column
+      const db = await connect("memory://");
+      const schema = new arrow.Schema([
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(
+            32,
+            new arrow.Field("item", new arrow.Float32(), true)
+          ),
+          true // nullable = true
+        ),
+      ]);
+      const table = await db.createEmptyTable("test_table", schema);
+
+      // Should not throw error for undefined value
+      await table.add([{ vector: undefined }]);
+
+      // Should not throw error for omitted field
+      await table.add([{}]);
+
+      // Should still work for null
+      await table.add([{ vector: null }]);
+
+      // Should still work for actual vector
+      const testVector = new Array(32).fill(0.5);
+      await table.add([{ vector: testVector }]);
+
+      expect(await table.countRows()).toEqual(4);
+    });
+  }
 );
 
 describe("merge insert", () => {
@@ -399,7 +429,7 @@ describe("merge insert", () => {
     // round trip to arrow and back to json to avoid comparing arrow objects to js object
     // biome-ignore lint/suspicious/noExplicitAny: test
     let res: any[] = JSON.parse(
-      JSON.stringify((await table.toArrow()).toArray()),
+      JSON.stringify((await table.toArrow()).toArray())
     );
     res = res.sort((a, b) => a.a - b.a);
 
@@ -421,7 +451,7 @@ describe("merge insert", () => {
     ];
     // biome-ignore lint/suspicious/noExplicitAny: <explanation>
     let res: any[] = JSON.parse(
-      JSON.stringify((await table.toArrow()).toArray()),
+      JSON.stringify((await table.toArrow()).toArray())
     );
     res = res.sort((a, b) => a.a - b.a);
     expect(res).toEqual(expected);
@@ -445,7 +475,7 @@ describe("merge insert", () => {
     ];
     // biome-ignore lint/suspicious/noExplicitAny: <explanation>
     let res: any[] = JSON.parse(
-      JSON.stringify((await table.toArrow()).toArray()),
+      JSON.stringify((await table.toArrow()).toArray())
     );
     res = res.sort((a, b) => a.a - b.a);
     expect(res).toEqual(expected);
@@ -469,7 +499,7 @@ describe("merge insert", () => {
 
     // biome-ignore lint/suspicious/noExplicitAny: test
     let res: any[] = JSON.parse(
-      JSON.stringify((await table.toArrow()).toArray()),
+      JSON.stringify((await table.toArrow()).toArray())
     );
     res = res.sort((a, b) => a.a - b.a);
     expect(res).toEqual(expected);
@@ -485,7 +515,7 @@ describe("merge insert", () => {
         .mergeInsert("a")
         .whenMatchedUpdateAll()
         .whenNotMatchedInsertAll()
-        .execute(newData, { timeoutMs: 0 }),
+        .execute(newData, { timeoutMs: 0 })
     ).rejects.toThrow("merge insert timed out");
   });
 });
@@ -515,7 +545,7 @@ describe("When creating an index", () => {
         })),
       {
         schema,
-      },
+      }
     );
     queryVec = data.toArray()[5].vec.toJSON();
     tbl = await db.createTable("test", data);
@@ -585,10 +615,10 @@ describe("When creating an index", () => {
     expect(rst.numRows).toBe(2);
 
     expect(() => tbl.query().nearestTo(queryVec).minimumNprobes(0)).toThrow(
-      "Invalid input, minimum_nprobes must be greater than 0",
+      "Invalid input, minimum_nprobes must be greater than 0"
     );
     expect(() => tbl.query().nearestTo(queryVec).maximumNprobes(5)).toThrow(
-      "Invalid input, maximum_nprobes must be greater than or equal to minimum_nprobes",
+      "Invalid input, maximum_nprobes must be greater than or equal to minimum_nprobes"
     );
 
     await tbl.dropIndex("vec_idx");
@@ -784,7 +814,7 @@ describe("When creating an index", () => {
     // Default is replace=true
     await tbl.createIndex("id");
     await expect(tbl.createIndex("id", { replace: false })).rejects.toThrow(
-      "already exists",
+      "already exists"
     );
     await tbl.createIndex("id", { replace: true });
   });
@@ -908,8 +938,8 @@ describe("When creating an index", () => {
               .fill(1)
               .map(() => Math.floor(Math.random() * 255)),
           })),
-        { schema: binarySchema },
-      ),
+        { schema: binarySchema }
+      )
     );
     await tbl.createIndex("vec", {
       config: Index.ivfFlat({ numPartitions: 10, distanceType: "hamming" }),
@@ -932,7 +962,7 @@ describe("When creating an index", () => {
       new Field("vec", new FixedSizeList(32, new Field("item", new Float32()))),
       new Field(
         "vec2",
-        new FixedSizeList(64, new Field("item", new Float32())),
+        new FixedSizeList(64, new Field("item", new Float32()))
       ),
     ]);
     const tbl = await db.createTable(
@@ -949,8 +979,8 @@ describe("When creating an index", () => {
               .fill(1)
               .map(() => Math.random()),
           })),
-        { schema },
-      ),
+        { schema }
+      )
     );
 
     // Only build index over v1
@@ -965,7 +995,7 @@ describe("When creating an index", () => {
       .nearestTo(
         Array(32)
           .fill(1)
-          .map(() => Math.random()),
+          .map(() => Math.random())
       )
       .toArrow();
     expect(rst.numRows).toBe(2);
@@ -978,12 +1008,12 @@ describe("When creating an index", () => {
         .nearestTo(
           Array(64)
             .fill(1)
-            .map(() => Math.random()),
+            .map(() => Math.random())
         )
         .column("vec")
-        .toArrow(),
+        .toArrow()
     ).rejects.toThrow(
-      /.* query dim\(64\) doesn't match the column vec vector dim\(32\).*/,
+      /.* query dim\(64\) doesn't match the column vec vector dim\(32\).*/
     );
 
     const query64 = Array(64)
@@ -1018,15 +1048,15 @@ describe("When querying a table", () => {
     await table.createIndex("text", { config: Index.fts() });
 
     await expect(
-      table.query().where("text != 'a'").toArray({ timeoutMs: 0 }),
+      table.query().where("text != 'a'").toArray({ timeoutMs: 0 })
     ).rejects.toThrow("Query timeout");
 
     await expect(
-      table.query().nearestTo([0.0, 0.0]).toArrow({ timeoutMs: 0 }),
+      table.query().nearestTo([0.0, 0.0]).toArrow({ timeoutMs: 0 })
     ).rejects.toThrow("Query timeout");
 
     await expect(
-      table.search("a", "fts").toArray({ timeoutMs: 0 }),
+      table.search("a", "fts").toArray({ timeoutMs: 0 })
     ).rejects.toThrow("Query timeout");
 
     await expect(
@@ -1034,7 +1064,7 @@ describe("When querying a table", () => {
         .query()
         .nearestToText("a")
         .nearestTo([0.0, 0.0])
-        .toArrow({ timeoutMs: 0 }),
+        .toArrow({ timeoutMs: 0 })
     ).rejects.toThrow("Query timeout");
   });
 });
@@ -1101,7 +1131,7 @@ describe("schema evolution", function () {
       new Field(
         "vector",
         new FixedSizeList(2, new Field("item", new Float32(), true)),
-        true,
+        true
       ),
       new Field("price", new Float32(), false),
     ]);
@@ -1115,7 +1145,7 @@ describe("schema evolution", function () {
       new Field(
         "vector",
         new FixedSizeList(2, new Field("item", new Float32(), true)),
-        true,
+        true
       ),
       new Field("price", new Float64(), false),
     ]);
@@ -1142,7 +1172,7 @@ describe("schema evolution", function () {
       new Field(
         "vector",
         new FixedSizeList(2, new Field("item", new Float32(), true)),
-        true,
+        true
       ),
       new Field("price", new Float64(), true),
     ]);
@@ -1154,7 +1184,7 @@ describe("schema evolution", function () {
       new Field(
         "vector",
         new FixedSizeList(2, new Field("item", new Float32(), true)),
-        true,
+        true
       ),
       new Field("price", new Float64(), true),
     ]);
@@ -1171,7 +1201,7 @@ describe("schema evolution", function () {
       new Field(
         "vector",
         new FixedSizeList(2, new Field("item", new Float64(), true)),
-        true,
+        true
       ),
       new Field("price", new Float64(), true),
     ]);
@@ -1221,15 +1251,15 @@ describe("schema evolution", function () {
       new arrow.List(new arrow.Field("item", new arrow.Float32(), true)),
       new arrow.FixedSizeList(
         2,
-        new arrow.Field("item", new arrow.Float64(), true),
+        new arrow.Field("item", new arrow.Float64(), true)
       ),
       new arrow.FixedSizeList(
         2,
-        new arrow.Field("item", new arrow.Float16(), true),
+        new arrow.Field("item", new arrow.Float16(), true)
       ),
       new arrow.FixedSizeList(
         2,
-        new arrow.Field("item", new arrow.Float32(), true),
+        new arrow.Field("item", new arrow.Float32(), true)
       ),
     ];
     const tableLists = await con.createTable("lists", [{ val: [2.1, 3.2] }], {
@@ -1237,7 +1267,7 @@ describe("schema evolution", function () {
         new Field(
           "val",
           new FixedSizeList(2, new arrow.Field("item", new Float32())),
-          true,
+          true
         ),
       ]),
     });
@@ -1285,7 +1315,7 @@ describe("when dealing with versioning", () => {
     expect(await table.countRows()).toBe(1);
     // Can't add data in time travel mode
     await expect(table.add([{ id: 3n, vector: [0.1, 0.2] }])).rejects.toThrow(
-      "table cannot be modified when a specific version is checked out",
+      "table cannot be modified when a specific version is checked out"
     );
     // Can go back to normal mode
     await table.checkoutLatest();
@@ -1302,7 +1332,7 @@ describe("when dealing with versioning", () => {
     expect(await table.countRows()).toBe(2);
     // Can't use restore if not checked out
     await expect(table.restore()).rejects.toThrow(
-      "checkout before running restore",
+      "checkout before running restore"
     );
   });
 });
@@ -1429,7 +1459,9 @@ describe("when optimizing a dataset", () => {
 
   it("delete unverified", async () => {
     const version = await table.version();
-    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${version - 1}.manifest`;
+    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${
+      version - 1
+    }.manifest`;
     fs.rmSync(versionFile);
 
     let stats = await table.optimize({ deleteUnverified: false });
@@ -1518,7 +1550,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const table = await db.createTable("test", data);
 
       expect(table.search("hello", "vector").toArray()).rejects.toThrow(
-        "No embedding functions are defined in the table",
+        "No embedding functions are defined in the table"
       );
     });
 
@@ -1610,7 +1642,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       const results3 = await table
         .search(
-          new MatchQuery("hello world", "text", { operator: Operator.And }),
+          new MatchQuery("hello world", "text", { operator: Operator.And })
         )
         .toArray();
       expect(results3.length).toBe(1);
@@ -1693,7 +1725,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       const prefixResults = await table
         .search(
-          new MatchQuery("foo", "text", { fuzziness: 3, prefixLength: 3 }),
+          new MatchQuery("foo", "text", { fuzziness: 3, prefixLength: 3 })
         )
         .toArray();
       expect(prefixResults.length).toBe(2);
@@ -1720,7 +1752,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new BooleanQuery([
             [Occur.Should, new MatchQuery("cat", "text")],
             [Occur.Should, new MatchQuery("dog", "text")],
-          ]),
+          ])
         )
         .toArray();
       expect(shouldResults.length).toBe(4);
@@ -1730,7 +1762,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new BooleanQuery([
             [Occur.Must, new MatchQuery("cat", "text")],
             [Occur.Must, new MatchQuery("dog", "text")],
-          ]),
+          ])
         )
         .toArray();
       expect(mustResults.length).toBe(2);
@@ -1740,7 +1772,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new BooleanQuery([
             [Occur.Must, new MatchQuery("cat", "text")],
             [Occur.MustNot, new MatchQuery("dog", "text")],
-          ]),
+          ])
         )
         .toArray();
       expect(mustNotResults.length).toBe(1);
@@ -1818,7 +1850,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results.length).toBe(2);
       expect(results[0].text).toBe(data[1].text);
     });
-  },
+  }
 );
 
 describe("when calling explainPlan", () => {
@@ -1911,7 +1943,7 @@ describe("column name options", () => {
     for (let i = 0; i < 256; i++) {
       data.push({
         multivector: Array.from({ length: 10 }, () =>
-          Array(2).fill(Math.random()),
+          Array(2).fill(Math.random())
         ),
       });
     }
@@ -1922,9 +1954,9 @@ describe("column name options", () => {
           new List(
             new Field(
               "item",
-              new FixedSizeList(2, new Field("item", new Float32())),
-            ),
-          ),
+              new FixedSizeList(2, new Field("item", new Float32()))
+            )
+          )
         ),
       ]),
     });
