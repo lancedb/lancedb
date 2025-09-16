@@ -497,6 +497,10 @@ class LanceDBConnection(DBConnection):
         conn = AsyncConnection(await lancedb_connect(self.uri))
         return await conn.table_names(start_after=start_after, limit=limit)
 
+    @property
+    def _inner(self) -> LanceDbConnection:
+        return self._conn._inner
+
     @override
     def list_namespaces(
         self,

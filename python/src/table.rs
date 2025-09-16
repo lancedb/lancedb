@@ -249,7 +249,7 @@ impl Table {
 }
 
 impl Table {
-    fn inner_ref(&self) -> PyResult<&LanceDbTable> {
+    pub(crate) fn inner_ref(&self) -> PyResult<&LanceDbTable> {
         self.inner
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err(format!("Table {} is closed", self.name)))

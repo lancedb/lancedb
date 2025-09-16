@@ -296,3 +296,34 @@ class AlterColumnsResult:
 
 class DropColumnsResult:
     version: int
+
+class AsyncPermutationBuilder:
+    def select(self, projections: Dict[str, str]) -> "AsyncPermutationBuilder": ...
+    def split_random(
+        self,
+        *,
+        ratios: Optional[List[float]] = None,
+        counts: Optional[List[int]] = None,
+        fixed: Optional[int] = None,
+        seed: Optional[int] = None,
+    ) -> "AsyncPermutationBuilder": ...
+    def split_hash(
+        self, columns: List[str], split_weights: List[int], *, discard_weight: int = 0
+    ) -> "AsyncPermutationBuilder": ...
+    def split_sequential(
+        self,
+        *,
+        ratios: Optional[List[float]] = None,
+        counts: Optional[List[int]] = None,
+        fixed: Optional[int] = None,
+    ) -> "AsyncPermutationBuilder": ...
+    def split_calculated(self, calculation: str) -> "AsyncPermutationBuilder": ...
+    def shuffle(
+        self, seed: Optional[int], clump_size: Optional[int]
+    ) -> "AsyncPermutationBuilder": ...
+    def filter(self, filter: str) -> "AsyncPermutationBuilder": ...
+    async def execute(self) -> Table: ...
+
+def async_permutation_builder(
+    table: Table, dest_db: Connection, dest_table_name: str
+) -> AsyncPermutationBuilder: ...

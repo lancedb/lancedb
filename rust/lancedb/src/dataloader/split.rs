@@ -338,7 +338,7 @@ impl Splitter {
                     // In this case we are only shuffling row ids so we can use a large max_rows_per_file
                     max_rows_per_file: 10 * 1024 * 1024,
                     temp_dir: self.temp_dir.clone(),
-                    shard_size: None,
+                    clump_size: None,
                 });
 
                 let shuffled = shuffler.shuffle(source, num_rows).await?;
@@ -396,7 +396,7 @@ pub enum SplitSizes {
     ///
     /// The number of rows in each split is the nearest integer to the percentage multiplied by
     /// the total number of rows.
-    Percentages(Vec<f32>),
+    Percentages(Vec<f64>),
     /// Absolute row counts per split
     ///
     /// If the dataset doesn't contain enough matching rows to fill all splits then an error
@@ -427,7 +427,7 @@ impl SplitSizes {
                             message: "Split percentages must be between 0.0 and 1.0".to_string(),
                         });
                     }
-                    if percentage * (num_rows as f32) < 1.0 {
+                    if percentage * (num_rows as f64) < 1.0 {
                         return Err(Error::InvalidInput {
                             message: format!(
                                 "One of the splits has {}% of {} rows which rounds to 0 rows",
@@ -437,7 +437,7 @@ impl SplitSizes {
                         });
                     }
                 }
-                if percentages.iter().sum::<f32>() > 1.0 {
+                if percentages.iter().sum::<f64>() > 1.0 {
                     return Err(Error::InvalidInput {
                         message: "Split percentages must sum to 1.0 or less".to_string(),
                     });
@@ -484,12 +484,49 @@ impl SplitSizes {
     pub fn to_counts(&self, num_rows: u64) -> Vec<u64> {
         let sizes = match self {
             Self::Percentages(percentages) => {
-                // If percentages adds to 1.0 will the rounding errors ever add up
-                // to more than num_rows or less than num_rows?
-                percentages
+                let mut percentage_sum = 0.0_f64;
+                let mut counts = percentages
                     .iter()
-                    .map(|p| (p * (num_rows as f32)).round() as u64)
-                    .collect()
+                    .map(|p| {
+                        let count = (p * (num_rows as f64)).round() as u64;
+                        percentage_sum += p;
+                        count
+                    })
+                    .collect::<Vec<_>>();
+                let sum = counts.iter().sum::<u64>();
+
+                let is_basically_one =
+                    (num_rows as f64 - percentage_sum * num_rows as f64).abs() < 0.5;
+
+                // If the sum of percentages is close to 1.0 then rounding errors can add up
+                // to more or less than num_rows
+                //
+                // Drop items from buckets until we have the correct number of rows
+                let mut excess = sum as i64 - num_rows as i64;
+                let mut drop_idx = 0;
+                while excess > 0 {
+                    if counts[drop_idx] > 0 {
+                        counts[drop_idx] -= 1;
+                        excess -= 1;
+                    }
+                    drop_idx += 1;
+                    if drop_idx == counts.len() {
+                        drop_idx = 0;
+                    }
+                }
+
+                // On the other hand, if the percentages sum to ~1.0 then the we also shouldn't _lose_
+                // rows due to rounding errors
+                let mut add_idx = 0;
+                while is_basically_one && excess < 0 {
+                    counts[add_idx] += 1;
+                    add_idx += 1;
+                    if add_idx == counts.len() {
+                        add_idx = 0;
+                    }
+                }
+
+                counts
             }
             Self::Counts(counts) => counts.clone(),
             Self::Fixed(num_splits) => {
