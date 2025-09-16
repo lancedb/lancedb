@@ -74,6 +74,21 @@ impl Table {
         })?))
     }
 
+    /// Replace the schema metadata of the table.
+    ///
+    /// # Arguments
+    /// * `metadata` - A JavaScript object containing the new metadata key-value pairs
+    #[napi(catch_unwind)]
+    pub async fn replace_schema_metadata(
+        &self,
+        metadata: HashMap<String, String>,
+    ) -> napi::Result<()> {
+        self.inner_ref()?
+            .replace_schema_metadata(metadata)
+            .await
+            .default_error()
+    }
+
     #[napi(catch_unwind)]
     pub async fn add(&self, buf: Buffer, mode: String) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())

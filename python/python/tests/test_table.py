@@ -1934,3 +1934,22 @@ def test_add_table_with_empty_embeddings(tmp_path):
         on_bad_vectors="drop",
     )
     assert table.count_rows() == 1
+
+
+def test_replace_schema_metadata(mem_db: DBConnection):
+    """Test replacing schema metadata"""
+    data = [{"item": "foo", "price": 10.0}]
+    table = mem_db.create_table("test_metadata", data=data)
+
+    # Replace schema metadata
+    new_metadata = {
+        "description": "Test table for schema metadata",
+        "version": "1.0",
+        "created_by": "pytest",
+    }
+    table.replace_schema_metadata(new_metadata)
+
+    metadata_strings = {
+        k.decode("utf-8"): v.decode("utf-8") for k, v in table.schema.metadata.items()
+    }
+    assert metadata_strings == new_metadata
