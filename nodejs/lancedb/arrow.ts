@@ -751,6 +751,7 @@ function makeVector(
   // biome-ignore lint/suspicious/noExplicitAny: skip
 ): Vector<any> {
   if (type !== undefined) {
+    // workaround for: https://github.com/apache/arrow-js/issues/68
     if (DataType.isBool(type)) {
       const hasNonNullValue = values.some((v) => v !== null && v !== undefined);
       if (!hasNonNullValue) {
