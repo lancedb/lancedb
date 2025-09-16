@@ -189,6 +189,7 @@ struct ListTablesResponse {
 pub struct RemoteDatabase<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
     table_cache: Cache<String, Arc<RemoteTable<S>>>,
+    uri: String,
 }
 
 impl RemoteDatabase {
@@ -217,6 +218,7 @@ impl RemoteDatabase {
         Ok(Self {
             client,
             table_cache,
+            uri: uri.to_owned(),
         })
     }
 }
@@ -238,6 +240,7 @@ mod test_utils {
             Self {
                 client,
                 table_cache: Cache::new(0),
+                uri: "http://localhost".to_string(),
             }
         }
 
@@ -250,6 +253,7 @@ mod test_utils {
             Self {
                 client,
                 table_cache: Cache::new(0),
+                uri: "http://localhost".to_string(),
             }
         }
     }
@@ -315,6 +319,10 @@ fn build_cache_key(name: &str, namespace: &[String]) -> String {
 
 #[async_trait]
 impl<S: HttpSend> Database for RemoteDatabase<S> {
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let mut req = if !request.namespace.is_empty() {
             let namespace_id =

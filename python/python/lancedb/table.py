@@ -74,6 +74,7 @@ from .index import lang_mapping
 
 
 if TYPE_CHECKING:
+    from .db import LanceDBConnection
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -88,7 +89,6 @@ if TYPE_CHECKING:
         MergeResult,
         UpdateResult,
     )
-    from .db import LanceDBConnection
     from .index import IndexConfig
     import pandas
     import PIL
@@ -1728,8 +1728,11 @@ class LanceTable(Table):
         return self._table.name
 
     @classmethod
-    def from_inner(cls, conn: LanceDBConnection, tbl: LanceDBTable):
+    def from_inner(cls, tbl: LanceDBTable):
+        from .db import LanceDBConnection
+
         async_tbl = AsyncTable(tbl)
+        conn = LanceDBConnection.from_inner(tbl.database())
         return cls(
             conn,
             async_tbl.name,

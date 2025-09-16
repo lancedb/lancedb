@@ -452,7 +452,12 @@ class LanceDBConnection(DBConnection):
         read_consistency_interval: Optional[timedelta] = None,
         storage_options: Optional[Dict[str, str]] = None,
         session: Optional[Session] = None,
+        _inner: Optional[LanceDbConnection] = None,
     ):
+        if _inner is not None:
+            self._conn = _inner
+            return
+
         if not isinstance(uri, Path):
             scheme = get_uri_scheme(uri)
         is_local = isinstance(uri, Path) or scheme == "file"
@@ -461,11 +466,6 @@ class LanceDBConnection(DBConnection):
                 uri = Path(uri)
             uri = uri.expanduser().absolute()
             Path(uri).mkdir(parents=True, exist_ok=True)
-        self._uri = str(uri)
-        self._entered = False
-        self.read_consistency_interval = read_consistency_interval
-        self.storage_options = storage_options
-        self.session = session
 
         if read_consistency_interval is not None:
             read_consistency_interval_secs = read_consistency_interval.total_seconds()
@@ -486,8 +486,24 @@ class LanceDBConnection(DBConnection):
 
         self._conn = AsyncConnection(LOOP.run(do_connect()))
 
+    @property
+    def read_consistency_interval(self) -> Optional[timedelta]:
+        return self._conn.read_consistency_interval
+
+    @property
+    def storage_options(self) -> Optional[Dict[str, str]]:
+        return self._conn.storage_options
+
+    @property
+    def session(self) -> Optional[Session]:
+        return self._conn.session
+
+    @classmethod
+    def from_inner(cls, inner: LanceDbConnection):
+        return cls(None, _inner=inner)
+
     def __repr__(self) -> str:
-        val = f"{self.__class__.__name__}(uri={self._uri!r}"
+        val = f"{self.__class__.__name__}(uri={self._conn.uri!r}"
         if self.read_consistency_interval is not None:
             val += f", read_consistency_interval={repr(self.read_consistency_interval)}"
         val += ")"

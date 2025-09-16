@@ -171,7 +171,7 @@ impl PermutationBuilder {
     }
 
     /// Builds the permutation table and stores it in the given database.
-    pub async fn build(self, dest_db: Connection, dest_table_name: &str) -> Result<Table> {
+    pub async fn build(self, dest_table_name: &str) -> Result<Table> {
         // First pass, apply filter and load row ids
         let mut rows = self.base_table.query().with_row_id();
 
@@ -227,8 +227,11 @@ impl PermutationBuilder {
         let renamed = rename_column(sorted, "_rowid", "row_id")?;
 
         // Create permutation table
-        dest_db
-            .create_table_streaming(dest_table_name, renamed)
+        let conn = Connection::new(
+            self.base_table.database().clone(),
+            self.base_table.embedding_registry().clone(),
+        );
+        conn.create_table_streaming(dest_table_name, renamed)
             .execute()
             .await
     }
@@ -267,7 +270,7 @@ mod tests {
                 seed: Some(42),
                 sizes: SplitSizes::Percentages(vec![0.05, 0.30]),
             })
-            .build(db, "permutation")
+            .build("permutation")
             .await
             .unwrap();
 

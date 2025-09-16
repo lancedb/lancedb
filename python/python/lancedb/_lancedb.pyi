@@ -325,5 +325,5 @@ class AsyncPermutationBuilder:
     async def execute(self) -> Table: ...
 
 def async_permutation_builder(
-    table: Table, dest_db: Connection, dest_table_name: str
+    table: Table, dest_table_name: str
 ) -> AsyncPermutationBuilder: ...
