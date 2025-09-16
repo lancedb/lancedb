@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::{connection::Connection, error::PythonErrorExt, table::Table};
+use crate::{error::PythonErrorExt, table::Table};
 use lancedb::dataloader::{
     permutation::{PermutationBuilder as LancePermutationBuilder, ShuffleStrategy},
     split::{SplitSizes, SplitStrategy},
@@ -18,19 +18,15 @@ use pyo3_async_runtimes::tokio::future_into_py;
 #[pyo3::pyfunction]
 pub fn async_permutation_builder<'py>(
     table: Bound<'py, PyAny>,
-    conn: Bound<'py, PyAny>,
     dest_table_name: String,
 ) -> PyResult<PyAsyncPermutationBuilder> {
     let table = table.getattr("_inner")?.downcast_into::<Table>()?;
     let inner_table = table.borrow().inner_ref()?.clone();
     let inner_builder = LancePermutationBuilder::new(inner_table);
-    let conn = conn.getattr("_inner")?.downcast_into::<Connection>()?;
-    let dest_conn = conn.borrow().get_inner()?.clone();
 
     Ok(PyAsyncPermutationBuilder {
         state: Arc::new(Mutex::new(PyAsyncPermutationBuilderState {
             builder: Some(inner_builder),
-            dest_db: dest_conn,
             dest_table_name,
         })),
     })
@@ -38,7 +34,6 @@ pub fn async_permutation_builder<'py>(
 
 struct PyAsyncPermutationBuilderState {
     builder: Option<LancePermutationBuilder>,
-    dest_db: lancedb::Connection,
     dest_table_name: String,
 }
 
@@ -172,14 +167,10 @@ impl PyAsyncPermutationBuilder {
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("Builder already consumed"))?;
 
-        let dest_db = state.dest_db.clone();
         let dest_table_name = std::mem::take(&mut state.dest_table_name);
 
         future_into_py(slf.py(), async move {
-            let table = builder
-                .build(dest_db, &dest_table_name)
-                .await
-                .infer_error()?;
+            let table = builder.build(&dest_table_name).await.infer_error()?;
             Ok(Table::new(table))
         })
     }

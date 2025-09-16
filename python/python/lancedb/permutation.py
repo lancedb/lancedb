@@ -9,11 +9,8 @@ from typing import Optional
 
 
 class PermutationBuilder:
-    def __init__(
-        self, table: LanceTable, conn: LanceDBConnection, dest_table_name: str
-    ):
-        self._conn = conn
-        self._async = async_permutation_builder(table, conn, dest_table_name)
+    def __init__(self, table: LanceTable, dest_table_name: str):
+        self._async = async_permutation_builder(table, dest_table_name)
 
     def select(self, projections: dict[str, str]) -> "PermutationBuilder":
         self._async.select(projections)
@@ -67,12 +64,10 @@ class PermutationBuilder:
     def execute(self) -> LanceTable:
         async def do_execute():
             inner_tbl = await self._async.execute()
-            return LanceTable.from_inner(self._conn, inner_tbl)
+            return LanceTable.from_inner(inner_tbl)
 
         return LOOP.run(do_execute())
 
 
-def permutation_builder(
-    table: LanceTable, conn: LanceDBConnection, dest_table_name: str
-) -> PermutationBuilder:
-    return PermutationBuilder(table, conn, dest_table_name)
+def permutation_builder(table: LanceTable, dest_table_name: str) -> PermutationBuilder:
+    return PermutationBuilder(table, dest_table_name)
