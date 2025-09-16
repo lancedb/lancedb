@@ -360,6 +360,10 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await table.add([{ vector: testVector }]);
 
       expect(await table.countRows()).toEqual(4);
+
+      const res = await table.query().limit(10).toArray();
+      const resVector = res.map((r) => r.get("vector").toArray());
+      expect(resVector).toEqual([null, null, null, testVector]);
     });
   }
 );
