@@ -3,7 +3,6 @@
 
 from ._lancedb import async_permutation_builder
 from .table import LanceTable
-from .db import LanceDBConnection
 from .background_loop import LOOP
 from typing import Optional
 
