@@ -587,7 +587,13 @@ impl ListingDatabase {
 
 #[async_trait::async_trait]
 impl Database for ListingDatabase {
-    async fn list_namespaces(&self, _request: ListNamespacesRequest) -> Result<Vec<String>> {
+    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>> {
+        if !request.namespace.is_empty() {
+            return Err(Error::NotSupported {
+                message: "Namespace operations are not supported for listing database".into(),
+            });
+        }
+
         Ok(Vec::new())
     }
 
