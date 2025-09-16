@@ -521,6 +521,7 @@ impl SplitSizes {
                 while is_basically_one && excess < 0 {
                     counts[add_idx] += 1;
                     add_idx += 1;
+                    excess += 1;
                     if add_idx == counts.len() {
                         add_idx = 0;
                     }
