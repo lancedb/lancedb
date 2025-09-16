@@ -47,17 +47,17 @@ pub enum ShuffleStrategy {
     ///
     /// A seed can be provided to make the shuffle deterministic.
     ///
-    /// If a shard size is provided, then data will be shuffled in small blocks of contiguous rows.
+    /// If a clump size is provided, then data will be shuffled in small blocks of contiguous rows.
     /// This decreases the overall randomization but can improve I/O performance when reading from
     /// cloud storage.
     ///
-    /// For example, a shard size of 16 will means we will shuffle blocks of 16 contiguous rows.  This
+    /// For example, a clump size of 16 will means we will shuffle blocks of 16 contiguous rows.  This
     /// will mean 16x fewer IOPS but these 16 rows will always be close together and this can influence
-    /// the performance of the model.  Note: shuffling within shards can still be done at read time but
+    /// the performance of the model.  Note: shuffling within clumps can still be done at read time but
     /// this will only provide a local shuffle and not a global shuffle.
     Random {
         seed: Option<u64>,
-        shard_size: Option<u64>,
+        clump_size: Option<u64>,
     },
     /// The data is not shuffled
     ///
@@ -67,10 +67,7 @@ pub enum ShuffleStrategy {
 
 impl Default for ShuffleStrategy {
     fn default() -> Self {
-        Self::Random {
-            seed: None,
-            shard_size: None,
-        }
+        Self::None
     }
 }
 
@@ -205,10 +202,10 @@ impl PermutationBuilder {
         // Shuffle data if requested
         let shuffled = match self.config.shuffle_strategy {
             ShuffleStrategy::None => split_data,
-            ShuffleStrategy::Random { seed, shard_size } => {
+            ShuffleStrategy::Random { seed, clump_size } => {
                 let shuffler = Shuffler::new(ShufflerConfig {
                     seed,
-                    shard_size,
+                    clump_size,
                     temp_dir: self.config.temp_dir.clone(),
                     max_rows_per_file: 10 * 1024 * 1024,
                 });

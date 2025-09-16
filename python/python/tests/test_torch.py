@@ -6,6 +6,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from lancedb._lancedb import async_permutation_builder
+
 
 def tbl_to_tensor(tbl):
     def to_tensor(col: pa.ChunkedArray):

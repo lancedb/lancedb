@@ -42,12 +42,12 @@ pub struct ShufflerConfig {
     pub max_rows_per_file: u64,
     /// The temporary directory to use for writing files
     pub temp_dir: TemporaryDirectory,
-    /// The size of the shards to shuffle within
+    /// The size of the clumps to shuffle within
     ///
-    /// If a shard size is provided, then data will be shuffled in small blocks of contiguous rows.
+    /// If a clump size is provided, then data will be shuffled in small blocks of contiguous rows.
     /// This decreases the overall randomization but can improve I/O performance when reading from
     /// cloud storage.
-    pub shard_size: Option<u64>,
+    pub clump_size: Option<u64>,
 }
 
 impl Default for ShufflerConfig {
@@ -56,7 +56,7 @@ impl Default for ShufflerConfig {
             max_rows_per_file: 1024 * 1024,
             seed: Option::default(),
             temp_dir: TemporaryDirectory::default(),
-            shard_size: None,
+            clump_size: None,
         }
     }
 }
@@ -85,19 +85,19 @@ impl Shuffler {
     fn shuffle_batch(
         batch: &RecordBatch,
         rng: &mut dyn RngCore,
-        shard_size: u64,
+        clump_size: u64,
     ) -> Result<RecordBatch> {
-        let num_shards = (batch.num_rows() as u64).div_ceil(shard_size);
-        let mut indices = (0..num_shards).collect::<Vec<_>>();
+        let num_clumps = (batch.num_rows() as u64).div_ceil(clump_size);
+        let mut indices = (0..num_clumps).collect::<Vec<_>>();
         indices.shuffle(rng);
-        let indices = if shard_size == 1 {
+        let indices = if clump_size == 1 {
             UInt64Array::from(indices)
         } else {
-            UInt64Array::from_iter_values(indices.iter().flat_map(|&shard_index| {
-                if shard_index == num_shards - 1 {
-                    shard_index * shard_size..batch.num_rows() as u64
+            UInt64Array::from_iter_values(indices.iter().flat_map(|&clump_index| {
+                if clump_index == num_clumps - 1 {
+                    clump_index * clump_size..batch.num_rows() as u64
                 } else {
-                    shard_index * shard_size..(shard_index + 1) * shard_size
+                    clump_index * clump_size..(clump_index + 1) * clump_size
                 }
             }))
         };
@@ -112,7 +112,7 @@ impl Shuffler {
         let schema = data.schema();
         let batches = data.try_collect::<Vec<_>>().await?;
         let batch = concat_batches(&schema, &batches)?;
-        let shuffled = Self::shuffle_batch(&batch, &mut rng, self.config.shard_size.unwrap_or(1))?;
+        let shuffled = Self::shuffle_batch(&batch, &mut rng, self.config.clump_size.unwrap_or(1))?;
         log::debug!("Shuffle job {}: in-memory shuffle complete", self.id);
         Ok(Box::pin(SimpleRecordBatchStream::new(
             futures::stream::once(async move { Ok(shuffled) }),
@@ -131,10 +131,10 @@ impl Shuffler {
         let temp_dir = self.config.temp_dir.create_temp_dir()?;
         let tmp_dir = temp_dir.path().to_path_buf();
 
-        let shard_size = self.config.shard_size.unwrap_or(1);
-        if shard_size == 0 {
+        let clump_size = self.config.clump_size.unwrap_or(1);
+        if clump_size == 0 {
             return Err(Error::InvalidInput {
-                message: "Shard size must be greater than 0".to_string(),
+                message: "clump size must be greater than 0".to_string(),
             });
         }
 
@@ -159,7 +159,7 @@ impl Shuffler {
 
         let mut num_rows_seen = 0;
 
-        // Randomly distribute shards to files
+        // Randomly distribute clumps to files
         while let Some(batch) = data.try_next().await? {
             num_rows_seen += batch.num_rows() as u64;
             let is_last = num_rows_seen == num_rows;
@@ -168,28 +168,28 @@ impl Shuffler {
                     message: format!("Expected {} rows but saw {} rows", num_rows, num_rows_seen),
                 });
             }
-            // This is kind of an annoying limitation but if we allow runt shards from batches then
-            // shards will get unaligned and we will mess up the shards when we do the in-memory
+            // This is kind of an annoying limitation but if we allow runt clumps from batches then
+            // clumps will get unaligned and we will mess up the clumps when we do the in-memory
             // shuffle step.  If this is a problem we can probably figure out a better way to do this.
-            if !is_last && batch.num_rows() as u64 % shard_size != 0 {
+            if !is_last && batch.num_rows() as u64 % clump_size != 0 {
                 return Err(Error::Runtime {
                     message: format!(
-                        "Expected batch size ({}) to be divisible by shard size ({})",
+                        "Expected batch size ({}) to be divisible by clump size ({})",
                         batch.num_rows(),
-                        shard_size
+                        clump_size
                     ),
                 });
             }
-            let num_shards = (batch.num_rows() as u64).div_ceil(shard_size);
+            let num_clumps = (batch.num_rows() as u64).div_ceil(clump_size);
             let mut batch_offsets_for_files =
                 vec![Vec::<u64>::with_capacity(batch.num_rows()); num_files as usize];
             // Partition the batch randomly and write to the appropriate accumulator
-            for shard_offset in 0..num_shards {
-                let shard_start = shard_offset * shard_size;
-                let num_rows_in_shard = shard_size.min(batch.num_rows() as u64 - shard_start);
-                let shard_end = shard_start + num_rows_in_shard;
+            for clump_offset in 0..num_clumps {
+                let clump_start = clump_offset * clump_size;
+                let num_rows_in_clump = clump_size.min(batch.num_rows() as u64 - clump_start);
+                let clump_end = clump_start + num_rows_in_clump;
                 let file_index = rng.random_range(0..num_files);
-                batch_offsets_for_files[file_index as usize].extend(shard_start..shard_end);
+                batch_offsets_for_files[file_index as usize].extend(clump_start..clump_end);
             }
             for (file_index, batch_offsets) in batch_offsets_for_files.into_iter().enumerate() {
                 if batch_offsets.is_empty() {
@@ -241,7 +241,7 @@ impl Shuffler {
                     // Need to read the entire file in a single batch for in-memory shuffling
                     let batch = reader.read_record_batch(0, reader.num_rows()).await?;
                     let mut rng = rng.lock().unwrap();
-                    Self::shuffle_batch(&batch, &mut rng, shard_size)
+                    Self::shuffle_batch(&batch, &mut rng, clump_size)
                 }
             })
             .finally(move || drop(temp_dir))
@@ -318,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn test_shuffle_with_shards() {
+    fn test_shuffle_with_clumps() {
         let batch = create_test_batch(RowCount::from(10));
         let mut rng = rand_xoshiro::Xoshiro256Plus::seed_from_u64(42);
         let shuffled = Shuffler::shuffle_batch(&batch, &mut rng, 3).unwrap();
@@ -326,21 +326,21 @@ mod tests {
 
         let mut iter = values.into_iter().map(|o| o.unwrap());
         let mut frag_seen = false;
-        let mut shards_seen = 0;
+        let mut clumps_seen = 0;
         while let Some(first) = iter.next() {
-            // 9 is the last value and not a full shard
+            // 9 is the last value and not a full clump
             if first != 9 {
-                // Otherwise we should have a full shard
+                // Otherwise we should have a full clump
                 let second = iter.next().unwrap();
                 let third = iter.next().unwrap();
                 assert_eq!(first + 1, second);
                 assert_eq!(first + 2, third);
-                shards_seen += 1;
+                clumps_seen += 1;
             } else {
                 frag_seen = true;
             }
         }
-        assert_eq!(shards_seen, 3);
+        assert_eq!(clumps_seen, 3);
         assert!(frag_seen);
     }
 
@@ -433,19 +433,19 @@ mod tests {
     }
 
     #[test_log::test(tokio::test)]
-    async fn test_external_shard_shuffle() {
+    async fn test_external_clump_shuffle() {
         let config = ShufflerConfig {
             max_rows_per_file: 100,
-            shard_size: Some(30),
+            clump_size: Some(30),
             ..Default::default()
         };
         let shuffler = Shuffler::new(config);
 
-        // Batch size (900) must be multiple of shard size (30)
+        // Batch size (900) must be multiple of clump size (30)
         let stream = create_test_stream(BatchCount::from(5), RowCount::from(900));
         let schema = stream.schema();
 
-        // Remove 10 rows from the last batch to simulate ending with partial shard
+        // Remove 10 rows from the last batch to simulate ending with partial clump
         let mut batches = stream.try_collect::<Vec<_>>().await.unwrap();
         let last_index = batches.len() - 1;
         let sliced_last = batches[last_index].slice(0, 890);
@@ -463,9 +463,9 @@ mod tests {
         let ids = result_batch.column(0).as_primitive::<Int32Type>();
         let mut iter = ids.into_iter().map(|o| o.unwrap());
         while let Some(first) = iter.next() {
-            let rows_left_in_shard = if first == 4470 { 19 } else { 29 };
+            let rows_left_in_clump = if first == 4470 { 19 } else { 29 };
             let mut expected_next = first + 1;
-            for _ in 0..rows_left_in_shard {
+            for _ in 0..rows_left_in_clump {
                 let next = iter.next().unwrap();
                 assert_eq!(next, expected_next);
                 expected_next += 1;

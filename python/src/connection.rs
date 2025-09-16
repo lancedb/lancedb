@@ -23,7 +23,7 @@ impl Connection {
         Self { inner: Some(inner) }
     }
 
-    fn get_inner(&self) -> PyResult<&LanceConnection> {
+    pub(crate) fn get_inner(&self) -> PyResult<&LanceConnection> {
         self.inner
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Connection is closed"))
