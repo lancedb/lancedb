@@ -13,8 +13,6 @@ use lance::dataset::ReadParams;
 use object_store::aws::AwsCredential;
 
 use crate::arrow::{IntoArrow, IntoArrowStream, SendableRecordBatchStream};
-use crate::catalog::listing::ListingCatalog;
-use crate::catalog::CatalogOptions;
 use crate::database::listing::{
     ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
@@ -660,7 +658,7 @@ pub struct ConnectRequest {
     #[cfg(feature = "remote")]
     pub client_config: ClientConfig,
 
-    /// Database/Catalog specific options
+    /// Database specific options
     pub options: HashMap<String, String>,
 
     /// The interval at which to check for updates from other processes.
@@ -937,50 +935,6 @@ pub fn connect(uri: &str) -> ConnectBuilder {
     ConnectBuilder::new(uri)
 }
 
-/// A builder for configuring a connection to a LanceDB catalog
-#[derive(Debug)]
-pub struct CatalogConnectBuilder {
-    request: ConnectRequest,
-}
-
-impl CatalogConnectBuilder {
-    /// Create a new [`CatalogConnectBuilder`] with the given catalog URI.
-    pub fn new(uri: &str) -> Self {
-        Self {
-            request: ConnectRequest {
-                uri: uri.to_string(),
-                #[cfg(feature = "remote")]
-                client_config: Default::default(),
-                read_consistency_interval: None,
-                options: HashMap::new(),
-                session: None,
-            },
-        }
-    }
-
-    pub fn catalog_options(mut self, catalog_options: &dyn CatalogOptions) -> Self {
-        catalog_options.serialize_into_map(&mut self.request.options);
-        self
-    }
-
-    /// Establishes a connection to the catalog
-    pub async fn execute(self) -> Result<Arc<ListingCatalog>> {
-        let catalog = ListingCatalog::connect(&self.request).await?;
-        Ok(Arc::new(catalog))
-    }
-}
-
-/// Connect to a LanceDB catalog.
-///
-/// A catalog is a container for databases, which in turn are containers for tables.
-///
-/// # Arguments
-///
-/// * `uri` - URI where the catalog is located, can be a local directory or supported remote cloud storage.
-pub fn connect_catalog(uri: &str) -> CatalogConnectBuilder {
-    CatalogConnectBuilder::new(uri)
-}
-
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
@@ -1022,7 +976,6 @@ mod test_utils {
 mod tests {
     use std::fs::create_dir_all;
 
-    use crate::catalog::{Catalog, DatabaseNamesRequest, OpenDatabaseRequest};
     use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, QueryExecutionOptions};
@@ -1327,92 +1280,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(other_schema, overwritten.schema().await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_connect_catalog() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let catalog = connect_catalog(uri).execute().await.unwrap();
-
-        // Verify that we can get the uri from the catalog
-        let catalog_uri = catalog.uri();
-        assert_eq!(catalog_uri, uri);
-
-        // Check that the catalog is initially empty
-        let dbs = catalog
-            .database_names(DatabaseNamesRequest::default())
-            .await
-            .unwrap();
-        assert_eq!(dbs.len(), 0);
-    }
-
-    #[tokio::test]
-    #[cfg(not(windows))]
-    async fn test_catalog_create_database() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let catalog = connect_catalog(uri).execute().await.unwrap();
-
-        let db_name = "test_db";
-        catalog
-            .create_database(crate::catalog::CreateDatabaseRequest {
-                name: db_name.to_string(),
-                mode: Default::default(),
-                options: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        let dbs = catalog
-            .database_names(DatabaseNamesRequest::default())
-            .await
-            .unwrap();
-        assert_eq!(dbs.len(), 1);
-        assert_eq!(dbs[0], db_name);
-
-        let db = catalog
-            .open_database(OpenDatabaseRequest {
-                name: db_name.to_string(),
-                database_options: HashMap::new(),
-            })
-            .await
-            .unwrap();
-
-        let tables = db.table_names(Default::default()).await.unwrap();
-        assert_eq!(tables.len(), 0);
-    }
-
-    #[tokio::test]
-    #[cfg(not(windows))]
-    async fn test_catalog_drop_database() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let catalog = connect_catalog(uri).execute().await.unwrap();
-
-        // Create and then drop a database
-        let db_name = "test_db_to_drop";
-        catalog
-            .create_database(crate::catalog::CreateDatabaseRequest {
-                name: db_name.to_string(),
-                mode: Default::default(),
-                options: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        let dbs = catalog
-            .database_names(DatabaseNamesRequest::default())
-            .await
-            .unwrap();
-        assert_eq!(dbs.len(), 1);
-
-        catalog.drop_database(db_name).await.unwrap();
-
-        let dbs_after = catalog
-            .database_names(DatabaseNamesRequest::default())
-            .await
-            .unwrap();
-        assert_eq!(dbs_after.len(), 0);
     }
 }
