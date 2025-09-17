@@ -26,7 +26,7 @@ pub struct Table {
 }
 
 impl Table {
-    fn inner_ref(&self) -> napi::Result<&LanceDbTable> {
+    pub(crate) fn inner_ref(&self) -> napi::Result<&LanceDbTable> {
         self.inner
             .as_ref()
             .ok_or_else(|| napi::Error::from_reason(format!("Table {} is closed", self.name)))
@@ -443,6 +443,7 @@ impl Table {
         let on: Vec<_> = on.iter().map(String::as_str).collect();
         Ok(self.inner_ref()?.merge_insert(on.as_slice()).into())
     }
+
 
     #[napi(catch_unwind)]
     pub async fn uses_v2_manifest_paths(&self) -> napi::Result<bool> {
