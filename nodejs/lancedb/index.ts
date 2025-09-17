@@ -7,6 +7,9 @@ import {
   cleanseStorageOptions,
 } from "./connection";
 
+import { Table, LocalTable } from "./table";
+import { PermutationBuilder, permutationBuilder as _permutationBuilder } from "./native.js";
+
 import {
   ConnectionOptions,
   Connection as LanceDbConnection,
@@ -43,6 +46,12 @@ export {
   DeleteResult,
   DropColumnsResult,
   UpdateResult,
+  PermutationBuilder,
+  SplitRandomOptions,
+  SplitHashOptions,
+  SplitSequentialOptions,
+  ShuffleOptions,
+  permutationBuilder as _permutationBuilder,
 } from "./native.js";
 
 export {
@@ -94,6 +103,7 @@ export {
 
 export {
   Table,
+  LocalTable,
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
@@ -284,4 +294,18 @@ export async function connect(
     nativeProvider,
   );
   return new LocalConnection(nativeConn);
+}
+
+/**
+ * Create a permutation builder for the given table.
+ *
+ * @param table - The table to create a permutation for
+ * @param destTableName - The name of the destination permutation table
+ * @returns A PermutationBuilder instance
+ */
+export function permutationBuilder(table: Table, destTableName: string): PermutationBuilder {
+  // Extract the inner native table from the TypeScript wrapper
+  const localTable = table as LocalTable;
+  // Access inner through a method since it's private
+  return _permutationBuilder((localTable as any).inner, destTableName);
 }
