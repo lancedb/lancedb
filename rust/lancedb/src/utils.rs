@@ -20,6 +20,8 @@ use datafusion_physical_plan::SendableRecordBatchStream;
 
 lazy_static! {
     static ref TABLE_NAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap();
+    static ref NAMESPACE_NAME_REGEX: regex::Regex =
+        regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap();
 }
 
 pub trait PatchStoreParam {
@@ -94,6 +96,53 @@ pub fn validate_table_name(name: &str) -> Result<()> {
                 "Table names can only contain alphanumeric characters, underscores, hyphens, and periods"
                     .to_string(),
         });
+    }
+    Ok(())
+}
+
+/// Validate a namespace name component
+///
+/// Namespace names must:
+/// - Not be empty
+/// - Only contain alphanumeric characters, underscores, hyphens, and periods
+///
+/// # Arguments
+/// * `name` - A single namespace component (not the full path)
+///
+/// # Returns
+/// * `Ok(())` if the namespace name is valid
+/// * `Err(Error)` if the namespace name is invalid
+pub fn validate_namespace_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::InvalidInput {
+            message: "Namespace names cannot be empty strings".to_string(),
+        });
+    }
+    if !NAMESPACE_NAME_REGEX.is_match(name) {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid namespace name '{}': Namespace names can only contain alphanumeric characters, underscores, hyphens, and periods",
+                name
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Validate all components of a namespace
+///
+/// Iterates through all namespace components and validates each one.
+/// Returns an error if any component is invalid.
+///
+/// # Arguments
+/// * `namespace` - The namespace components to validate
+///
+/// # Returns
+/// * `Ok(())` if all namespace components are valid
+/// * `Err(Error)` if any component is invalid
+pub fn validate_namespace(namespace: &[String]) -> Result<()> {
+    for component in namespace {
+        validate_namespace_name(component)?;
     }
     Ok(())
 }
@@ -343,6 +392,61 @@ mod tests {
         assert!(validate_table_name("my/table").is_err());
         assert!(validate_table_name("my@table").is_err());
         assert!(validate_table_name("name with space").is_err());
+    }
+
+    #[test]
+    fn test_validate_namespace_name() {
+        // Valid namespace names
+        assert!(validate_namespace_name("ns1").is_ok());
+        assert!(validate_namespace_name("namespace_123").is_ok());
+        assert!(validate_namespace_name("my-namespace").is_ok());
+        assert!(validate_namespace_name("my.namespace").is_ok());
+        assert!(validate_namespace_name("NS_1.2.3").is_ok());
+        assert!(validate_namespace_name("a").is_ok());
+        assert!(validate_namespace_name("123").is_ok());
+        assert!(validate_namespace_name("_underscore").is_ok());
+        assert!(validate_namespace_name("-hyphen").is_ok());
+        assert!(validate_namespace_name(".period").is_ok());
+
+        // Invalid namespace names
+        assert!(validate_namespace_name("").is_err());
+        assert!(validate_namespace_name("namespace with spaces").is_err());
+        assert!(validate_namespace_name("namespace/with/slashes").is_err());
+        assert!(validate_namespace_name("namespace\\with\\backslashes").is_err());
+        assert!(validate_namespace_name("namespace$with$delimiter").is_err());
+        assert!(validate_namespace_name("namespace@special").is_err());
+        assert!(validate_namespace_name("namespace#hash").is_err());
+    }
+
+    #[test]
+    fn test_validate_namespace() {
+        // Valid namespace with single component
+        assert!(validate_namespace(&["ns1".to_string()]).is_ok());
+
+        // Valid namespace with multiple components
+        assert!(
+            validate_namespace(&["ns1".to_string(), "ns2".to_string(), "ns3".to_string()]).is_ok()
+        );
+
+        // Empty namespace (root) is valid
+        assert!(validate_namespace(&[]).is_ok());
+
+        // Invalid: contains empty component
+        assert!(validate_namespace(&["ns1".to_string(), "".to_string()]).is_err());
+
+        // Invalid: contains component with spaces
+        assert!(validate_namespace(&["ns1".to_string(), "ns 2".to_string()]).is_err());
+
+        // Invalid: contains component with special characters
+        assert!(validate_namespace(&["ns1".to_string(), "ns@2".to_string()]).is_err());
+        assert!(validate_namespace(&["ns1".to_string(), "ns/2".to_string()]).is_err());
+        assert!(validate_namespace(&["ns1".to_string(), "ns$2".to_string()]).is_err());
+
+        // Valid: underscores, hyphens, and periods are allowed
+        assert!(
+            validate_namespace(&["ns_1".to_string(), "ns-2".to_string(), "ns.3".to_string()])
+                .is_ok()
+        );
     }
 
     #[test]
