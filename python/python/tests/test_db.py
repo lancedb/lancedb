@@ -747,15 +747,16 @@ def test_local_namespace_operations(tmp_path):
     # Create a local database connection
     db = lancedb.connect(tmp_path)
 
-    # Test list_namespaces returns empty list
+    # Test list_namespaces returns empty list for root namespace
     namespaces = list(db.list_namespaces())
     assert namespaces == []
 
-    # Test list_namespaces with parameters still returns empty list
-    namespaces_with_params = list(
-        db.list_namespaces(namespace=["test"], page_token="token", limit=5)
-    )
-    assert namespaces_with_params == []
+    # Test list_namespaces with non-empty namespace raises NotImplementedError
+    with pytest.raises(
+        NotImplementedError,
+        match="Namespace operations are not supported for listing database",
+    ):
+        list(db.list_namespaces(namespace=["test"]))
 
 
 def test_local_create_namespace_not_supported(tmp_path):
