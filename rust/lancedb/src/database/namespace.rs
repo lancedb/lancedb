@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use lance_namespace::{LanceNamespace, NamespaceBuilder};
+use lance_namespace::{connect as connect_namespace, LanceNamespace};
 use lance_namespace_reqwest_client::models::{
     CreateEmptyTableRequest, CreateNamespaceRequest, DescribeTableRequest, DropNamespaceRequest,
     DropTableRequest, ListNamespacesRequest, ListTablesRequest,
@@ -41,12 +41,12 @@ impl NamespaceBackedDatabase {
         storage_options: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
-        // Build the namespace using NamespaceBuilder
-        let builder = NamespaceBuilder::new(ns_impl).with_properties(ns_properties);
-
-        let namespace_box = builder.build().map_err(|e| Error::InvalidInput {
-            message: format!("Failed to connect to namespace: {}", e),
-        })?;
+        // Connect to the namespace using lance_namespace::connect
+        let namespace_box = connect_namespace(ns_impl, ns_properties.clone())
+            .await
+            .map_err(|e| Error::InvalidInput {
+                message: format!("Failed to connect to namespace: {}", e),
+            })?;
 
         // Convert Box<dyn LanceNamespace> to Arc<dyn LanceNamespace>
         let namespace: Arc<dyn LanceNamespace> = Arc::from(namespace_box);

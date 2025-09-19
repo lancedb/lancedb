@@ -5529,6 +5529,8 @@ dependencies = [
 [[package]]
 name = "lance-namespace"
 version = "0.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b3191f14844823aea8a25e8858f0d2deeeea7065773828514ab743880a9f0cb"
 dependencies = [
  "arrow",
  "async-trait",
@@ -5546,6 +5548,8 @@ dependencies = [
 [[package]]
 name = "lance-namespace-reqwest-client"
 version = "0.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc99fa36321bf344d4e13d493d9216f4433514bb8a4423775a7fe3dd399c9b51"
 dependencies = [
  "reqwest",
  "serde",
