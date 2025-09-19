@@ -48,6 +48,10 @@ url.workspace = true
 regex.workspace = true
 serde = { version = "^1" }
 serde_json = { version = "1" }
+
+# Lance namespace support
+lance-namespace = { path = "../../../lance-namespace/rust/lance-namespace" }
+lance-namespace-reqwest-client = { path = "../../../lance-namespace/rust/lance-namespace-reqwest-client" }
 async-openai = { version = "0.20.0", optional = true }
 serde_with = { version = "3.8.1" }
 aws-sdk-bedrockruntime = { version = "1.27.0", optional = true }

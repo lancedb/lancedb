@@ -935,6 +935,51 @@ pub fn connect(uri: &str) -> ConnectBuilder {
     ConnectBuilder::new(uri)
 }
 
+/// Connect to a LanceDB database through a namespace.
+///
+/// # Arguments
+///
+/// * `ns_impl` - The namespace implementation to use (e.g., "dir" for directory-based, "rest" for REST API)
+/// * `ns_properties` - Configuration properties for the namespace implementation
+///
+/// # Example
+///
+/// ```no_run
+/// use lancedb::connect_namespace;
+/// use std::collections::HashMap;
+///
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// let mut properties = HashMap::new();
+/// properties.insert("root".to_string(), "/tmp/lancedb".to_string());
+///
+/// let conn = connect_namespace("dir", properties)
+///     .await
+///     .unwrap();
+/// # });
+/// ```
+pub async fn connect_namespace(
+    ns_impl: &str,
+    ns_properties: HashMap<String, String>,
+) -> Result<Connection> {
+    use crate::database::namespace::NamespaceBackedDatabase;
+
+    let internal = Arc::new(
+        NamespaceBackedDatabase::connect(
+            ns_impl,
+            ns_properties,
+            HashMap::new(), // storage_options
+            None,           // read_consistency_interval
+        )
+        .await?,
+    );
+
+    Ok(Connection {
+        internal,
+        uri: format!("namespace://{}", ns_impl),
+        embedding_registry: Arc::new(MemoryRegistry::new()),
+    })
+}
+
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
