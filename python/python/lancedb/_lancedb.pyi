@@ -124,6 +124,7 @@ class Tags:
     async def update(self, tag: str, version: int): ...
 
 class IndexConfig:
+    name: str
     index_type: str
     columns: List[str]
 
