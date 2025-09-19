@@ -5,6 +5,7 @@ use arrow::RecordBatchStream;
 use connection::{connect, Connection};
 use env_logger::Env;
 use index::IndexConfig;
+use permutation::PyAsyncPermutationBuilder;
 use pyo3::{
     pymodule,
     types::{PyModule, PyModuleMethods},
@@ -22,6 +23,7 @@ pub mod connection;
 pub mod error;
 pub mod header;
 pub mod index;
+pub mod permutation;
 pub mod query;
 pub mod session;
 pub mod table;
@@ -49,7 +51,9 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DeleteResult>()?;
     m.add_class::<DropColumnsResult>()?;
     m.add_class::<UpdateResult>()?;
+    m.add_class::<PyAsyncPermutationBuilder>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
+    m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

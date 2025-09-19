@@ -183,6 +183,8 @@ impl CreateTableRequest {
 pub trait Database:
     Send + Sync + std::any::Any + std::fmt::Debug + std::fmt::Display + 'static
 {
+    /// Get the uri of the database
+    fn uri(&self) -> &str;
     /// List immediate child namespace names in the given namespace
     async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>>;
     /// Create a new namespace

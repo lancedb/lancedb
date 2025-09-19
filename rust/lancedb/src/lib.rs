@@ -194,6 +194,7 @@ pub mod arrow;
 pub mod connection;
 pub mod data;
 pub mod database;
+pub mod dataloader;
 pub mod embeddings;
 pub mod error;
 pub mod index;
