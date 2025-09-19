@@ -207,7 +207,8 @@ pub mod query;
 pub mod remote;
 pub mod rerankers;
 pub mod table;
-pub mod test_connection;
+#[cfg(test)]
+pub mod test_utils;
 pub mod utils;
 
 use std::fmt::Display;

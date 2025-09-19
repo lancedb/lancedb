@@ -18,8 +18,8 @@ use lance::arrow::SchemaExt;
 use crate::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     dataloader::{
-        shuffle::{Shuffler, ShufflerConfig},
-        util::TemporaryDirectory,
+        permutation::shuffle::{Shuffler, ShufflerConfig},
+        permutation::util::TemporaryDirectory,
     },
     query::{Query, QueryBase, Select},
     Error, Result,
