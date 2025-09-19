@@ -50,7 +50,7 @@ function sampleRecords(): Array<Record<string, any>> {
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Arrow",
   (
-    arrow: typeof arrow15 | typeof arrow16 | typeof arrow17 | typeof arrow18
+    arrow: typeof arrow15 | typeof arrow16 | typeof arrow17 | typeof arrow18,
   ) => {
     type ApacheArrow =
       | typeof arrow15
@@ -87,9 +87,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       tableCreationMethod: (
         records: Record<string, unknown>[],
         recordsReversed: Record<string, unknown>[],
-        schema: Schema
+        schema: Schema,
       ) => Promise<Table>,
-      infersTypes: boolean
+      infersTypes: boolean,
     ): Promise<void> {
       const records = sampleRecords();
       const recordsReversed = [
@@ -112,18 +112,18 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new Struct([
             new Field("x", new Float64(), false),
             new Field("y", new Float64(), false),
-          ])
+          ]),
         ),
         new Field(
           "list",
           new List(new Field("item", new Utf8(), false)),
-          false
+          false,
         ),
       ]);
       const table = (await tableCreationMethod(
         records,
         recordsReversed,
-        schema
+        schema,
         // biome-ignore lint/suspicious/noExplicitAny: <explanation>
       )) as any;
 
@@ -134,7 +134,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         (
           // biome-ignore lint/suspicious/noExplicitAny: <explanation>
           field: { name: any; type: { toString: () => any } },
-          idx: string | number
+          idx: string | number,
         ) => {
           const actualField = table.schema.fields[idx];
           // Type inference always assumes nullable=true
@@ -144,12 +144,12 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
             expect(actualField.nullable).toBe(false);
           }
           expect(table.getChild(field.name)?.type.toString()).toEqual(
-            field.type.toString()
+            field.type.toString(),
           );
           expect(table.getChildAt(idx)?.type.toString()).toEqual(
-            field.type.toString()
+            field.type.toString(),
           );
-        }
+        },
       );
     }
 
@@ -160,7 +160,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new Field("b", new Float32(), true),
           new Field(
             "c",
-            new FixedSizeList(3, new Field("item", new Float16()))
+            new FixedSizeList(3, new Field("item", new Float16())),
           ),
           new Field("d", new Int64(), true),
         ]);
@@ -170,7 +170,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
             { a: 4, b: 5, c: [4, 5, 6], d: 10 },
             { a: 7, b: 8, c: [7, 8, 9], d: null },
           ],
-          { schema }
+          { schema },
         );
 
         const buf = await fromTableToBuffer(table);
@@ -193,9 +193,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
             "vector",
             new FixedSizeList(
               3,
-              new Field("item", new Float(Precision.SINGLE), true)
+              new Field("item", new Float(Precision.SINGLE), true),
             ),
-            true
+            true,
           ),
         ]);
         const table = makeArrowTable([
@@ -218,7 +218,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           table
             .getChild("vector")
             ?.toJSON()
-            .map((v) => v.toJSON())
+            .map((v) => v.toJSON()),
         ).toEqual([
           [1, 2, 3],
           [4, 5, 6],
@@ -233,12 +233,12 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new Field(
             "vec1",
             new FixedSizeList(3, new Field("item", new Float16(), true)),
-            true
+            true,
           ),
           new Field(
             "vec2",
             new FixedSizeList(3, new Field("item", new Float64(), true)),
-            true
+            true,
           ),
         ]);
         const table = makeArrowTable(
@@ -252,7 +252,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
               vec1: { type: new Float16() },
               vec2: { type: new Float64() },
             },
-          }
+          },
         );
 
         const buf = await fromTableToBuffer(table);
@@ -300,14 +300,14 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         for (const columnName of floatVectorColumns) {
           expect(
             DataType.isFixedSizeList(
-              floatVectorTable.getChild(columnName)?.type
-            )
+              floatVectorTable.getChild(columnName)?.type,
+            ),
           ).toBe(true);
           // Check that float vectors use Float32 by default
           expect(
             floatVectorTable
               .getChild(columnName)
-              ?.type.children[0].type.toString()
+              ?.type.children[0].type.toString(),
           ).toEqual(new Float32().toString());
         }
 
@@ -327,14 +327,14 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         for (const columnName of integerArrayColumns) {
           expect(
             DataType.isFixedSizeList(
-              integerArrayTable.getChild(columnName)?.type
-            )
+              integerArrayTable.getChild(columnName)?.type,
+            ),
           ).toBe(true);
           // Regular integer arrays should use Float32 (avoiding false positives)
           expect(
             integerArrayTable
               .getChild(columnName)
-              ?.type.children[0].type.toString()
+              ?.type.children[0].type.toString(),
           ).toEqual(new Float32().toString());
         }
 
@@ -348,11 +348,11 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
         expect(
           DataType.isFixedSizeList(
-            normalListTable.getChild("normal_list")?.type
-          )
+            normalListTable.getChild("normal_list")?.type,
+          ),
         ).toBe(false);
         expect(
-          DataType.isList(normalListTable.getChild("normal_list")?.type)
+          DataType.isList(normalListTable.getChild("normal_list")?.type),
         ).toBe(true);
       });
 
@@ -366,13 +366,13 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         });
 
         expect(
-          table.getChild("fp16")?.type.children[0].type.toString()
+          table.getChild("fp16")?.type.children[0].type.toString(),
         ).toEqual(new Float16().toString());
         expect(
-          table.getChild("fp32")?.type.children[0].type.toString()
+          table.getChild("fp32")?.type.children[0].type.toString(),
         ).toEqual(new Float32().toString());
         expect(
-          table.getChild("fp64")?.type.children[0].type.toString()
+          table.getChild("fp64")?.type.children[0].type.toString(),
         ).toEqual(new Float64().toString());
       });
 
@@ -384,7 +384,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           dictionaryEncodeStrings: true,
         });
         expect(DataType.isDictionary(tableWithDict.getChild("str")?.type)).toBe(
-          true
+          true,
         );
 
         const schema = new Schema([
@@ -393,7 +393,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
         const tableWithDict2 = makeArrowTable([{ str: "hello" }], { schema });
         expect(
-          DataType.isDictionary(tableWithDict2.getChild("str")?.type)
+          DataType.isDictionary(tableWithDict2.getChild("str")?.type),
         ).toBe(true);
       });
 
@@ -401,7 +401,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         await checkTableCreation(
           // biome-ignore lint/suspicious/noExplicitAny: <explanation>
           async (records) => (<any>makeArrowTable)(records),
-          true
+          true,
         );
       });
 
@@ -410,7 +410,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           async (records, _, schema) =>
             // biome-ignore lint/suspicious/noExplicitAny: <explanation>
             (<any>makeArrowTable)(records, { schema }),
-          false
+          false,
         );
       });
 
@@ -419,7 +419,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           async (_, recordsReversed, schema) =>
             // biome-ignore lint/suspicious/noExplicitAny: <explanation>
             (<any>makeArrowTable)(recordsReversed, { schema }),
-          false
+          false,
         );
       });
 
@@ -427,7 +427,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         await checkTableCreation(
           // biome-ignore lint/suspicious/noExplicitAny: <explanation>
           async (_, __, schema) => (<any>makeArrowTable)([], { schema }),
-          false
+          false,
         );
       });
 
@@ -440,7 +440,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
               new Field("x", new Int32(), true),
               new Field("y", new Int32(), true),
             ]),
-            true
+            true,
           ),
           new Field("d", new Int16(), true),
         ]);
@@ -485,7 +485,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
             new Field("name", new Utf8(), true),
             new Field("description", new Utf8(), true),
           ],
-          new Map([["embedding_functions", JSON.stringify([])]])
+          new Map([["embedding_functions", JSON.stringify([])]]),
         );
 
         const data = [
@@ -526,13 +526,13 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
                 new Field(
                   "tags",
                   new List(new Field("item", new Utf8(), true)),
-                  true
+                  true,
                 ),
               ]),
-              true
+              true,
             ),
           ],
-          new Map([["embedding_functions", JSON.stringify([])]])
+          new Map([["embedding_functions", JSON.stringify([])]]),
         );
 
         const data = [
@@ -571,10 +571,10 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
                 new Field("author", new Utf8(), true),
                 new Field("created_at", new Utf8(), true),
               ]),
-              true
+              true,
             ),
           ],
-          new Map([["embedding_functions", JSON.stringify([])]])
+          new Map([["embedding_functions", JSON.stringify([])]]),
         );
 
         const data = [
@@ -590,7 +590,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         const metadataColumn = table.getChild("metadata");
         expect(metadataColumn).toBeDefined();
         expect(metadataColumn?.type.toString()).toBe(
-          "Struct<{version:Int32, author:Utf8, created_at:Utf8}>"
+          "Struct<{version:Int32, author:Utf8, created_at:Utf8}>",
         );
       });
 
@@ -613,16 +613,16 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
                         new Field("enabled", new Bool(), true),
                         new Field("cert_path", new Utf8(), true),
                       ]),
-                      true
+                      true,
                     ),
                   ]),
-                  true
+                  true,
                 ),
               ]),
-              true
+              true,
             ),
           ],
-          new Map([["embedding_functions", JSON.stringify([])]])
+          new Map([["embedding_functions", JSON.stringify([])]]),
         );
 
         const data = [
@@ -650,7 +650,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         const configColumn = table.getChild("config");
         expect(configColumn).toBeDefined();
         expect(configColumn?.type.toString()).toBe(
-          "Struct<{database:Utf8, connection:Struct<{host:Utf8, port:Int32, ssl:Struct<{enabled:Bool, cert_path:Utf8}>}>}>"
+          "Struct<{database:Utf8, connection:Struct<{host:Utf8, port:Int32, ssl:Struct<{enabled:Bool, cert_path:Utf8}>}>}>",
         );
       });
 
@@ -666,7 +666,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
             new Field("name", new Utf8(), true),
             new Field("description", new Utf8(), true),
           ],
-          new Map([["embedding_functions", JSON.stringify([])]])
+          new Map([["embedding_functions", JSON.stringify([])]]),
         );
 
         const buf = await fromDataToBuffer(incompleteTable, undefined, schema);
@@ -719,7 +719,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         const table = makeArrowTable(testData);
 
         const metadataField = table.schema.fields.find(
-          (f) => f.name === "metadata"
+          (f) => f.name === "metadata",
         );
         expect(metadataField).toBeDefined();
         // biome-ignore lint/suspicious/noExplicitAny: accessing fields in different Arrow versions
@@ -795,7 +795,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         await checkTableCreation(
           // biome-ignore lint/suspicious/noExplicitAny: <explanation>
           async (records) => await (<any>convertToTable)(records),
-          true
+          true,
         );
       });
 
@@ -804,7 +804,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           async (records, _, schema) =>
             // biome-ignore lint/suspicious/noExplicitAny: <explanation>
             await (<any>convertToTable)(records, undefined, { schema }),
-          false
+          false,
         );
       });
 
@@ -813,7 +813,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           async (_, recordsReversed, schema) =>
             // biome-ignore lint/suspicious/noExplicitAny: <explanation>
             await (<any>convertToTable)(recordsReversed, undefined, { schema }),
-          false
+          false,
         );
       });
 
@@ -822,7 +822,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           async (_, __, schema) =>
             // biome-ignore lint/suspicious/noExplicitAny: <explanation>
             await (<any>convertToTable)([], undefined, { schema }),
-          false
+          false,
         );
       });
 
@@ -830,16 +830,16 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         const records = sampleRecords();
         const table = await convertToTable(records, dummyEmbeddingConfig);
         expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
-          true
+          true,
         );
         expect(
-          table.getChild("vector")?.type.children[0].type.toString()
+          table.getChild("vector")?.type.children[0].type.toString(),
         ).toEqual(new Float16().toString());
       });
 
       it("will fail if missing the embedding source column", async function () {
         await expect(
-          convertToTable([{ id: 1 }], dummyEmbeddingConfig)
+          convertToTable([{ id: 1 }], dummyEmbeddingConfig),
         ).rejects.toThrow("'string' was not present");
       });
 
@@ -858,18 +858,18 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new Field(
             "vector",
             new FixedSizeList(2, new Field("item", new Float16(), false)),
-            false
+            false,
           ),
         ]);
         await fromTableToBuffer(
           table,
           dummyEmbeddingConfigWithNoDimension,
-          schemaWithEmbedding
+          schemaWithEmbedding,
         );
 
         // Otherwise we will get an error
         await expect(
-          fromTableToBuffer(table, dummyEmbeddingConfigWithNoDimension)
+          fromTableToBuffer(table, dummyEmbeddingConfigWithNoDimension),
         ).rejects.toThrow("does not specify `embeddingDimension`");
       });
 
@@ -879,24 +879,24 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           new Field(
             "vector",
             new FixedSizeList(2, new Field("item", new Float16(), false)),
-            false
+            false,
           ),
         ]);
         const table = await convertToTable([], dummyEmbeddingConfig, {
           schema,
         });
         expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
-          true
+          true,
         );
         expect(
-          table.getChild("vector")?.type.children[0].type.toString()
+          table.getChild("vector")?.type.children[0].type.toString(),
         ).toEqual(new Float16().toString());
       });
 
       it("will complain if embeddings present but schema missing embedding column", async function () {
         const schema = new Schema([new Field("string", new Utf8(), false)]);
         await expect(
-          convertToTable([], dummyEmbeddingConfig, { schema })
+          convertToTable([], dummyEmbeddingConfig, { schema }),
         ).rejects.toThrow("column vector was missing");
       });
 
@@ -916,7 +916,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         await checkTableCreation(
           // biome-ignore lint/suspicious/noExplicitAny: <explanation>
           async (_, __, schema) => (<any>makeEmptyTable)(schema),
-          false
+          false,
         );
       });
     });
@@ -929,8 +929,8 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
             "vector",
             new arrow15.FixedSizeList(
               1024,
-              new arrow15.Field("item", new arrow15.Float32(), true)
-            )
+              new arrow15.Field("item", new arrow15.Float32(), true),
+            ),
           ),
           new arrow15.Field(
             "struct",
@@ -941,18 +941,18 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
                   new arrow15.Utf8(),
                   new arrow15.Int32(),
                   1,
-                  true
-                )
+                  true,
+                ),
               ),
               new arrow15.Field(
                 "ts_with_tz",
-                new arrow15.TimestampNanosecond("some_tz")
+                new arrow15.TimestampNanosecond("some_tz"),
               ),
               new arrow15.Field(
                 "ts_no_tz",
-                new arrow15.TimestampNanosecond(null)
+                new arrow15.TimestampNanosecond(null),
               ),
-            ])
+            ]),
           ),
           // biome-ignore lint/suspicious/noExplicitAny: skip
         ]) as any;
@@ -999,7 +999,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         const result = await fromBufferToRecordBatch(buffer);
 
         expect(JSON.stringify(batch.toArray())).toEqual(
-          JSON.stringify(result?.toArray())
+          JSON.stringify(result?.toArray()),
         );
       });
 
@@ -1008,7 +1008,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(result).toEqual(null);
       });
     });
-  }
+  },
 );
 
 // Test for the undefined values bug fix
