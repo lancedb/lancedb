@@ -22,7 +22,7 @@ use rand::{seq::SliceRandom, Rng, RngCore};
 
 use crate::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
-    dataloader::util::{non_crypto_rng, TemporaryDirectory},
+    dataloader::permutation::util::{non_crypto_rng, TemporaryDirectory},
     Error, Result,
 };
 

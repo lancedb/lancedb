@@ -4711,6 +4711,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-ord",
  "arrow-schema",
+ "arrow-select",
  "async-openai",
  "async-trait",
  "aws-config",
