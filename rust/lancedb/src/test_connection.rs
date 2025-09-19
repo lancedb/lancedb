@@ -9,9 +9,9 @@ pub mod test_utils {
     use std::io::{BufRead, BufReader};
     use std::process::{Child, ChildStdout, Command, Stdio};
 
+    use crate::{connect, Connection};
     use anyhow::{bail, Result};
     use tempfile::{tempdir, TempDir};
-    use crate::{connect, Connection};
 
     const CREATE_LANCEDB_TEST_CONNECTION_SCRIPT: &str = "create_lancedb_test_connection.sh";
 
@@ -19,7 +19,7 @@ pub mod test_utils {
         pub uri: String,
         pub connection: Connection,
         _temp_dir: Option<TempDir>,
-        _process: Option<TestProcess>, 
+        _process: Option<TestProcess>,
     }
 
     struct TestProcess {
@@ -44,16 +44,18 @@ pub mod test_utils {
     async fn new_remote_connection() -> Result<TestConnection> {
         let temp_dir = tempdir()?;
         let data_path = format!("{}", temp_dir.path().to_str().unwrap());
-        let child_result =
-            Command::new(CREATE_LANCEDB_TEST_CONNECTION_SCRIPT).
-                stdin(Stdio::null()).
-                stdout(Stdio::piped()).
-                stderr(Stdio::piped()).
-                arg(data_path.clone()).
-                spawn();
+        let child_result = Command::new(CREATE_LANCEDB_TEST_CONNECTION_SCRIPT)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .arg(data_path.clone())
+            .spawn();
         if child_result.is_err() {
-            bail!(format!("Unable to run {}: {:?}",
-                CREATE_LANCEDB_TEST_CONNECTION_SCRIPT, child_result.err()));
+            bail!(format!(
+                "Unable to run {}: {:?}",
+                CREATE_LANCEDB_TEST_CONNECTION_SCRIPT,
+                child_result.err()
+            ));
         }
         let mut process = TestProcess {
             child: child_result.unwrap(),
@@ -77,8 +79,10 @@ pub mod test_utils {
         loop {
             let result = stdout.read_line(&mut line);
             if result.is_err() {
-                bail!(format!("read_process_port: error while reading from process output: {}",
-                    result.err().unwrap()));
+                bail!(format!(
+                    "read_process_port: error while reading from process output: {}",
+                    result.err().unwrap()
+                ));
             }
             if re.is_match(&line) {
                 let caps = re.captures(&line).unwrap();
@@ -88,16 +92,23 @@ pub mod test_utils {
     }
 
     #[cfg(feature = "remote")]
-    async fn create_new_connection(uri: &str, host_override: &str) -> crate::error::Result<Connection> {
-        connect(uri).
-            region("us-east-1").
-            api_key("sk_localtest").
-            host_override(host_override).
-            execute().await
+    async fn create_new_connection(
+        uri: &str,
+        host_override: &str,
+    ) -> crate::error::Result<Connection> {
+        connect(uri)
+            .region("us-east-1")
+            .api_key("sk_localtest")
+            .host_override(host_override)
+            .execute()
+            .await
     }
 
     #[cfg(not(feature = "remote"))]
-    async fn create_new_connection(_uri: &str, _host_override: &str) -> crate::error::Result<Connection> {
+    async fn create_new_connection(
+        _uri: &str,
+        _host_override: &str,
+    ) -> crate::error::Result<Connection> {
         panic!("remote feature not supported");
     }
 
