@@ -1170,6 +1170,7 @@ mod tests {
     use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, QueryExecutionOptions};
+    use crate::test_connection::test_utils::new_test_connection;
     use arrow::compute::concat_batches;
     use arrow_array::RecordBatchReader;
     use arrow_schema::{DataType, Field, Schema};
@@ -1185,11 +1186,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri).execute().await.unwrap();
-
-        assert_eq!(db.uri, uri);
+        let tc = new_test_connection().await.unwrap();
+        assert_eq!(tc.connection.uri, tc.uri);
     }
 
     #[cfg(not(windows))]
@@ -1256,15 +1254,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_connect_s3() {
-        // let db = Database::connect("s3://bucket/path/to/database").await.unwrap();
-    }
-
-    #[tokio::test]
     async fn test_open_table() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri).execute().await.unwrap();
+        let tc = new_test_connection().await.unwrap();
+        let db = tc.connection;
 
         assert_eq!(db.table_names().execute().await.unwrap().len(), 0);
         // open non-exist table

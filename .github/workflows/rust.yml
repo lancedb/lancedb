@@ -96,6 +96,7 @@ jobs:
       # Need up-to-date compilers for kernels
       CC: clang-18
       CXX: clang++-18
+      GH_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,15 +118,14 @@ jobs:
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
-      - name: Start S3 integration test environment
-        working-directory: .
-        run: docker compose up --detach --wait
       - name: Build
         run: cargo build --all-features --tests --locked --examples
-      - name: Run tests
-        run: cargo test --all-features --locked
+      - name: Run feature tests
+        run: make -C ./lancedb feature-tests
       - name: Run examples
         run: cargo run --example simple --locked
+      - name: Run remote tests
+        run: make -C ./lancedb remote-tests
 
   macos:
     timeout-minutes: 30
