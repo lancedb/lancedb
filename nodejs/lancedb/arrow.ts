@@ -705,7 +705,7 @@ function transposeData(
       }
       return current;
     });
-    return makeVector(values, field.type);
+    return makeVector(values, field.type, undefined, field.nullable);
   }
 }
 
@@ -752,9 +752,15 @@ function makeVector(
   values: unknown[],
   type?: DataType,
   stringAsDictionary?: boolean,
+  nullable?: boolean,
   // biome-ignore lint/suspicious/noExplicitAny: skip
 ): Vector<any> {
   if (type !== undefined) {
+    // Convert undefined values to null for nullable fields
+    if (nullable) {
+      values = values.map((v) => (v === undefined ? null : v));
+    }
+
     // No need for inference, let Arrow create it
     if (type instanceof Int) {
       if (DataType.isInt(type) && type.bitWidth === 64) {
@@ -879,7 +885,12 @@ async function applyEmbeddingsFromMetadata(
   for (const field of schema.fields) {
     if (!(field.name in columns)) {
       const nullValues = new Array(table.numRows).fill(null);
-      columns[field.name] = makeVector(nullValues, field.type);
+      columns[field.name] = makeVector(
+        nullValues,
+        field.type,
+        undefined,
+        field.nullable,
+      );
     }
   }
 
@@ -943,7 +954,12 @@ async function applyEmbeddings<T>(
     } else if (schema != null) {
       const destField = schema.fields.find((f) => f.name === destColumn);
       if (destField != null) {
-        newColumns[destColumn] = makeVector([], destField.type);
+        newColumns[destColumn] = makeVector(
+          [],
+          destField.type,
+          undefined,
+          destField.nullable,
+        );
       } else {
         throw new Error(
           `Attempt to apply embeddings to an empty table failed because schema was missing embedding column '${destColumn}'`,
