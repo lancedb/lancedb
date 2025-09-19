@@ -35,13 +35,13 @@ pub mod test_utils {
     pub async fn new_test_connection() -> Result<TestConnection> {
         match env::var("CREATE_LANCEDB_TEST_CONNECTION_SCRIPT") {
             Ok(script_path) => new_remote_connection(&script_path).await,
-            Err(e) => new_local_connection().await,
+            Err(_e) => new_local_connection().await,
         }
     }
 
     async fn new_remote_connection(script_path: &str) -> Result<TestConnection> {
         let temp_dir = tempdir()?;
-        let data_path = format!("{}", temp_dir.path().to_str().unwrap());
+        let data_path = temp_dir.path().to_str().unwrap().to_string();
         let child_result = Command::new(script_path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -62,10 +62,10 @@ pub mod test_utils {
         let port = read_process_port(stdout)?;
         let uri = "db://test";
         let host_override = format!("http://localhost:{}", port);
-        let connection = create_new_connection(&uri, &host_override).await?;
+        let connection = create_new_connection(uri, &host_override).await?;
         Ok(TestConnection {
             uri: uri.to_string(),
-            connection: connection,
+            connection,
             _temp_dir: Some(temp_dir),
             _process: Some(process),
         })
@@ -116,7 +116,7 @@ pub mod test_utils {
         let connection = connect(uri).execute().await?;
         Ok(TestConnection {
             uri: uri.to_string(),
-            connection: connection,
+            connection,
             _temp_dir: Some(temp_dir),
             _process: None,
         })
