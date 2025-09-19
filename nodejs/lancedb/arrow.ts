@@ -512,7 +512,11 @@ function* rowPathsAndValues(
     if (isObject(value)) {
       yield* rowPathsAndValues(value, [...basePath, key]);
     } else {
-      yield [[...basePath, key], value];
+      // Skip undefined values - they should be treated the same as missing fields
+      // for embedding function purposes
+      if (value !== undefined) {
+        yield [[...basePath, key], value];
+      }
     }
   }
 }
