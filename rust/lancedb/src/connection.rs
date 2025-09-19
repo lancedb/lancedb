@@ -1164,8 +1164,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_table_streaming() {
-        let tc = new_test_connection().await.unwrap();
-        let db = tc.connection;
+        let tmp_dir = tempdir().unwrap();
+
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = connect(uri).execute().await.unwrap();
 
         let batches = make_data().collect::<ArrowResult<Vec<_>>>().unwrap();
 

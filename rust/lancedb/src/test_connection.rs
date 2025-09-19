@@ -6,11 +6,8 @@
 #[cfg(test)]
 pub mod test_utils {
     use regex::Regex;
-    use std::fs::File;
     use std::io::{BufRead, BufReader};
-    use std::process::{Child, Command, Stdio};
-    use std::thread;
-    use std::time::Duration;
+    use std::process::{Child, ChildStdout, Command, Stdio};
 
     use anyhow::{bail, Result};
     use tempfile::{tempdir, TempDir};
@@ -46,51 +43,46 @@ pub mod test_utils {
 
     async fn new_remote_connection() -> Result<TestConnection> {
         let temp_dir = tempdir()?;
-        let log_path = format!("{}/lance-logs.txt", temp_dir.path().to_str().unwrap());
+        let data_path = format!("{}", temp_dir.path().to_str().unwrap());
         let child_result =
             Command::new(CREATE_LANCEDB_TEST_CONNECTION_SCRIPT).
                 stdin(Stdio::null()).
-                stdout(Stdio::null()).
-                arg(log_path.clone()).
+                stdout(Stdio::piped()).
+                stderr(Stdio::piped()).
+                arg(data_path.clone()).
                 spawn();
         if child_result.is_err() {
-            bail!(format!("Unable to run CREATE_LANCEDB_TEST_CONNECTION_SCRIPT: {:?}", child_result.err()));
+            bail!(format!("Unable to run {}: {:?}",
+                CREATE_LANCEDB_TEST_CONNECTION_SCRIPT, child_result.err()));
         }
-        let process = TestProcess {
+        let mut process = TestProcess {
             child: child_result.unwrap(),
         };
-        let port = read_process_port(&log_path)?;
+        let stdout = BufReader::new(process.child.stdout.take().unwrap());
+        let port = read_process_port(stdout)?;
         let uri = "db://test";
         let host_override = format!("http://localhost:{}", port);
         let connection = create_new_connection(&uri, &host_override).await?;
-        println!("DEBUG2: temp_dir={:?}", temp_dir.keep());
         Ok(TestConnection {
             uri: uri.to_string(),
             connection: connection,
-            _temp_dir: None,
+            _temp_dir: Some(temp_dir),
             _process: Some(process),
         })
     }
 
-    fn read_process_port(log_path: &str) -> Result<String> {
+    fn read_process_port(mut stdout: BufReader<ChildStdout>) -> Result<String> {
+        let mut line = String::new();
         let re = Regex::new(r"Query node now listening on 0.0.0.0:(.*)").unwrap();
         loop {
-            thread::sleep(Duration::from_millis(1));
-            let file = match File::open(log_path) {
-                Ok(file) => file,
-                Err(_err) => continue,
-            };
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) => {
-                        if re.is_match(&line) {
-                            let caps = re.captures(&line).unwrap();
-                            return Ok(caps[1].to_string());
-                        }
-                    }
-                    Err(_err) => break,
-                }
+            let result = stdout.read_line(&mut line);
+            if result.is_err() {
+                bail!(format!("read_process_port: error while reading from process output: {}",
+                    result.err().unwrap()));
+            }
+            if re.is_match(&line) {
+                let caps = re.captures(&line).unwrap();
+                return Ok(caps[1].to_string());
             }
         }
     }
