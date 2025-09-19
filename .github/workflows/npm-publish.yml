@@ -1,8 +1,8 @@
 name: NPM Publish
 
 env:
-  MACOSX_DEPLOYMENT_TARGET: '10.13'
-  CARGO_INCREMENTAL: '0'
+  MACOSX_DEPLOYMENT_TARGET: "10.13"
+  CARGO_INCREMENTAL: "0"
 
 permissions:
   contents: write
@@ -101,8 +101,8 @@ jobs:
             host: macos-latest
             features: ","
             pre_build: |-
-                brew install protobuf
-                rustup target add x86_64-apple-darwin
+              brew install protobuf
+              rustup target add x86_64-apple-darwin
           - target: aarch64-apple-darwin
             host: macos-latest
             features: fp16kernels
@@ -120,8 +120,8 @@ jobs:
             host: windows-latest
             features: ","
             pre_build: |-
-                choco install --no-progress protoc
-                rustup target add aarch64-pc-windows-msvc
+              choco install --no-progress protoc
+              rustup target add aarch64-pc-windows-msvc
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
             features: fp16kernels
@@ -130,7 +130,7 @@ jobs:
             pre_build: |-
               set -e &&
               apt-get update &&
-              apt-get install -y protobuf-compiler pkg-config
+              apt-get install -y protobuf-compiler pkg-config libssl-dev
           - target: x86_64-unknown-linux-musl
             # This one seems to need some extra memory
             host: ubuntu-2404-8x-x64
@@ -139,7 +139,7 @@ jobs:
             features: fp16kernels
             pre_build: |-
               set -e &&
-              apk add protobuf-dev curl &&
+              apk add protobuf-dev curl pkgconf openssl-dev &&
               ln -s /usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/crtbeginS.o /usr/lib/crtbeginS.o &&
               ln -s /usr/lib/libgcc_s.so /usr/lib/libgcc.so &&
               CC=gcc &&
@@ -152,7 +152,7 @@ jobs:
             pre_build: |-
               set -e &&
               apt-get update &&
-              apt-get install -y protobuf-compiler pkg-config &&
+              apt-get install -y protobuf-compiler pkg-config libssl-dev &&
               # https://github.com/aws/aws-lc-rs/issues/737#issuecomment-2725918627
               ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc/aarch64-unknown-linux-gnu/4.8.5/crtbeginS.o /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/crtbeginS.o &&
               ln -s /usr/aarch64-unknown-linux-gnu/lib/gcc /usr/aarch64-unknown-linux-gnu/aarch64-unknown-linux-gnu/sysroot/usr/lib/gcc &&
@@ -164,7 +164,7 @@ jobs:
             features: ","
             pre_build: |-
               set -e &&
-              apk add protobuf-dev &&
+              apk add protobuf-dev curl pkgconf openssl-dev &&
               rustup target add aarch64-unknown-linux-musl &&
               export CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc &&
               export CXX_aarch64_unknown_linux_musl=aarch64-linux-musl-g++
@@ -209,10 +209,11 @@ jobs:
         if: ${{ matrix.settings.docker }}
         with:
           image: ${{ matrix.settings.docker }}
-          options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
-                    -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache \
-                    -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index \
-                    -v ${{ github.workspace }}:/build -w /build/nodejs"
+          options:
+            "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
+            -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache \
+            -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index \
+            -v ${{ github.workspace }}:/build -w /build/nodejs"
           run: |
             set -e
             ${{ matrix.settings.pre_build }}
@@ -273,7 +274,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             host: buildjet-16vcpu-ubuntu-2204-arm
         node:
-          - '20'
+          - "20"
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
