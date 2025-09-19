@@ -6,14 +6,13 @@
 #[cfg(test)]
 pub mod test_utils {
     use regex::Regex;
+    use std::env;
     use std::io::{BufRead, BufReader};
     use std::process::{Child, ChildStdout, Command, Stdio};
 
     use crate::{connect, Connection};
     use anyhow::{bail, Result};
     use tempfile::{tempdir, TempDir};
-
-    const CREATE_LANCEDB_TEST_CONNECTION_SCRIPT: &str = "create_lancedb_test_connection.sh";
 
     pub struct TestConnection {
         pub uri: String,
@@ -34,17 +33,16 @@ pub mod test_utils {
     }
 
     pub async fn new_test_connection() -> Result<TestConnection> {
-        if cfg!(feature = "test_remote_connections") {
-            new_remote_connection().await
-        } else {
-            new_local_connection().await
+        match env::var("CREATE_LANCEDB_TEST_CONNECTION_SCRIPT") {
+            Ok(script_path) => new_remote_connection(&script_path).await,
+            Err(e) => new_local_connection().await,
         }
     }
 
-    async fn new_remote_connection() -> Result<TestConnection> {
+    async fn new_remote_connection(script_path: &str) -> Result<TestConnection> {
         let temp_dir = tempdir()?;
         let data_path = format!("{}", temp_dir.path().to_str().unwrap());
-        let child_result = Command::new(CREATE_LANCEDB_TEST_CONNECTION_SCRIPT)
+        let child_result = Command::new(script_path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -53,7 +51,7 @@ pub mod test_utils {
         if child_result.is_err() {
             bail!(format!(
                 "Unable to run {}: {:?}",
-                CREATE_LANCEDB_TEST_CONNECTION_SCRIPT,
+                script_path,
                 child_result.err()
             ));
         }
