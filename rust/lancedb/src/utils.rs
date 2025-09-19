@@ -174,7 +174,7 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
             ),
         })
     } else {
-        Ok(candidates[0].to_string())
+        Ok(candidates[0].clone())
     }
 }
 
