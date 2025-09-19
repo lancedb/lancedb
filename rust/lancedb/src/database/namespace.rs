@@ -42,14 +42,11 @@ impl NamespaceBackedDatabase {
         read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         // Connect to the namespace using lance_namespace::connect
-        let namespace_box = connect_namespace(ns_impl, ns_properties.clone())
+        let namespace = connect_namespace(ns_impl, ns_properties.clone())
             .await
             .map_err(|e| Error::InvalidInput {
                 message: format!("Failed to connect to namespace: {}", e),
             })?;
-
-        // Convert Box<dyn LanceNamespace> to Arc<dyn LanceNamespace>
-        let namespace: Arc<dyn LanceNamespace> = Arc::from(namespace_box);
 
         Ok(Self {
             namespace,
