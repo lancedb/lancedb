@@ -23,6 +23,7 @@ lance-table = "=0.37.0"
 lance-testing = "=0.37.0"
 lance-datafusion = "=0.37.0"
 lance-encoding = "=0.37.0"
+lance-namespace = "0.0.15"
 # Note that this one does not include pyarrow
 arrow = { version = "55.1", optional = false }
 arrow-array = "55.1"

@@ -36,6 +36,7 @@ lance-table = { workspace = true }
 lance-linalg = { workspace = true }
 lance-testing = { workspace = true }
 lance-encoding = { workspace = true }
+lance-namespace = { workspace = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }

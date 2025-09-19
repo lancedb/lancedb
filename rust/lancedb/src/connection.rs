@@ -1015,6 +1015,117 @@ pub fn connect(uri: &str) -> ConnectBuilder {
     ConnectBuilder::new(uri)
 }
 
+pub struct ConnectNamespaceBuilder {
+    ns_impl: String,
+    ns_properties: HashMap<String, String>,
+    storage_options: HashMap<String, String>,
+    read_consistency_interval: Option<std::time::Duration>,
+    embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    session: Option<Arc<lance::session::Session>>,
+}
+
+impl ConnectNamespaceBuilder {
+    fn new(ns_impl: &str, ns_properties: HashMap<String, String>) -> Self {
+        Self {
+            ns_impl: ns_impl.to_string(),
+            ns_properties,
+            storage_options: HashMap::new(),
+            read_consistency_interval: None,
+            embedding_registry: None,
+            session: None,
+        }
+    }
+
+    /// Set an option for the storage layer.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.storage_options.insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple options for the storage layer.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (key, value) in pairs {
+            self.storage_options.insert(key.into(), value.into());
+        }
+        self
+    }
+
+    /// The interval at which to check for updates from other processes.
+    ///
+    /// If left unset, consistency is not checked. For maximum read
+    /// performance, this is the default. For strong consistency, set this to
+    /// zero seconds. Then every read will check for updates from other processes.
+    /// As a compromise, set this to a non-zero duration for eventual consistency.
+    pub fn read_consistency_interval(
+        mut self,
+        read_consistency_interval: std::time::Duration,
+    ) -> Self {
+        self.read_consistency_interval = Some(read_consistency_interval);
+        self
+    }
+
+    /// Provide a custom [`EmbeddingRegistry`] to use for this connection.
+    pub fn embedding_registry(mut self, registry: Arc<dyn EmbeddingRegistry>) -> Self {
+        self.embedding_registry = Some(registry);
+        self
+    }
+
+    /// Set a custom session for object stores and caching.
+    ///
+    /// By default, a new session with default configuration will be created.
+    /// This method allows you to provide a custom session with your own
+    /// configuration for object store registries, caching, etc.
+    pub fn session(mut self, session: Arc<lance::session::Session>) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    /// Execute the connection
+    pub async fn execute(self) -> Result<Connection> {
+        use crate::database::namespace::LanceNamespaceDatabase;
+
+        let internal = Arc::new(
+            LanceNamespaceDatabase::connect(
+                &self.ns_impl,
+                self.ns_properties,
+                self.storage_options,
+                self.read_consistency_interval,
+                self.session,
+            )
+            .await?,
+        );
+
+        Ok(Connection {
+            internal,
+            uri: format!("namespace://{}", self.ns_impl),
+            embedding_registry: self
+                .embedding_registry
+                .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
+        })
+    }
+}
+
+/// Connect to a LanceDB database through a namespace.
+///
+/// # Arguments
+///
+/// * `ns_impl` - The namespace implementation to use (e.g., "dir" for directory-based, "rest" for REST API)
+/// * `ns_properties` - Configuration properties for the namespace implementation
+/// ```
+pub fn connect_namespace(
+    ns_impl: &str,
+    properties: HashMap<String, String>,
+) -> ConnectNamespaceBuilder {
+    ConnectNamespaceBuilder::new(ns_impl, properties)
+}
+
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
