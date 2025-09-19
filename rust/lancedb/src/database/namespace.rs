@@ -31,17 +31,18 @@ pub struct NamespaceBackedDatabase {
     storage_options: HashMap<String, String>,
     // Read consistency interval for tables
     read_consistency_interval: Option<std::time::Duration>,
+    // Optional session for object stores and caching
+    session: Option<Arc<lance::session::Session>>,
 }
 
 impl NamespaceBackedDatabase {
-    /// Create a new namespace-backed database
     pub async fn connect(
         ns_impl: &str,
         ns_properties: HashMap<String, String>,
         storage_options: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
+        session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
-        // Connect to the namespace using lance_namespace::connect
         let namespace = connect_namespace(ns_impl, ns_properties.clone())
             .await
             .map_err(|e| Error::InvalidInput {
@@ -52,7 +53,60 @@ impl NamespaceBackedDatabase {
             namespace,
             storage_options,
             read_consistency_interval,
+            session,
         })
+    }
+
+    /// Helper method to create a ListingDatabase from a table location
+    ///
+    /// This method:
+    /// 1. Validates that the location ends with <table_name>.lance
+    /// 2. Extracts the parent directory from the location
+    /// 3. Creates a ListingDatabase at that parent directory
+    async fn create_listing_database(
+        &self,
+        table_name: &str,
+        location: &str,
+        additional_storage_options: Option<HashMap<String, String>>,
+    ) -> Result<Arc<ListingDatabase>> {
+        let expected_suffix = format!("{}.lance", table_name);
+        if !location.ends_with(&expected_suffix) {
+            return Err(Error::Runtime {
+                message: format!(
+                    "Invalid table location '{}': expected to end with '{}'",
+                    location, expected_suffix
+                ),
+            });
+        }
+
+        let parent_dir = location
+            .rsplit_once('/')
+            .map(|(parent, _)| parent.to_string())
+            .ok_or_else(|| Error::Runtime {
+                message: format!("Invalid table location '{}': no parent directory", location),
+            })?;
+
+        let mut merged_storage_options = self.storage_options.clone();
+        if let Some(opts) = additional_storage_options {
+            merged_storage_options.extend(opts);
+        }
+
+        let connect_request = ConnectRequest {
+            uri: parent_dir,
+            options: merged_storage_options,
+            read_consistency_interval: self.read_consistency_interval,
+            session: self.session.clone(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+        };
+
+        let listing_db = ListingDatabase::connect_with_options(&connect_request)
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to create listing database: {}", e),
+            })?;
+
+        Ok(Arc::new(listing_db))
     }
 }
 
@@ -160,64 +214,47 @@ impl Database for NamespaceBackedDatabase {
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
-        // Check mode - namespace operations don't support all modes
+        let mut table_id = request.namespace.clone();
+        table_id.push(request.name.clone());
+        let describe_request = DescribeTableRequest {
+            id: Some(table_id.clone()),
+            version: None,
+        };
+
+        let describe_result = self.namespace.describe_table(describe_request).await;
+
         match request.mode {
-            CreateTableMode::Create => {}
+            CreateTableMode::Create => {
+                if describe_result.is_ok() {
+                    return Err(Error::TableAlreadyExists {
+                        name: request.name.clone(),
+                    });
+                }
+            }
             CreateTableMode::Overwrite => {
-                // Try to drop the table first if it exists
-                let mut table_id = request.namespace.clone();
-                table_id.push(request.name.clone());
-                let drop_request = DropTableRequest { id: Some(table_id) };
-                let _ = self.namespace.drop_table(drop_request).await;
+                if describe_result.is_ok() {
+                    // Drop the existing table - must succeed
+                    let drop_request = DropTableRequest {
+                        id: Some(table_id.clone()),
+                    };
+                    self.namespace
+                        .drop_table(drop_request)
+                        .await
+                        .map_err(|e| Error::Runtime {
+                            message: format!("Failed to drop existing table for overwrite: {}", e),
+                        })?;
+                }
             }
             CreateTableMode::ExistOk(_) => {
-                // Try to open the existing table
-                let mut table_id = request.namespace.clone();
-                table_id.push(request.name.clone());
-                let describe_request = DescribeTableRequest {
-                    id: Some(table_id),
-                    version: None,
-                };
-                if let Ok(response) = self.namespace.describe_table(describe_request).await {
-                    // Table exists, open it using ListingDatabase
-                    let mut merged_storage_options = self.storage_options.clone();
-                    if let Some(opts) = response.storage_options {
-                        merged_storage_options.extend(opts);
-                    }
-
+                if let Ok(response) = describe_result {
                     let location = response.location.ok_or_else(|| Error::Runtime {
                         message: "Table location is missing from namespace response".to_string(),
                     })?;
 
-                    // Get parent directory from table location
-                    let parent_dir = if location.contains(".lance") {
-                        location
-                            .rsplit_once('/')
-                            .map(|(parent, _)| parent.to_string())
-                            .unwrap_or_else(|| location.clone())
-                    } else {
-                        location.clone()
-                    };
+                    let listing_db = self
+                        .create_listing_database(&request.name, &location, response.storage_options)
+                        .await?;
 
-                    // Create a ListingDatabase at the parent directory
-                    let connect_request = ConnectRequest {
-                        uri: parent_dir,
-                        options: merged_storage_options,
-                        read_consistency_interval: self.read_consistency_interval,
-                        session: None,
-                        #[cfg(feature = "remote")]
-                        client_config: Default::default(),
-                    };
-
-                    let listing_db = Arc::new(
-                        ListingDatabase::connect_with_options(&connect_request)
-                            .await
-                            .map_err(|e| Error::Runtime {
-                                message: format!("Failed to create listing database: {}", e),
-                            })?,
-                    );
-
-                    // Open the table using ListingDatabase
                     return listing_db
                         .open_table(OpenTableRequest {
                             name: request.name.clone(),
@@ -227,11 +264,9 @@ impl Database for NamespaceBackedDatabase {
                         })
                         .await;
                 }
-                // Table doesn't exist, continue with creation
             }
         }
 
-        // Step 1: Create an empty table using namespace to get the location
         let mut table_id = request.namespace.clone();
         table_id.push(request.name.clone());
 
@@ -259,46 +294,14 @@ impl Database for NamespaceBackedDatabase {
                 message: "Table location is missing from create_empty_table response".to_string(),
             })?;
 
-        // Merge storage options from response
-        let mut merged_storage_options = self.storage_options.clone();
-        if let Some(opts) = create_empty_response.storage_options {
-            merged_storage_options.extend(opts);
-        }
+        let listing_db = self
+            .create_listing_database(
+                &request.name,
+                &location,
+                create_empty_response.storage_options,
+            )
+            .await?;
 
-        // Step 2: Get parent directory from table location
-        // The location should be something like /path/to/db/table.lance
-        // We need to extract the parent directory
-        let parent_dir = if location.contains(".lance") {
-            // Remove the table.lance part to get the parent directory
-            location
-                .rsplit_once('/')
-                .map(|(parent, _)| parent.to_string())
-                .unwrap_or_else(|| location.clone())
-        } else {
-            // If it doesn't contain .lance, assume it's already the parent directory
-            location.clone()
-        };
-
-        // Step 3: Create a ListingDatabase at the parent directory
-        let connect_request = ConnectRequest {
-            uri: parent_dir,
-            options: merged_storage_options,
-            read_consistency_interval: self.read_consistency_interval,
-            session: None,
-            #[cfg(feature = "remote")]
-            client_config: Default::default(),
-        };
-
-        let listing_db = Arc::new(
-            ListingDatabase::connect_with_options(&connect_request)
-                .await
-                .map_err(|e| Error::Runtime {
-                    message: format!("Failed to create listing database: {}", e),
-                })?,
-        );
-
-        // Step 4: Use the ListingDatabase to create the table
-        // Pass the request directly to the listing database
         listing_db.create_table(request).await
     }
 
@@ -318,46 +321,14 @@ impl Database for NamespaceBackedDatabase {
                 message: format!("Failed to describe table: {}", e),
             })?;
 
-        // Merge storage options
-        let mut merged_storage_options = self.storage_options.clone();
-        if let Some(opts) = response.storage_options {
-            merged_storage_options.extend(opts);
-        }
-
-        // Get table location
         let location = response.location.ok_or_else(|| Error::Runtime {
             message: "Table location is missing from namespace response".to_string(),
         })?;
 
-        // Get parent directory from table location
-        let parent_dir = if location.contains(".lance") {
-            location
-                .rsplit_once('/')
-                .map(|(parent, _)| parent.to_string())
-                .unwrap_or_else(|| location.clone())
-        } else {
-            location.clone()
-        };
+        let listing_db = self
+            .create_listing_database(&request.name, &location, response.storage_options)
+            .await?;
 
-        // Create a ListingDatabase at the parent directory
-        let connect_request = ConnectRequest {
-            uri: parent_dir,
-            options: merged_storage_options,
-            read_consistency_interval: self.read_consistency_interval,
-            session: None,
-            #[cfg(feature = "remote")]
-            client_config: Default::default(),
-        };
-
-        let listing_db = Arc::new(
-            ListingDatabase::connect_with_options(&connect_request)
-                .await
-                .map_err(|e| Error::Runtime {
-                    message: format!("Failed to create listing database: {}", e),
-                })?,
-        );
-
-        // Open the table using ListingDatabase
         listing_db.open_table(request).await
     }
 
@@ -420,9 +391,9 @@ mod tests {
     use tempfile::tempdir;
 
     /// Helper function to create test data
-    fn create_test_data(
-    ) -> RecordBatchIterator<std::vec::IntoIter<std::result::Result<RecordBatch, arrow_schema::ArrowError>>>
-    {
+    fn create_test_data() -> RecordBatchIterator<
+        std::vec::IntoIter<std::result::Result<RecordBatch, arrow_schema::ArrowError>>,
+    > {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, false),
@@ -449,26 +420,63 @@ mod tests {
         properties.insert("root".to_string(), root_path);
 
         // This should succeed with directory-based namespace
-        let result = connect_namespace("dir", properties).await;
+        let result = connect_namespace("dir", properties).execute().await;
 
         assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn test_namespace_connection_with_properties() {
-        // Test namespace connections work with properties passed directly
+    async fn test_namespace_connection_with_storage_options() {
+        // Test namespace connections with storage options
         let tmp_dir = tempdir().unwrap();
         let root_path = tmp_dir.path().to_str().unwrap().to_string();
 
         let mut properties = HashMap::new();
         properties.insert("root".to_string(), root_path);
-        // Storage options can be passed as part of properties if needed by the namespace implementation
-        properties.insert("timeout".to_string(), "30s".to_string());
 
-        // This should succeed with directory-based namespace
-        let result = connect_namespace("dir", properties).await;
+        // This should succeed with directory-based namespace and storage options
+        let result = connect_namespace("dir", properties)
+            .storage_option("timeout", "30s")
+            .execute()
+            .await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_namespace_connection_with_all_options() {
+        use crate::embeddings::MemoryRegistry;
+        use std::time::Duration;
+
+        // Test namespace connections with all configuration options
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let embedding_registry = Arc::new(MemoryRegistry::new());
+        let session = Arc::new(lance::session::Session::default());
+
+        // Test with all options set
+        let result = connect_namespace("dir", properties)
+            .storage_option("timeout", "30s")
+            .storage_options([("cache_size", "1gb"), ("region", "us-east-1")])
+            .read_consistency_interval(Duration::from_secs(5))
+            .embedding_registry(embedding_registry.clone())
+            .session(session.clone())
+            .execute()
+            .await;
+
+        assert!(result.is_ok());
+
+        let conn = result.unwrap();
+
+        // Verify embedding registry is set correctly
+        assert!(std::ptr::eq(
+            conn.embedding_registry() as *const _,
+            embedding_registry.as_ref() as *const _
+        ));
     }
 
     #[tokio::test]
@@ -482,6 +490,7 @@ mod tests {
         properties.insert("root".to_string(), root_path.clone());
 
         let conn = connect_namespace("dir", properties)
+            .execute()
             .await
             .expect("Failed to connect to namespace");
 
@@ -526,6 +535,7 @@ mod tests {
         properties.insert("root".to_string(), root_path.clone());
 
         let conn = connect_namespace("dir", properties)
+            .execute()
             .await
             .expect("Failed to connect to namespace");
 
@@ -574,6 +584,7 @@ mod tests {
         properties.insert("root".to_string(), root_path.clone());
 
         let conn = connect_namespace("dir", properties)
+            .execute()
             .await
             .expect("Failed to connect to namespace");
 
@@ -602,7 +613,10 @@ mod tests {
         let table2 = conn
             .create_table(
                 "overwrite_test",
-                RecordBatchIterator::new(vec![std::result::Result::Ok(test_data2)].into_iter(), schema),
+                RecordBatchIterator::new(
+                    vec![std::result::Result::Ok(test_data2)].into_iter(),
+                    schema,
+                ),
             )
             .mode(CreateTableMode::Overwrite)
             .execute()
@@ -643,6 +657,7 @@ mod tests {
         properties.insert("root".to_string(), root_path.clone());
 
         let conn = connect_namespace("dir", properties)
+            .execute()
             .await
             .expect("Failed to connect to namespace");
 
@@ -687,6 +702,7 @@ mod tests {
         properties.insert("root".to_string(), root_path.clone());
 
         let conn = connect_namespace("dir", properties)
+            .execute()
             .await
             .expect("Failed to connect to namespace");
 
@@ -753,6 +769,7 @@ mod tests {
         properties.insert("root".to_string(), root_path.clone());
 
         let conn = connect_namespace("dir", properties)
+            .execute()
             .await
             .expect("Failed to connect to namespace");
 
@@ -773,6 +790,7 @@ mod tests {
         properties.insert("root".to_string(), root_path.clone());
 
         let conn = connect_namespace("dir", properties)
+            .execute()
             .await
             .expect("Failed to connect to namespace");
 
