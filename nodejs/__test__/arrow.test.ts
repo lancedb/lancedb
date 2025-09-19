@@ -1010,3 +1010,39 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     });
   },
 );
+
+describe.each([arrow15, arrow16, arrow17, arrow18])(
+  "Boolean null handling",
+  (arrow) => {
+    it("should handle null values in nullable boolean fields", () => {
+      const { makeArrowTable } = require("../lancedb/arrow");
+      const schema = new arrow.Schema([
+        new arrow.Field("test", new arrow.Bool(), true),
+      ]);
+
+      // Test with all null values
+      const data = [{ test: null }];
+      const table = makeArrowTable(data, { schema });
+      
+      expect(table.numRows).toBe(1);
+      expect(table.schema.names).toEqual(["test"]);
+      expect(table.getChild("test")!.get(0)).toBeNull();
+    });
+
+    it("should handle mixed null and non-null boolean values", () => {
+      const { makeArrowTable } = require("../lancedb/arrow");
+      const schema = new arrow.Schema([
+        new arrow.Field("test", new arrow.Bool(), true),
+      ]);
+
+      // Test with mixed values
+      const data = [{ test: true }, { test: null }, { test: false }];
+      const table = makeArrowTable(data, { schema });
+      
+      expect(table.numRows).toBe(3);
+      expect(table.getChild("test")!.get(0)).toBe(true);
+      expect(table.getChild("test")!.get(1)).toBeNull();
+      expect(table.getChild("test")!.get(2)).toBe(false);
+    });
+  },
+);
