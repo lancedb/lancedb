@@ -1,0 +1,24 @@
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-stdlib=libc++", "-C", "link-arg=-lc++", "-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
+
+[target.x86_64-apple-darwin]  
+rustflags = ["-C", "link-arg=-stdlib=libc++", "-C", "link-arg=-lc++", "-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
+
+[env]
+MACOSX_DEPLOYMENT_TARGET = "11.0"
+CC = "clang"
+CXX = "clang++"
+CXXFLAGS = "-stdlib=libc++"
+LDFLAGS = "-stdlib=libc++"
+
+[profile.dev-release]
+inherits = "release"
+opt-level = 2          # faster to compile, still optimizes
+lto = "off"            # skip slow link-time optimization
+codegen-units = 16     # more parallelism
+incremental = true     # keep incremental builds
+
+[profile.release]
+opt-level = 3          # full optimizations for production
+lto = "thin"           # better runtime perf, slower builds
+codegen-units = 1      # maximum optimization
