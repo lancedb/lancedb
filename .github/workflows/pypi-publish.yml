@@ -56,7 +56,7 @@ jobs:
           pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           fury_token: ${{ secrets.FURY_TOKEN }}
   mac:
-    timeout-minutes: 60
+    timeout-minutes: 90
     runs-on: ${{ matrix.config.runner }}
     strategy:
       matrix:
@@ -64,7 +64,7 @@ jobs:
           - target: x86_64-apple-darwin
             runner: macos-13
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: warp-macos-14-arm64-6x
     env:
       MACOSX_DEPLOYMENT_TARGET: 10.15
     steps:
