@@ -26,7 +26,7 @@ pub struct Table {
 }
 
 impl Table {
-    fn inner_ref(&self) -> napi::Result<&LanceDbTable> {
+    pub(crate) fn inner_ref(&self) -> napi::Result<&LanceDbTable> {
         self.inner
             .as_ref()
             .ok_or_else(|| napi::Error::from_reason(format!("Table {} is closed", self.name)))

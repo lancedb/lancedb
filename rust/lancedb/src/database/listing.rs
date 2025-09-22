@@ -598,6 +598,10 @@ impl Database for ListingDatabase {
         Ok(Vec::new())
     }
 
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
     async fn create_namespace(&self, _request: CreateNamespaceRequest) -> Result<()> {
         Err(Error::NotSupported {
             message: "Namespace operations are not supported for listing database".into(),
