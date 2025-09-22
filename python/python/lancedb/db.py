@@ -484,6 +484,12 @@ class LanceDBConnection(DBConnection):
                 session,
             )
 
+        # TODO: It would be nice if we didn't store self.storage_options but it is
+        # currently used by the LanceTable.to_lance method.  This doesn't _really_
+        # work because some paths like LanceDBConnection.from_inner will lose the
+        # storage_options.  Also, this class really shouldn't be holding any state
+        # beyond _conn.
+        self.storage_options = storage_options
         self._conn = AsyncConnection(LOOP.run(do_connect()))
 
     @property
@@ -491,12 +497,12 @@ class LanceDBConnection(DBConnection):
         return self._conn.read_consistency_interval
 
     @property
-    def storage_options(self) -> Optional[Dict[str, str]]:
-        return self._conn.storage_options
-
-    @property
     def session(self) -> Optional[Session]:
         return self._conn.session
+
+    @property
+    def uri(self) -> str:
+        return self._conn.uri
 
     @classmethod
     def from_inner(cls, inner: LanceDbConnection):
