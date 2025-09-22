@@ -444,7 +444,6 @@ impl Table {
         Ok(self.inner_ref()?.merge_insert(on.as_slice()).into())
     }
 
-
     #[napi(catch_unwind)]
     pub async fn uses_v2_manifest_paths(&self) -> napi::Result<bool> {
         self.inner_ref()?
