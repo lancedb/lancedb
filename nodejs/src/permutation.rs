@@ -40,7 +40,10 @@ pub struct ShuffleOptions {
 
 /// Create a permutation builder for the given table
 #[napi]
-pub fn permutation_builder(table: &crate::table::Table, dest_table_name: String) -> napi::Result<PermutationBuilder> {
+pub fn permutation_builder(
+    table: &crate::table::Table,
+    dest_table_name: String,
+) -> napi::Result<PermutationBuilder> {
     use lancedb::dataloader::permutation::PermutationBuilder as LancePermutationBuilder;
 
     let inner_table = table.inner_ref()?.clone();
@@ -48,7 +51,6 @@ pub fn permutation_builder(table: &crate::table::Table, dest_table_name: String)
 
     Ok(PermutationBuilder::new(inner_builder, dest_table_name))
 }
-
 
 pub struct PermutationBuilderState {
     pub builder: Option<LancePermutationBuilder>,
@@ -94,10 +96,14 @@ impl PermutationBuilder {
     #[napi]
     pub fn split_random(&self, options: SplitRandomOptions) -> napi::Result<PermutationBuilder> {
         // Check that exactly one split type is provided
-        let split_args_count = [options.ratios.is_some(), options.counts.is_some(), options.fixed.is_some()]
-            .iter()
-            .filter(|&&x| x)
-            .count();
+        let split_args_count = [
+            options.ratios.is_some(),
+            options.counts.is_some(),
+            options.fixed.is_some(),
+        ]
+        .iter()
+        .filter(|&&x| x)
+        .count();
 
         if split_args_count != 1 {
             return Err(napi::Error::from_reason(
@@ -123,7 +129,11 @@ impl PermutationBuilder {
     /// Configure hash-based splits
     #[napi]
     pub fn split_hash(&self, options: SplitHashOptions) -> napi::Result<PermutationBuilder> {
-        let split_weights = options.split_weights.into_iter().map(|w| w as u64).collect();
+        let split_weights = options
+            .split_weights
+            .into_iter()
+            .map(|w| w as u64)
+            .collect();
         let discard_weight = options.discard_weight.unwrap_or(0) as u64;
 
         self.modify(|builder| {
@@ -137,12 +147,19 @@ impl PermutationBuilder {
 
     /// Configure sequential splits
     #[napi]
-    pub fn split_sequential(&self, options: SplitSequentialOptions) -> napi::Result<PermutationBuilder> {
+    pub fn split_sequential(
+        &self,
+        options: SplitSequentialOptions,
+    ) -> napi::Result<PermutationBuilder> {
         // Check that exactly one split type is provided
-        let split_args_count = [options.ratios.is_some(), options.counts.is_some(), options.fixed.is_some()]
-            .iter()
-            .filter(|&&x| x)
-            .count();
+        let split_args_count = [
+            options.ratios.is_some(),
+            options.counts.is_some(),
+            options.fixed.is_some(),
+        ]
+        .iter()
+        .filter(|&&x| x)
+        .count();
 
         if split_args_count != 1 {
             return Err(napi::Error::from_reason(
@@ -166,7 +183,9 @@ impl PermutationBuilder {
     /// Configure calculated splits
     #[napi]
     pub fn split_calculated(&self, calculation: String) -> napi::Result<PermutationBuilder> {
-        self.modify(|builder| builder.with_split_strategy(SplitStrategy::Calculated { calculation }))
+        self.modify(|builder| {
+            builder.with_split_strategy(SplitStrategy::Calculated { calculation })
+        })
     }
 
     /// Configure shuffling
