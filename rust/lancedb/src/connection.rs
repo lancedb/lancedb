@@ -17,9 +17,9 @@ use crate::database::listing::{
     ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
 use crate::database::{
-    CreateNamespaceRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
-    DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
-    TableNamesRequest,
+    CloneTableRequest, CreateNamespaceRequest, CreateTableData, CreateTableMode,
+    CreateTableRequest, Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest,
+    OpenTableRequest, TableNamesRequest,
 };
 use crate::embeddings::{
     EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
@@ -469,6 +469,62 @@ impl OpenTableBuilder {
     }
 }
 
+/// Builder for cloning a table.
+///
+/// A shallow clone creates a new table that shares the underlying data files
+/// with the source table but has its own independent manifest. Both the source
+/// and cloned tables can evolve independently while initially sharing the same
+/// data, deletion, and index files.
+///
+/// Use this builder to configure the clone operation before executing it.
+pub struct CloneTableBuilder {
+    parent: Arc<dyn Database>,
+    request: CloneTableRequest,
+}
+
+impl CloneTableBuilder {
+    fn new(parent: Arc<dyn Database>, target_table_name: String, source_uri: String) -> Self {
+        Self {
+            parent,
+            request: CloneTableRequest::new(target_table_name, source_uri),
+        }
+    }
+
+    /// Set the source version to clone from
+    pub fn source_version(mut self, version: u64) -> Self {
+        self.request.source_version = Some(version);
+        self
+    }
+
+    /// Set the source tag to clone from
+    pub fn source_tag(mut self, tag: impl Into<String>) -> Self {
+        self.request.source_tag = Some(tag.into());
+        self
+    }
+
+    /// Set the target namespace for the cloned table
+    pub fn target_namespace(mut self, namespace: Vec<String>) -> Self {
+        self.request.target_namespace = namespace;
+        self
+    }
+
+    /// Set whether to perform a shallow clone (default: true)
+    ///
+    /// When true, the cloned table shares data files with the source table.
+    /// When false, performs a deep clone (not yet implemented).
+    pub fn is_shallow(mut self, is_shallow: bool) -> Self {
+        self.request.is_shallow = is_shallow;
+        self
+    }
+
+    /// Execute the clone operation
+    pub async fn execute(self) -> Result<Table> {
+        Ok(Table::new(
+            self.parent.clone().clone_table(self.request).await?,
+        ))
+    }
+}
+
 /// A connection to LanceDB
 #[derive(Clone)]
 pub struct Connection {
@@ -572,6 +628,30 @@ impl Connection {
             self.internal.clone(),
             name.into(),
             self.embedding_registry.clone(),
+        )
+    }
+
+    /// Clone a table in the database
+    ///
+    /// Creates a new table by cloning from an existing source table.
+    /// By default, this performs a shallow clone where the new table shares
+    /// the underlying data files with the source table.
+    ///
+    /// # Parameters
+    /// - `target_table_name`: The name of the new table to create
+    /// - `source_uri`: The URI of the source table to clone from
+    ///
+    /// # Returns
+    /// A [`CloneTableBuilder`] that can be used to configure the clone operation
+    pub fn clone_table(
+        &self,
+        target_table_name: impl Into<String>,
+        source_uri: impl Into<String>,
+    ) -> CloneTableBuilder {
+        CloneTableBuilder::new(
+            self.internal.clone(),
+            target_table_name.into(),
+            source_uri.into(),
         )
     }
 
@@ -1280,5 +1360,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(other_schema, overwritten.schema().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_clone_table() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = connect(uri).execute().await.unwrap();
+
+        // Create a source table with some data
+        let mut batch_gen = BatchGenerator::new()
+            .col(Box::new(IncrementingInt32::new().named("id")))
+            .col(Box::new(IncrementingInt32::new().named("value")));
+        let reader = batch_gen.batches(5, 100);
+
+        let source_table = db
+            .create_table("source_table", reader)
+            .execute()
+            .await
+            .unwrap();
+
+        // Get the source table URI
+        let source_table_path = tmp_dir.path().join("source_table.lance");
+        let source_uri = source_table_path.to_str().unwrap();
+
+        // Clone the table
+        let cloned_table = db
+            .clone_table("cloned_table", source_uri)
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify the cloned table exists
+        let table_names = db.table_names().execute().await.unwrap();
+        assert!(table_names.contains(&"source_table".to_string()));
+        assert!(table_names.contains(&"cloned_table".to_string()));
+
+        // Verify the cloned table has the same schema
+        assert_eq!(
+            source_table.schema().await.unwrap(),
+            cloned_table.schema().await.unwrap()
+        );
+
+        // Verify the cloned table has the same data
+        let source_count = source_table.count_rows(None).await.unwrap();
+        let cloned_count = cloned_table.count_rows(None).await.unwrap();
+        assert_eq!(source_count, cloned_count);
     }
 }
