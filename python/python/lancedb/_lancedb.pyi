@@ -60,6 +60,15 @@ class Connection(object):
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table: ...
+    async def clone_table(
+        self,
+        target_table_name: str,
+        source_uri: str,
+        target_namespace: List[str] = [],
+        source_version: Optional[int] = None,
+        source_tag: Optional[str] = None,
+        is_shallow: bool = True,
+    ) -> Table: ...
     async def rename_table(
         self,
         cur_name: str,

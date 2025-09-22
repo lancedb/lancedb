@@ -14,9 +14,9 @@ use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
 use crate::database::{
-    CreateNamespaceRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
-    DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
-    TableNamesRequest,
+    CloneTableRequest, CreateNamespaceRequest, CreateTableData, CreateTableMode,
+    CreateTableRequest, Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest,
+    OpenTableRequest, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::table::BaseTable;
@@ -26,6 +26,18 @@ use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClie
 use super::table::RemoteTable;
 use super::util::{batches_to_ipc_bytes, parse_server_version};
 use super::ARROW_STREAM_CONTENT_TYPE;
+
+// Request structure for the remote clone table API
+#[derive(serde::Serialize)]
+struct RemoteCloneTableRequest {
+    source_location: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_shallow: Option<bool>,
+}
 
 // the versions of the server that we support
 // for any new feature that we need to change the SDK behavior, we should bump the server version,
@@ -422,6 +434,51 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             self.client.clone(),
             request.name.clone(),
             request.namespace.clone(),
+            table_identifier,
+            version,
+        ));
+        self.table_cache.insert(cache_key, table.clone()).await;
+
+        Ok(table)
+    }
+
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
+        let table_identifier = build_table_identifier(
+            &request.target_table_name,
+            &request.target_namespace,
+            &self.client.id_delimiter,
+        );
+
+        let remote_request = RemoteCloneTableRequest {
+            source_location: request.source_uri,
+            source_version: request.source_version,
+            source_tag: request.source_tag,
+            is_shallow: Some(request.is_shallow),
+        };
+
+        let req = self
+            .client
+            .post(&format!("/v1/table/{}/clone", table_identifier.clone()))
+            .json(&remote_request);
+
+        let (request_id, rsp) = self.client.send(req).await?;
+
+        let status = rsp.status();
+        if status != StatusCode::OK {
+            let body = rsp.text().await.err_to_http(request_id.clone())?;
+            return Err(crate::Error::Http {
+                source: format!("Failed to clone table: {}", body).into(),
+                request_id,
+                status_code: Some(status),
+            });
+        }
+
+        let version = parse_server_version(&request_id, &rsp)?;
+        let cache_key = build_cache_key(&request.target_table_name, &request.target_namespace);
+        let table = Arc::new(RemoteTable::new(
+            self.client.clone(),
+            request.target_table_name.clone(),
+            request.target_namespace.clone(),
             table_identifier,
             version,
         ));
@@ -1219,6 +1276,148 @@ mod tests {
                 assert_eq!(message, "Failed to fetch auth token");
             }
             _ => panic!("Expected Runtime error from header provider"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_clone_table() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/cloned_table/clone");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["source_location"], "s3://bucket/source_table");
+            assert_eq!(body["is_shallow"], true);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let table = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "cloned_table");
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_version() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/cloned_table/clone");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["source_location"], "s3://bucket/source_table");
+            assert_eq!(body["source_version"], 42);
+            assert_eq!(body["is_shallow"], true);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let table = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .source_version(42)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "cloned_table");
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_tag() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/cloned_table/clone");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["source_location"], "s3://bucket/source_table");
+            assert_eq!(body["source_tag"], "v1.0");
+            assert_eq!(body["is_shallow"], true);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let table = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .source_tag("v1.0")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "cloned_table");
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_deep_clone() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/cloned_table/clone");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["source_location"], "s3://bucket/source_table");
+            assert_eq!(body["is_shallow"], false);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let table = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .is_shallow(false)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "cloned_table");
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/ns1$ns2$cloned_table/clone");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["source_location"], "s3://bucket/source_table");
+            assert_eq!(body["is_shallow"], true);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let table = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .target_namespace(vec!["ns1".to_string(), "ns2".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "cloned_table");
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_error() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(500)
+                .body("Internal server error")
+                .unwrap()
+        });
+
+        let result = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .execute()
+            .await;
+
+        assert!(result.is_err());
+        if let Err(crate::Error::Http { source, .. }) = result {
+            assert!(source.to_string().contains("Failed to clone table"));
+        } else {
+            panic!("Expected HTTP error");
         }
     }
 }
