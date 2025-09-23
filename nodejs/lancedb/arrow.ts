@@ -751,7 +751,8 @@ function makeListVector(lists: unknown[][]): Vector<unknown> {
 function makeVector(
   values: unknown[],
   type?: DataType,
-  stringAsDictionary?: boolean
+  stringAsDictionary?: boolean,
+  nullable?: boolean
   // biome-ignore lint/suspicious/noExplicitAny: skip
 ): Vector<any> {
   if (type !== undefined) {
@@ -1285,21 +1286,33 @@ function validateSchemaEmbeddings(
     if (isFixedSizeList(field.type)) {
       field = sanitizeField(field);
       if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
-        // If the field is nullable, allow undefined/omitted values
-        if (field.nullable) {
+        // Check if there's an embedding function registered for this field
+        let hasEmbeddingFunction = false;
+
+        // Check schema metadata for embedding functions
+        if (schema.metadata.has("embedding_functions")) {
+          const embeddings = JSON.parse(
+            schema.metadata.get("embedding_functions")!,
+          );
+          // biome-ignore lint/suspicious/noExplicitAny: we don't know the type of `f`
+          if (embeddings.find((f: any) => f["vectorColumn"] === field.name)) {
+            hasEmbeddingFunction = true;
+          }
+        }
+
+        // Check passed embedding function parameter
+        if (embeddings && embeddings.vectorColumn === field.name) {
+          hasEmbeddingFunction = true;
+        }
+
+        // If the field is nullable AND there's no embedding function, allow undefined/omitted values
+        if (field.nullable && !hasEmbeddingFunction) {
           fields.push(field);
         } else {
-          if (schema.metadata.has("embedding_functions")) {
-            const embeddings = JSON.parse(
-              schema.metadata.get("embedding_functions")!
-            );
-            if (
-              // biome-ignore lint/suspicious/noExplicitAny: we don't know the type of `f`
-              embeddings.find((f: any) => f["vectorColumn"] === field.name) ===
-              undefined
-            ) {
-              missingEmbeddingFields.push(field);
-            }
+          // Either not nullable OR has embedding function - require explicit values
+          if (hasEmbeddingFunction) {
+            // Don't add to missingEmbeddingFields since this is expected to be filled by embedding function
+            fields.push(field);
           } else {
             missingEmbeddingFields.push(field);
           }
