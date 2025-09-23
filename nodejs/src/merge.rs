@@ -43,6 +43,13 @@ impl NativeMergeInsertBuilder {
         self.inner.timeout(Duration::from_millis(timeout as u64));
     }
 
+    #[napi]
+    pub fn use_index(&self, use_index: bool) -> Self {
+        let mut this = self.clone();
+        this.inner.use_index(use_index);
+        this
+    }
+
     #[napi(catch_unwind)]
     pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeResult> {
         let data = ipc_file_to_batches(buf.to_vec())

@@ -1452,6 +1452,14 @@ struct MergeInsertRequest {
     when_not_matched_insert_all: bool,
     when_not_matched_by_source_delete: bool,
     when_not_matched_by_source_delete_filt: Option<String>,
+    // For backwards compatibility, only serialize use_index when it's false
+    // (the default is true)
+    #[serde(skip_serializing_if = "is_true")]
+    use_index: bool,
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
@@ -1476,6 +1484,8 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             when_not_matched_insert_all: value.when_not_matched_insert_all,
             when_not_matched_by_source_delete: value.when_not_matched_by_source_delete,
             when_not_matched_by_source_delete_filt: value.when_not_matched_by_source_delete_filt,
+            // Only serialize use_index when it's false for backwards compatibility
+            use_index: value.use_index,
         })
     }
 }
@@ -1942,6 +1952,7 @@ mod tests {
                 assert_eq!(params["when_not_matched_by_source_delete"], "false");
                 assert!(!params.contains_key("when_matched_update_all_filt"));
                 assert!(!params.contains_key("when_not_matched_by_source_delete_filt"));
+                assert!(!params.contains_key("use_index"));
 
                 if old_server {
                     http::Response::builder().status(200).body("{}").unwrap()
