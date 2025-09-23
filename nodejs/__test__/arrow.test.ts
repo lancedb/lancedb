@@ -1,17 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-// SPDX-FileCopyrightText: Copyright The LanceDB Authors
-
-import {
-  Bool,
-  Field,
-  Int32,
-  List,
-  Schema,
-  Struct,
-  Uint8,
-  Utf8,
-} from "apache-arrow";
-
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
@@ -25,11 +11,9 @@ import {
   fromTableToBuffer,
   makeArrowTable,
   makeEmptyTable,
-  tableFromIPC,
 } from "../lancedb/arrow";
 import {
   EmbeddingFunction,
-  FieldOptions,
   FunctionOptions,
 } from "../lancedb/embedding/embedding_function";
 import { EmbeddingFunctionConfig } from "../lancedb/embedding/registry";

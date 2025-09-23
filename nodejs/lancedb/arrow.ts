@@ -41,7 +41,6 @@ import {
   vectorFromArray as badVectorFromArray,
   makeBuilder,
   makeData,
-  makeTable,
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
