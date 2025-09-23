@@ -61,6 +61,35 @@ impl NativeMergeInsertBuilder {
         })?;
         Ok(res.into())
     }
+
+    #[napi(catch_unwind)]
+    pub async fn explain_plan(&self, verbose: bool) -> napi::Result<String> {
+        let this = self.clone();
+        this.inner.explain_plan(None, verbose).await.map_err(|e| {
+            napi::Error::from_reason(format!(
+                "Failed to explain merge insert plan: {}",
+                convert_error(&e)
+            ))
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn analyze_plan(&self, buf: Buffer) -> napi::Result<String> {
+        let data = ipc_file_to_batches(buf.to_vec())
+            .and_then(IntoArrow::into_arrow)
+            .map_err(|e| {
+                napi::Error::from_reason(format!("Failed to read IPC file: {}", convert_error(&e)))
+            })?;
+
+        let this = self.clone();
+
+        this.inner.analyze_plan(data).await.map_err(|e| {
+            napi::Error::from_reason(format!(
+                "Failed to analyze merge insert plan: {}",
+                convert_error(&e)
+            ))
+        })
+    }
 }
 
 impl From<MergeInsertBuilder> for NativeMergeInsertBuilder {

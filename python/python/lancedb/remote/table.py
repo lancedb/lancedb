@@ -455,6 +455,24 @@ class RemoteTable(Table):
             self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
         )
 
+    def _explain_merge_plan(
+        self,
+        merge: LanceMergeInsertBuilder,
+        verbose: bool,
+    ) -> str:
+        raise NotImplementedError(
+            "explain_plan for merge_insert is not supported on remote tables"
+        )
+
+    def _analyze_merge_plan(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+    ) -> str:
+        raise NotImplementedError(
+            "analyze_plan for merge_insert is not supported on remote tables"
+        )
+
     def delete(self, predicate: str) -> DeleteResult:
         """Delete rows from the table.
 

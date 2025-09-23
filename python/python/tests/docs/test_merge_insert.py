@@ -192,3 +192,74 @@ async def test_replace_range_async(mem_db_async):
     assert res.num_inserted_rows == 0
     assert res.num_deleted_rows == 1
     assert res.num_updated_rows == 1
+
+
+def test_merge_insert_explain_and_analyze(mem_db):
+    """Test explain_plan and analyze_plan methods for merge insert operations."""
+    db = mem_db
+    table = db.create_table(
+        "test_table",
+        [
+            {"id": 0, "name": "Alice"},
+            {"id": 1, "name": "Bob"},
+        ],
+    )
+
+    new_data = [
+        {"id": 1, "name": "Bobby"},
+        {"id": 2, "name": "Charlie"},
+    ]
+
+    # Test explain_plan
+    merge_builder = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+    )
+    explain_result = merge_builder.explain_plan(verbose=False)
+    assert "MergeInsert" in explain_result
+
+    # Test analyze_plan
+    merge_builder = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+    )
+    analyze_result = merge_builder.analyze_plan(new_data)
+    assert "MergeInsert" in analyze_result
+
+
+@pytest.mark.asyncio
+async def test_merge_insert_explain_and_analyze_async(mem_db_async):
+    """Test explain_plan and analyze_plan methods for merge insert operations."""
+    db = mem_db_async
+    table = await db.create_table(
+        "test_table",
+        [
+            {"id": 0, "name": "Alice"},
+            {"id": 1, "name": "Bob"},
+        ],
+    )
+
+    new_data = [
+        {"id": 1, "name": "Bobby"},
+        {"id": 2, "name": "Charlie"},
+    ]
+
+    # Test explain_plan
+    merge_builder = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+    )
+    explain_result = merge_builder.explain_plan(verbose=False)
+    assert "MergeInsert" in explain_result
+
+    # Test analyze_plan
+    merge_builder = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+    )
+    analyze_result = merge_builder.analyze_plan(new_data)
+    assert "MergeInsert" in analyze_result

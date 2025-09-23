@@ -1178,6 +1178,27 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(merge_insert_response)
     }
 
+    async fn merge_insert_explain_plan(
+        &self,
+        _params: &MergeInsertBuilder,
+        _schema: Option<arrow_schema::SchemaRef>,
+        _verbose: bool,
+    ) -> Result<String> {
+        Err(crate::Error::NotSupported {
+            message: "explain_plan for merge_insert is not supported on remote tables".to_string(),
+        })
+    }
+
+    async fn merge_insert_analyze_plan(
+        &self,
+        _params: &MergeInsertBuilder,
+        _new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<String> {
+        Err(crate::Error::NotSupported {
+            message: "analyze_plan for merge_insert is not supported on remote tables".to_string(),
+        })
+    }
+
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
         Ok(Box::new(RemoteTags { inner: self }))
     }

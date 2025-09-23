@@ -101,6 +101,31 @@ impl MergeInsertBuilder {
         self
     }
 
+    /// Explain the execution plan for the merge insert operation
+    ///
+    /// Returns a string describing how the merge insert operation would be executed.
+    /// This does not execute the operation.
+    pub async fn explain_plan(
+        &self,
+        schema: Option<arrow_schema::SchemaRef>,
+        verbose: bool,
+    ) -> Result<String> {
+        self.table
+            .merge_insert_explain_plan(self, schema, verbose)
+            .await
+    }
+
+    /// Analyze the execution plan for the merge insert operation
+    ///
+    /// This executes the merge insert operation to collect performance metrics
+    /// but does not commit the changes to the dataset.
+    pub async fn analyze_plan(
+        &self,
+        new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<String> {
+        self.table.merge_insert_analyze_plan(self, new_data).await
+    }
+
     /// Executes the merge insert operation
     ///
     /// Returns version and statistics about the merge operation including the number of rows
