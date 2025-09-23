@@ -17,6 +17,7 @@ class MRRReranker(Reranker):
     """
     Reranks the results using Mean Reciprocal Rank (MRR) algorithm based
     on the scores of vector and FTS search.
+    Algorithm reference - https://en.wikipedia.org/wiki/Mean_reciprocal_rank
 
     MRR calculates the average of reciprocal ranks across different search results.
     For each document, it computes the reciprocal of its rank in each system,
@@ -65,19 +66,16 @@ class MRRReranker(Reranker):
         # Maps result_id to list of (type, reciprocal_rank)
         mrr_score_map = defaultdict(list)
 
-        # Calculate reciprocal rank for vector results
         if vector_ids:
             for rank, result_id in enumerate(vector_ids, 1):
                 reciprocal_rank = 1.0 / rank
                 mrr_score_map[result_id].append(("vector", reciprocal_rank))
 
-        # Calculate reciprocal rank for FTS results
         if fts_ids:
             for rank, result_id in enumerate(fts_ids, 1):
                 reciprocal_rank = 1.0 / rank
                 mrr_score_map[result_id].append(("fts", reciprocal_rank))
 
-        # Calculate weighted MRR score for each document
         final_mrr_scores = {}
         for result_id, scores in mrr_score_map.items():
             vector_rr = 0.0
@@ -89,12 +87,10 @@ class MRRReranker(Reranker):
                 elif score_type == "fts":
                     fts_rr = reciprocal_rank
 
-            # Calculate weighted average of reciprocal ranks
             # If a document doesn't appear, its reciprocal rank is 0
             weighted_mrr = self.weight_vector * vector_rr + self.weight_fts * fts_rr
             final_mrr_scores[result_id] = weighted_mrr
 
-        # Sort the results based on MRR score
         combined_results = self.merge_results(vector_results, fts_results)
         combined_row_ids = combined_results["_rowid"].to_pylist()
         relevance_scores = [final_mrr_scores[row_id] for row_id in combined_row_ids]
