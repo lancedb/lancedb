@@ -17,11 +17,11 @@ class MRRReranker(Reranker):
     """
     Reranks the results using Mean Reciprocal Rank (MRR) algorithm based
     on the scores of vector and FTS search.
-    
+
     MRR calculates the average of reciprocal ranks across different search results.
     For each document, it computes the reciprocal of its rank in each system,
     then takes the mean of these reciprocal ranks as the final score.
-    
+
     Parameters
     ----------
     weight_vector : float, default 0.5
@@ -36,14 +36,19 @@ class MRRReranker(Reranker):
         with the relevance score.
     """
 
-    def __init__(self, weight_vector: float = 0.5, weight_fts: float = 0.5, return_score="relevance"):
+    def __init__(
+        self,
+        weight_vector: float = 0.5,
+        weight_fts: float = 0.5,
+        return_score="relevance",
+    ):
         if not (0.0 <= weight_vector <= 1.0):
             raise ValueError("weight_vector must be between 0.0 and 1.0")
         if not (0.0 <= weight_fts <= 1.0):
             raise ValueError("weight_fts must be between 0.0 and 1.0")
         if abs(weight_vector + weight_fts - 1.0) > 1e-6:
             raise ValueError("weight_vector + weight_fts must equal 1.0")
-        
+
         super().__init__(return_score)
         self.weight_vector = weight_vector
         self.weight_fts = weight_fts
@@ -64,29 +69,29 @@ class MRRReranker(Reranker):
         if vector_ids:
             for rank, result_id in enumerate(vector_ids, 1):
                 reciprocal_rank = 1.0 / rank
-                mrr_score_map[result_id].append(('vector', reciprocal_rank))
+                mrr_score_map[result_id].append(("vector", reciprocal_rank))
 
         # Calculate reciprocal rank for FTS results
         if fts_ids:
             for rank, result_id in enumerate(fts_ids, 1):
                 reciprocal_rank = 1.0 / rank
-                mrr_score_map[result_id].append(('fts', reciprocal_rank))
+                mrr_score_map[result_id].append(("fts", reciprocal_rank))
 
         # Calculate weighted MRR score for each document
         final_mrr_scores = {}
         for result_id, scores in mrr_score_map.items():
             vector_rr = 0.0
             fts_rr = 0.0
-            
+
             for score_type, reciprocal_rank in scores:
-                if score_type == 'vector':
+                if score_type == "vector":
                     vector_rr = reciprocal_rank
-                elif score_type == 'fts':
+                elif score_type == "fts":
                     fts_rr = reciprocal_rank
-            
+
             # Calculate weighted average of reciprocal ranks
-            # If a document doesn't appear in one of the rankings, its reciprocal rank is 0
-            weighted_mrr = (self.weight_vector * vector_rr + self.weight_fts * fts_rr)
+            # If a document doesn't appear, its reciprocal rank is 0
+            weighted_mrr = self.weight_vector * vector_rr + self.weight_fts * fts_rr
             final_mrr_scores[result_id] = weighted_mrr
 
         # Sort the results based on MRR score
@@ -109,7 +114,7 @@ class MRRReranker(Reranker):
         self,
         vector_results: Union[List[pa.Table], List["LanceVectorQueryBuilder"]],
         query: str = None,
-        deduplicate: bool = True,  # noqa: F821 # TODO: automatically deduplicates
+        deduplicate: bool = True,  # noqa: F821
     ):
         """
         Reranks the results from multiple vector searches using MRR algorithm.
@@ -139,7 +144,7 @@ class MRRReranker(Reranker):
             )
 
         mrr_score_map = defaultdict(list)
-        
+
         for result_table in vector_results:
             result_ids = result_table["_rowid"].to_pylist()
             for rank, result_id in enumerate(result_ids, 1):
@@ -155,7 +160,7 @@ class MRRReranker(Reranker):
         combined = self._deduplicate(combined)
 
         combined_row_ids = combined["_rowid"].to_pylist()
-        
+
         relevance_scores = [final_mrr_scores[row_id] for row_id in combined_row_ids]
         combined = combined.append_column(
             "_relevance_score", pa.array(relevance_scores, type=pa.float32())

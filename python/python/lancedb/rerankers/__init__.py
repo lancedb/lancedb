@@ -24,5 +24,5 @@ __all__ = [
     "RRFReranker",
     "AnswerdotaiRerankers",
     "VoyageAIReranker",
-    "MRRReranker"
+    "MRRReranker",
 ]
