@@ -268,6 +268,33 @@ export abstract class Connection {
    * @param {string[]} namespace The namespace to drop tables from (defaults to root namespace).
    */
   abstract dropAllTables(namespace?: string[]): Promise<void>;
+
+  /**
+   * Clone a table from a source table.
+   *
+   * A shallow clone creates a new table that shares the underlying data files
+   * with the source table but has its own independent manifest. This allows
+   * both the source and cloned tables to evolve independently while initially
+   * sharing the same data, deletion, and index files.
+   *
+   * @param {string} targetTableName - The name of the target table to create.
+   * @param {string} sourceUri - The URI of the source table to clone from.
+   * @param {object} options - Clone options.
+   * @param {string[]} options.targetNamespace - The namespace for the target table (defaults to root namespace).
+   * @param {number} options.sourceVersion - The version of the source table to clone.
+   * @param {string} options.sourceTag - The tag of the source table to clone.
+   * @param {boolean} options.isShallow - Whether to perform a shallow clone (defaults to true).
+   */
+  abstract cloneTable(
+    targetTableName: string,
+    sourceUri: string,
+    options?: {
+      targetNamespace?: string[];
+      sourceVersion?: number;
+      sourceTag?: string;
+      isShallow?: boolean;
+    },
+  ): Promise<Table>;
 }
 
 /** @hideconstructor */
@@ -327,6 +354,28 @@ export class LocalConnection extends Connection {
       namespace ?? [],
       cleanseStorageOptions(options?.storageOptions),
       options?.indexCacheSize,
+    );
+
+    return new LocalTable(innerTable);
+  }
+
+  async cloneTable(
+    targetTableName: string,
+    sourceUri: string,
+    options?: {
+      targetNamespace?: string[];
+      sourceVersion?: number;
+      sourceTag?: string;
+      isShallow?: boolean;
+    },
+  ): Promise<Table> {
+    const innerTable = await this.inner.cloneTable(
+      targetTableName,
+      sourceUri,
+      options?.targetNamespace ?? [],
+      options?.sourceVersion ?? null,
+      options?.sourceTag ?? null,
+      options?.isShallow ?? true,
     );
 
     return new LocalTable(innerTable);

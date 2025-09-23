@@ -512,7 +512,11 @@ function* rowPathsAndValues(
     if (isObject(value)) {
       yield* rowPathsAndValues(value, [...basePath, key]);
     } else {
-      yield [[...basePath, key], value];
+      // Skip undefined values - they should be treated the same as missing fields
+      // for embedding function purposes
+      if (value !== undefined) {
+        yield [[...basePath, key], value];
+      }
     }
   }
 }
@@ -701,7 +705,7 @@ function transposeData(
       }
       return current;
     });
-    return makeVector(values, field.type);
+    return makeVector(values, field.type, undefined, field.nullable);
   }
 }
 
@@ -747,10 +751,30 @@ function makeListVector(lists: unknown[][]): Vector<unknown> {
 function makeVector(
   values: unknown[],
   type?: DataType,
-  stringAsDictionary?: boolean,
+  stringAsDictionary?: boolean
   // biome-ignore lint/suspicious/noExplicitAny: skip
 ): Vector<any> {
   if (type !== undefined) {
+    // Convert undefined values to null for nullable fields
+    if (nullable) {
+      values = values.map((v) => (v === undefined ? null : v));
+    }
+
+    // workaround for: https://github.com/apache/arrow-js/issues/68
+    if (DataType.isBool(type)) {
+      const hasNonNullValue = values.some((v) => v !== null && v !== undefined);
+      if (!hasNonNullValue) {
+        const nullBitmap = new Uint8Array(Math.ceil(values.length / 8));
+        const data = makeData({
+          type: type,
+          length: values.length,
+          nullCount: values.length,
+          nullBitmap,
+        });
+        return arrowMakeVector(data);
+      }
+    }
+
     // No need for inference, let Arrow create it
     if (type instanceof Int) {
       if (DataType.isInt(type) && type.bitWidth === 64) {
@@ -875,7 +899,12 @@ async function applyEmbeddingsFromMetadata(
   for (const field of schema.fields) {
     if (!(field.name in columns)) {
       const nullValues = new Array(table.numRows).fill(null);
-      columns[field.name] = makeVector(nullValues, field.type);
+      columns[field.name] = makeVector(
+        nullValues,
+        field.type,
+        undefined,
+        field.nullable,
+      );
     }
   }
 
@@ -939,7 +968,12 @@ async function applyEmbeddings<T>(
     } else if (schema != null) {
       const destField = schema.fields.find((f) => f.name === destColumn);
       if (destField != null) {
-        newColumns[destColumn] = makeVector([], destField.type);
+        newColumns[destColumn] = makeVector(
+          [],
+          destField.type,
+          undefined,
+          destField.nullable,
+        );
       } else {
         throw new Error(
           `Attempt to apply embeddings to an empty table failed because schema was missing embedding column '${destColumn}'`,
@@ -1251,33 +1285,21 @@ function validateSchemaEmbeddings(
     if (isFixedSizeList(field.type)) {
       field = sanitizeField(field);
       if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
-        // Check if there's an embedding function registered for this field
-        let hasEmbeddingFunction = false;
-
-        // Check schema metadata for embedding functions
-        if (schema.metadata.has("embedding_functions")) {
-          const embeddings = JSON.parse(
-            schema.metadata.get("embedding_functions")!,
-          );
-          // biome-ignore lint/suspicious/noExplicitAny: we don't know the type of `f`
-          if (embeddings.find((f: any) => f["vectorColumn"] === field.name)) {
-            hasEmbeddingFunction = true;
-          }
-        }
-
-        // Check passed embedding function parameter
-        if (embeddings && embeddings.vectorColumn === field.name) {
-          hasEmbeddingFunction = true;
-        }
-
-        // If the field is nullable AND there's no embedding function, allow undefined/omitted values
-        if (field.nullable && !hasEmbeddingFunction) {
+        // If the field is nullable, allow undefined/omitted values
+        if (field.nullable) {
           fields.push(field);
         } else {
-          // Either not nullable OR has embedding function - require explicit values
-          if (hasEmbeddingFunction) {
-            // Don't add to missingEmbeddingFields since this is expected to be filled by embedding function
-            fields.push(field);
+          if (schema.metadata.has("embedding_functions")) {
+            const embeddings = JSON.parse(
+              schema.metadata.get("embedding_functions")!
+            );
+            if (
+              // biome-ignore lint/suspicious/noExplicitAny: we don't know the type of `f`
+              embeddings.find((f: any) => f["vectorColumn"] === field.name) ===
+              undefined
+            ) {
+              missingEmbeddingFields.push(field);
+            }
           } else {
             missingEmbeddingFields.push(field);
           }

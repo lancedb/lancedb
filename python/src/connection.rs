@@ -163,6 +163,34 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = (target_table_name, source_uri, target_namespace=vec![], source_version=None, source_tag=None, is_shallow=true))]
+    pub fn clone_table(
+        self_: PyRef<'_, Self>,
+        target_table_name: String,
+        source_uri: String,
+        target_namespace: Vec<String>,
+        source_version: Option<u64>,
+        source_tag: Option<String>,
+        is_shallow: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+
+        let mut builder = inner.clone_table(target_table_name, source_uri);
+        builder = builder.target_namespace(target_namespace);
+        if let Some(version) = source_version {
+            builder = builder.source_version(version);
+        }
+        if let Some(tag) = source_tag {
+            builder = builder.source_tag(tag);
+        }
+        builder = builder.is_shallow(is_shallow);
+
+        future_into_py(self_.py(), async move {
+            let table = builder.execute().await.infer_error()?;
+            Ok(Table::new(table))
+        })
+    }
+
     #[pyo3(signature = (cur_name, new_name, cur_namespace=vec![], new_namespace=vec![]))]
     pub fn rename_table(
         self_: PyRef<'_, Self>,
