@@ -1976,6 +1976,8 @@ impl NativeTable {
     /// Delete keys from the config
     pub async fn delete_config_keys(&self, delete_keys: &[&str]) -> Result<()> {
         let mut dataset = self.dataset.get_mut().await?;
+        // TODO: update this when we implement metadata APIs
+        #[allow(deprecated)]
         dataset.delete_config_keys(delete_keys).await?;
         Ok(())
     }
@@ -1986,6 +1988,8 @@ impl NativeTable {
         upsert_values: impl IntoIterator<Item = (String, String)>,
     ) -> Result<()> {
         let mut dataset = self.dataset.get_mut().await?;
+        // TODO: update this when we implement metadata APIs
+        #[allow(deprecated)]
         dataset.replace_schema_metadata(upsert_values).await?;
         Ok(())
     }
