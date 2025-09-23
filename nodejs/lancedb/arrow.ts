@@ -512,7 +512,11 @@ function* rowPathsAndValues(
     if (isObject(value)) {
       yield* rowPathsAndValues(value, [...basePath, key]);
     } else {
-      yield [[...basePath, key], value];
+      // Skip undefined values - they should be treated the same as missing fields
+      // for embedding function purposes
+      if (value !== undefined) {
+        yield [[...basePath, key], value];
+      }
     }
   }
 }
@@ -755,6 +759,21 @@ function makeVector(
     // Convert undefined values to null for nullable fields
     if (nullable) {
       values = values.map((v) => (v === undefined ? null : v));
+    }
+
+    // workaround for: https://github.com/apache/arrow-js/issues/68
+    if (DataType.isBool(type)) {
+      const hasNonNullValue = values.some((v) => v !== null && v !== undefined);
+      if (!hasNonNullValue) {
+        const nullBitmap = new Uint8Array(Math.ceil(values.length / 8));
+        const data = makeData({
+          type: type,
+          length: values.length,
+          nullCount: values.length,
+          nullBitmap,
+        });
+        return arrowMakeVector(data);
+      }
     }
 
     // No need for inference, let Arrow create it

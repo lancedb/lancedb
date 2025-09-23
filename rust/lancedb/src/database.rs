@@ -176,6 +176,42 @@ impl CreateTableRequest {
     }
 }
 
+/// Request to clone a table from a source table.
+///
+/// A shallow clone creates a new table that shares the underlying data files
+/// with the source table but has its own independent manifest. This allows
+/// both the source and cloned tables to evolve independently while initially
+/// sharing the same data, deletion, and index files.
+#[derive(Clone, Debug)]
+pub struct CloneTableRequest {
+    /// The name of the target table to create
+    pub target_table_name: String,
+    /// The namespace for the target table. Empty list represents root namespace.
+    pub target_namespace: Vec<String>,
+    /// The URI of the source table to clone from.
+    pub source_uri: String,
+    /// Optional version of the source table to clone.
+    pub source_version: Option<u64>,
+    /// Optional tag of the source table to clone.
+    pub source_tag: Option<String>,
+    /// Whether to perform a shallow clone (true) or deep clone (false). Defaults to true.
+    /// Currently only shallow clone is supported.
+    pub is_shallow: bool,
+}
+
+impl CloneTableRequest {
+    pub fn new(target_table_name: String, source_uri: String) -> Self {
+        Self {
+            target_table_name,
+            target_namespace: vec![],
+            source_uri,
+            source_version: None,
+            source_tag: None,
+            is_shallow: true,
+        }
+    }
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
@@ -193,6 +229,13 @@ pub trait Database:
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>>;
     /// Create a table in the database
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>>;
+    /// Clone a table in the database.
+    ///
+    /// Creates a shallow clone of the source table, sharing underlying data files
+    /// but with an independent manifest. Both tables can evolve separately after cloning.
+    ///
+    /// See [`CloneTableRequest`] for detailed documentation and examples.
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database

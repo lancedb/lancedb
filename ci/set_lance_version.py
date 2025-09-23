@@ -1,4 +1,5 @@
 import argparse
+import re
 import sys
 import json
 
@@ -18,8 +19,12 @@ def run_command(command: str) -> str:
 
 def get_latest_stable_version() -> str:
     version_line = run_command("cargo info lance | grep '^version:'")
-    version = version_line.split(" ")[1].strip()
-    return version
+    # Example output: "version: 0.35.0 (latest 0.37.0)"
+    match = re.search(r'\(latest ([0-9.]+)\)', version_line)
+    if match:
+        return match.group(1)
+    # Fallback: use the first version after 'version:'
+    return version_line.split("version:")[1].split()[0].strip()
 
 
 def get_latest_preview_version() -> str:

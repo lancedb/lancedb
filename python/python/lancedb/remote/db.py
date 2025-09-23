@@ -212,6 +212,53 @@ class RemoteDBConnection(DBConnection):
         table = LOOP.run(self._conn.open_table(name, namespace=namespace))
         return RemoteTable(table, self.db_name)
 
+    def clone_table(
+        self,
+        target_table_name: str,
+        source_uri: str,
+        *,
+        target_namespace: List[str] = [],
+        source_version: Optional[int] = None,
+        source_tag: Optional[str] = None,
+        is_shallow: bool = True,
+    ) -> Table:
+        """Clone a table from a source table.
+
+        Parameters
+        ----------
+        target_table_name: str
+            The name of the target table to create.
+        source_uri: str
+            The URI of the source table to clone from.
+        target_namespace: List[str], optional
+            The namespace for the target table.
+            None or empty list represents root namespace.
+        source_version: int, optional
+            The version of the source table to clone.
+        source_tag: str, optional
+            The tag of the source table to clone.
+        is_shallow: bool, default True
+            Whether to perform a shallow clone (True) or deep clone (False).
+            Currently only shallow clone is supported.
+
+        Returns
+        -------
+        A RemoteTable object representing the cloned table.
+        """
+        from .table import RemoteTable
+
+        table = LOOP.run(
+            self._conn.clone_table(
+                target_table_name,
+                source_uri,
+                target_namespace=target_namespace,
+                source_version=source_version,
+                source_tag=source_tag,
+                is_shallow=is_shallow,
+            )
+        )
+        return RemoteTable(table, self.db_name)
+
     @override
     def create_table(
         self,
