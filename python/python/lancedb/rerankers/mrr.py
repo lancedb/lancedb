@@ -118,7 +118,6 @@ class MRRReranker(Reranker):
         This cannot reuse rerank_hybrid because MRR semantics require treating
         each vector result as a separate ranking system.
         """
-        # Make sure all elements are of the same type
         if not all(isinstance(v, type(vector_results[0])) for v in vector_results):
             raise ValueError(
                 "All elements in vector_results should be of the same type"
@@ -157,7 +156,6 @@ class MRRReranker(Reranker):
 
         combined_row_ids = combined["_rowid"].to_pylist()
         
-        # Apply MRR scores
         relevance_scores = [final_mrr_scores[row_id] for row_id in combined_row_ids]
         combined = combined.append_column(
             "_relevance_score", pa.array(relevance_scores, type=pa.float32())
