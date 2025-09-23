@@ -1008,5 +1008,64 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(result).toEqual(null);
       });
     });
+
+    describe("boolean null handling", function () {
+      it("should handle null values in nullable boolean fields", () => {
+        const { makeArrowTable } = require("../lancedb/arrow");
+        const schema = new Schema([new Field("test", new arrow.Bool(), true)]);
+
+        // Test with all null values
+        const data = [{ test: null }];
+        const table = makeArrowTable(data, { schema });
+
+        expect(table.numRows).toBe(1);
+        expect(table.schema.names).toEqual(["test"]);
+        expect(table.getChild("test")!.get(0)).toBeNull();
+      });
+
+      it("should handle mixed null and non-null boolean values", () => {
+        const { makeArrowTable } = require("../lancedb/arrow");
+        const schema = new Schema([new Field("test", new Bool(), true)]);
+
+        // Test with mixed values
+        const data = [{ test: true }, { test: null }, { test: false }];
+        const table = makeArrowTable(data, { schema });
+
+        expect(table.numRows).toBe(3);
+        expect(table.getChild("test")!.get(0)).toBe(true);
+        expect(table.getChild("test")!.get(1)).toBeNull();
+        expect(table.getChild("test")!.get(2)).toBe(false);
+      });
+    });
   },
 );
+
+// Test for the undefined values bug fix
+describe("undefined values handling", () => {
+  it("should handle mixed undefined and actual values", () => {
+    const schema = new Schema([
+      new Field("text", new Utf8(), true), // nullable
+      new Field("number", new Int32(), true), // nullable
+      new Field("bool", new Bool(), true), // nullable
+    ]);
+
+    const data = [
+      { text: undefined, number: 42, bool: true },
+      { text: "hello", number: undefined, bool: false },
+      { text: "world", number: 123, bool: undefined },
+    ];
+    const table = makeArrowTable(data, { schema });
+
+    const result = table.toArray();
+    expect(result).toHaveLength(3);
+    expect(result[0].text).toBe(null);
+    expect(result[0].number).toBe(42);
+    expect(result[0].bool).toBe(true);
+    expect(result[1].text).toBe("hello");
+    expect(result[1].number).toBe(null);
+    expect(result[1].bool).toBe(false);
+    expect(result[2].text).toBe("world");
+    expect(result[2].number).toBe(123);
+    expect(result[2].bool).toBe(null);
+  });
+});

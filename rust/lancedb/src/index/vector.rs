@@ -8,7 +8,7 @@
 //! values
 use std::cmp::max;
 
-use lance::table::format::{Index, Manifest};
+use lance::table::format::{IndexMetadata, Manifest};
 
 use crate::DistanceType;
 
@@ -19,7 +19,7 @@ pub struct VectorIndex {
 }
 
 impl VectorIndex {
-    pub fn new_from_format(manifest: &Manifest, index: &Index) -> Self {
+    pub fn new_from_format(manifest: &Manifest, index: &IndexMetadata) -> Self {
         let fields = index
             .fields
             .iter()

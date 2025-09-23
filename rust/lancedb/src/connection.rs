@@ -13,15 +13,13 @@ use lance::dataset::ReadParams;
 use object_store::aws::AwsCredential;
 
 use crate::arrow::{IntoArrow, IntoArrowStream, SendableRecordBatchStream};
-use crate::catalog::listing::ListingCatalog;
-use crate::catalog::CatalogOptions;
 use crate::database::listing::{
     ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
 use crate::database::{
-    CreateNamespaceRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
-    DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
-    TableNamesRequest,
+    CloneTableRequest, CreateNamespaceRequest, CreateTableData, CreateTableMode,
+    CreateTableRequest, Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest,
+    OpenTableRequest, TableNamesRequest,
 };
 use crate::embeddings::{
     EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
@@ -471,6 +469,62 @@ impl OpenTableBuilder {
     }
 }
 
+/// Builder for cloning a table.
+///
+/// A shallow clone creates a new table that shares the underlying data files
+/// with the source table but has its own independent manifest. Both the source
+/// and cloned tables can evolve independently while initially sharing the same
+/// data, deletion, and index files.
+///
+/// Use this builder to configure the clone operation before executing it.
+pub struct CloneTableBuilder {
+    parent: Arc<dyn Database>,
+    request: CloneTableRequest,
+}
+
+impl CloneTableBuilder {
+    fn new(parent: Arc<dyn Database>, target_table_name: String, source_uri: String) -> Self {
+        Self {
+            parent,
+            request: CloneTableRequest::new(target_table_name, source_uri),
+        }
+    }
+
+    /// Set the source version to clone from
+    pub fn source_version(mut self, version: u64) -> Self {
+        self.request.source_version = Some(version);
+        self
+    }
+
+    /// Set the source tag to clone from
+    pub fn source_tag(mut self, tag: impl Into<String>) -> Self {
+        self.request.source_tag = Some(tag.into());
+        self
+    }
+
+    /// Set the target namespace for the cloned table
+    pub fn target_namespace(mut self, namespace: Vec<String>) -> Self {
+        self.request.target_namespace = namespace;
+        self
+    }
+
+    /// Set whether to perform a shallow clone (default: true)
+    ///
+    /// When true, the cloned table shares data files with the source table.
+    /// When false, performs a deep clone (not yet implemented).
+    pub fn is_shallow(mut self, is_shallow: bool) -> Self {
+        self.request.is_shallow = is_shallow;
+        self
+    }
+
+    /// Execute the clone operation
+    pub async fn execute(self) -> Result<Table> {
+        Ok(Table::new(
+            self.parent.clone().clone_table(self.request).await?,
+        ))
+    }
+}
+
 /// A connection to LanceDB
 #[derive(Clone)]
 pub struct Connection {
@@ -577,6 +631,30 @@ impl Connection {
         )
     }
 
+    /// Clone a table in the database
+    ///
+    /// Creates a new table by cloning from an existing source table.
+    /// By default, this performs a shallow clone where the new table shares
+    /// the underlying data files with the source table.
+    ///
+    /// # Parameters
+    /// - `target_table_name`: The name of the new table to create
+    /// - `source_uri`: The URI of the source table to clone from
+    ///
+    /// # Returns
+    /// A [`CloneTableBuilder`] that can be used to configure the clone operation
+    pub fn clone_table(
+        &self,
+        target_table_name: impl Into<String>,
+        source_uri: impl Into<String>,
+    ) -> CloneTableBuilder {
+        CloneTableBuilder::new(
+            self.internal.clone(),
+            target_table_name.into(),
+            source_uri.into(),
+        )
+    }
+
     /// Rename a table in the database.
     ///
     /// This is only supported in LanceDB Cloud.
@@ -660,7 +738,7 @@ pub struct ConnectRequest {
     #[cfg(feature = "remote")]
     pub client_config: ClientConfig,
 
-    /// Database/Catalog specific options
+    /// Database specific options
     pub options: HashMap<String, String>,
 
     /// The interval at which to check for updates from other processes.
@@ -937,50 +1015,6 @@ pub fn connect(uri: &str) -> ConnectBuilder {
     ConnectBuilder::new(uri)
 }
 
-/// A builder for configuring a connection to a LanceDB catalog
-#[derive(Debug)]
-pub struct CatalogConnectBuilder {
-    request: ConnectRequest,
-}
-
-impl CatalogConnectBuilder {
-    /// Create a new [`CatalogConnectBuilder`] with the given catalog URI.
-    pub fn new(uri: &str) -> Self {
-        Self {
-            request: ConnectRequest {
-                uri: uri.to_string(),
-                #[cfg(feature = "remote")]
-                client_config: Default::default(),
-                read_consistency_interval: None,
-                options: HashMap::new(),
-                session: None,
-            },
-        }
-    }
-
-    pub fn catalog_options(mut self, catalog_options: &dyn CatalogOptions) -> Self {
-        catalog_options.serialize_into_map(&mut self.request.options);
-        self
-    }
-
-    /// Establishes a connection to the catalog
-    pub async fn execute(self) -> Result<Arc<ListingCatalog>> {
-        let catalog = ListingCatalog::connect(&self.request).await?;
-        Ok(Arc::new(catalog))
-    }
-}
-
-/// Connect to a LanceDB catalog.
-///
-/// A catalog is a container for databases, which in turn are containers for tables.
-///
-/// # Arguments
-///
-/// * `uri` - URI where the catalog is located, can be a local directory or supported remote cloud storage.
-pub fn connect_catalog(uri: &str) -> CatalogConnectBuilder {
-    CatalogConnectBuilder::new(uri)
-}
-
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
@@ -1022,7 +1056,6 @@ mod test_utils {
 mod tests {
     use std::fs::create_dir_all;
 
-    use crate::catalog::{Catalog, DatabaseNamesRequest, OpenDatabaseRequest};
     use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, QueryExecutionOptions};
@@ -1330,89 +1363,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_connect_catalog() {
+    async fn test_clone_table() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let catalog = connect_catalog(uri).execute().await.unwrap();
+        let db = connect(uri).execute().await.unwrap();
 
-        // Verify that we can get the uri from the catalog
-        let catalog_uri = catalog.uri();
-        assert_eq!(catalog_uri, uri);
+        // Create a source table with some data
+        let mut batch_gen = BatchGenerator::new()
+            .col(Box::new(IncrementingInt32::new().named("id")))
+            .col(Box::new(IncrementingInt32::new().named("value")));
+        let reader = batch_gen.batches(5, 100);
 
-        // Check that the catalog is initially empty
-        let dbs = catalog
-            .database_names(DatabaseNamesRequest::default())
-            .await
-            .unwrap();
-        assert_eq!(dbs.len(), 0);
-    }
-
-    #[tokio::test]
-    #[cfg(not(windows))]
-    async fn test_catalog_create_database() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let catalog = connect_catalog(uri).execute().await.unwrap();
-
-        let db_name = "test_db";
-        catalog
-            .create_database(crate::catalog::CreateDatabaseRequest {
-                name: db_name.to_string(),
-                mode: Default::default(),
-                options: Default::default(),
-            })
+        let source_table = db
+            .create_table("source_table", reader)
+            .execute()
             .await
             .unwrap();
 
-        let dbs = catalog
-            .database_names(DatabaseNamesRequest::default())
-            .await
-            .unwrap();
-        assert_eq!(dbs.len(), 1);
-        assert_eq!(dbs[0], db_name);
+        // Get the source table URI
+        let source_table_path = tmp_dir.path().join("source_table.lance");
+        let source_uri = source_table_path.to_str().unwrap();
 
-        let db = catalog
-            .open_database(OpenDatabaseRequest {
-                name: db_name.to_string(),
-                database_options: HashMap::new(),
-            })
+        // Clone the table
+        let cloned_table = db
+            .clone_table("cloned_table", source_uri)
+            .execute()
             .await
             .unwrap();
 
-        let tables = db.table_names(Default::default()).await.unwrap();
-        assert_eq!(tables.len(), 0);
-    }
+        // Verify the cloned table exists
+        let table_names = db.table_names().execute().await.unwrap();
+        assert!(table_names.contains(&"source_table".to_string()));
+        assert!(table_names.contains(&"cloned_table".to_string()));
 
-    #[tokio::test]
-    #[cfg(not(windows))]
-    async fn test_catalog_drop_database() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let catalog = connect_catalog(uri).execute().await.unwrap();
+        // Verify the cloned table has the same schema
+        assert_eq!(
+            source_table.schema().await.unwrap(),
+            cloned_table.schema().await.unwrap()
+        );
 
-        // Create and then drop a database
-        let db_name = "test_db_to_drop";
-        catalog
-            .create_database(crate::catalog::CreateDatabaseRequest {
-                name: db_name.to_string(),
-                mode: Default::default(),
-                options: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        let dbs = catalog
-            .database_names(DatabaseNamesRequest::default())
-            .await
-            .unwrap();
-        assert_eq!(dbs.len(), 1);
-
-        catalog.drop_database(db_name).await.unwrap();
-
-        let dbs_after = catalog
-            .database_names(DatabaseNamesRequest::default())
-            .await
-            .unwrap();
-        assert_eq!(dbs_after.len(), 0);
+        // Verify the cloned table has the same data
+        let source_count = source_table.count_rows(None).await.unwrap();
+        let cloned_count = cloned_table.count_rows(None).await.unwrap();
+        assert_eq!(source_count, cloned_count);
     }
 }

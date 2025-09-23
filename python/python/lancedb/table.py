@@ -1470,10 +1470,7 @@ class Table(ABC):
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
         retrain: bool, default False
-            If True, retrain the vector indices, this would refine the IVF clustering
-            and quantization, which may improve the search accuracy. It's faster than
-            re-creating the index from scratch, so it's recommended to try this first,
-            when the data distribution has changed significantly.
+            This parameter is no longer used and is deprecated.
 
         Experimental API
         ----------------
@@ -2835,10 +2832,7 @@ class LanceTable(Table):
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
         retrain: bool, default False
-            If True, retrain the vector indices, this would refine the IVF clustering
-            and quantization, which may improve the search accuracy. It's faster than
-            re-creating the index from scratch, so it's recommended to try this first,
-            when the data distribution has changed significantly.
+            This parameter is no longer used and is deprecated.
 
         Experimental API
         ----------------
@@ -4298,10 +4292,7 @@ class AsyncTable:
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
         retrain: bool, default False
-            If True, retrain the vector indices, this would refine the IVF clustering
-            and quantization, which may improve the search accuracy. It's faster than
-            re-creating the index from scratch, so it's recommended to try this first,
-            when the data distribution has changed significantly.
+            This parameter is no longer used and is deprecated.
 
         Experimental API
         ----------------
@@ -4324,10 +4315,19 @@ class AsyncTable:
         cleanup_since_ms: Optional[int] = None
         if cleanup_older_than is not None:
             cleanup_since_ms = round(cleanup_older_than.total_seconds() * 1000)
+
+        if retrain:
+            import warnings
+
+            warnings.warn(
+                "The 'retrain' parameter is deprecated and will be removed in a "
+                "future version.",
+                DeprecationWarning,
+            )
+
         return await self._inner.optimize(
             cleanup_since_ms=cleanup_since_ms,
             delete_unverified=delete_unverified,
-            retrain=retrain,
         )
 
     async def list_indices(self) -> Iterable[IndexConfig]:

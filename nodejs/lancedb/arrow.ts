@@ -512,7 +512,11 @@ function* rowPathsAndValues(
     if (isObject(value)) {
       yield* rowPathsAndValues(value, [...basePath, key]);
     } else {
-      yield [[...basePath, key], value];
+      // Skip undefined values - they should be treated the same as missing fields
+      // for embedding function purposes
+      if (value !== undefined) {
+        yield [[...basePath, key], value];
+      }
     }
   }
 }
@@ -701,7 +705,7 @@ function transposeData(
       }
       return current;
     });
-    return makeVector(values, field.type);
+    return makeVector(values, field.type, undefined, field.nullable);
   }
 }
 
@@ -747,10 +751,31 @@ function makeListVector(lists: unknown[][]): Vector<unknown> {
 function makeVector(
   values: unknown[],
   type?: DataType,
-  stringAsDictionary?: boolean
+  stringAsDictionary?: boolean,
+  nullable?: boolean,
   // biome-ignore lint/suspicious/noExplicitAny: skip
 ): Vector<any> {
   if (type !== undefined) {
+    // Convert undefined values to null for nullable fields
+    if (nullable) {
+      values = values.map((v) => (v === undefined ? null : v));
+    }
+
+    // workaround for: https://github.com/apache/arrow-js/issues/68
+    if (DataType.isBool(type)) {
+      const hasNonNullValue = values.some((v) => v !== null && v !== undefined);
+      if (!hasNonNullValue) {
+        const nullBitmap = new Uint8Array(Math.ceil(values.length / 8));
+        const data = makeData({
+          type: type,
+          length: values.length,
+          nullCount: values.length,
+          nullBitmap,
+        });
+        return arrowMakeVector(data);
+      }
+    }
+
     // No need for inference, let Arrow create it
     if (type instanceof Int) {
       if (DataType.isInt(type) && type.bitWidth === 64) {
@@ -876,7 +901,12 @@ async function applyEmbeddingsFromMetadata(
   for (const field of schema.fields) {
     if (!(field.name in columns)) {
       const nullValues = new Array(table.numRows).fill(null);
-      columns[field.name] = makeVector(nullValues, field.type);
+      columns[field.name] = makeVector(
+        nullValues,
+        field.type,
+        undefined,
+        field.nullable,
+      );
     }
   }
 
@@ -940,7 +970,12 @@ async function applyEmbeddings<T>(
     } else if (schema != null) {
       const destField = schema.fields.find((f) => f.name === destColumn);
       if (destField != null) {
-        newColumns[destColumn] = makeVector([], destField.type);
+        newColumns[destColumn] = makeVector(
+          [],
+          destField.type,
+          undefined,
+          destField.nullable,
+        );
       } else {
         throw new Error(
           `Attempt to apply embeddings to an empty table failed because schema was missing embedding column '${destColumn}'`

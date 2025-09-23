@@ -22,6 +22,7 @@ from lancedb.rerankers import (
     JinaReranker,
     AnswerdotaiRerankers,
     VoyageAIReranker,
+    MRRReranker,
 )
 from lancedb.table import LanceTable
 
@@ -46,6 +47,7 @@ def get_test_table(tmp_path, use_tantivy):
         db,
         "my_table",
         schema=MyTable,
+        mode="overwrite",
     )
 
     # Need to test with a bunch of phrases to make sure sorting is consistent
@@ -96,7 +98,7 @@ def get_test_table(tmp_path, use_tantivy):
     )
 
     # Create a fts index
-    table.create_fts_index("text", use_tantivy=use_tantivy)
+    table.create_fts_index("text", use_tantivy=use_tantivy, replace=True)
 
     return table, MyTable
 
@@ -318,6 +320,34 @@ def test_linear_combination(tmp_path, use_tantivy):
 def test_rrf_reranker(tmp_path, use_tantivy):
     reranker = RRFReranker()
     _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
+
+
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_mrr_reranker(tmp_path, use_tantivy):
+    reranker = MRRReranker()
+    _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
+
+    # Test multi-vector part
+    table, schema = get_test_table(tmp_path, use_tantivy)
+    query = "single player experience"
+    rs1 = table.search(query, vector_column_name="vector").limit(10).with_row_id(True)
+    rs2 = (
+        table.search(query, vector_column_name="meta_vector")
+        .limit(10)
+        .with_row_id(True)
+    )
+    result = reranker.rerank_multivector([rs1, rs2])
+    assert "_relevance_score" in result.column_names
+    assert len(result) <= 20
+
+    if len(result) > 1:
+        assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+            "The _relevance_score should be descending."
+        )
+
+    # Test with duplicate results
+    result_deduped = reranker.rerank_multivector([rs1, rs2, rs1])
+    assert len(result_deduped) == len(result)
 
 
 def test_rrf_reranker_distance():
