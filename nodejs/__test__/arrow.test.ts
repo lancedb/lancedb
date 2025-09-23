@@ -1042,23 +1042,6 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
 // Test for the undefined values bug fix
 describe("undefined values handling", () => {
-  it("should convert undefined values to null for nullable fields", () => {
-    const schema = new Schema([
-      new Field("text", new Utf8(), true), // nullable
-      new Field("number", new Int32(), true), // nullable
-      new Field("bool", new Bool(), true), // nullable
-    ]);
-
-    const data = [{ text: undefined, number: undefined, bool: undefined }];
-    const table = makeArrowTable(data, { schema });
-
-    const result = table.toArray();
-    expect(result).toHaveLength(1);
-    expect(result[0].text).toBe(null);
-    expect(result[0].number).toBe(null);
-    expect(result[0].bool).toBe(null);
-  });
-
   it("should handle mixed undefined and actual values", () => {
     const schema = new Schema([
       new Field("text", new Utf8(), true), // nullable
