@@ -78,6 +78,7 @@
 - [TableNamesOptions](interfaces/TableNamesOptions.md)
 - [TableStatistics](interfaces/TableStatistics.md)
 - [TimeoutConfig](interfaces/TimeoutConfig.md)
+- [TlsConfig](interfaces/TlsConfig.md)
 - [TokenResponse](interfaces/TokenResponse.md)
 - [UpdateOptions](interfaces/UpdateOptions.md)
 - [UpdateResult](interfaces/UpdateResult.md)
