@@ -71,6 +71,41 @@ export class MergeInsertBuilder {
     );
   }
   /**
+   * Explain the execution plan for the merge insert operation
+   *
+   * This shows how the merge insert operation would be executed without
+   * actually running it.
+   *
+   * @param verbose - Whether to show a verbose execution plan
+   * @returns {Promise<string>} A string describing the execution plan
+   */
+  async explainPlan(verbose: boolean = false): Promise<string> {
+    return await this.#native.explainPlan(verbose);
+  }
+
+  /**
+   * Analyze the execution plan for the merge insert operation
+   *
+   * This executes the merge insert operation to collect performance metrics
+   * but does not commit the changes to the dataset.
+   *
+   * @param data - The new data to merge
+   * @returns {Promise<string>} A string containing performance metrics and execution details
+   */
+  async analyzePlan(data: Data): Promise<string> {
+    let schema: Schema;
+    if (this.#schema instanceof Promise) {
+      schema = await this.#schema;
+      this.#schema = schema; // In case of future calls
+    } else {
+      schema = this.#schema;
+    }
+
+    const buffer = await fromDataToBuffer(data, undefined, schema);
+    return await this.#native.analyzePlan(buffer);
+  }
+
+  /**
    * Executes the merge insert operation
    *
    * @returns {Promise<MergeResult>} the merge result

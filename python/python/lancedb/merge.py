@@ -123,7 +123,7 @@ class LanceMergeInsertBuilder(object):
             self._timeout = timeout
         return self._table._do_merge(self, new_data, on_bad_vectors, fill_value)
 
-    def explain_plan(self, schema=None, verbose: bool = False) -> str:
+    def explain_plan(self, schema=None, verbose: bool = False):
         """
         Explain the execution plan for the merge insert operation.
 
@@ -139,12 +139,13 @@ class LanceMergeInsertBuilder(object):
 
         Returns
         -------
-        str
+        str or Coroutine[Any, Any, str]
             A string describing the execution plan.
+            Returns a coroutine for async tables, a string for sync tables.
         """
         return self._table._explain_merge_plan(self, verbose)
 
-    def analyze_plan(self, new_data: DATA) -> str:
+    def analyze_plan(self, new_data: DATA):
         """
         Analyze the execution plan for the merge insert operation.
 
@@ -159,7 +160,8 @@ class LanceMergeInsertBuilder(object):
 
         Returns
         -------
-        str
+        str or Coroutine[Any, Any, str]
             A string containing performance metrics and execution details.
+            Returns a coroutine for async tables, a string for sync tables.
         """
         return self._table._analyze_merge_plan(self, new_data)

@@ -246,12 +246,12 @@ async def test_merge_insert_explain_and_analyze_async(mem_db_async):
     merge_builder = (
         table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all()
     )
-    explain_result = merge_builder.explain_plan(verbose=False)
+    explain_result = await merge_builder.explain_plan(verbose=False)
     assert "MergeInsert" in explain_result
 
     # Test analyze_plan
     merge_builder = (
         table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all()
     )
-    analyze_result = merge_builder.analyze_plan(new_data)
+    analyze_result = await merge_builder.analyze_plan(new_data)
     assert "MergeInsert" in analyze_result
