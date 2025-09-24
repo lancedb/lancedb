@@ -2028,7 +2028,8 @@ impl NativeTable {
         params: &MergeInsertBuilder,
     ) -> Result<lance::dataset::MergeInsertBuilder> {
         let dataset = Arc::new(self.dataset.get().await?.clone());
-        let mut builder = lance::dataset::MergeInsertBuilder::try_new(dataset.clone(), params.on.clone())?;
+        let mut builder =
+            lance::dataset::MergeInsertBuilder::try_new(dataset.clone(), params.on.clone())?;
         match (
             params.when_matched_update_all,
             params.when_matched_update_all_filt.as_deref(),
@@ -2043,11 +2044,12 @@ impl NativeTable {
             builder.when_not_matched(WhenNotMatched::DoNothing);
         }
         if params.when_not_matched_by_source_delete {
-            let behavior = if let Some(filter) = params.when_not_matched_by_source_delete_filt.as_deref() {
-                WhenNotMatchedBySource::delete_if(dataset.as_ref(), filter)?
-            } else {
-                WhenNotMatchedBySource::Delete
-            };
+            let behavior =
+                if let Some(filter) = params.when_not_matched_by_source_delete_filt.as_deref() {
+                    WhenNotMatchedBySource::delete_if(dataset.as_ref(), filter)?
+                } else {
+                    WhenNotMatchedBySource::Delete
+                };
             builder.when_not_matched_by_source(behavior);
         } else {
             builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
