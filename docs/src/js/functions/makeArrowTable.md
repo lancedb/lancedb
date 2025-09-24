@@ -13,7 +13,7 @@ function makeArrowTable(
    metadata?): ArrowTable
 ```
 
-An enhanced version of the makeTable function from Apache Arrow
+An enhanced version of the apache-arrow makeTable function from Apache Arrow
 that supports nested fields and embeddings columns.
 
 (typically you do not need to call this function.  It will be called automatically

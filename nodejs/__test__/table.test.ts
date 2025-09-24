@@ -39,7 +39,6 @@ import {
   Operator,
   instanceOfFullTextQuery,
 } from "../lancedb/query";
-import exp = require("constants");
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Given a table",
@@ -508,6 +507,32 @@ describe("merge insert", () => {
     // Test analyze_plan
     const analyzeResult = await mergeBuilder.analyzePlan(newData);
     expect(analyzeResult).toContain("MergeInsert");
+  });
+
+  test("useIndex", async () => {
+    const newData = [
+      { a: 2, b: "x" },
+      { a: 4, b: "z" },
+    ];
+
+    // Test with useIndex(true) - should work fine
+    const result1 = await table
+      .mergeInsert("a")
+      .whenNotMatchedInsertAll()
+      .useIndex(true)
+      .execute(newData);
+
+    expect(result1.numInsertedRows).toBe(1); // Only a=4 should be inserted
+
+    // Test with useIndex(false) - should also work fine
+    const newData2 = [{ a: 5, b: "w" }];
+    const result2 = await table
+      .mergeInsert("a")
+      .whenNotMatchedInsertAll()
+      .useIndex(false)
+      .execute(newData2);
+
+    expect(result2.numInsertedRows).toBe(1); // a=5 should be inserted
   });
 });
 

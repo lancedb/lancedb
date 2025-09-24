@@ -1,17 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
-
-import {
-  Bool,
-  Field,
-  Int32,
-  List,
-  Schema,
-  Struct,
-  Uint8,
-  Utf8,
-} from "apache-arrow";
-
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
@@ -25,11 +13,9 @@ import {
   fromTableToBuffer,
   makeArrowTable,
   makeEmptyTable,
-  tableFromIPC,
 } from "../lancedb/arrow";
 import {
   EmbeddingFunction,
-  FieldOptions,
   FunctionOptions,
 } from "../lancedb/embedding/embedding_function";
 import { EmbeddingFunctionConfig } from "../lancedb/embedding/registry";
@@ -1037,35 +1023,35 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(table.getChild("test")!.get(2)).toBe(false);
       });
     });
+
+    // Test for the undefined values bug fix
+    describe("undefined values handling", () => {
+      it("should handle mixed undefined and actual values", () => {
+        const schema = new Schema([
+          new Field("text", new Utf8(), true), // nullable
+          new Field("number", new Int32(), true), // nullable
+          new Field("bool", new Bool(), true), // nullable
+        ]);
+
+        const data = [
+          { text: undefined, number: 42, bool: true },
+          { text: "hello", number: undefined, bool: false },
+          { text: "world", number: 123, bool: undefined },
+        ];
+        const table = makeArrowTable(data, { schema });
+
+        const result = table.toArray();
+        expect(result).toHaveLength(3);
+        expect(result[0].text).toBe(null);
+        expect(result[0].number).toBe(42);
+        expect(result[0].bool).toBe(true);
+        expect(result[1].text).toBe("hello");
+        expect(result[1].number).toBe(null);
+        expect(result[1].bool).toBe(false);
+        expect(result[2].text).toBe("world");
+        expect(result[2].number).toBe(123);
+        expect(result[2].bool).toBe(null);
+      });
+    });
   },
 );
-
-// Test for the undefined values bug fix
-describe("undefined values handling", () => {
-  it("should handle mixed undefined and actual values", () => {
-    const schema = new Schema([
-      new Field("text", new Utf8(), true), // nullable
-      new Field("number", new Int32(), true), // nullable
-      new Field("bool", new Bool(), true), // nullable
-    ]);
-
-    const data = [
-      { text: undefined, number: 42, bool: true },
-      { text: "hello", number: undefined, bool: false },
-      { text: "world", number: 123, bool: undefined },
-    ];
-    const table = makeArrowTable(data, { schema });
-
-    const result = table.toArray();
-    expect(result).toHaveLength(3);
-    expect(result[0].text).toBe(null);
-    expect(result[0].number).toBe(42);
-    expect(result[0].bool).toBe(true);
-    expect(result[1].text).toBe("hello");
-    expect(result[1].number).toBe(null);
-    expect(result[1].bool).toBe(false);
-    expect(result[2].text).toBe("world");
-    expect(result[2].number).toBe(123);
-    expect(result[2].bool).toBe(null);
-  });
-});

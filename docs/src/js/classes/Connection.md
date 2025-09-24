@@ -25,6 +25,51 @@ the underlying connection has been closed.
 
 ## Methods
 
+### cloneTable()
+
+```ts
+abstract cloneTable(
+   targetTableName,
+   sourceUri,
+   options?): Promise<Table>
+```
+
+Clone a table from a source table.
+
+A shallow clone creates a new table that shares the underlying data files
+with the source table but has its own independent manifest. This allows
+both the source and cloned tables to evolve independently while initially
+sharing the same data, deletion, and index files.
+
+#### Parameters
+
+* **targetTableName**: `string`
+    The name of the target table to create.
+
+* **sourceUri**: `string`
+    The URI of the source table to clone from.
+
+* **options?**
+    Clone options.
+
+* **options.isShallow?**: `boolean`
+    Whether to perform a shallow clone (defaults to true).
+
+* **options.sourceTag?**: `string`
+    The tag of the source table to clone.
+
+* **options.sourceVersion?**: `number`
+    The version of the source table to clone.
+
+* **options.targetNamespace?**: `string`[]
+    The namespace for the target table (defaults to root namespace).
+
+#### Returns
+
+`Promise`&lt;[`Table`](Table.md)&gt;
+
+***
+
 ### close()
 
 ```ts

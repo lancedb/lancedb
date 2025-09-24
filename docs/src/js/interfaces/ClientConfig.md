@@ -40,6 +40,14 @@ optional timeoutConfig: TimeoutConfig;
 
 ***
 
+### tlsConfig?
+
+```ts
+optional tlsConfig: TlsConfig;
+```
+
+***
+
 ### userAgent?
 
 ```ts

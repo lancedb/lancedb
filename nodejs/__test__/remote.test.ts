@@ -7,7 +7,6 @@ import {
   ClientConfig,
   Connection,
   ConnectionOptions,
-  NativeJsHeaderProvider,
   TlsConfig,
   connect,
 } from "../lancedb";

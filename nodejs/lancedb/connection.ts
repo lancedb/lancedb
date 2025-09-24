@@ -3,7 +3,6 @@
 
 import {
   Data,
-  Schema,
   SchemaLike,
   TableLike,
   fromTableToStreamBuffer,
