@@ -498,10 +498,11 @@ impl Table {
             })
             .collect();
 
-        self.inner_ref()?
-            .update_metadata(lance_entries, replace)
-            .await
-            .default_error()
+        let mut builder = self.inner_ref()?.update_metadata(lance_entries);
+        if replace {
+            builder = builder.replace();
+        }
+        builder.await.default_error()
     }
 
     /// Update schema metadata
@@ -526,10 +527,11 @@ impl Table {
             })
             .collect();
 
-        self.inner_ref()?
-            .update_schema_metadata(lance_entries, replace)
-            .await
-            .default_error()
+        let mut builder = self.inner_ref()?.update_schema_metadata(lance_entries);
+        if replace {
+            builder = builder.replace();
+        }
+        builder.await.default_error()
     }
 }
 

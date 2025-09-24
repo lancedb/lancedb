@@ -1569,6 +1569,39 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(result)
     }
 
+    async fn update_config(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let request_data = serde_json::json!({
+            "updates": values.into_iter().map(|entry| {
+                serde_json::json!({
+                    "key": entry.key,
+                    "value": entry.value
+                })
+            }).collect::<Vec<_>>(),
+            "replace": replace
+        });
+
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/update_config/", self.name))
+            .json(&request_data);
+
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        let result = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse config update response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        Ok(result)
+    }
+
     async fn update_schema_metadata(
         &self,
         values: Vec<UpdateMapEntry>,

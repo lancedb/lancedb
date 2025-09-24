@@ -874,10 +874,11 @@ impl Table {
 
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let result = inner
-                .update_metadata(entries, replace)
-                .await
-                .infer_error()?;
+            let mut builder = inner.update_metadata(entries);
+            if replace {
+                builder = builder.replace();
+            }
+            let result = builder.await.infer_error()?;
             Python::with_gil(|py| {
                 let dict = PyDict::new(py);
                 for (k, v) in result {
@@ -915,10 +916,11 @@ impl Table {
 
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let result = inner
-                .update_schema_metadata(entries, replace)
-                .await
-                .infer_error()?;
+            let mut builder = inner.update_schema_metadata(entries);
+            if replace {
+                builder = builder.replace();
+            }
+            let result = builder.await.infer_error()?;
             Python::with_gil(|py| {
                 let dict = PyDict::new(py);
                 for (k, v) in result {
