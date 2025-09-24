@@ -2027,31 +2027,30 @@ impl NativeTable {
         &self,
         params: &MergeInsertBuilder,
     ) -> Result<lance::dataset::MergeInsertBuilder> {
-        let dataset = self.dataset.get().await?;
-
-        let mut builder = lance::dataset::MergeInsertBuilder::try_new(
-            std::sync::Arc::new((*dataset).clone()),
-            params.on.clone(),
-        )?;
-
-        if params.when_matched_update_all {
-            let behavior = match &params.when_matched_update_all_filt {
-                Some(condition) => WhenMatched::UpdateIf(condition.clone()),
-                None => WhenMatched::UpdateAll,
-            };
-            builder.when_matched(behavior);
-        }
-
+        let dataset = Arc::new(self.dataset.get().await?.clone());
+        let mut builder = lance::dataset::MergeInsertBuilder::try_new(dataset.clone(), params.on.clone())?;
+        match (
+            params.when_matched_update_all,
+            params.when_matched_update_all_filt.as_deref(),
+        ) {
+            (false, _) => builder.when_matched(WhenMatched::DoNothing),
+            (true, None) => builder.when_matched(WhenMatched::UpdateAll),
+            (true, Some(filt)) => builder.when_matched(WhenMatched::update_if(&dataset, filt)?),
+        };
         if params.when_not_matched_insert_all {
             builder.when_not_matched(WhenNotMatched::InsertAll);
+        } else {
+            builder.when_not_matched(WhenNotMatched::DoNothing);
         }
-
         if params.when_not_matched_by_source_delete {
-            let behavior = match &params.when_not_matched_by_source_delete_filt {
-                Some(condition) => WhenNotMatchedBySource::delete_if(&dataset, condition)?,
-                None => WhenNotMatchedBySource::Delete,
+            let behavior = if let Some(filter) = params.when_not_matched_by_source_delete_filt.as_deref() {
+                WhenNotMatchedBySource::delete_if(dataset.as_ref(), filter)?
+            } else {
+                WhenNotMatchedBySource::Delete
             };
             builder.when_not_matched_by_source(behavior);
+        } else {
+            builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
         }
 
         Ok(builder)
