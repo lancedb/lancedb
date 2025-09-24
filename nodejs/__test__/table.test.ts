@@ -191,39 +191,42 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       // Add initial metadata
       let result = await table.updateMetadata({
         description: "Test table",
-        version: "1.0"
+        version: "1.0",
       });
       expect(result).toEqual({
         description: "Test table",
-        version: "1.0"
+        version: "1.0",
       });
 
       // Update existing and add new metadata
       result = await table.updateMetadata({
         version: "1.1",
-        author: "test_user"
+        author: "test_user",
       });
       expect(result).toEqual({
         description: "Test table",
         version: "1.1",
-        author: "test_user"
+        author: "test_user",
       });
 
       // Remove a key
       result = await table.updateMetadata({
-        author: null
+        author: null,
       });
       expect(result).toEqual({
         description: "Test table",
-        version: "1.1"
+        version: "1.1",
       });
 
       // Replace all metadata
-      result = await table.updateMetadata({
-        new_field: "new_value"
-      }, true);
+      result = await table.updateMetadata(
+        {
+          newField: "new_value",
+        },
+        true,
+      );
       expect(result).toEqual({
-        new_field: "new_value"
+        newField: "new_value",
       });
     });
 
@@ -231,58 +234,61 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       // Test using Map instead of object
       const updates = new Map([
         ["description", "Map test"],
-        ["version", "2.0"]
+        ["version", "2.0"],
       ]);
-      
+
       const result = await table.updateMetadata(updates);
       expect(result).toEqual({
         description: "Map test",
-        version: "2.0"
+        version: "2.0",
       });
     });
 
     it("should update schema metadata", async () => {
       // Add schema metadata
       let result = await table.updateSchemaMetadata({
-        format_version: "2.0",
-        encoding: "utf-8"
+        formatVersion: "2.0",
+        encoding: "utf-8",
       });
       expect(result).toEqual({
-        format_version: "2.0",
-        encoding: "utf-8"
+        formatVersion: "2.0",
+        encoding: "utf-8",
       });
 
       // Update existing metadata
       result = await table.updateSchemaMetadata({
-        format_version: "2.1"
+        formatVersion: "2.1",
       });
       expect(result).toEqual({
-        format_version: "2.1",
-        encoding: "utf-8"
+        formatVersion: "2.1",
+        encoding: "utf-8",
       });
 
       // Remove a key
       result = await table.updateSchemaMetadata({
-        encoding: null
+        encoding: null,
       });
       expect(result).toEqual({
-        format_version: "2.1"
+        formatVersion: "2.1",
       });
     });
 
     it("should update schema metadata with replace", async () => {
       // Add initial metadata
       await table.updateSchemaMetadata({
-        old_field: "old_value",
-        keep_field: "keep_value"
+        oldField: "old_value",
+        keepField: "keep_value",
       });
 
       // Replace all schema metadata
-      const result = await table.updateSchemaMetadata({
-        new_format: "json"
-      }, true);
+      const result = await table.updateSchemaMetadata(
+        {
+          newFormat: "json",
+        },
+        true,
+      );
       expect(result).toEqual({
-        new_format: "json"
+        newFormat: "json",
       });
     });
 
