@@ -460,8 +460,8 @@ class RemoteTable(Table):
         merge: LanceMergeInsertBuilder,
         verbose: bool,
     ) -> str:
-        raise NotImplementedError(
-            "explain_plan for merge_insert is not supported on remote tables"
+        return LOOP.run(
+            self._table._explain_merge_plan(merge, verbose)
         )
 
     def _analyze_merge_plan(
@@ -469,8 +469,8 @@ class RemoteTable(Table):
         merge: LanceMergeInsertBuilder,
         new_data: DATA,
     ) -> str:
-        raise NotImplementedError(
-            "analyze_plan for merge_insert is not supported on remote tables"
+        return LOOP.run(
+            self._table._analyze_merge_plan(merge, new_data)
         )
 
     def delete(self, predicate: str) -> DeleteResult:
