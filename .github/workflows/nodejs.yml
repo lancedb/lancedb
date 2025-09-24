@@ -116,7 +116,7 @@ jobs:
         set -e
         npm ci
         npm run docs
-        if ! git diff --exit-code -- . ':(exclude)Cargo.lock'; then
+        if ! git diff --exit-code -- ../ ':(exclude)Cargo.lock'; then
           echo "Docs need to be updated"
           echo "Run 'npm run docs', fix any warnings, and commit the changes."
           exit 1

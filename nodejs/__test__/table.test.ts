@@ -39,7 +39,6 @@ import {
   Operator,
   instanceOfFullTextQuery,
 } from "../lancedb/query";
-import exp = require("constants");
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Given a table",

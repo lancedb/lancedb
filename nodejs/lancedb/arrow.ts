@@ -41,7 +41,6 @@ import {
   vectorFromArray as badVectorFromArray,
   makeBuilder,
   makeData,
-  makeTable,
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
@@ -279,7 +278,7 @@ export class MakeArrowTableOptions {
 }
 
 /**
- * An enhanced version of the {@link makeTable} function from Apache Arrow
+ * An enhanced version of the apache-arrow makeTable function from Apache Arrow
  * that supports nested fields and embeddings columns.
  *
  * (typically you do not need to call this function.  It will be called automatically
