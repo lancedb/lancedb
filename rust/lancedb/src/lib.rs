@@ -212,7 +212,7 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
-pub use connection::Connection;
+pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, Result};
 use lance_linalg::distance::DistanceType as LanceDistanceType;
 pub use table::Table;
@@ -289,6 +289,8 @@ impl Display for DistanceType {
 
 /// Connect to a database
 pub use connection::connect;
+/// Connect to a namespace-backed database
+pub use connection::connect_namespace;
 
 /// Re-export Lance Session and ObjectStoreRegistry for custom session creation
 pub use lance::session::Session;
