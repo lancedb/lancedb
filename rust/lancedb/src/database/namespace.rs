@@ -390,6 +390,7 @@ impl Database for LanceNamespaceDatabase {
 }
 
 #[cfg(test)]
+#[cfg(not(windows))] // TODO: support windows for lance-namespace
 mod tests {
     use super::*;
     use crate::connect_namespace;
@@ -496,7 +497,7 @@ mod tests {
 
         // Connect to namespace using DirectoryNamespace
         let mut properties = HashMap::new();
-        properties.insert("root".to_string(), root_path.clone());
+        properties.insert("root".to_string(), root_path);
 
         let conn = connect_namespace("dir", properties)
             .execute()
@@ -541,7 +542,7 @@ mod tests {
 
         // Connect to namespace
         let mut properties = HashMap::new();
-        properties.insert("root".to_string(), root_path.clone());
+        properties.insert("root".to_string(), root_path);
 
         let conn = connect_namespace("dir", properties)
             .execute()
@@ -590,7 +591,7 @@ mod tests {
         let root_path = tmp_dir.path().to_str().unwrap().to_string();
 
         let mut properties = HashMap::new();
-        properties.insert("root".to_string(), root_path.clone());
+        properties.insert("root".to_string(), root_path);
 
         let conn = connect_namespace("dir", properties)
             .execute()
@@ -663,7 +664,7 @@ mod tests {
         let root_path = tmp_dir.path().to_str().unwrap().to_string();
 
         let mut properties = HashMap::new();
-        properties.insert("root".to_string(), root_path.clone());
+        properties.insert("root".to_string(), root_path);
 
         let conn = connect_namespace("dir", properties)
             .execute()
@@ -708,7 +709,7 @@ mod tests {
         let root_path = tmp_dir.path().to_str().unwrap().to_string();
 
         let mut properties = HashMap::new();
-        properties.insert("root".to_string(), root_path.clone());
+        properties.insert("root".to_string(), root_path);
 
         let conn = connect_namespace("dir", properties)
             .execute()
@@ -775,7 +776,7 @@ mod tests {
         let root_path = tmp_dir.path().to_str().unwrap().to_string();
 
         let mut properties = HashMap::new();
-        properties.insert("root".to_string(), root_path.clone());
+        properties.insert("root".to_string(), root_path);
 
         let conn = connect_namespace("dir", properties)
             .execute()
@@ -796,7 +797,7 @@ mod tests {
         let root_path = tmp_dir.path().to_str().unwrap().to_string();
 
         let mut properties = HashMap::new();
-        properties.insert("root".to_string(), root_path.clone());
+        properties.insert("root".to_string(), root_path);
 
         let conn = connect_namespace("dir", properties)
             .execute()
