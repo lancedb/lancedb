@@ -1017,7 +1017,7 @@ pub fn connect(uri: &str) -> ConnectBuilder {
 
 pub struct ConnectNamespaceBuilder {
     ns_impl: String,
-    ns_properties: HashMap<String, String>,
+    properties: HashMap<String, String>,
     storage_options: HashMap<String, String>,
     read_consistency_interval: Option<std::time::Duration>,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
@@ -1025,10 +1025,10 @@ pub struct ConnectNamespaceBuilder {
 }
 
 impl ConnectNamespaceBuilder {
-    fn new(ns_impl: &str, ns_properties: HashMap<String, String>) -> Self {
+    fn new(ns_impl: &str, properties: HashMap<String, String>) -> Self {
         Self {
             ns_impl: ns_impl.to_string(),
-            ns_properties,
+            properties,
             storage_options: HashMap::new(),
             read_consistency_interval: None,
             embedding_registry: None,
@@ -1094,7 +1094,7 @@ impl ConnectNamespaceBuilder {
         let internal = Arc::new(
             LanceNamespaceDatabase::connect(
                 &self.ns_impl,
-                self.ns_properties,
+                self.properties,
                 self.storage_options,
                 self.read_consistency_interval,
                 self.session,
@@ -1117,7 +1117,7 @@ impl ConnectNamespaceBuilder {
 /// # Arguments
 ///
 /// * `ns_impl` - The namespace implementation to use (e.g., "dir" for directory-based, "rest" for REST API)
-/// * `ns_properties` - Configuration properties for the namespace implementation
+/// * `properties` - Configuration properties for the namespace implementation
 /// ```
 pub fn connect_namespace(
     ns_impl: &str,
