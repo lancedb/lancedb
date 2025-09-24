@@ -1192,10 +1192,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         // Create empty RecordBatch with the schema
         let empty_batch = RecordBatch::new_empty(schema.clone());
-        let empty_reader = Box::new(RecordBatchIterator::new(
-            vec![Ok(empty_batch)],
-            schema,
-        ));
+        let empty_reader = Box::new(RecordBatchIterator::new(vec![Ok(empty_batch)], schema));
 
         let merge_params = MergeInsertRequest::try_from(params.clone())?;
         let query = MergeInsertExplainRequest {
@@ -1205,7 +1202,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let request = self
             .client
-            .post(&format!("/v1/table/{}/merge_insert/explain_plan/", self.identifier))
+            .post(&format!(
+                "/v1/table/{}/merge_insert/explain_plan/",
+                self.identifier
+            ))
             .query(&query)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
@@ -1223,13 +1223,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<String> {
         let merge_params = MergeInsertRequest::try_from(params.clone())?;
-        let query = MergeInsertAnalyzeRequest {
-            merge_params,
-        };
+        let query = MergeInsertAnalyzeRequest { merge_params };
 
         let request = self
             .client
-            .post(&format!("/v1/table/{}/merge_insert/analyze_plan/", self.identifier))
+            .post(&format!(
+                "/v1/table/{}/merge_insert/analyze_plan/",
+                self.identifier
+            ))
             .query(&query)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 

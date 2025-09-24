@@ -30,6 +30,30 @@ Construct a MergeInsertBuilder. __Internal use only.__
 
 ## Methods
 
+### analyzePlan()
+
+```ts
+analyzePlan(data): Promise<string>
+```
+
+Analyze the execution plan for the merge insert operation
+
+This executes the merge insert operation to collect performance metrics
+but does not commit the changes to the dataset.
+
+#### Parameters
+
+* **data**: [`Data`](../type-aliases/Data.md)
+    The new data to merge
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+A string containing performance metrics and execution details
+
+***
+
 ### execute()
 
 ```ts
@@ -49,6 +73,54 @@ Executes the merge insert operation
 `Promise`&lt;[`MergeResult`](../interfaces/MergeResult.md)&gt;
 
 the merge result
+
+***
+
+### explainPlan()
+
+```ts
+explainPlan(verbose): Promise<string>
+```
+
+Explain the execution plan for the merge insert operation
+
+This shows how the merge insert operation would be executed without
+actually running it.
+
+#### Parameters
+
+* **verbose**: `boolean` = `false`
+    Whether to show a verbose execution plan
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+A string describing the execution plan
+
+***
+
+### useIndex()
+
+```ts
+useIndex(useIndex): MergeInsertBuilder
+```
+
+Controls whether to use indexes for the merge operation.
+
+When set to `true` (the default), the operation will use an index if available
+on the join key for improved performance. When set to `false`, it forces a full
+table scan even if an index exists. This can be useful for benchmarking or when
+the query optimizer chooses a suboptimal path.
+
+#### Parameters
+
+* **useIndex**: `boolean`
+    Whether to use indices for the merge operation. Defaults to `true`.
+
+#### Returns
+
+[`MergeInsertBuilder`](MergeInsertBuilder.md)
 
 ***
 

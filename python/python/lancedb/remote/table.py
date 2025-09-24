@@ -460,18 +460,14 @@ class RemoteTable(Table):
         merge: LanceMergeInsertBuilder,
         verbose: bool,
     ) -> str:
-        return LOOP.run(
-            self._table._explain_merge_plan(merge, verbose)
-        )
+        return LOOP.run(self._table._explain_merge_plan(merge, verbose))
 
     def _analyze_merge_plan(
         self,
         merge: LanceMergeInsertBuilder,
         new_data: DATA,
     ) -> str:
-        return LOOP.run(
-            self._table._analyze_merge_plan(merge, new_data)
-        )
+        return LOOP.run(self._table._analyze_merge_plan(merge, new_data))
 
     def delete(self, predicate: str) -> DeleteResult:
         """Delete rows from the table.
