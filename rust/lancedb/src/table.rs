@@ -2399,6 +2399,7 @@ impl BaseTable for NativeTable {
         } else {
             builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
         }
+        builder.use_index(params.use_index);
 
         let future = if let Some(timeout) = params.timeout {
             // The default retry timeout is 30s, so we pass the full timeout down
@@ -2904,6 +2905,38 @@ mod tests {
             table.count_rows(Some("age = 3".to_string())).await.unwrap(),
             5
         );
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_use_index() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        // Create a dataset with i=0..10
+        let batches = merge_insert_test_batches(0, 0);
+        let table = conn
+            .create_table("my_table", batches)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+
+        // Test use_index=true (default behavior)
+        let new_batches = Box::new(merge_insert_test_batches(5, 1));
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_not_matched_insert_all();
+        merge_insert_builder.use_index(true);
+        merge_insert_builder.execute(new_batches).await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 15);
+
+        // Test use_index=false (force table scan)
+        let new_batches = Box::new(merge_insert_test_batches(15, 2));
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_not_matched_insert_all();
+        merge_insert_builder.use_index(false);
+        merge_insert_builder.execute(new_batches).await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 25);
     }
 
     #[tokio::test]

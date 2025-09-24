@@ -672,6 +672,9 @@ impl Table {
         if let Some(timeout) = parameters.timeout {
             builder.timeout(timeout);
         }
+        if let Some(use_index) = parameters.use_index {
+            builder.use_index(use_index);
+        }
 
         future_into_py(self_.py(), async move {
             let res = builder.execute(Box::new(batches)).await.infer_error()?;
@@ -831,6 +834,7 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_delete: bool,
     when_not_matched_by_source_condition: Option<String>,
     timeout: Option<std::time::Duration>,
+    use_index: Option<bool>,
 }
 
 #[pyclass]
