@@ -1993,7 +1993,11 @@ def test_update_metadata(mem_db: DBConnection):
 
     # Update existing and add new metadata
     result = table.update_metadata({"version": "1.1", "author": "test_user"})
-    assert result == {"description": "Test table", "version": "1.1", "author": "test_user"}
+    assert result == {
+        "description": "Test table",
+        "version": "1.1",
+        "author": "test_user",
+    }
 
     # Remove a key
     result = table.update_metadata({"author": None})
@@ -2012,7 +2016,9 @@ def test_update_schema_metadata(mem_db: DBConnection):
     )
 
     # Add schema metadata
-    result = table.update_schema_metadata({"format_version": "2.0", "encoding": "utf-8"})
+    result = table.update_schema_metadata(
+        {"format_version": "2.0", "encoding": "utf-8"}
+    )
     assert result == {"format_version": "2.0", "encoding": "utf-8"}
 
     # Update existing metadata
@@ -2033,12 +2039,18 @@ async def test_update_metadata_async(mem_db_async: AsyncConnection):
     )
 
     # Add initial metadata
-    result = await table.update_metadata({"description": "Async test table", "version": "1.0"})
+    result = await table.update_metadata(
+        {"description": "Async test table", "version": "1.0"}
+    )
     assert result == {"description": "Async test table", "version": "1.0"}
 
     # Update metadata
     result = await table.update_metadata({"version": "2.0", "async": "true"})
-    assert result == {"description": "Async test table", "version": "2.0", "async": "true"}
+    assert result == {
+        "description": "Async test table",
+        "version": "2.0",
+        "async": "true",
+    }
 
 
 @pytest.mark.asyncio

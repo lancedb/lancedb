@@ -209,35 +209,35 @@ export abstract class Table {
 
   /**
    * Update table metadata.
-   * 
-   * @param updates - The metadata updates to apply. Keys are metadata keys, 
+   *
+   * @param updates - The metadata updates to apply. Keys are metadata keys,
    *                  values are the new values. Use `null` to remove a key.
-   * @param replace - If true, replace the entire metadata map. If false, merge 
+   * @param replace - If true, replace the entire metadata map. If false, merge
    *                  updates with existing metadata. Defaults to false.
    * @returns A promise that resolves to the updated metadata map.
    * @example
    * ```ts
    * // Add metadata
    * await table.updateMetadata({"description": "My test table", "version": "1.0"});
-   * 
+   *
    * // Update specific keys
    * await table.updateMetadata({"version": "1.1", "author": "me"});
-   * 
+   *
    * // Remove a key
    * await table.updateMetadata({"author": null});
    * ```
    */
   abstract updateMetadata(
     updates: Map<string, string | null> | Record<string, string | null>,
-    replace?: boolean
+    replace?: boolean,
   ): Promise<Record<string, string>>;
 
   /**
    * Update schema metadata.
-   * 
-   * @param updates - The schema metadata updates to apply. Keys are metadata keys, 
+   *
+   * @param updates - The schema metadata updates to apply. Keys are metadata keys,
    *                  values are the new values. Use `null` to remove a key.
-   * @param replace - If true, replace the entire schema metadata map. If false, 
+   * @param replace - If true, replace the entire schema metadata map. If false,
    *                  merge updates with existing metadata. Defaults to false.
    * @returns A promise that resolves to the updated schema metadata map.
    * @example
@@ -248,7 +248,7 @@ export abstract class Table {
    */
   abstract updateSchemaMetadata(
     updates: Map<string, string | null> | Record<string, string | null>,
-    replace?: boolean
+    replace?: boolean,
   ): Promise<Record<string, string>>;
 
   /** Count the total number of rows in the dataset. */
@@ -725,10 +725,10 @@ export class LocalTable extends Table {
 
   async updateMetadata(
     updates: Map<string, string | null> | Record<string, string | null>,
-    replace: boolean = false
+    replace: boolean = false,
   ): Promise<Record<string, string>> {
     const entries: UpdateMapEntry[] = [];
-    
+
     if (updates instanceof Map) {
       for (const [key, value] of updates.entries()) {
         entries.push({ key, value: value ?? undefined });
@@ -744,10 +744,10 @@ export class LocalTable extends Table {
 
   async updateSchemaMetadata(
     updates: Map<string, string | null> | Record<string, string | null>,
-    replace: boolean = false
+    replace: boolean = false,
   ): Promise<Record<string, string>> {
     const entries: UpdateMapEntry[] = [];
-    
+
     if (updates instanceof Map) {
       for (const [key, value] of updates.entries()) {
         entries.push({ key, value: value ?? undefined });

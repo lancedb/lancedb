@@ -1414,9 +1414,7 @@ class Table(ABC):
 
     @abstractmethod
     def update_metadata(
-        self, 
-        updates: Dict[str, Optional[str]], 
-        replace: bool = False
+        self, updates: Dict[str, Optional[str]], replace: bool = False
     ) -> Dict[str, str]:
         """
         Update table metadata.
@@ -1424,7 +1422,7 @@ class Table(ABC):
         Parameters
         ----------
         updates : Dict[str, Optional[str]]
-            The metadata updates to apply. Keys are metadata keys, values are 
+            The metadata updates to apply. Keys are metadata keys, values are
             the new values. Use None as a value to remove that key.
         replace : bool, default False
             If True, replace the entire metadata map with the provided updates.
@@ -1439,9 +1437,7 @@ class Table(ABC):
 
     @abstractmethod
     def update_schema_metadata(
-        self, 
-        updates: Dict[str, Optional[str]], 
-        replace: bool = False
+        self, updates: Dict[str, Optional[str]], replace: bool = False
     ) -> Dict[str, str]:
         """
         Update schema metadata.
@@ -1449,7 +1445,7 @@ class Table(ABC):
         Parameters
         ----------
         updates : Dict[str, Optional[str]]
-            The schema metadata updates to apply. Keys are metadata keys, values 
+            The schema metadata updates to apply. Keys are metadata keys, values
             are the new values. Use None as a value to remove that key.
         replace : bool, default False
             If True, replace the entire schema metadata map with the provided updates.
@@ -2912,9 +2908,7 @@ class LanceTable(Table):
         return LOOP.run(self._table.update(values, where=where, updates_sql=values_sql))
 
     def update_metadata(
-        self, 
-        updates: Dict[str, Optional[str]], 
-        replace: bool = False
+        self, updates: Dict[str, Optional[str]], replace: bool = False
     ) -> Dict[str, str]:
         """
         Update table metadata.
@@ -2922,7 +2916,7 @@ class LanceTable(Table):
         Parameters
         ----------
         updates : Dict[str, Optional[str]]
-            The metadata updates to apply. Keys are metadata keys, values are 
+            The metadata updates to apply. Keys are metadata keys, values are
             the new values. Use None as a value to remove that key.
         replace : bool, default False
             If True, replace the entire metadata map with the provided updates.
@@ -2953,9 +2947,7 @@ class LanceTable(Table):
         return LOOP.run(self._table.update_metadata(updates, replace))
 
     def update_schema_metadata(
-        self, 
-        updates: Dict[str, Optional[str]], 
-        replace: bool = False
+        self, updates: Dict[str, Optional[str]], replace: bool = False
     ) -> Dict[str, str]:
         """
         Update schema metadata.
@@ -2963,7 +2955,7 @@ class LanceTable(Table):
         Parameters
         ----------
         updates : Dict[str, Optional[str]]
-            The schema metadata updates to apply. Keys are metadata keys, values 
+            The schema metadata updates to apply. Keys are metadata keys, values
             are the new values. Use None as a value to remove that key.
         replace : bool, default False
             If True, replace the entire schema metadata map with the provided updates.
@@ -4403,9 +4395,7 @@ class AsyncTable:
         return await self._inner.update(updates_sql, where)
 
     async def update_metadata(
-        self, 
-        updates: Dict[str, Optional[str]], 
-        replace: bool = False
+        self, updates: Dict[str, Optional[str]], replace: bool = False
     ) -> Dict[str, str]:
         """
         Update table metadata.
@@ -4413,7 +4403,7 @@ class AsyncTable:
         Parameters
         ----------
         updates : Dict[str, Optional[str]]
-            The metadata updates to apply. Keys are metadata keys, values are 
+            The metadata updates to apply. Keys are metadata keys, values are
             the new values. Use None as a value to remove that key.
         replace : bool, default False
             If True, replace the entire metadata map with the provided updates.
@@ -4441,9 +4431,7 @@ class AsyncTable:
         return await self._inner.update_metadata(updates, replace)
 
     async def update_schema_metadata(
-        self, 
-        updates: Dict[str, Optional[str]], 
-        replace: bool = False
+        self, updates: Dict[str, Optional[str]], replace: bool = False
     ) -> Dict[str, str]:
         """
         Update schema metadata.
@@ -4451,7 +4439,7 @@ class AsyncTable:
         Parameters
         ----------
         updates : Dict[str, Optional[str]]
-            The schema metadata updates to apply. Keys are metadata keys, values 
+            The schema metadata updates to apply. Keys are metadata keys, values
             are the new values. Use None as a value to remove that key.
         replace : bool, default False
             If True, replace the entire schema metadata map with the provided updates.
@@ -4471,7 +4459,7 @@ class AsyncTable:
         ...     data = pd.DataFrame({"x": [1, 2], "vector": [[1, 2], [3, 4]]})
         ...     db = await lancedb.connect_async("./.lancedb")
         ...     table = await db.create_table("my_table", data)
-        ...     # Add schema metadata  
+        ...     # Add schema metadata
         ...     result = await table.update_schema_metadata({"format_version": "2.0"})
         ...     print(result)  # {"format_version": "2.0"}
         >>> asyncio.run(demo_schema_metadata())
