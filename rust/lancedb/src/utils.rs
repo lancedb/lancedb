@@ -195,7 +195,15 @@ pub fn supported_btree_data_type(dtype: &DataType) -> bool {
 }
 
 pub fn supported_bitmap_data_type(dtype: &DataType) -> bool {
-    dtype.is_integer() || matches!(dtype, DataType::Utf8)
+    dtype.is_integer()
+        || matches!(
+            dtype,
+            DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::Boolean
+        )
 }
 
 pub fn supported_label_list_data_type(dtype: &DataType) -> bool {

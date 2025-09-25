@@ -2760,6 +2760,7 @@ mod tests {
         RecordBatchReader, StringArray, TimestampMillisecondArray, TimestampNanosecondArray,
         UInt32Array,
     };
+    use arrow_array::{BinaryArray, LargeBinaryArray};
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
@@ -3725,6 +3726,10 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("category", DataType::Utf8, true),
+            Field::new("large_category", DataType::LargeUtf8, true),
+            Field::new("is_active", DataType::Boolean, true),
+            Field::new("data", DataType::Binary, true),
+            Field::new("large_data", DataType::LargeBinary, true),
         ]));
 
         let batch = RecordBatch::try_new(
@@ -3733,6 +3738,16 @@ mod tests {
                 Arc::new(Int32Array::from_iter_values(0..100)),
                 Arc::new(StringArray::from_iter_values(
                     (0..100).map(|i| format!("category_{}", i % 5)),
+                )),
+                Arc::new(LargeStringArray::from_iter_values(
+                    (0..100).map(|i| format!("large_category_{}", i % 5)),
+                )),
+                Arc::new(BooleanArray::from_iter((0..100).map(|i| Some(i % 2 == 0)))),
+                Arc::new(BinaryArray::from_iter_values(
+                    (0_u32..100).map(|i| i.to_le_bytes()),
+                )),
+                Arc::new(LargeBinaryArray::from_iter_values(
+                    (0_u32..100).map(|i| i.to_le_bytes()),
                 )),
             ],
         )
@@ -3754,12 +3769,58 @@ mod tests {
             .await
             .unwrap();
 
+        // Create bitmap index on the "is_active" column
+        table
+            .create_index(&["is_active"], Index::Bitmap(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        // Create bitmap index on the "data" column
+        table
+            .create_index(&["data"], Index::Bitmap(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        // Create bitmap index on the "large_data" column
+        table
+            .create_index(&["large_data"], Index::Bitmap(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        // Create bitmap index on the "large_category" column
+        table
+            .create_index(&["large_category"], Index::Bitmap(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
         // Verify the index was created
         let index_configs = table.list_indices().await.unwrap();
-        assert_eq!(index_configs.len(), 1);
-        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index_configs.len(), 3);
+
+        let mut configs_iter = index_configs.into_iter();
+        let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
         assert_eq!(index.columns, vec!["category".to_string()]);
+
+        let index = configs_iter.next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
+        assert_eq!(index.columns, vec!["is_active".to_string()]);
+
+        let index = configs_iter.next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
+        assert_eq!(index.columns, vec!["data".to_string()]);
+
+        let index = configs_iter.next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
+        assert_eq!(index.columns, vec!["large_data".to_string()]);
+
+        let index = configs_iter.next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
+        assert_eq!(index.columns, vec!["large_category".to_string()]);
     }
 
     #[tokio::test]
