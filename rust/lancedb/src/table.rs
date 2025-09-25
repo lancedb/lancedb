@@ -3799,7 +3799,7 @@ mod tests {
 
         // Verify the index was created
         let index_configs = table.list_indices().await.unwrap();
-        assert_eq!(index_configs.len(), 3);
+        assert_eq!(index_configs.len(), 5);
 
         let mut configs_iter = index_configs.into_iter();
         let index = configs_iter.next().unwrap();
