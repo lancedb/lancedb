@@ -186,7 +186,26 @@
   (function() {
     var banner = document.getElementById('deprecation-banner');
     var lastPath = null;
-    var isInitialLoad = true;
+    var hasProcessedRedirect = false; // Renamed and initialized to false
+
+    function applySeoTagsAndRedirect() {
+      // Add noindex meta tag
+      var noindexMeta = document.createElement('meta');
+      noindexMeta.setAttribute('name', 'robots');
+      noindexMeta.setAttribute('content', 'noindex, follow');
+      document.head.appendChild(noindexMeta);
+
+      // Add canonical link for SEO
+      var canonicalLink = document.createElement('link');
+      canonicalLink.setAttribute('rel', 'canonical');
+      canonicalLink.setAttribute('href', 'https://lancedb.com/docs');
+      document.head.appendChild(canonicalLink);
+
+      // Redirect users after a small delay to ensure tags are rendered
+      setTimeout(function() {
+        window.location.replace('https://lancedb.com/docs'); // Using location.replace()
+      }, 100); // 100ms delay
+    }
 
     function checkBannerAndRedirect() {
       var currentPath = window.location.pathname;
@@ -208,13 +227,21 @@
         banner.style.display = 'none';
       } else {
         banner.style.display = 'block';
-        if (isInitialLoad) {
-          window.location.href = 'https://lancedb.com/docs';
+        if (!hasProcessedRedirect) { // Use the new flag
+          applySeoTagsAndRedirect();
+          hasProcessedRedirect = true;
         }
       }
-      isInitialLoad = false;
     }
 
+    // Better DOM ready handling
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', checkBannerAndRedirect);
+    } else {
+      checkBannerAndRedirect();
+    }
+
+    // Interval check for SPA-like navigation
     setInterval(checkBannerAndRedirect, 200);
   })();
 </script>
