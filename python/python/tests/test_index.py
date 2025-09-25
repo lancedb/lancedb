@@ -35,6 +35,8 @@ async def some_table(db_async):
             "tags": [
                 [f"tag{random.randint(0, 8)}" for _ in range(2)] for _ in range(NROWS)
             ],
+            "is_active": [random.choice([True, False]) for _ in range(NROWS)],
+            "data": [random.randbytes(random.randint(0, 128)) for _ in range(NROWS)],
         }
     )
     return await db_async.create_table(
@@ -99,10 +101,17 @@ async def test_create_fixed_size_binary_index(some_table: AsyncTable):
 @pytest.mark.asyncio
 async def test_create_bitmap_index(some_table: AsyncTable):
     await some_table.create_index("id", config=Bitmap())
+    await some_table.create_index("is_active", config=Bitmap())
+    await some_table.create_index("data", config=Bitmap())
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(Bitmap, columns=["id"], name="id_idx")]'
-    indices = await some_table.list_indices()
-    assert len(indices) == 1
+    assert len(indices) == 3
+    assert indices[0].index_type == "Bitmap"
+    assert indices[0].columns == ["id"]
+    assert indices[1].index_type == "Bitmap"
+    assert indices[1].columns == ["is_active"]
+    assert indices[2].index_type == "Bitmap"
+    assert indices[2].columns == ["data"]
+
     index_name = indices[0].name
     stats = await some_table.index_stats(index_name)
     assert stats.index_type == "BITMAP"
@@ -110,6 +119,11 @@ async def test_create_bitmap_index(some_table: AsyncTable):
     assert stats.num_indexed_rows == await some_table.count_rows()
     assert stats.num_unindexed_rows == 0
     assert stats.num_indices == 1
+
+    assert (
+        "ScalarIndexQuery"
+        in await some_table.query().where("is_active = TRUE").explain_plan()
+    )
 
 
 @pytest.mark.asyncio
