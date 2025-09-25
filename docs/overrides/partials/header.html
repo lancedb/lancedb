@@ -180,10 +180,12 @@
 <script>
   (function() {
     var path = window.location.pathname;
-    var apiPaths = ['/python/', '/javascript/', '/js/', '/api_reference/'];
+    // Normalize path: remove trailing slash if it's not the root
+    var cleanPath = path.endsWith('/') && path.length > 1 ? path.slice(0, -1) : path;
+
+    var apiPaths = ['/python', '/javascript', '/js', '/api_reference']; // Store without trailing slashes
     var isApiPage = apiPaths.some(function(apiPath) {
-      var cleanApiPath = apiPath.slice(0, -1);
-      return path.startsWith('/lancedb' + cleanApiPath);
+      return cleanPath.startsWith('/lancedb' + apiPath);
     });
 
     if (!isApiPage) {
