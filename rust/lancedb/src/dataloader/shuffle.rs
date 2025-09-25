@@ -281,7 +281,7 @@ mod tests {
     use datafusion_expr::col;
     use futures::TryStreamExt;
     use lance_datagen::{BatchCount, BatchGeneratorBuilder, ByteCount, RowCount, Seed};
-    use rand::SeedableRng;
+    use rand::{rngs::SmallRng, SeedableRng};
 
     fn test_gen() -> BatchGeneratorBuilder {
         lance_datagen::gen_batch()
@@ -307,8 +307,8 @@ mod tests {
     #[test]
     fn test_shuffle_batch_deterministic() {
         let batch = create_test_batch(RowCount::from(10));
-        let mut rng1 = rand_xoshiro::Xoshiro256Plus::seed_from_u64(42);
-        let mut rng2 = rand_xoshiro::Xoshiro256Plus::seed_from_u64(42);
+        let mut rng1 = SmallRng::seed_from_u64(42);
+        let mut rng2 = SmallRng::seed_from_u64(42);
 
         let shuffled1 = Shuffler::shuffle_batch(&batch, &mut rng1, 1).unwrap();
         let shuffled2 = Shuffler::shuffle_batch(&batch, &mut rng2, 1).unwrap();
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn test_shuffle_with_clumps() {
         let batch = create_test_batch(RowCount::from(10));
-        let mut rng = rand_xoshiro::Xoshiro256Plus::seed_from_u64(42);
+        let mut rng = SmallRng::seed_from_u64(42);
         let shuffled = Shuffler::shuffle_batch(&batch, &mut rng, 3).unwrap();
         let values = shuffled.column(0).as_primitive::<Int32Type>();
 
@@ -356,7 +356,7 @@ mod tests {
     #[tokio::test]
     async fn test_shuffle_batch_preserves_data() {
         let batch = create_test_batch(RowCount::from(100));
-        let mut rng = rand_xoshiro::Xoshiro256Plus::seed_from_u64(42);
+        let mut rng = SmallRng::seed_from_u64(42);
 
         let shuffled = Shuffler::shuffle_batch(&batch, &mut rng, 1).unwrap();
 
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn test_shuffle_batch_empty() {
         let batch = create_test_batch(RowCount::from(0));
-        let mut rng = rand_xoshiro::Xoshiro256Plus::seed_from_u64(42);
+        let mut rng = SmallRng::seed_from_u64(42);
 
         let shuffled = Shuffler::shuffle_batch(&batch, &mut rng, 1).unwrap();
         assert_eq!(shuffled.num_rows(), 0);

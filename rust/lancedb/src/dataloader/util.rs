@@ -7,7 +7,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::{Fields, Schema};
 use datafusion_execution::disk_manager::DiskManagerMode;
 use futures::TryStreamExt;
-use rand::{RngCore, SeedableRng};
+use rand::{rngs::SmallRng, RngCore, SeedableRng};
 use tempfile::TempDir;
 
 use crate::{
@@ -56,8 +56,8 @@ impl TemporaryDirectory {
 pub fn non_crypto_rng(seed: &Option<u64>) -> Box<dyn RngCore + Send> {
     Box::new(
         seed.as_ref()
-            .map(|seed| rand_xoshiro::Xoshiro256Plus::seed_from_u64(*seed))
-            .unwrap_or_else(|| rand_xoshiro::Xoshiro256Plus::from_rng(&mut rand::rng())),
+            .map(|seed| SmallRng::seed_from_u64(*seed))
+            .unwrap_or_else(|| SmallRng::from_os_rng()),
     )
 }
 

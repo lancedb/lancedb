@@ -16,6 +16,9 @@ rust-version = "1.78.0"
 
 [workspace.dependencies]
 lance = { "version" = "=0.38.2", default-features = false, "features" = ["dynamodb"] }
+lance-core = "=0.38.2"
+lance-datagen = "=0.38.2"
+lance-file = "=0.38.2"
 lance-io = { "version" = "=0.38.2", default-features = false }
 lance-index = "=0.38.2"
 lance-linalg = "=0.38.2"
@@ -24,6 +27,7 @@ lance-testing = "=0.38.2"
 lance-datafusion = "=0.38.2"
 lance-encoding = "=0.38.2"
 lance-namespace = "0.0.18"
+ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "56.2", optional = false }
 arrow-array = "56.2"
@@ -48,6 +52,7 @@ log = "0.4"
 moka = { version = "0.12", features = ["future"] }
 object_store = "0.12.0"
 pin-project = "1.0.7"
+rand = "0.9"
 snafu = "0.8"
 url = "2"
 num-traits = "0.2"

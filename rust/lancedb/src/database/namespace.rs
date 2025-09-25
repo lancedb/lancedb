@@ -36,6 +36,8 @@ pub struct LanceNamespaceDatabase {
     read_consistency_interval: Option<std::time::Duration>,
     // Optional session for object stores and caching
     session: Option<Arc<lance::session::Session>>,
+    // database URI
+    uri: String,
 }
 
 impl LanceNamespaceDatabase {
@@ -57,6 +59,7 @@ impl LanceNamespaceDatabase {
             storage_options,
             read_consistency_interval,
             session,
+            uri: format!("namespace://{}", ns_impl),
         })
     }
 
@@ -130,6 +133,10 @@ impl std::fmt::Display for LanceNamespaceDatabase {
 
 #[async_trait]
 impl Database for LanceNamespaceDatabase {
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
     async fn list_namespaces(&self, request: DbListNamespacesRequest) -> Result<Vec<String>> {
         let ns_request = ListNamespacesRequest {
             id: if request.namespace.is_empty() {

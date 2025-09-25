@@ -522,9 +522,9 @@ impl CloneTableBuilder {
 
     /// Execute the clone operation
     pub async fn execute(self) -> Result<Table> {
-        Ok(Table::new(
-            self.parent.clone().clone_table(self.request).await?,
-        ))
+        let parent = self.parent.clone();
+        let table = parent.clone_table(self.request).await?;
+        Ok(Table::new(table, parent))
     }
 }
 
@@ -1114,7 +1114,6 @@ impl ConnectNamespaceBuilder {
 
         Ok(Connection {
             internal,
-            uri: format!("namespace://{}", self.ns_impl),
             embedding_registry: self
                 .embedding_registry
                 .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
@@ -1195,7 +1194,7 @@ mod tests {
     #[tokio::test]
     async fn test_connect() {
         let tc = new_test_connection().await.unwrap();
-        assert_eq!(tc.connection.uri, tc.uri);
+        assert_eq!(tc.connection.uri(), tc.uri);
     }
 
     #[cfg(not(windows))]
