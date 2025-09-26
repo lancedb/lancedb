@@ -728,7 +728,7 @@ impl Database for ListingDatabase {
 
         let target_uri = self.table_uri(&request.target_table_name)?;
         source_dataset
-            .shallow_clone(&target_uri, version_ref, storage_params)
+            .shallow_clone(&target_uri, version_ref, Some(storage_params))
             .await
             .map_err(|e| Error::Lance { source: e })?;
 
