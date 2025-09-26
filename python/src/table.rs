@@ -682,6 +682,64 @@ impl Table {
         })
     }
 
+    pub fn merge_insert_explain_plan(
+        self_: PyRef<'_, Self>,
+        parameters: MergeInsertParams,
+        verbose: bool,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let on = parameters.on.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+        let mut builder = self_.inner_ref()?.merge_insert(&on);
+        if parameters.when_matched_update_all {
+            builder.when_matched_update_all(parameters.when_matched_update_all_condition);
+        }
+        if parameters.when_not_matched_insert_all {
+            builder.when_not_matched_insert_all();
+        }
+        if parameters.when_not_matched_by_source_delete {
+            builder
+                .when_not_matched_by_source_delete(parameters.when_not_matched_by_source_condition);
+        }
+        if let Some(timeout) = parameters.timeout {
+            builder.timeout(timeout);
+        }
+
+        future_into_py(self_.py(), async move {
+            let result = builder.explain_plan(None, verbose).await.infer_error()?;
+            Ok(result)
+        })
+    }
+
+    pub fn merge_insert_analyze_plan<'a>(
+        self_: PyRef<'a, Self>,
+        data: Bound<'a, PyAny>,
+        parameters: MergeInsertParams,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let batches: ArrowArrayStreamReader = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
+        let on = parameters.on.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+        let mut builder = self_.inner_ref()?.merge_insert(&on);
+        if parameters.when_matched_update_all {
+            builder.when_matched_update_all(parameters.when_matched_update_all_condition);
+        }
+        if parameters.when_not_matched_insert_all {
+            builder.when_not_matched_insert_all();
+        }
+        if parameters.when_not_matched_by_source_delete {
+            builder
+                .when_not_matched_by_source_delete(parameters.when_not_matched_by_source_condition);
+        }
+        if let Some(timeout) = parameters.timeout {
+            builder.timeout(timeout);
+        }
+
+        future_into_py(self_.py(), async move {
+            let result = builder
+                .analyze_plan(Box::new(batches))
+                .await
+                .infer_error()?;
+            Ok(result)
+        })
+    }
+
     pub fn uses_v2_manifest_paths(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
