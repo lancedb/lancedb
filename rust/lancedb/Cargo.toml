@@ -82,6 +82,7 @@ crunchy.workspace = true
 bytemuck_derive.workspace = true
 
 [dev-dependencies]
+anyhow = "1"
 tempfile = "3.5.0"
 rand = { version = "0.9", features = ["small_rng"] }
 random_word = { version = "0.4.3", features = ["en"] }
