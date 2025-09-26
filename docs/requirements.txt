@@ -5,3 +5,4 @@ mkdocstrings[python]==0.25.2
 griffe
 mkdocs-render-swagger-plugin
 pydantic
+mkdocs-redirects
