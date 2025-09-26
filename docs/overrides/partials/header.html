@@ -19,7 +19,13 @@
   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
   IN THE SOFTWARE.
 -->
-
+<div id="deprecation-banner" style="background-color: #f8d7da; color: #721c24; padding: 1em; text-align: center;">                                                           
+    <p style="margin: 0; font-size: 1.1em;">                                                                                                           
+        <strong>This documentation site is deprecated.</strong>                                                                           
+        Please visit our new documentation site at <a href="https://lancedb.com/docs" style="color: #721c24; text-decoration: underline;">
+          lancedb.com/docs</a> for the latest information.                                                                                        
+    </p>                                                                                                                                               
+  </div>  
 {% set class = "md-header" %}
 {% if "navigation.tabs.sticky" in features %}
   {% set class = class ~ " md-header--shadow md-header--lifted" %}
@@ -177,32 +183,73 @@
 
 <script>
   (function() {
-    var lastPath = window.location.pathname;
+    function checkPathAndRedirect() {
+      var banner = document.getElementById('deprecation-banner');
 
-    function handleInternalNavigation() {
-      var currentPath = window.location.pathname;
-      if (currentPath === lastPath) {
-        return; // No change
+      if (document.querySelector('meta[http-equiv="refresh"]')) {
+        return; // Stop! The redirects plugin is already handling this page.
       }
-      lastPath = currentPath;
+
+      var currentPath = window.location.pathname;
 
       var cleanPath = currentPath.endsWith('/') && currentPath.length > 1
         ? currentPath.slice(0, -1)
         : currentPath;
 
-      var apiPaths = ['/lancedb/python', '/lancedb/javascript', '/lancedb/js', '/lancedb/api_reference'];
+      // These are the ONLY paths that should remain on the old site
+      var apiPaths = [
+        '/lancedb/python', 
+        '/lancedb/javascript', 
+        '/lancedb/js',
+        '/lancedb/api_reference'
+      ];
+      
       var isApiPage = apiPaths.some(function(apiPath) {
         return cleanPath.startsWith(apiPath);
       });
 
-      // If the new path is NOT an API page, it means the user navigated
-      // internally to a deprecated page, so we redirect them.
-      if (!isApiPage) {
+      if (isApiPage) {
+        if (banner) {
+          banner.style.display = 'none';
+        }
+      } else {
+        if (banner) {
+          banner.style.display = 'block';
+        }
+        
+        // Add noindex meta tag to prevent indexing of old docs for seo
+        var noindexMeta = document.createElement('meta');
+        noindexMeta.setAttribute('name', 'robots');
+        noindexMeta.setAttribute('content', 'noindex, follow');
+        document.head.appendChild(noindexMeta);
+
+        // Add canonical link to point to the new docs to reward new site for seo
+        var canonicalLink = document.createElement('link');
+        canonicalLink.setAttribute('rel', 'canonical');
+        canonicalLink.setAttribute('href', 'https://lancedb.com/docs');
+        document.head.appendChild(canonicalLink);
+        
         window.location.replace('https://lancedb.com/docs');
       }
     }
 
-    // This interval handles the SPA navigation case.
-    setInterval(handleInternalNavigation, 200);
+    // Run the check only if doc is ready. This makes sure we catch the initial load
+    // and redirect.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', checkPathAndRedirect);
+    } else {
+      checkPathAndRedirect();
+    }
+
+    // Use an interval to handle subsequent navigation clicks.
+    var lastPath = window.location.pathname;
+    setInterval(function() {
+      if (window.location.pathname !== lastPath) {
+        lastPath = window.location.pathname;
+        checkPathAndRedirect();
+      }
+    }, 2000); // keeping it 2 second to make it easy for user to understand
+              // what's happening
+
   })();
 </script>

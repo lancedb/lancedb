@@ -45,8 +45,6 @@ theme:
 
 plugins:
   - search
-  - redirects:
-      write_html: true
   - autorefs
   - mkdocstrings:
       handlers:
@@ -72,6 +70,22 @@ plugins:
   - mkdocs-jupyter
   - render_swagger:
       allow_arbitrary_locations: true
+  - redirects:
+      redirect_maps:
+        # Redirect the home page and other top-level markdown files. This enables maximum SEO benefit
+        # other sub-pages are handled by the ingected js in overrides/partials/header.html
+        'index.md': 'https://lancedb.com/docs/'
+        'guides/tables.md': 'https://lancedb.com/docs/tables/'
+        'ann_indexes.md': 'https://lancedb.com/docs/indexing/'
+        'basic.md': 'https://lancedb.com/docs/quickstart/'
+        'faq.md': 'https://lancedb.com/docs/faq/'
+        'embeddings/understanding_embeddings.md': 'https://lancedb.com/docs/embedding/'
+        'integrations.md': 'https://lancedb.com/docs/integrations/'
+        'examples.md': 'https://lancedb.com/docs/tutorials/'
+        'concepts/vector_search.md': 'https://lancedb.com/docs/search/vector-search/'
+        'troubleshooting.md': 'https://lancedb.com/docs/troubleshooting/'
+
+
 
 markdown_extensions:
   - admonition
@@ -389,30 +403,3 @@ extra:
       link: https://twitter.com/lancedb
     - icon: fontawesome/brands/linkedin
       link: https://www.linkedin.com/company/lancedb
-
-redirect_maps:
-  # Redirect the home page and other top-level markdown files
-  'index.md': 'https://lancedb.com/docs/'
-  'ann_indexes.md': 'https://lancedb.com/docs/'
-  'basic.md': 'https://lancedb.com/docs/'
-  'faq.md': 'https://lancedb.com/docs/'
-  'fts.md': 'https://lancedb.com/docs/'
-  'fts_tantivy.md': 'https://lancedb.com/docs/'
-  'migration.md': 'https://lancedb.com/docs/'
-  'search.md': 'https://lancedb.com/docs/'
-  'sql.md': 'https://lancedb.com/docs/'
-  'troubleshooting.md': 'https://lancedb.com/docs/'
-  'api_reference.md': 'https://lancedb.com/docs/'
-
-  # Redirect entire sections by pointing the directory to the new docs
-  'cloud/': 'https://lancedb.com/docs/cloud/'
-  'concepts/': 'https://lancedb.com/docs/quickstart/'
-  'embeddings/': 'https://lancedb.com/docs/embedding/'
-  'examples/': 'https://lancedb.com/docs/tutorials/'
-  'guides/': 'https://lancedb.com/docs/guides/'
-  'hybrid_search/': 'https://lancedb.com/docs/search/hybrid-search/'
-  'integrations/': 'https://lancedb.com/docs/integrations/'
-  'notebooks/': 'https://lancedb.com/docs/notebooks/'
-  'rag/': 'https://lancedb.com/docs/'
-  'reranking/': 'https://lancedb.com/docs/reranking/'
-  'studies/': 'https://lancedb.com/docs/'
