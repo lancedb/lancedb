@@ -291,6 +291,52 @@ pub(crate) fn suggested_num_sub_vectors(dim: u32) -> u32 {
     }
 }
 
+/// Builder for an IVF RQ index.
+///
+/// This index stores a compressed (quantized) copy of every vector. Each dimension
+/// is quantized into a small number of bits.
+/// The parameters `num_bits` control this process, providing a tradeoff
+/// between index size (and thus search speed) and index accuracy.
+///
+/// The partitioning process is called IVF and the `num_partitions` parameter controls how
+/// many groups to create.
+///
+/// Note that training an IVF RQ index on a large dataset is a slow operation and
+/// currently is also a memory intensive operation.
+#[derive(Debug, Clone)]
+pub struct IvfRqIndexBuilder {
+    // IVF
+    pub(crate) distance_type: DistanceType,
+    pub(crate) num_partitions: Option<u32>,
+    pub(crate) num_bits: Option<u32>,
+    pub(crate) sample_rate: u32,
+    pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
+}
+
+impl Default for IvfRqIndexBuilder {
+    fn default() -> Self {
+        Self {
+            distance_type: DistanceType::L2,
+            num_partitions: None,
+            num_bits: None,
+            sample_rate: 256,
+            max_iterations: 50,
+            target_partition_size: None,
+        }
+    }
+}
+
+impl IvfRqIndexBuilder {
+    impl_distance_type_setter!();
+    impl_ivf_params_setter!();
+
+    pub fn num_bits(mut self, num_bits: u32) -> Self {
+        self.num_bits = Some(num_bits);
+        self
+    }
+}
+
 /// Builder for an IVF HNSW PQ index.
 ///
 /// This index is a combination of IVF and HNSW.
