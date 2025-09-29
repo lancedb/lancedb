@@ -5,7 +5,8 @@ use std::sync::Mutex;
 
 use lancedb::index::scalar::{BTreeIndexBuilder, FtsIndexBuilder};
 use lancedb::index::vector::{
-    IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, IvfRqIndexBuilder,
+    IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
+    IvfRqIndexBuilder,
 };
 use lancedb::index::Index as LanceDbIndex;
 use napi_derive::napi;
