@@ -70,6 +70,22 @@ plugins:
   - mkdocs-jupyter
   - render_swagger:
       allow_arbitrary_locations: true
+  - redirects:
+      redirect_maps:
+        # Redirect the home page and other top-level markdown files. This enables maximum SEO benefit
+        # other sub-pages are handled by the ingected js in overrides/partials/header.html
+        'index.md': 'https://lancedb.com/docs/'
+        'guides/tables.md': 'https://lancedb.com/docs/tables/'
+        'ann_indexes.md': 'https://lancedb.com/docs/indexing/'
+        'basic.md': 'https://lancedb.com/docs/quickstart/'
+        'faq.md': 'https://lancedb.com/docs/faq/'
+        'embeddings/understanding_embeddings.md': 'https://lancedb.com/docs/embedding/'
+        'integrations.md': 'https://lancedb.com/docs/integrations/'
+        'examples.md': 'https://lancedb.com/docs/tutorials/'
+        'concepts/vector_search.md': 'https://lancedb.com/docs/search/vector-search/'
+        'troubleshooting.md': 'https://lancedb.com/docs/troubleshooting/'
+
+
 
 markdown_extensions:
   - admonition
