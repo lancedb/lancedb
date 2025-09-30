@@ -58,6 +58,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: docs/package-lock.json
       - name: Install node dependencies
+        working-directory: nodejs
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
