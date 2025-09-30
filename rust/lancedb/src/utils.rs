@@ -39,7 +39,7 @@ impl PatchStoreParam for Option<ObjectStoreParams> {
         let mut params = self.unwrap_or_default();
         if params.object_store_wrapper.is_some() {
             return Err(Error::Other {
-                message: "can not patch param because object store is already set".into(),
+                message: "can not patch param because object store is already set.".into(),
                 source: None,
             });
         }
