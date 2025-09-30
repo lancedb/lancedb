@@ -79,6 +79,7 @@ semver = { workspace = true }
 # For a workaround, see workspace Cargo.toml
 crunchy.workspace = true
 bytemuck_derive.workspace = true
+lance-namespace = "0.0.16"
 
 [dev-dependencies]
 anyhow = "1"

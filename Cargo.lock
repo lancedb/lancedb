@@ -4602,6 +4602,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "lance-namespace"
+version = "0.0.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b0f223ee1d067b8e913ccc1c861d94d9cf1502ab548184461f0a87961e8c9"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "lance",
+ "lance-namespace-reqwest-client",
+ "opendal",
+ "reqwest",
+ "serde_json",
+ "thiserror 1.0.69",
+ "url",
+]
+
+[[package]]
+name = "lance-namespace-reqwest-client"
+version = "0.0.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49395fc265645893983745ddbca448ed5fc7002a5faf8f57eb9a3b0ff3117524"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "url",
+]
+
+[[package]]
 name = "lance-table"
 version = "0.37.0"
 source = "git+https://github.com/lancedb/lance.git?tag=v0.37.1-beta.1#aa3e902a448fc345b44a32945c7700e6b9228154"
@@ -4696,6 +4727,7 @@ dependencies = [
  "lance-index",
  "lance-io",
  "lance-linalg",
+ "lance-namespace",
  "lance-table",
  "lance-testing",
  "lazy_static",
@@ -7485,6 +7517,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ce1fc6db65a611022b23a0dec6975d63fb80a302cb3388835ff02c097258d50"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "serde_repr"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175ee3e80ae9982737ca543e96133087cbd9a485eecc3bc4de9c1a37b47ea59c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]
