@@ -23,7 +23,7 @@ lance-table = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https:
 lance-testing = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
 lance-datafusion = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
 lance-encoding = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
-lance-namespace = "0.0.15"
+lance-namespace = "0.0.16"
 # Note that this one does not include pyarrow
 arrow = { version = "55.1", optional = false }
 arrow-array = "55.1"
@@ -31,7 +31,6 @@ arrow-data = "55.1"
 arrow-ipc = "55.1"
 arrow-ord = "55.1"
 arrow-schema = "55.1"
-arrow-arith = "55.1"
 arrow-cast = "55.1"
 async-trait = "0"
 datafusion = { version = "49.0", default-features = false }
@@ -52,7 +51,6 @@ pin-project = "1.0.7"
 snafu = "0.8"
 url = "2"
 num-traits = "0.2"
-rand = "0.9"
 regex = "1.10"
 lazy_static = "1"
 semver = "1.0.25"
@@ -60,7 +58,16 @@ crunchy = "0.2.4"
 # Temporary pins to work around downstream issues
 # https://github.com/apache/arrow-rs/commit/2fddf85afcd20110ce783ed5b4cdeb82293da30b
 chrono = "=0.4.41"
-# https://github.com/RustCrypto/formats/issues/1684
-base64ct = "=1.6.0"
 # Workaround for: https://github.com/Lokathor/bytemuck/issues/306
 bytemuck_derive = ">=1.8.1, <1.9.0"
+
+[patch.crates-io]
+# Force to use the same lance version as the rest of the project to avoid duplicate dependencies
+lance = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-io = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-index = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-linalg = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-table = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-testing = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-datafusion = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
+lance-encoding = { "version" = "=0.37.0", "tag" = "v0.37.1-beta.1", "git" = "https://github.com/lancedb/lance.git" }
