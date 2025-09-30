@@ -56,6 +56,7 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
+          cache-dependency-path: docs/package-lock.json
       - name: Install node dependencies
         working-directory: node
         run: |
