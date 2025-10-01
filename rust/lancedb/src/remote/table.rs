@@ -2096,14 +2096,31 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_insert_explain_plan() {
-        let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
-        )
-        .unwrap();
-
         let table = Table::new_with_handler("my_table", |request| {
-            if request.url().path() == "/v1/table/my_table/merge_insert/explain_plan/" {
+            if request.url().path() == "/v1/table/my_table/describe/" {
+                // Handle schema request
+                assert_eq!(request.method(), "POST");
+
+                let table_desc_json = r#"{
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {
+                                "name": "a",
+                                "type": { "type": "int32" },
+                                "nullable": false,
+                                "metadata": {}
+                            }
+                        ],
+                        "metadata": {}
+                    }
+                }"#;
+
+                http::Response::builder()
+                    .status(200)
+                    .body(table_desc_json)
+                    .unwrap()
+            } else if request.url().path() == "/v1/table/my_table/merge_insert/explain_plan/" {
                 assert_eq!(request.method(), "POST");
 
                 let params = request.url().query_pairs().collect::<HashMap<_, _>>();
@@ -2146,7 +2163,30 @@ mod tests {
         ));
 
         let table = Table::new_with_handler("my_table", |request| {
-            if request.url().path() == "/v1/table/my_table/merge_insert/analyze_plan/" {
+            if request.url().path() == "/v1/table/my_table/describe/" {
+                // Handle schema request
+                assert_eq!(request.method(), "POST");
+
+                let table_desc_json = r#"{
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {
+                                "name": "a",
+                                "type": { "type": "int32" },
+                                "nullable": false,
+                                "metadata": {}
+                            }
+                        ],
+                        "metadata": {}
+                    }
+                }"#;
+
+                http::Response::builder()
+                    .status(200)
+                    .body(table_desc_json)
+                    .unwrap()
+            } else if request.url().path() == "/v1/table/my_table/merge_insert/analyze_plan/" {
                 assert_eq!(request.method(), "POST");
 
                 let params = request.url().query_pairs().collect::<HashMap<_, _>>();
