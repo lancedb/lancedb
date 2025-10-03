@@ -647,7 +647,7 @@ impl From<StorageOptions> for RemoteOptions {
         let mut filtered = HashMap::new();
         for opt in supported_opts {
             if let Some(v) = options.0.get(opt) {
-                filtered.insert(opt.to_string(), v.to_string());
+                filtered.insert(opt.to_string(), v.clone());
             }
         }
         Self::new(filtered)
