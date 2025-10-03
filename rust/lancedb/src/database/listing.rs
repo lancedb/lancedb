@@ -718,9 +718,9 @@ impl Database for ListingDatabase {
             .map_err(|e| Error::Lance { source: e })?;
 
         let version_ref = match (request.source_version, request.source_tag) {
-            (Some(v), None) => Ok(Ref::Version(v)),
+            (Some(v), None) => Ok(Ref::Version(None, Some(v))),
             (None, Some(tag)) => Ok(Ref::Tag(tag)),
-            (None, None) => Ok(Ref::Version(source_dataset.version().version)),
+            (None, None) => Ok(Ref::Version(None, Some(source_dataset.version().version))),
             _ => Err(Error::InvalidInput {
                 message: "Cannot specify both source_version and source_tag".to_string(),
             }),

@@ -98,7 +98,8 @@ impl DatasetRef {
             }
             Self::TimeTravel { dataset, version } => {
                 let should_checkout = match &target_ref {
-                    refs::Ref::Version(target_ver) => version != target_ver,
+                    refs::Ref::Version(_, Some(target_ver)) => version != target_ver,
+                    refs::Ref::Version(_, None) => true, // No specific version, always checkout
                     refs::Ref::Tag(_) => true, // Always checkout for tags
                 };
 
