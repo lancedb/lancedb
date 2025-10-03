@@ -17,7 +17,7 @@ rust-version = "1.78.0"
 [workspace.dependencies]
 lance = { "version" = "=0.38.0", default-features = false, "features" = ["dynamodb"] }
 lance-io = { "version" = "=0.38.0", default-features = false }
-lance-index = { "version" = "=0.38.0", "tag" = "v0.38.0", "git" = "https://github.com/lancedb/lance.git" }
+lance-index = "=0.38.0"
 lance-linalg = "=0.38.0"
 lance-table = "=0.38.0"
 lance-testing = "=0.38.0"
