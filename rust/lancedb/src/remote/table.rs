@@ -1212,9 +1212,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send_streaming(request, empty_reader, false).await?;
 
         let response = self.check_table_response(&request_id, response).await?;
-        let body = response.text().await.err_to_http(request_id)?;
+        let plan_response: PlanResponse = response.json().await.err_to_http(request_id)?;
 
-        Ok(body)
+        Ok(plan_response.plan)
     }
 
     async fn merge_insert_analyze_plan(
@@ -1237,9 +1237,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let (request_id, response) = self.send_streaming(request, new_data, false).await?;
 
         let response = self.check_table_response(&request_id, response).await?;
-        let body = response.text().await.err_to_http(request_id)?;
+        let plan_response: PlanResponse = response.json().await.err_to_http(request_id)?;
 
-        Ok(body)
+        Ok(plan_response.plan)
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -1537,6 +1537,11 @@ struct MergeInsertExplainRequest {
 struct MergeInsertAnalyzeRequest {
     #[serde(flatten)]
     merge_params: MergeInsertRequest,
+}
+
+#[derive(Deserialize)]
+struct PlanResponse {
+    plan: String,
 }
 
 impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
@@ -2132,7 +2137,7 @@ mod tests {
 
                 http::Response::builder()
                     .status(200)
-                    .body("MergeInsertExec: columns=1")
+                    .body(r#"{"plan": "MergeInsertExec: columns=1"}"#)
                     .unwrap()
             } else {
                 panic!("Unexpected request path: {}", request.url().path());
@@ -2199,7 +2204,7 @@ mod tests {
 
                 http::Response::builder()
                     .status(200)
-                    .body("MergeInsertExec: rows_processed=3, duration=10ms")
+                    .body(r#"{"plan": "MergeInsertExec: rows_processed=3, duration=10ms"}"#)
                     .unwrap()
             } else {
                 panic!("Unexpected request path: {}", request.url().path());
