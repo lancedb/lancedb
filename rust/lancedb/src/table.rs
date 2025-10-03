@@ -1383,30 +1383,35 @@ impl Table {
 }
 
 pub struct NativeTags {
-    inner: LanceTags,
+    dataset: dataset::DatasetConsistencyWrapper,
 }
 #[async_trait]
 impl Tags for NativeTags {
     async fn list(&self) -> Result<HashMap<String, TagContents>> {
-        Ok(self.inner.list().await?)
+        let dataset = self.dataset.get().await?;
+        Ok(dataset.tags().list().await?)
     }
 
     async fn get_version(&self, tag: &str) -> Result<u64> {
-        Ok(self.inner.get_version(tag).await?)
+        let dataset = self.dataset.get().await?;
+        Ok(dataset.tags().get_version(tag).await?)
     }
 
     async fn create(&mut self, tag: &str, version: u64) -> Result<()> {
-        self.inner.create(tag, version).await?;
+        let dataset = self.dataset.get_mut().await?;
+        dataset.tags().create(tag, version).await?;
         Ok(())
     }
 
     async fn delete(&mut self, tag: &str) -> Result<()> {
-        self.inner.delete(tag).await?;
+        let dataset = self.dataset.get_mut().await?;
+        dataset.tags().delete(tag).await?;
         Ok(())
     }
 
     async fn update(&mut self, tag: &str, version: u64) -> Result<()> {
-        self.inner.update(tag, version).await?;
+        let dataset = self.dataset.get_mut().await?;
+        dataset.tags().update(tag, version).await?;
         Ok(())
     }
 }
@@ -1780,13 +1785,13 @@ impl NativeTable {
                         BuiltinIndexType::BTree,
                     )))
                 } else {
-                    return Err(Error::InvalidInput {
+                    Err(Error::InvalidInput {
                         message: format!(
                             "there are no indices supported for the field `{}` with the data type {}",
                             field.name(),
                             field.data_type()
                         ),
-                    });
+                    })?
                 }
             }
             Index::BTree(_) => {
@@ -2440,10 +2445,8 @@ impl BaseTable for NativeTable {
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
-        let dataset = self.dataset.get().await?;
-
         Ok(Box::new(NativeTags {
-            inner: dataset.tags.clone(),
+            dataset: self.dataset.clone(),
         }))
     }
 

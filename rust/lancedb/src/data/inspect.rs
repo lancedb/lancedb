@@ -52,13 +52,13 @@ pub fn infer_vector_columns(
     for field in reader.schema().fields() {
         match field.data_type() {
             DataType::FixedSizeList(sub_field, _) if sub_field.data_type().is_floating() => {
-                columns.push(field.name().to_string());
+                columns.push(field.name().clone());
             }
             DataType::List(sub_field) if sub_field.data_type().is_floating() && !strict => {
-                columns_to_infer.insert(field.name().to_string(), None);
+                columns_to_infer.insert(field.name().clone(), None);
             }
             DataType::LargeList(sub_field) if sub_field.data_type().is_floating() && !strict => {
-                columns_to_infer.insert(field.name().to_string(), None);
+                columns_to_infer.insert(field.name().clone(), None);
             }
             _ => {}
         }

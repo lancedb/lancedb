@@ -172,7 +172,7 @@ impl TableProvider for BaseTableAdapter {
         if let Some(projection) = projection {
             let field_names = projection
                 .iter()
-                .map(|i| self.schema.field(*i).name().to_string())
+                .map(|i| self.schema.field(*i).name().clone())
                 .collect();
             query.select = Select::Columns(field_names);
         }
