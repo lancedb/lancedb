@@ -639,6 +639,50 @@ class RemoteTable(Table):
     def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
         return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
 
+    def update_metadata(
+        self, updates: Dict[str, Optional[str]], replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update table metadata.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            Dictionary of metadata keys and values to update.
+            Set a value to None to remove that key.
+        replace : bool, optional
+            If True, replace the entire metadata map.
+            If False (default), merge updates.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated metadata map after the operation.
+        """
+        return LOOP.run(self._table.update_metadata(updates, replace))
+
+    def update_schema_metadata(
+        self, updates: Dict[str, Optional[str]], replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update schema metadata.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            Dictionary of schema metadata keys and values to update.
+            Set a value to None to remove that key.
+        replace : bool, optional
+            If True, replace the entire schema metadata map.
+            If False (default), merge updates.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated schema metadata map after the operation.
+        """
+        return LOOP.run(self._table.update_schema_metadata(updates, replace))
+
     def uses_v2_manifest_paths(self) -> bool:
         raise NotImplementedError(
             "uses_v2_manifest_paths() is not supported on the LanceDB Cloud"
