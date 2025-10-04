@@ -120,6 +120,8 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
     name: str
         The name of the model to use. List of acceptable models:
 
+            * voyage-3.5
+            * voyage-3.5-lite
             * voyage-3
             * voyage-3-lite
             * voyage-multimodal-3
@@ -157,8 +159,11 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
     name: str
     client: ClassVar = None
     text_embedding_models: list = [
+        "voyage-3.5",
+        "voyage-3.5-lite",
         "voyage-3",
         "voyage-3-lite",
+        "voyage-multilingual-2",
         "voyage-finance-2",
         "voyage-law-2",
         "voyage-code-2",
@@ -176,6 +181,8 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         elif self.name == "voyage-code-2":
             return 1536
         elif self.name in [
+            "voyage-3.5",
+            "voyage-3.5-lite",
             "voyage-3",
             "voyage-multimodal-3",
             "voyage-finance-2",
