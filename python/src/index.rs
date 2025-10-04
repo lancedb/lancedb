@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use lancedb::index::vector::IvfFlatIndexBuilder;
+use lancedb::index::vector::{IvfFlatIndexBuilder, IvfRqIndexBuilder};
 use lancedb::index::{
     scalar::{BTreeIndexBuilder, FtsIndexBuilder},
     vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
@@ -87,6 +87,22 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 }
                 Ok(LanceDbIndex::IvfPq(ivf_pq_builder))
             },
+            "IvfRq" => {
+                let params = source.extract::<IvfRqParams>()?;
+                let distance_type = parse_distance_type(params.distance_type)?;
+                let mut ivf_rq_builder = IvfRqIndexBuilder::default()
+                    .distance_type(distance_type)
+                    .max_iterations(params.max_iterations)
+                    .sample_rate(params.sample_rate)
+                    .num_bits(params.num_bits);
+                if let Some(num_partitions) = params.num_partitions {
+                    ivf_rq_builder = ivf_rq_builder.num_partitions(num_partitions);
+                }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    ivf_rq_builder = ivf_rq_builder.target_partition_size(target_partition_size);
+                }
+                Ok(LanceDbIndex::IvfRq(ivf_rq_builder))
+            },
             "HnswPq" => {
                 let params = source.extract::<IvfHnswPqParams>()?;
                 let distance_type = parse_distance_type(params.distance_type)?;
@@ -164,6 +180,16 @@ struct IvfPqParams {
     distance_type: String,
     num_partitions: Option<u32>,
     num_sub_vectors: Option<u32>,
+    num_bits: u32,
+    max_iterations: u32,
+    sample_rate: u32,
+    target_partition_size: Option<u32>,
+}
+
+#[derive(FromPyObject)]
+struct IvfRqParams {
+    distance_type: String,
+    num_partitions: Option<u32>,
     num_bits: u32,
     max_iterations: u32,
     sample_rate: u32,

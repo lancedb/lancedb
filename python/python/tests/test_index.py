@@ -8,7 +8,17 @@ import pyarrow as pa
 import pytest
 import pytest_asyncio
 from lancedb import AsyncConnection, AsyncTable, connect_async
-from lancedb.index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from lancedb.index import (
+    BTree,
+    IvfFlat,
+    IvfPq,
+    IvfRq,
+    Bitmap,
+    LabelList,
+    HnswPq,
+    HnswSq,
+    FTS,
+)
 
 
 @pytest_asyncio.fixture
@@ -193,6 +203,16 @@ async def test_create_4bit_ivfpq_index(some_table: AsyncTable):
     assert stats.num_unindexed_rows == 0
     assert stats.num_indices == 1
     assert stats.loss >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_create_ivfrq_index(some_table: AsyncTable):
+    await some_table.create_index("vector", config=IvfRq(num_bits=1))
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "IvfRq"
+    assert indices[0].columns == ["vector"]
+    assert indices[0].name == "vector_idx"
 
 
 @pytest.mark.asyncio

@@ -52,6 +52,30 @@ the merge result
 
 ***
 
+### useIndex()
+
+```ts
+useIndex(useIndex): MergeInsertBuilder
+```
+
+Controls whether to use indexes for the merge operation.
+
+When set to `true` (the default), the operation will use an index if available
+on the join key for improved performance. When set to `false`, it forces a full
+table scan even if an index exists. This can be useful for benchmarking or when
+the query optimizer chooses a suboptimal path.
+
+#### Parameters
+
+* **useIndex**: `boolean`
+    Whether to use indices for the merge operation. Defaults to `true`.
+
+#### Returns
+
+[`MergeInsertBuilder`](MergeInsertBuilder.md)
+
+***
+
 ### whenMatchedUpdateAll()
 
 ```ts

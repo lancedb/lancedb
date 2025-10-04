@@ -85,6 +85,7 @@ export {
   Index,
   IndexOptions,
   IvfPqOptions,
+  IvfRqOptions,
   IvfFlatOptions,
   HnswPqOptions,
   HnswSqOptions,

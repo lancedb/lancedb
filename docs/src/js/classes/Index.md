@@ -194,6 +194,37 @@ currently is also a memory intensive operation.
 
 ***
 
+### ivfRq()
+
+```ts
+static ivfRq(options?): Index
+```
+
+Create an IvfRq index
+
+IVF-RQ (RabitQ Quantization) compresses vectors using RabitQ quantization
+and organizes them into IVF partitions.
+
+The compression scheme is called RabitQ quantization. Each dimension is quantized into a small number of bits.
+The parameters `num_bits` and `num_partitions` control this process, providing a tradeoff
+between index size (and thus search speed) and index accuracy.
+
+The partitioning process is called IVF and the `num_partitions` parameter controls how
+many groups to create.
+
+Note that training an IVF RQ index on a large dataset is a slow operation and
+currently is also a memory intensive operation.
+
+#### Parameters
+
+* **options?**: `Partial`&lt;[`IvfRqOptions`](../interfaces/IvfRqOptions.md)&gt;
+
+#### Returns
+
+[`Index`](Index.md)
+
+***
+
 ### labelList()
 
 ```ts

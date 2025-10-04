@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use vector::IvfFlatIndexBuilder;
 
+use crate::index::vector::IvfRqIndexBuilder;
 use crate::{table::BaseTable, DistanceType, Error, Result};
 
 use self::{
@@ -52,6 +53,9 @@ pub enum Index {
 
     /// IVF index with Product Quantization
     IvfPq(IvfPqIndexBuilder),
+
+    /// IVF index with RabitQ Quantization
+    IvfRq(IvfRqIndexBuilder),
 
     /// IVF-HNSW index with Product Quantization
     /// It is a variant of the HNSW algorithm that uses product quantization to compress the vectors.
@@ -275,6 +279,8 @@ pub enum IndexType {
     IvfFlat,
     #[serde(alias = "IVF_PQ")]
     IvfPq,
+    #[serde(alias = "IVF_RQ")]
+    IvfRq,
     #[serde(alias = "IVF_HNSW_PQ")]
     IvfHnswPq,
     #[serde(alias = "IVF_HNSW_SQ")]
@@ -296,6 +302,7 @@ impl std::fmt::Display for IndexType {
         match self {
             Self::IvfFlat => write!(f, "IVF_FLAT"),
             Self::IvfPq => write!(f, "IVF_PQ"),
+            Self::IvfRq => write!(f, "IVF_RQ"),
             Self::IvfHnswPq => write!(f, "IVF_HNSW_PQ"),
             Self::IvfHnswSq => write!(f, "IVF_HNSW_SQ"),
             Self::BTree => write!(f, "BTREE"),
@@ -317,6 +324,7 @@ impl std::str::FromStr for IndexType {
             "FTS" | "INVERTED" => Ok(Self::FTS),
             "IVF_FLAT" => Ok(Self::IvfFlat),
             "IVF_PQ" => Ok(Self::IvfPq),
+            "IVF_RQ" => Ok(Self::IvfRq),
             "IVF_HNSW_PQ" => Ok(Self::IvfHnswPq),
             "IVF_HNSW_SQ" => Ok(Self::IvfHnswSq),
             _ => Err(Error::InvalidInput {

@@ -1843,6 +1843,18 @@ impl NativeTable {
                 );
                 Ok(Box::new(lance_idx_params))
             }
+            Index::IvfRq(index) => {
+                Self::validate_index_type(field, "IVF RQ", supported_vector_data_type)?;
+                let num_partitions = self
+                    .get_num_partitions(index.num_partitions, false, None)
+                    .await?;
+                let lance_idx_params = VectorIndexParams::ivf_rq(
+                    num_partitions as usize,
+                    index.num_bits.unwrap_or(1) as u8,
+                    index.distance_type.into(),
+                );
+                Ok(Box::new(lance_idx_params))
+            }
             Index::IvfHnswPq(index) => {
                 Self::validate_index_type(field, "IVF HNSW PQ", supported_vector_data_type)?;
                 let dim = Self::get_vector_dimension(field)?;
@@ -1912,9 +1924,11 @@ impl NativeTable {
             Index::Bitmap(_) => IndexType::Bitmap,
             Index::LabelList(_) => IndexType::LabelList,
             Index::FTS(_) => IndexType::Inverted,
-            Index::IvfFlat(_) | Index::IvfPq(_) | Index::IvfHnswPq(_) | Index::IvfHnswSq(_) => {
-                IndexType::Vector
-            }
+            Index::IvfFlat(_)
+            | Index::IvfPq(_)
+            | Index::IvfRq(_)
+            | Index::IvfHnswPq(_)
+            | Index::IvfHnswSq(_) => IndexType::Vector,
         }
     }
 
