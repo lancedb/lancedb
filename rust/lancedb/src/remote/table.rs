@@ -258,15 +258,52 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
-    fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
+    fn estimate_batch_memory_size(batch: &RecordBatch) -> usize {
+        batch.get_array_memory_size()
+    }
+
+    fn chunk_record_batch(batch: RecordBatch, max_size_bytes: usize) -> Result<Vec<RecordBatch>> {
+        let batch_size = Self::estimate_batch_memory_size(&batch);
+        
+        if batch_size <= max_size_bytes {
+            return Ok(vec![batch]);
+        }
+
+        let num_rows = batch.num_rows();
+        if num_rows <= 1 {
+            return Ok(vec![batch]);
+        }
+
+        let estimated_rows_per_chunk = ((max_size_bytes as f64 / batch_size as f64) * num_rows as f64) as usize;
+        let rows_per_chunk = estimated_rows_per_chunk.max(1);
+
+        let mut chunks = Vec::new();
+        let mut start = 0;
+
+        while start < num_rows {
+            let end = (start + rows_per_chunk).min(num_rows);
+            let chunk = batch.slice(start, end - start);
+            chunks.push(chunk);
+            start = end;
+        }
+
+        Ok(chunks)
+    }
+
+    fn reader_as_body(data: Box<dyn RecordBatchReader + Send>, chunk_size_bytes: usize) -> Result<reqwest::Body> {
         // TODO: Once Phalanx supports compression, we should use it here.
         let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
 
-        //  Mutex is just here to make it sync. We shouldn't have any contention.
+        // Mutex is just here to make it sync. We shouldn't have any contention.
         let mut data = Mutex::new(data);
         let body_iter = std::iter::from_fn(move || match data.get_mut().unwrap().next() {
             Some(Ok(batch)) => {
-                writer.write(&batch).ok()?;
+                let chunks = Self::chunk_record_batch(batch, chunk_size_bytes).ok()?;
+                
+                for chunk in chunks {
+                    writer.write(&chunk).ok()?;
+                }
+                
                 let buffer = std::mem::take(writer.get_mut());
                 Some(Ok(buffer))
             }
@@ -318,15 +355,16 @@ impl<S: HttpSend> RemoteTable<S> {
         with_retry: bool,
     ) -> Result<(String, Response)> {
         if !with_retry || self.client.retry_config.retries == 0 {
-            let body = Self::reader_as_body(data)?;
+            let body = Self::reader_as_body(data, self.client.chunk_size_bytes)?;
             return self.client.send(req.body(body)).await;
         }
 
         // to support retries, buffer into memory and clone the batches on each retry
         let (schema, batches) = Self::buffer_reader(&mut *data).await?;
+        let chunk_size_bytes = self.client.chunk_size_bytes;
         let make_body = Box::new(move || {
             let reader = Self::make_reader(schema.clone(), batches.clone());
-            Self::reader_as_body(Box::new(reader))
+            Self::reader_as_body(Box::new(reader), chunk_size_bytes)
         });
         let res = self
             .client
@@ -3285,5 +3323,162 @@ mod tests {
 
         let result = table.drop_columns(&["old_col1", "old_col2"]).await.unwrap();
         assert_eq!(result.version, 5);
+    }
+
+    #[tokio::test]
+    async fn test_record_batch_chunking() {
+        use arrow_array::{Float32Array, RecordBatch, UInt32Array};
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new("value", DataType::Float32, false),
+        ]));
+
+        // Test with small batch (should not be chunked)
+        let small_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(vec![1, 2, 3])),
+                Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0])),
+            ],
+        ).unwrap();
+
+        let chunks = RemoteTable::<crate::remote::client::Sender>::chunk_record_batch(small_batch, 100 * 1024 * 1024).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].num_rows(), 3);
+
+        // Test with large batch (should be chunked)
+        let large_size = 10000usize;
+        let ids: Vec<u32> = (0..large_size).map(|i| i as u32).collect();
+        let values: Vec<f32> = (0..large_size).map(|i| i as f32).collect();
+
+        let large_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from(ids)),
+                Arc::new(Float32Array::from(values)),
+            ],
+        ).unwrap();
+
+        // Use a very small max size to force chunking
+        let small_max_size = 1024; // 1KB
+        let chunks = RemoteTable::<crate::remote::client::Sender>::chunk_record_batch(large_batch, small_max_size).unwrap();
+        
+        // Should be chunked into multiple pieces
+        assert!(chunks.len() > 1);
+
+        // Verify all chunks have the same schema
+        for chunk in &chunks {
+            assert_eq!(chunk.schema(), schema);
+        }
+
+        // Verify total rows are preserved
+        let total_rows: usize = chunks.iter().map(|c| c.num_rows()).sum();
+        assert_eq!(total_rows, large_size);
+
+        // Verify data integrity by checking first and last values
+        assert_eq!(chunks[0].column(0).as_any().downcast_ref::<UInt32Array>().unwrap().value(0), 0);
+        let last_chunk = &chunks[chunks.len() - 1];
+        let last_chunk_last_idx = last_chunk.num_rows() - 1;
+        let last_id = last_chunk.column(0).as_any().downcast_ref::<UInt32Array>().unwrap().value(last_chunk_last_idx);
+        assert_eq!(last_id, (large_size - 1) as u32);
+    }
+
+    #[test]
+    fn test_estimate_batch_memory_size() {
+        use arrow_array::{Float32Array, RecordBatch, UInt32Array};
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new("value", DataType::Float32, false),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt32Array::from(vec![1, 2, 3])),
+                Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0])),
+            ],
+        ).unwrap();
+
+        let size = RemoteTable::<crate::remote::client::Sender>::estimate_batch_memory_size(&batch);
+        
+        // Should be greater than 0 and reasonable for 3 rows * (4 bytes + 4 bytes) = 24 bytes minimum
+        assert!(size > 0);
+        assert!(size >= 24); // At least the raw data size
+    }
+
+    #[test]
+    fn test_single_row_batch_not_chunked() {
+        use arrow_array::{Float32Array, RecordBatch, UInt32Array};
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new("value", DataType::Float32, false),
+        ]));
+
+        let single_row_batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt32Array::from(vec![1])),
+                Arc::new(Float32Array::from(vec![1.0])),
+            ],
+        ).unwrap();
+
+        // Even with a very small max size, single row should not be chunked
+        let chunks = RemoteTable::<crate::remote::client::Sender>::chunk_record_batch(single_row_batch, 1).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].num_rows(), 1);
+    }
+
+    #[test]
+    fn test_configurable_chunk_size() {
+        use arrow_array::{Float32Array, RecordBatch, UInt32Array};
+        use arrow_schema::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new("value", DataType::Float32, false),
+        ]));
+
+        // Create a batch that's larger than 1KB but smaller than 10KB
+        let large_size = 1000usize;
+        let ids: Vec<u32> = (0..large_size).map(|i| i as u32).collect();
+        let values: Vec<f32> = (0..large_size).map(|i| i as f32).collect();
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt32Array::from(ids)),
+                Arc::new(Float32Array::from(values)),
+            ],
+        ).unwrap();
+
+        // Test with different chunk sizes
+        let small_chunk_size = 1024; // 1KB
+        let large_chunk_size = 100 * 1024 * 1024; // 100MB
+
+        let small_chunks = RemoteTable::<crate::remote::client::Sender>::chunk_record_batch(batch.clone(), small_chunk_size).unwrap();
+        let large_chunks = RemoteTable::<crate::remote::client::Sender>::chunk_record_batch(batch, large_chunk_size).unwrap();
+
+        // With small chunk size, should be split into multiple chunks
+        assert!(small_chunks.len() > 1);
+        
+        // With large chunk size, should remain as single chunk
+        assert_eq!(large_chunks.len(), 1);
+
+        // Verify total rows are preserved in both cases
+        let small_total_rows: usize = small_chunks.iter().map(|c| c.num_rows()).sum();
+        let large_total_rows: usize = large_chunks.iter().map(|c| c.num_rows()).sum();
+        
+        assert_eq!(small_total_rows, large_size);
+        assert_eq!(large_total_rows, large_size);
     }
 }
