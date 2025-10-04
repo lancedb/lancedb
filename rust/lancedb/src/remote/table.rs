@@ -1178,6 +1178,70 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(merge_insert_response)
     }
 
+    async fn merge_insert_explain_plan(
+        &self,
+        params: &MergeInsertBuilder,
+        schema: Option<arrow_schema::SchemaRef>,
+        verbose: bool,
+    ) -> Result<String> {
+        let schema = if let Some(schema) = schema {
+            schema
+        } else {
+            self.schema().await?
+        };
+
+        // Create empty RecordBatch with the schema
+        let empty_batch = RecordBatch::new_empty(schema.clone());
+        let empty_reader = Box::new(RecordBatchIterator::new(vec![Ok(empty_batch)], schema));
+
+        let merge_params = MergeInsertRequest::try_from(params.clone())?;
+        let query = MergeInsertExplainRequest {
+            merge_params,
+            verbose,
+        };
+
+        let request = self
+            .client
+            .post(&format!(
+                "/v1/table/{}/merge_insert/explain_plan/",
+                self.identifier
+            ))
+            .query(&query)
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+
+        let (request_id, response) = self.send_streaming(request, empty_reader, false).await?;
+
+        let response = self.check_table_response(&request_id, response).await?;
+        let plan_response: PlanResponse = response.json().await.err_to_http(request_id)?;
+
+        Ok(plan_response.plan)
+    }
+
+    async fn merge_insert_analyze_plan(
+        &self,
+        params: &MergeInsertBuilder,
+        new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<String> {
+        let merge_params = MergeInsertRequest::try_from(params.clone())?;
+        let query = MergeInsertAnalyzeRequest { merge_params };
+
+        let request = self
+            .client
+            .post(&format!(
+                "/v1/table/{}/merge_insert/analyze_plan/",
+                self.identifier
+            ))
+            .query(&query)
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+
+        let (request_id, response) = self.send_streaming(request, new_data, false).await?;
+
+        let response = self.check_table_response(&request_id, response).await?;
+        let plan_response: PlanResponse = response.json().await.err_to_http(request_id)?;
+
+        Ok(plan_response.plan)
+    }
+
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
         Ok(Box::new(RemoteTags { inner: self }))
     }
@@ -1444,7 +1508,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct MergeInsertRequest {
     on: String,
     when_matched_update_all: bool,
@@ -1460,6 +1524,24 @@ struct MergeInsertRequest {
 
 fn is_true(b: &bool) -> bool {
     *b
+}
+
+#[derive(Debug, Serialize)]
+struct MergeInsertExplainRequest {
+    #[serde(flatten)]
+    merge_params: MergeInsertRequest,
+    verbose: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct MergeInsertAnalyzeRequest {
+    #[serde(flatten)]
+    merge_params: MergeInsertRequest,
+}
+
+#[derive(Deserialize)]
+struct PlanResponse {
+    plan: String,
 }
 
 impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
@@ -2015,6 +2097,129 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.to_string().contains("Hit retry limit"));
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_explain_plan() {
+        let table = Table::new_with_handler("my_table", |request| {
+            if request.url().path() == "/v1/table/my_table/describe/" {
+                // Handle schema request
+                assert_eq!(request.method(), "POST");
+
+                let table_desc_json = r#"{
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {
+                                "name": "a",
+                                "type": { "type": "int32" },
+                                "nullable": false,
+                                "metadata": {}
+                            }
+                        ],
+                        "metadata": {}
+                    }
+                }"#;
+
+                http::Response::builder()
+                    .status(200)
+                    .body(table_desc_json)
+                    .unwrap()
+            } else if request.url().path() == "/v1/table/my_table/merge_insert/explain_plan/" {
+                assert_eq!(request.method(), "POST");
+
+                let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+                assert_eq!(params["on"], "some_col");
+                assert_eq!(params["when_matched_update_all"], "true");
+                assert_eq!(params["when_not_matched_insert_all"], "true");
+                assert_eq!(params["when_not_matched_by_source_delete"], "false");
+                assert_eq!(params["verbose"], "true");
+
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"plan": "MergeInsertExec: columns=1"}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table
+            .merge_insert(&["some_col"])
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all()
+            .explain_plan(None, true)
+            .await
+            .unwrap();
+
+        assert!(result.contains("MergeInsertExec"));
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_analyze_plan() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let data = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        let table = Table::new_with_handler("my_table", |request| {
+            if request.url().path() == "/v1/table/my_table/describe/" {
+                // Handle schema request
+                assert_eq!(request.method(), "POST");
+
+                let table_desc_json = r#"{
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {
+                                "name": "a",
+                                "type": { "type": "int32" },
+                                "nullable": false,
+                                "metadata": {}
+                            }
+                        ],
+                        "metadata": {}
+                    }
+                }"#;
+
+                http::Response::builder()
+                    .status(200)
+                    .body(table_desc_json)
+                    .unwrap()
+            } else if request.url().path() == "/v1/table/my_table/merge_insert/analyze_plan/" {
+                assert_eq!(request.method(), "POST");
+
+                let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+                assert_eq!(params["on"], "some_col");
+                assert_eq!(params["when_matched_update_all"], "true");
+                assert_eq!(params["when_not_matched_insert_all"], "true");
+                assert_eq!(params["when_not_matched_by_source_delete"], "false");
+                // Note: verbose parameter should not be present for analyze_plan
+                assert!(!params.contains_key("verbose"));
+
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"plan": "MergeInsertExec: rows_processed=3, duration=10ms"}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table
+            .merge_insert(&["some_col"])
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all()
+            .analyze_plan(data)
+            .await
+            .unwrap();
+
+        assert!(result.contains("MergeInsertExec"));
     }
 
     #[rstest]

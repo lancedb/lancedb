@@ -1258,6 +1258,20 @@ class Table(ABC):
     ) -> MergeResult: ...
 
     @abstractmethod
+    def _explain_merge_plan(
+        self,
+        merge: LanceMergeInsertBuilder,
+        verbose: bool,
+    ) -> str: ...
+
+    @abstractmethod
+    def _analyze_merge_plan(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+    ) -> str: ...
+
+    @abstractmethod
     def delete(self, where: str) -> DeleteResult:
         """Delete rows from the table.
 
@@ -2747,6 +2761,20 @@ class LanceTable(Table):
             self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
         )
 
+    def _explain_merge_plan(
+        self,
+        merge: LanceMergeInsertBuilder,
+        verbose: bool,
+    ) -> str:
+        return LOOP.run(self._table._explain_merge_plan(merge, verbose))
+
+    def _analyze_merge_plan(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+    ) -> str:
+        return LOOP.run(self._table._analyze_merge_plan(merge, new_data))
+
     @deprecation.deprecated(
         deprecated_in="0.21.0",
         current_version=__version__,
@@ -3911,6 +3939,57 @@ class AsyncTable:
         if isinstance(data, pa.Table):
             data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
         return await self._inner.execute_merge_insert(
+            data,
+            dict(
+                on=merge._on,
+                when_matched_update_all=merge._when_matched_update_all,
+                when_matched_update_all_condition=merge._when_matched_update_all_condition,
+                when_not_matched_insert_all=merge._when_not_matched_insert_all,
+                when_not_matched_by_source_delete=merge._when_not_matched_by_source_delete,
+                when_not_matched_by_source_condition=merge._when_not_matched_by_source_condition,
+                timeout=merge._timeout,
+                use_index=merge._use_index,
+            ),
+        )
+
+    async def _explain_merge_plan(
+        self,
+        merge: LanceMergeInsertBuilder,
+        verbose: bool,
+    ) -> str:
+        return await self._inner.merge_insert_explain_plan(
+            dict(
+                on=merge._on,
+                when_matched_update_all=merge._when_matched_update_all,
+                when_matched_update_all_condition=merge._when_matched_update_all_condition,
+                when_not_matched_insert_all=merge._when_not_matched_insert_all,
+                when_not_matched_by_source_delete=merge._when_not_matched_by_source_delete,
+                when_not_matched_by_source_condition=merge._when_not_matched_by_source_condition,
+                timeout=merge._timeout,
+                use_index=merge._use_index,
+            ),
+            verbose,
+        )
+
+    async def _analyze_merge_plan(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+    ) -> str:
+        schema = await self.schema()
+        on_bad_vectors = "error"
+        fill_value = 0.0
+        data = _sanitize_data(
+            new_data,
+            schema,
+            metadata=schema.metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+            allow_subschema=True,
+        )
+        if isinstance(data, pa.Table):
+            data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
+        return await self._inner.merge_insert_analyze_plan(
             data,
             dict(
                 on=merge._on,

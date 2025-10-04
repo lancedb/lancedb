@@ -24,9 +24,9 @@ pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::{
-    InsertBuilder, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
+    InsertBuilder, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WhenNotMatched,
+    WhenNotMatchedBySource, WriteMode, WriteParams,
 };
-use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::index::vector::VectorIndexParams;
 use lance::io::WrappingObjectStore;
@@ -566,6 +566,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult>;
+    /// Explain the execution plan for a merge insert operation.
+    async fn merge_insert_explain_plan(
+        &self,
+        params: &MergeInsertBuilder,
+        schema: Option<arrow_schema::SchemaRef>,
+        verbose: bool,
+    ) -> Result<String>;
+    /// Analyze the execution plan for a merge insert operation.
+    async fn merge_insert_analyze_plan(
+        &self,
+        params: &MergeInsertBuilder,
+        new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<String>;
     /// Gets the table tag manager.
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
@@ -2014,6 +2027,42 @@ impl NativeTable {
         dataset.replace_field_metadata(new_values).await?;
         Ok(())
     }
+
+    async fn to_lance_builder(
+        &self,
+        params: &MergeInsertBuilder,
+    ) -> Result<lance::dataset::MergeInsertBuilder> {
+        let dataset = Arc::new(self.dataset.get().await?.clone());
+        let mut builder =
+            lance::dataset::MergeInsertBuilder::try_new(dataset.clone(), params.on.clone())?;
+        match (
+            params.when_matched_update_all,
+            params.when_matched_update_all_filt.as_deref(),
+        ) {
+            (false, _) => builder.when_matched(WhenMatched::DoNothing),
+            (true, None) => builder.when_matched(WhenMatched::UpdateAll),
+            (true, Some(filt)) => builder.when_matched(WhenMatched::update_if(&dataset, filt)?),
+        };
+        if params.when_not_matched_insert_all {
+            builder.when_not_matched(WhenNotMatched::InsertAll);
+        } else {
+            builder.when_not_matched(WhenNotMatched::DoNothing);
+        }
+        if params.when_not_matched_by_source_delete {
+            let behavior =
+                if let Some(filter) = params.when_not_matched_by_source_delete_filt.as_deref() {
+                    WhenNotMatchedBySource::delete_if(dataset.as_ref(), filter)?
+                } else {
+                    WhenNotMatchedBySource::Delete
+                };
+            builder.when_not_matched_by_source(behavior);
+        } else {
+            builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
+        }
+        builder.use_index(params.use_index);
+
+        Ok(builder)
+    }
 }
 
 #[async_trait::async_trait]
@@ -2379,32 +2428,7 @@ impl BaseTable for NativeTable {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
-        let dataset = Arc::new(self.dataset.get().await?.clone());
-        let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
-        match (
-            params.when_matched_update_all,
-            params.when_matched_update_all_filt,
-        ) {
-            (false, _) => builder.when_matched(WhenMatched::DoNothing),
-            (true, None) => builder.when_matched(WhenMatched::UpdateAll),
-            (true, Some(filt)) => builder.when_matched(WhenMatched::update_if(&dataset, &filt)?),
-        };
-        if params.when_not_matched_insert_all {
-            builder.when_not_matched(lance::dataset::WhenNotMatched::InsertAll);
-        } else {
-            builder.when_not_matched(lance::dataset::WhenNotMatched::DoNothing);
-        }
-        if params.when_not_matched_by_source_delete {
-            let behavior = if let Some(filter) = params.when_not_matched_by_source_delete_filt {
-                WhenNotMatchedBySource::delete_if(dataset.as_ref(), &filter)?
-            } else {
-                WhenNotMatchedBySource::Delete
-            };
-            builder.when_not_matched_by_source(behavior);
-        } else {
-            builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
-        }
-        builder.use_index(params.use_index);
+        let mut builder = self.to_lance_builder(&params).await?;
 
         let future = if let Some(timeout) = params.timeout {
             // The default retry timeout is 30s, so we pass the full timeout down
@@ -2433,6 +2457,30 @@ impl BaseTable for NativeTable {
             num_inserted_rows: stats.num_inserted_rows,
             num_deleted_rows: stats.num_deleted_rows,
         })
+    }
+
+    async fn merge_insert_explain_plan(
+        &self,
+        params: &MergeInsertBuilder,
+        schema: Option<arrow_schema::SchemaRef>,
+        verbose: bool,
+    ) -> Result<String> {
+        let mut builder = self.to_lance_builder(params).await?;
+        let job = builder.try_build()?;
+        job.explain_plan(schema.as_deref(), verbose)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn merge_insert_analyze_plan(
+        &self,
+        params: &MergeInsertBuilder,
+        new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<String> {
+        let mut builder = self.to_lance_builder(params).await?;
+        let job = builder.try_build()?;
+        let stream = lance_datafusion::utils::reader_to_stream(new_data);
+        job.analyze_plan(stream).await.map_err(Into::into)
     }
 
     /// Delete rows from the table
@@ -2909,6 +2957,43 @@ mod tests {
             table.count_rows(Some("age = 3".to_string())).await.unwrap(),
             5
         );
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_explain_and_analyze() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        // Create a dataset with i=0..10
+        let batches = merge_insert_test_batches(0, 0);
+        let table = conn
+            .create_table("my_table", batches)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+
+        // Test explain_plan for upsert operation (when_matched_update_all + when_not_matched_insert_all)
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_matched_update_all(None);
+        merge_insert_builder.when_not_matched_insert_all();
+        let explain_result = merge_insert_builder
+            .explain_plan(None, false)
+            .await
+            .unwrap();
+        assert!(explain_result.contains("MergeInsert"));
+
+        // Test analyze_plan with new data for upsert operation
+        let new_batches = Box::new(merge_insert_test_batches(5, 1));
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_matched_update_all(None);
+        merge_insert_builder.when_not_matched_insert_all();
+        let analyze_result = merge_insert_builder
+            .analyze_plan(new_batches)
+            .await
+            .unwrap();
+        assert!(analyze_result.contains("MergeInsert"));
     }
 
     #[tokio::test]

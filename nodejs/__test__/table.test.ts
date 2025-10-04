@@ -537,6 +537,27 @@ describe("merge insert", () => {
     ).rejects.toThrow("merge insert timed out");
   });
 
+  test("explain plan and analyze plan", async () => {
+    const newData = [
+      { a: 2, b: "x" },
+      { a: 3, b: "y" },
+      { a: 4, b: "z" },
+    ];
+
+    const mergeBuilder = table
+      .mergeInsert("a")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll();
+
+    // Test explain_plan
+    const explainResult = await mergeBuilder.explainPlan(false);
+    expect(explainResult).toContain("MergeInsert");
+
+    // Test analyze_plan
+    const analyzeResult = await mergeBuilder.analyzePlan(newData);
+    expect(analyzeResult).toContain("MergeInsert");
+  });
+
   test("useIndex", async () => {
     const newData = [
       { a: 2, b: "x" },

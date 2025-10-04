@@ -140,3 +140,46 @@ class LanceMergeInsertBuilder(object):
         if timeout is not None:
             self._timeout = timeout
         return self._table._do_merge(self, new_data, on_bad_vectors, fill_value)
+
+    def explain_plan(self, schema=None, verbose: bool = False):
+        """
+        Explain the execution plan for the merge insert operation.
+
+        This shows how the merge insert operation would be executed without
+        actually running it.
+
+        Parameters
+        ----------
+        schema : Optional[Schema], default None
+            The schema to use for the explain plan. If None, uses the table schema.
+        verbose : bool, default False
+            Whether to show a verbose execution plan.
+
+        Returns
+        -------
+        str or Coroutine[Any, Any, str]
+            A string describing the execution plan.
+            Returns a coroutine for async tables, a string for sync tables.
+        """
+        return self._table._explain_merge_plan(self, verbose)
+
+    def analyze_plan(self, new_data: DATA):
+        """
+        Analyze the execution plan for the merge insert operation.
+
+        This executes the merge insert operation to collect performance metrics
+        but does not commit the changes to the dataset.
+
+        Parameters
+        ----------
+        new_data : DATA
+            New records which will be matched against the existing records.
+            This parameter can be anything you use for [`add`][lancedb.table.Table.add]
+
+        Returns
+        -------
+        str or Coroutine[Any, Any, str]
+            A string containing performance metrics and execution details.
+            Returns a coroutine for async tables, a string for sync tables.
+        """
+        return self._table._analyze_merge_plan(self, new_data)
