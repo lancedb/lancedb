@@ -12,13 +12,18 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Optional, Union
 import os
+import sys
+
+if sys.version_info >= (3, 12):
+    from typing import override
+else:
+    from overrides import override
 
 from lancedb.db import DBConnection
 from lancedb.table import LanceTable, Table
 from lancedb.util import validate_table_name
 from lancedb.common import validate_schema
 from lancedb.table import sanitize_create_table
-from overrides import override
 
 from lance_namespace import LanceNamespace, connect as namespace_connect
 from lance_namespace_urllib3_client.models import (
