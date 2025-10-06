@@ -73,7 +73,7 @@ export type FieldLike =
   | {
       type: string;
       name: string;
-      nullable?: boolean;
+      nullable: boolean;
       metadata?: Map<string, string>;
     };
 
