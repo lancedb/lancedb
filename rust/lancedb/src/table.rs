@@ -1398,19 +1398,19 @@ impl Tags for NativeTags {
     }
 
     async fn create(&mut self, tag: &str, version: u64) -> Result<()> {
-        let dataset = self.dataset.get_mut().await?;
+        let dataset = self.dataset.get().await?;
         dataset.tags().create(tag, version).await?;
         Ok(())
     }
 
     async fn delete(&mut self, tag: &str) -> Result<()> {
-        let dataset = self.dataset.get_mut().await?;
+        let dataset = self.dataset.get().await?;
         dataset.tags().delete(tag).await?;
         Ok(())
     }
 
     async fn update(&mut self, tag: &str, version: u64) -> Result<()> {
-        let dataset = self.dataset.get_mut().await?;
+        let dataset = self.dataset.get().await?;
         dataset.tags().update(tag, version).await?;
         Ok(())
     }
