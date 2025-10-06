@@ -261,7 +261,7 @@ impl Database for LanceNamespaceDatabase {
                     return listing_db
                         .open_table(OpenTableRequest {
                             name: request.name.clone(),
-                            namespace: request.namespace.clone(),
+                            namespace: vec![],
                             index_cache_size: None,
                             lance_read_params: None,
                         })
@@ -305,7 +305,14 @@ impl Database for LanceNamespaceDatabase {
             )
             .await?;
 
-        listing_db.create_table(request).await
+        let create_request = DbCreateTableRequest {
+            name: request.name,
+            namespace: vec![],
+            data: request.data,
+            mode: request.mode,
+            write_options: request.write_options,
+        };
+        listing_db.create_table(create_request).await
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -332,7 +339,13 @@ impl Database for LanceNamespaceDatabase {
             .create_listing_database(&request.name, &location, response.storage_options)
             .await?;
 
-        listing_db.open_table(request).await
+        let open_request = OpenTableRequest {
+            name: request.name.clone(),
+            namespace: vec![],
+            index_cache_size: request.index_cache_size,
+            lance_read_params: request.lance_read_params,
+        };
+        listing_db.open_table(open_request).await
     }
 
     async fn clone_table(&self, _request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
