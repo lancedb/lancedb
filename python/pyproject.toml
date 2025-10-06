@@ -5,7 +5,7 @@ dynamic = ["version"]
 dependencies = [
     "deprecation",
     "numpy",
-    "overrides>=0.7",
+    "overrides>=0.7; python_version<'3.12'",
     "packaging",
     "pyarrow>=16",
     "pydantic>=1.10",
