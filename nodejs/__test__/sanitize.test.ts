@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 import * as arrow from "../lancedb/arrow";
 import { sanitizeField, sanitizeType } from "../lancedb/sanitize";
 
