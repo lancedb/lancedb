@@ -10,7 +10,13 @@ import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
 
-import { MatchQuery, PhraseQuery, Table, connect } from "../lancedb";
+import {
+  Connection,
+  MatchQuery,
+  PhraseQuery,
+  Table,
+  connect,
+} from "../lancedb";
 import {
   Table as ArrowTable,
   Field,
@@ -21,6 +27,8 @@ import {
   Int64,
   List,
   Schema,
+  SchemaLike,
+  Type,
   Uint8,
   Utf8,
   makeArrowTable,
@@ -2017,5 +2025,54 @@ describe("column name options", () => {
       .limit(10)
       .toArray();
     expect(results2.length).toBe(10);
+  });
+});
+
+describe("when creating an empty table", () => {
+  let con: Connection;
+  beforeEach(async () => {
+    const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    con = await connect(tmpDir.name);
+  });
+  afterEach(() => {
+    con.close();
+  });
+
+  it("can create an empty table from an arrow Schema", async () => {
+    const schema = new Schema([
+      new Field("id", new Int64()),
+      new Field("vector", new Float64()),
+    ]);
+    const table = await con.createEmptyTable("test", schema);
+    const actualSchema = await table.schema();
+    expect(actualSchema.fields[0].type.typeId).toBe(Type.Int);
+    expect((actualSchema.fields[0].type as Int64).bitWidth).toBe(64);
+    expect(actualSchema.fields[1].type.typeId).toBe(Type.Float);
+    expect((actualSchema.fields[1].type as Float64).precision).toBe(2);
+  });
+
+  it("can create an empty table from schema that specifies field types by name", async () => {
+    const schemaLike = {
+      fields: [
+        {
+          name: "id",
+          type: "int64",
+          nullable: true,
+        },
+        {
+          name: "vector",
+          type: "float64",
+          nullable: true,
+        },
+      ],
+      metadata: new Map(),
+      names: ["id", "vector"],
+    } satisfies SchemaLike;
+    const table = await con.createEmptyTable("test", schemaLike);
+    const actualSchema = await table.schema();
+    expect(actualSchema.fields[0].type.typeId).toBe(Type.Int);
+    expect((actualSchema.fields[0].type as Int64).bitWidth).toBe(64);
+    expect(actualSchema.fields[1].type.typeId).toBe(Type.Float);
+    expect((actualSchema.fields[1].type as Float64).precision).toBe(2);
   });
 });

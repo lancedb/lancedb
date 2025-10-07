@@ -1,44 +1,15 @@
-import { DataType, Field, Int, Type } from "../lancedb/arrow";
-import {
-  Binary,
-  Bool,
-  DateDay,
-  DateMillisecond,
-  DurationMicrosecond,
-  DurationMillisecond,
-  DurationNanosecond,
-  DurationSecond,
-  Float16,
-  Float32,
-  Float64,
-  Int8,
-  Int16,
-  Int32,
-  Int64,
-  IntervalDayTime,
-  IntervalYearMonth,
-  Null,
-  TimeMicrosecond,
-  TimeMillisecond,
-  TimeNanosecond,
-  TimeSecond,
-  Uint8,
-  Uint16,
-  Uint32,
-  Uint64,
-  Utf8,
-} from "../lancedb/arrow";
+import * as arrow from "../lancedb/arrow";
 import { sanitizeField, sanitizeType } from "../lancedb/sanitize";
 
 describe("sanitize", function () {
   describe("sanitizeType function", function () {
     it("should handle type objects", function () {
-      const type = new Int32();
+      const type = new arrow.Int32();
       const result = sanitizeType(type);
 
-      expect(result.typeId).toBe(Type.Int);
-      expect((result as Int).bitWidth).toBe(32);
-      expect((result as Int).isSigned).toBe(true);
+      expect(result.typeId).toBe(arrow.Type.Int);
+      expect((result as arrow.Int).bitWidth).toBe(32);
+      expect((result as arrow.Int).isSigned).toBe(true);
 
       const floatType = {
         typeId: 3, // Type.Float = 3
@@ -49,42 +20,42 @@ describe("sanitize", function () {
       };
 
       const floatResult = sanitizeType(floatType);
-      expect(floatResult).toBeInstanceOf(DataType);
-      expect(floatResult.typeId).toBe(Type.Float);
+      expect(floatResult).toBeInstanceOf(arrow.DataType);
+      expect(floatResult.typeId).toBe(arrow.Type.Float);
 
       const floatResult2 = sanitizeType({ ...floatType, typeId: () => 3 });
-      expect(floatResult2).toBeInstanceOf(DataType);
-      expect(floatResult2.typeId).toBe(Type.Float);
+      expect(floatResult2).toBeInstanceOf(arrow.DataType);
+      expect(floatResult2.typeId).toBe(arrow.Type.Float);
     });
 
     const allTypeNameTestCases = [
-      ["null", new Null()],
-      ["binary", new Binary()],
-      ["utf8", new Utf8()],
-      ["bool", new Bool()],
-      ["int8", new Int8()],
-      ["int16", new Int16()],
-      ["int32", new Int32()],
-      ["int64", new Int64()],
-      ["uint8", new Uint8()],
-      ["uint16", new Uint16()],
-      ["uint32", new Uint32()],
-      ["uint64", new Uint64()],
-      ["float16", new Float16()],
-      ["float32", new Float32()],
-      ["float64", new Float64()],
-      ["datemillisecond", new DateMillisecond()],
-      ["dateday", new DateDay()],
-      ["timenanosecond", new TimeNanosecond()],
-      ["timemicrosecond", new TimeMicrosecond()],
-      ["timemillisecond", new TimeMillisecond()],
-      ["timesecond", new TimeSecond()],
-      ["intervaldaytime", new IntervalDayTime()],
-      ["intervalyearmonth", new IntervalYearMonth()],
-      ["durationnanosecond", new DurationNanosecond()],
-      ["durationmicrosecond", new DurationMicrosecond()],
-      ["durationmillisecond", new DurationMillisecond()],
-      ["durationsecond", new DurationSecond()],
+      ["null", new arrow.Null()],
+      ["binary", new arrow.Binary()],
+      ["utf8", new arrow.Utf8()],
+      ["bool", new arrow.Bool()],
+      ["int8", new arrow.Int8()],
+      ["int16", new arrow.Int16()],
+      ["int32", new arrow.Int32()],
+      ["int64", new arrow.Int64()],
+      ["uint8", new arrow.Uint8()],
+      ["uint16", new arrow.Uint16()],
+      ["uint32", new arrow.Uint32()],
+      ["uint64", new arrow.Uint64()],
+      ["float16", new arrow.Float16()],
+      ["float32", new arrow.Float32()],
+      ["float64", new arrow.Float64()],
+      ["datemillisecond", new arrow.DateMillisecond()],
+      ["dateday", new arrow.DateDay()],
+      ["timenanosecond", new arrow.TimeNanosecond()],
+      ["timemicrosecond", new arrow.TimeMicrosecond()],
+      ["timemillisecond", new arrow.TimeMillisecond()],
+      ["timesecond", new arrow.TimeSecond()],
+      ["intervaldaytime", new arrow.IntervalDayTime()],
+      ["intervalyearmonth", new arrow.IntervalYearMonth()],
+      ["durationnanosecond", new arrow.DurationNanosecond()],
+      ["durationmicrosecond", new arrow.DurationMicrosecond()],
+      ["durationmillisecond", new arrow.DurationMillisecond()],
+      ["durationsecond", new arrow.DurationSecond()],
     ] as const;
 
     it.each(allTypeNameTestCases)(
@@ -96,10 +67,10 @@ describe("sanitize", function () {
     );
 
     const caseVariationTestCases = [
-      ["NULL", new Null()],
-      ["Utf8", new Utf8()],
-      ["FLOAT32", new Float32()],
-      ["DaTedAy", new DateDay()],
+      ["NULL", new arrow.Null()],
+      ["Utf8", new arrow.Utf8()],
+      ["FLOAT32", new arrow.Float32()],
+      ["DaTedAy", new arrow.DateDay()],
     ] as const;
 
     it.each(caseVariationTestCases)(
@@ -126,9 +97,9 @@ describe("sanitize", function () {
         metadata: new Map([["key", "value"]]),
       });
 
-      expect(field).toBeInstanceOf(Field);
+      expect(field).toBeInstanceOf(arrow.Field);
       expect(field.name).toBe("string_field");
-      expect(field.type).toBeInstanceOf(Utf8);
+      expect(field.type).toBeInstanceOf(arrow.Utf8);
       expect(field.nullable).toBe(true);
       expect(field.metadata?.get("key")).toBe("value");
     });
@@ -136,7 +107,7 @@ describe("sanitize", function () {
     it("should handle field with type object", function () {
       const floatType = {
         typeId: 3, // Float
-        precision: 2,
+        precision: 32,
       };
 
       const field = sanitizeField({
@@ -145,22 +116,24 @@ describe("sanitize", function () {
         nullable: false,
       });
 
-      expect(field).toBeInstanceOf(Field);
+      expect(field).toBeInstanceOf(arrow.Field);
       expect(field.name).toBe("float_field");
-      expect(field.type).toBeInstanceOf(DataType);
+      expect(field.type).toBeInstanceOf(arrow.DataType);
+      expect(field.type.typeId).toBe(arrow.Type.Float);
+      expect((field.type as arrow.Float64).precision).toBe(32);
       expect(field.nullable).toBe(false);
     });
 
     it("should handle field with direct Type instance", function () {
       const field = sanitizeField({
         name: "bool_field",
-        type: new Bool(),
+        type: new arrow.Bool(),
         nullable: true,
       });
 
-      expect(field).toBeInstanceOf(Field);
+      expect(field).toBeInstanceOf(arrow.Field);
       expect(field.name).toBe("bool_field");
-      expect(field.type).toBeInstanceOf(Bool);
+      expect(field.type).toBeInstanceOf(arrow.Bool);
       expect(field.nullable).toBe(true);
     });
 
