@@ -16,8 +16,8 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 /// Create a permutation builder for the given table
 #[pyo3::pyfunction]
-pub fn async_permutation_builder<'py>(
-    table: Bound<'py, PyAny>,
+pub fn async_permutation_builder(
+    table: Bound<'_, PyAny>,
     dest_table_name: String,
 ) -> PyResult<PyAsyncPermutationBuilder> {
     let table = table.getattr("_inner")?.downcast_into::<Table>()?;
