@@ -17,6 +17,7 @@ use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
 
 use crate::connection::ConnectRequest;
+use crate::database::ReadConsistency;
 use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::NativeTable;
@@ -600,6 +601,18 @@ impl Database for ListingDatabase {
 
     fn uri(&self) -> &str {
         &self.uri
+    }
+
+    async fn read_consistency(&self) -> Result<ReadConsistency> {
+        if let Some(read_consistency_inverval) = self.read_consistency_interval {
+            if read_consistency_inverval.is_zero() {
+                Ok(ReadConsistency::Strong)
+            } else {
+                Ok(ReadConsistency::Eventual(read_consistency_inverval))
+            }
+        } else {
+            Ok(ReadConsistency::Manual)
+        }
     }
 
     async fn create_namespace(&self, _request: CreateNamespaceRequest) -> Result<()> {

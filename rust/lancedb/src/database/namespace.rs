@@ -16,9 +16,9 @@ use lance_namespace::{
     LanceNamespace,
 };
 
-use crate::connection::ConnectRequest;
 use crate::database::listing::ListingDatabase;
 use crate::error::{Error, Result};
+use crate::{connection::ConnectRequest, database::ReadConsistency};
 
 use super::{
     BaseTable, CloneTableRequest, CreateNamespaceRequest as DbCreateNamespaceRequest,
@@ -135,6 +135,18 @@ impl std::fmt::Display for LanceNamespaceDatabase {
 impl Database for LanceNamespaceDatabase {
     fn uri(&self) -> &str {
         &self.uri
+    }
+
+    async fn read_consistency(&self) -> Result<ReadConsistency> {
+        if let Some(read_consistency_inverval) = self.read_consistency_interval {
+            if read_consistency_inverval.is_zero() {
+                Ok(ReadConsistency::Strong)
+            } else {
+                Ok(ReadConsistency::Eventual(read_consistency_inverval))
+            }
+        } else {
+            Ok(ReadConsistency::Manual)
+        }
     }
 
     async fn list_namespaces(&self, request: DbListNamespacesRequest) -> Result<Vec<String>> {

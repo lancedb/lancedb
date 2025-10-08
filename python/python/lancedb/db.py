@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from datetime import timedelta
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
@@ -40,7 +41,6 @@ import deprecation
 if TYPE_CHECKING:
     import pyarrow as pa
     from .pydantic import LanceModel
-    from datetime import timedelta
 
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
@@ -494,7 +494,7 @@ class LanceDBConnection(DBConnection):
 
     @property
     def read_consistency_interval(self) -> Optional[timedelta]:
-        return self._conn.read_consistency_interval
+        return LOOP.run(self._conn.get_read_consistency_interval())
 
     @property
     def session(self) -> Optional[Session]:
@@ -881,6 +881,13 @@ class AsyncConnection(object):
     @property
     def uri(self) -> str:
         return self._inner.uri
+
+    async def get_read_consistency_interval(self) -> Optional[timedelta]:
+        interval_secs = await self._inner.get_read_consistency_interval()
+        if interval_secs is not None:
+            return timedelta(seconds=interval_secs)
+        else:
+            return None
 
     async def list_namespaces(
         self,

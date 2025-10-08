@@ -19,7 +19,7 @@ use crate::database::listing::{
 use crate::database::{
     CloneTableRequest, CreateNamespaceRequest, CreateTableData, CreateTableMode,
     CreateTableRequest, Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest,
-    OpenTableRequest, TableNamesRequest,
+    OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::embeddings::{
     EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
@@ -685,6 +685,11 @@ impl Connection {
                 new_namespace,
             )
             .await
+    }
+
+    /// Get the read consistency of the connection
+    pub async fn read_consistency(&self) -> Result<ReadConsistency> {
+        self.internal.read_consistency().await
     }
 
     /// Drop a table in the database.

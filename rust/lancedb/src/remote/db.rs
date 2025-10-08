@@ -16,7 +16,7 @@ use tokio::task::spawn_blocking;
 use crate::database::{
     CloneTableRequest, CreateNamespaceRequest, CreateTableData, CreateTableMode,
     CreateTableRequest, Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest,
-    OpenTableRequest, TableNamesRequest,
+    OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::table::BaseTable;
@@ -321,6 +321,13 @@ fn build_cache_key(name: &str, namespace: &[String]) -> String {
 impl<S: HttpSend> Database for RemoteDatabase<S> {
     fn uri(&self) -> &str {
         &self.uri
+    }
+
+    async fn read_consistency(&self) -> Result<ReadConsistency> {
+        Err(Error::NotSupported {
+            message: "Getting the read consistency of a remote database is not yet supported"
+                .to_string(),
+        })
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
