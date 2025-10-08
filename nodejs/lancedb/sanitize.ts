@@ -326,6 +326,9 @@ export function sanitizeDictionary(typeLike: object) {
 
 // biome-ignore lint/suspicious/noExplicitAny: skip
 export function sanitizeType(typeLike: unknown): DataType<any> {
+  if (typeof typeLike === "string") {
+    return dataTypeFromName(typeLike);
+  }
   if (typeof typeLike !== "object" || typeLike === null) {
     throw Error("Expected a Type but object was null/undefined");
   }
@@ -447,7 +450,7 @@ export function sanitizeType(typeLike: unknown): DataType<any> {
     case Type.DurationSecond:
       return new DurationSecond();
     default:
-      throw new Error("Unrecoginized type id in schema: " + typeId);
+      throw new Error("Unrecognized type id in schema: " + typeId);
   }
 }
 
@@ -467,7 +470,15 @@ export function sanitizeField(fieldLike: unknown): Field {
       "The field passed in is missing a `type`/`name`/`nullable` property",
     );
   }
-  const type = sanitizeType(fieldLike.type);
+  let type: DataType;
+  try {
+    type = sanitizeType(fieldLike.type);
+  } catch (error: unknown) {
+    throw Error(
+      `Unable to sanitize type for field: ${fieldLike.name} due to error: ${error}`,
+      { cause: error },
+    );
+  }
   const name = fieldLike.name;
   if (!(typeof name === "string")) {
     throw Error("The field passed in had a non-string `name` property");
@@ -580,4 +591,47 @@ function sanitizeData(
       [BufferType.TYPE]: dataLike.typeIds,
     },
   );
+}
+
+const constructorsByTypeName = {
+  null: () => new Null(),
+  binary: () => new Binary(),
+  utf8: () => new Utf8(),
+  bool: () => new Bool(),
+  int8: () => new Int8(),
+  int16: () => new Int16(),
+  int32: () => new Int32(),
+  int64: () => new Int64(),
+  uint8: () => new Uint8(),
+  uint16: () => new Uint16(),
+  uint32: () => new Uint32(),
+  uint64: () => new Uint64(),
+  float16: () => new Float16(),
+  float32: () => new Float32(),
+  float64: () => new Float64(),
+  datemillisecond: () => new DateMillisecond(),
+  dateday: () => new DateDay(),
+  timenanosecond: () => new TimeNanosecond(),
+  timemicrosecond: () => new TimeMicrosecond(),
+  timemillisecond: () => new TimeMillisecond(),
+  timesecond: () => new TimeSecond(),
+  intervaldaytime: () => new IntervalDayTime(),
+  intervalyearmonth: () => new IntervalYearMonth(),
+  durationnanosecond: () => new DurationNanosecond(),
+  durationmicrosecond: () => new DurationMicrosecond(),
+  durationmillisecond: () => new DurationMillisecond(),
+  durationsecond: () => new DurationSecond(),
+} as const;
+
+type MappableTypeName = keyof typeof constructorsByTypeName;
+
+export function dataTypeFromName(typeName: string): DataType {
+  const normalizedTypeName = typeName.toLowerCase() as MappableTypeName;
+  const _constructor = constructorsByTypeName[normalizedTypeName];
+
+  if (!_constructor) {
+    throw new Error("Unrecognized type name in schema: " + typeName);
+  }
+
+  return _constructor();
 }
