@@ -22,6 +22,9 @@ import { LocalTable, Table } from "./table";
 export class PermutationBuilder {
   private inner: NativePermutationBuilder;
 
+  /**
+   * @hidden
+   */
   constructor(inner: NativePermutationBuilder) {
     this.inner = inner;
   }

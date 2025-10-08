@@ -38,20 +38,6 @@ pub struct ShuffleOptions {
     pub clump_size: Option<i64>,
 }
 
-/// Create a permutation builder for the given table
-#[napi]
-pub fn permutation_builder(
-    table: &crate::table::Table,
-    dest_table_name: String,
-) -> napi::Result<PermutationBuilder> {
-    use lancedb::dataloader::permutation::PermutationBuilder as LancePermutationBuilder;
-
-    let inner_table = table.inner_ref()?.clone();
-    let inner_builder = LancePermutationBuilder::new(inner_table);
-
-    Ok(PermutationBuilder::new(inner_builder, dest_table_name))
-}
-
 pub struct PermutationBuilderState {
     pub builder: Option<LancePermutationBuilder>,
     pub dest_table_name: String,
@@ -94,7 +80,7 @@ impl PermutationBuilder {
 impl PermutationBuilder {
     /// Configure random splits
     #[napi]
-    pub fn split_random(&self, options: SplitRandomOptions) -> napi::Result<PermutationBuilder> {
+    pub fn split_random(&self, options: SplitRandomOptions) -> napi::Result<Self> {
         // Check that exactly one split type is provided
         let split_args_count = [
             options.ratios.is_some(),
@@ -128,7 +114,7 @@ impl PermutationBuilder {
 
     /// Configure hash-based splits
     #[napi]
-    pub fn split_hash(&self, options: SplitHashOptions) -> napi::Result<PermutationBuilder> {
+    pub fn split_hash(&self, options: SplitHashOptions) -> napi::Result<Self> {
         let split_weights = options
             .split_weights
             .into_iter()
@@ -147,10 +133,7 @@ impl PermutationBuilder {
 
     /// Configure sequential splits
     #[napi]
-    pub fn split_sequential(
-        &self,
-        options: SplitSequentialOptions,
-    ) -> napi::Result<PermutationBuilder> {
+    pub fn split_sequential(&self, options: SplitSequentialOptions) -> napi::Result<Self> {
         // Check that exactly one split type is provided
         let split_args_count = [
             options.ratios.is_some(),
@@ -182,7 +165,7 @@ impl PermutationBuilder {
 
     /// Configure calculated splits
     #[napi]
-    pub fn split_calculated(&self, calculation: String) -> napi::Result<PermutationBuilder> {
+    pub fn split_calculated(&self, calculation: String) -> napi::Result<Self> {
         self.modify(|builder| {
             builder.with_split_strategy(SplitStrategy::Calculated { calculation })
         })
@@ -190,7 +173,7 @@ impl PermutationBuilder {
 
     /// Configure shuffling
     #[napi]
-    pub fn shuffle(&self, options: ShuffleOptions) -> napi::Result<PermutationBuilder> {
+    pub fn shuffle(&self, options: ShuffleOptions) -> napi::Result<Self> {
         let seed = options.seed.map(|s| s as u64);
         let clump_size = options.clump_size.map(|c| c as u64);
 
@@ -201,7 +184,7 @@ impl PermutationBuilder {
 
     /// Configure filtering
     #[napi]
-    pub fn filter(&self, filter: String) -> napi::Result<PermutationBuilder> {
+    pub fn filter(&self, filter: String) -> napi::Result<Self> {
         self.modify(|builder| builder.with_filter(filter))
     }
 

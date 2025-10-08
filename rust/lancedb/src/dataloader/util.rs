@@ -57,7 +57,7 @@ pub fn non_crypto_rng(seed: &Option<u64>) -> Box<dyn RngCore + Send> {
     Box::new(
         seed.as_ref()
             .map(|seed| SmallRng::seed_from_u64(*seed))
-            .unwrap_or_else(|| SmallRng::from_os_rng()),
+            .unwrap_or_else(SmallRng::from_os_rng),
     )
 }
 
