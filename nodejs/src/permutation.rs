@@ -206,3 +206,17 @@ impl PermutationBuilder {
         Ok(Table::new(table))
     }
 }
+
+/// Create a permutation builder for the given table
+#[napi]
+pub fn permutation_builder(
+    table: &crate::table::Table,
+    dest_table_name: String,
+) -> napi::Result<PermutationBuilder> {
+    use lancedb::dataloader::permutation::PermutationBuilder as LancePermutationBuilder;
+
+    let inner_table = table.inner_ref()?.clone();
+    let inner_builder = LancePermutationBuilder::new(inner_table);
+
+    Ok(PermutationBuilder::new(inner_builder, dest_table_name))
+}
