@@ -84,6 +84,7 @@ plugins:
         'examples.md': 'https://lancedb.com/docs/tutorials/'
         'concepts/vector_search.md': 'https://lancedb.com/docs/search/vector-search/'
         'troubleshooting.md': 'https://lancedb.com/docs/troubleshooting/'
+        'guides/storage.md': 'https://lancedb.com/docs/storage/integrations'
 
 
 
