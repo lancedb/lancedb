@@ -3,12 +3,12 @@
 
 import {
   PermutationBuilder as NativePermutationBuilder,
-  SplitRandomOptions,
-  SplitHashOptions,
-  SplitSequentialOptions,
+  Table as NativeTable,
   ShuffleOptions,
+  SplitHashOptions,
+  SplitRandomOptions,
+  SplitSequentialOptions,
   permutationBuilder as nativePermutationBuilder,
-  Table as NativeTable
 } from "./native.js";
 import { LocalTable, Table } from "./table";
 
@@ -172,10 +172,17 @@ export class PermutationBuilder {
  * const trainingTable = await builder.execute();
  * ```
  */
-export function permutationBuilder(table: Table, destTableName: string): PermutationBuilder {
+export function permutationBuilder(
+  table: Table,
+  destTableName: string,
+): PermutationBuilder {
   // Extract the inner native table from the TypeScript wrapper
   const localTable = table as LocalTable;
   // Access inner through type assertion since it's private
-  const nativeBuilder = nativePermutationBuilder((localTable as any).inner, destTableName);
+  const nativeBuilder = nativePermutationBuilder(
+    // biome-ignore lint/suspicious/noExplicitAny: need access to private variable
+    (localTable as any).inner,
+    destTableName,
+  );
   return new PermutationBuilder(nativeBuilder);
 }
