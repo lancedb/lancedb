@@ -10,7 +10,13 @@ import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
 
-import { MatchQuery, PhraseQuery, Table, connect } from "../lancedb";
+import {
+  Connection,
+  MatchQuery,
+  PhraseQuery,
+  Table,
+  connect,
+} from "../lancedb";
 import {
   Table as ArrowTable,
   Field,
@@ -21,6 +27,8 @@ import {
   Int64,
   List,
   Schema,
+  SchemaLike,
+  Type,
   Uint8,
   Utf8,
   makeArrowTable,
@@ -211,8 +219,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       },
     );
 
-    // TODO: https://github.com/lancedb/lancedb/issues/1832
-    it.skip("should be able to omit nullable fields", async () => {
+    it("should be able to omit nullable fields", async () => {
       const db = await connect(tmpDir.name);
       const schema = new arrow.Schema([
         new arrow.Field(
@@ -236,23 +243,36 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await table.add([data3]);
 
       let res = await table.query().limit(10).toArray();
-      const resVector = res.map((r) => r.get("vector").toArray());
+      const resVector = res.map((r) =>
+        r.vector ? Array.from(r.vector) : null,
+      );
       expect(resVector).toEqual([null, data2.vector, data3.vector]);
-      const resItem = res.map((r) => r.get("item").toArray());
+      const resItem = res.map((r) => r.item);
       expect(resItem).toEqual(["foo", null, "bar"]);
-      const resPrice = res.map((r) => r.get("price").toArray());
+      const resPrice = res.map((r) => r.price);
       expect(resPrice).toEqual([10.0, 2.0, 3.0]);
 
       const data4 = { item: "foo" };
       // We can't omit a column if it's not nullable
-      await expect(table.add([data4])).rejects.toThrow("Invalid user input");
+      await expect(table.add([data4])).rejects.toThrow(
+        "Append with different schema",
+      );
 
       // But we can alter columns to make them nullable
       await table.alterColumns([{ path: "price", nullable: true }]);
       await table.add([data4]);
 
-      res = (await table.query().limit(10).toArray()).map((r) => r.toJSON());
-      expect(res).toEqual([data1, data2, data3, data4]);
+      res = (await table.query().limit(10).toArray()).map((r) => ({
+        ...r.toJSON(),
+        vector: r.vector ? Array.from(r.vector) : null,
+      }));
+      // Rust fills missing nullable fields with null
+      expect(res).toEqual([
+        { ...data1, vector: null },
+        { ...data2, item: null },
+        data3,
+        { ...data4, price: null, vector: null },
+      ]);
     });
 
     it("should be able to insert nullable data for non-nullable fields", async () => {
@@ -329,6 +349,43 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       const table = await db.createTable("my_table", data);
       expect(await table.countRows()).toEqual(2);
+    });
+
+    it("should allow undefined and omitted nullable vector fields", async () => {
+      // Test for the bug: can't pass undefined or omit vector column
+      const db = await connect("memory://");
+      const schema = new arrow.Schema([
+        new arrow.Field("id", new arrow.Int32(), true),
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(
+            32,
+            new arrow.Field("item", new arrow.Float32(), true),
+          ),
+          true, // nullable = true
+        ),
+      ]);
+      const table = await db.createEmptyTable("test_table", schema);
+
+      // Should not throw error for undefined value
+      await table.add([{ id: 0, vector: undefined }]);
+
+      // Should not throw error for omitted field
+      await table.add([{ id: 1 }]);
+
+      // Should still work for null
+      await table.add([{ id: 2, vector: null }]);
+
+      // Should still work for actual vector
+      const testVector = new Array(32).fill(0.5);
+      await table.add([{ id: 3, vector: testVector }]);
+      expect(await table.countRows()).toEqual(4);
+
+      const res = await table.query().limit(10).toArray();
+      const resVector = res.map((r) =>
+        r.vector ? Array.from(r.vector) : null,
+      );
+      expect(resVector).toEqual([null, null, null, testVector]);
     });
   },
 );
@@ -1463,7 +1520,9 @@ describe("when optimizing a dataset", () => {
 
   it("delete unverified", async () => {
     const version = await table.version();
-    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${version - 1}.manifest`;
+    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${
+      version - 1
+    }.manifest`;
     fs.rmSync(versionFile);
 
     let stats = await table.optimize({ deleteUnverified: false });
@@ -1975,5 +2034,54 @@ describe("column name options", () => {
       .limit(10)
       .toArray();
     expect(results2.length).toBe(10);
+  });
+});
+
+describe("when creating an empty table", () => {
+  let con: Connection;
+  beforeEach(async () => {
+    const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    con = await connect(tmpDir.name);
+  });
+  afterEach(() => {
+    con.close();
+  });
+
+  it("can create an empty table from an arrow Schema", async () => {
+    const schema = new Schema([
+      new Field("id", new Int64()),
+      new Field("vector", new Float64()),
+    ]);
+    const table = await con.createEmptyTable("test", schema);
+    const actualSchema = await table.schema();
+    expect(actualSchema.fields[0].type.typeId).toBe(Type.Int);
+    expect((actualSchema.fields[0].type as Int64).bitWidth).toBe(64);
+    expect(actualSchema.fields[1].type.typeId).toBe(Type.Float);
+    expect((actualSchema.fields[1].type as Float64).precision).toBe(2);
+  });
+
+  it("can create an empty table from schema that specifies field types by name", async () => {
+    const schemaLike = {
+      fields: [
+        {
+          name: "id",
+          type: "int64",
+          nullable: true,
+        },
+        {
+          name: "vector",
+          type: "float64",
+          nullable: true,
+        },
+      ],
+      metadata: new Map(),
+      names: ["id", "vector"],
+    } satisfies SchemaLike;
+    const table = await con.createEmptyTable("test", schemaLike);
+    const actualSchema = await table.schema();
+    expect(actualSchema.fields[0].type.typeId).toBe(Type.Int);
+    expect((actualSchema.fields[0].type as Int64).bitWidth).toBe(64);
+    expect(actualSchema.fields[1].type.typeId).toBe(Type.Float);
+    expect((actualSchema.fields[1].type as Float64).precision).toBe(2);
   });
 });

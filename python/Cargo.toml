@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-python"
-version = "0.25.2-beta.0"
+version = "0.25.2"
 edition.workspace = true
 description = "Python bindings for LanceDB"
 license.workspace = true
@@ -14,12 +14,12 @@ name = "_lancedb"
 crate-type = ["cdylib"]
 
 [dependencies]
-arrow = { version = "55.1", features = ["pyarrow"] }
+arrow = { version = "56.2", features = ["pyarrow"] }
 async-trait = "0.1"
 lancedb = { path = "../rust/lancedb", default-features = false }
 env_logger.workspace = true
-pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
-pyo3-async-runtimes = { version = "0.24", features = [
+pyo3 = { version = "0.25", features = ["extension-module", "abi3-py39"] }
+pyo3-async-runtimes = { version = "0.25", features = [
     "attributes",
     "tokio-runtime",
 ] }
@@ -28,7 +28,7 @@ futures.workspace = true
 tokio = { version = "1.40", features = ["sync"] }
 
 [build-dependencies]
-pyo3-build-config = { version = "0.24", features = [
+pyo3-build-config = { version = "0.25", features = [
     "extension-module",
     "abi3-py39",
 ] }

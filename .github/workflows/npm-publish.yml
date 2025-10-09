@@ -365,3 +365,17 @@ jobs:
             ARGS="$ARGS --tag preview"
           fi
           npm publish $ARGS
+  report-failure:
+    name: Report Workflow Failure
+    runs-on: ubuntu-latest
+    needs: [build-lancedb, test-lancedb, publish]
+    if: always() && (github.event_name == 'release' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/create-failure-issue
+        with:
+          job-results: ${{ toJSON(needs) }}
+          workflow-name: ${{ github.workflow }}

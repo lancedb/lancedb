@@ -6,10 +6,18 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from pathlib import Path
+import sys
 from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
 
+if sys.version_info >= (3, 12):
+    from typing import override
+
+    class EnforceOverrides:
+        pass
+else:
+    from overrides import EnforceOverrides, override  # type: ignore
+
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
-from overrides import EnforceOverrides, override  # type: ignore
 
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP

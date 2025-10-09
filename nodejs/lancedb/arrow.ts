@@ -73,7 +73,7 @@ export type FieldLike =
   | {
       type: string;
       name: string;
-      nullable?: boolean;
+      nullable: boolean;
       metadata?: Map<string, string>;
     };
 
@@ -1285,19 +1285,36 @@ function validateSchemaEmbeddings(
     if (isFixedSizeList(field.type)) {
       field = sanitizeField(field);
       if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
+        // Check if there's an embedding function registered for this field
+        let hasEmbeddingFunction = false;
+
+        // Check schema metadata for embedding functions
         if (schema.metadata.has("embedding_functions")) {
           const embeddings = JSON.parse(
             schema.metadata.get("embedding_functions")!,
           );
-          if (
-            // biome-ignore lint/suspicious/noExplicitAny: we don't know the type of `f`
-            embeddings.find((f: any) => f["vectorColumn"] === field.name) ===
-            undefined
-          ) {
+          // biome-ignore lint/suspicious/noExplicitAny: we don't know the type of `f`
+          if (embeddings.find((f: any) => f["vectorColumn"] === field.name)) {
+            hasEmbeddingFunction = true;
+          }
+        }
+
+        // Check passed embedding function parameter
+        if (embeddings && embeddings.vectorColumn === field.name) {
+          hasEmbeddingFunction = true;
+        }
+
+        // If the field is nullable AND there's no embedding function, allow undefined/omitted values
+        if (field.nullable && !hasEmbeddingFunction) {
+          fields.push(field);
+        } else {
+          // Either not nullable OR has embedding function - require explicit values
+          if (hasEmbeddingFunction) {
+            // Don't add to missingEmbeddingFields since this is expected to be filled by embedding function
+            fields.push(field);
+          } else {
             missingEmbeddingFields.push(field);
           }
-        } else {
-          missingEmbeddingFields.push(field);
         }
       } else {
         fields.push(field);

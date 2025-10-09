@@ -1,0 +1,45 @@
+name: Create Failure Issue
+description: Creates a GitHub issue if any jobs in the workflow failed
+
+inputs:
+  job-results:
+    description: 'JSON string of job results from needs context'
+    required: true
+  workflow-name:
+    description: 'Name of the workflow'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check for failures and create issue
+      shell: bash
+      env:
+        JOB_RESULTS: ${{ inputs.job-results }}
+        WORKFLOW_NAME: ${{ inputs.workflow-name }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # Check if any job failed
+        if echo "$JOB_RESULTS" | jq -e 'to_entries | any(.value.result == "failure")' > /dev/null; then
+          echo "Detected job failures, creating issue..."
+
+          # Extract failed job names
+          FAILED_JOBS=$(echo "$JOB_RESULTS" | jq -r 'to_entries | map(select(.value.result == "failure")) | map(.key) | join(", ")')
+
+          # Create issue with workflow name, failed jobs, and run URL
+          gh issue create \
+            --title "$WORKFLOW_NAME Failed ($FAILED_JOBS)" \
+            --body "The workflow **$WORKFLOW_NAME** failed during execution.
+
+        **Failed jobs:** $FAILED_JOBS
+
+        **Run URL:** $RUN_URL
+
+        Please investigate the failed jobs and address any issues." \
+            --label "ci"
+
+          echo "Issue created successfully"
+        else
+          echo "No job failures detected, skipping issue creation"
+        fi

@@ -5,15 +5,20 @@
 from datetime import timedelta
 import logging
 from concurrent.futures import ThreadPoolExecutor
+import sys
 from typing import Any, Dict, Iterable, List, Optional, Union
 from urllib.parse import urlparse
 import warnings
+
+if sys.version_info >= (3, 12):
+    from typing import override
+else:
+    from overrides import override
 
 # Remove this import to fix circular dependency
 # from lancedb import connect_async
 from lancedb.remote import ClientConfig
 import pyarrow as pa
-from overrides import override
 
 from ..common import DATA
 from ..db import DBConnection, LOOP
