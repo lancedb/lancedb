@@ -125,6 +125,10 @@ impl ExecutionPlan for MetadataEraserExec {
     fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Statistics> {
         self.input.partition_statistics(partition)
     }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug)]
