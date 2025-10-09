@@ -605,9 +605,53 @@ class IvfPq:
     target_partition_size: Optional[int] = None
 
 
+@dataclass
+class IvfRq:
+    """Describes an IVF RQ Index
+
+    IVF-RQ (Residual Quantization) stores a compressed copy of each vector using
+    residual quantization and organizes them into IVF partitions. Parameters
+    largely mirror IVF-PQ for consistency.
+
+    Attributes
+    ----------
+    distance_type: str, default "l2"
+        Distance metric used to train the index and for quantization.
+
+        The following distance types are available:
+
+        "l2" - Euclidean distance.
+        "cosine" - Cosine distance.
+        "dot" - Dot product.
+
+    num_partitions: int, default sqrt(num_rows)
+        Number of IVF partitions to create.
+
+    num_bits: int, default 1
+        Number of bits to encode each dimension.
+
+    max_iterations: int, default 50
+        Max iterations to train kmeans when computing IVF partitions.
+
+    sample_rate: int, default 256
+        Controls the number of training vectors: sample_rate * num_partitions.
+
+    target_partition_size, default is 8192
+        Target size of each partition.
+    """
+
+    distance_type: Literal["l2", "cosine", "dot"] = "l2"
+    num_partitions: Optional[int] = None
+    num_bits: int = 1
+    max_iterations: int = 50
+    sample_rate: int = 256
+    target_partition_size: Optional[int] = None
+
+
 __all__ = [
     "BTree",
     "IvfPq",
+    "IvfRq",
     "IvfFlat",
     "HnswPq",
     "HnswSq",

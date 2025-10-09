@@ -861,6 +861,15 @@ describe("When creating an index", () => {
     });
   });
 
+  it("should be able to create IVF_RQ", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.ivfRq({
+        numPartitions: 10,
+        numBits: 1,
+      }),
+    });
+  });
+
   it("should allow me to replace (or not) an existing index", async () => {
     await tbl.createIndex("id");
     // Default is replace=true
