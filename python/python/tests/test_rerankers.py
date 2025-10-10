@@ -484,7 +484,7 @@ def test_jina_reranker(tmp_path, use_tantivy):
 @pytest.mark.parametrize("use_tantivy", [True, False])
 def test_voyageai_reranker(tmp_path, use_tantivy):
     pytest.importorskip("voyageai")
-    reranker = VoyageAIReranker(model_name="rerank-2")
+    reranker = VoyageAIReranker(model_name="rerank-2.5")
     table, schema = get_test_table(tmp_path, use_tantivy)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 

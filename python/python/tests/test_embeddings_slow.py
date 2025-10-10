@@ -536,6 +536,27 @@ def test_voyageai_embedding_function():
 @pytest.mark.skipif(
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
+def test_voyageai_embedding_function_contextual_model():
+    voyageai = (
+        get_registry().get("voyageai").create(name="voyage-context-3", max_retries=0)
+    )
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
 def test_voyageai_multimodal_embedding_function():
     import requests
 
@@ -651,9 +672,9 @@ def test_colpali(tmp_path):
     # Verify multivector dimensions
     first_row = table.to_arrow().to_pylist()[0]
     assert len(first_row["image_vectors"]) > 1, "Should have multiple image vectors"
-    assert len(first_row["image_vectors"][0]) == func.ndims(), (
-        "Vector dimension mismatch"
-    )
+    assert (
+        len(first_row["image_vectors"][0]) == func.ndims()
+    ), "Vector dimension mismatch"
 
 
 @pytest.mark.slow
