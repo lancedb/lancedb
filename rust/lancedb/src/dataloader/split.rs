@@ -103,7 +103,7 @@ impl SplitStrategy {
                         message: "Hash strategy requires at least one split weight".to_string(),
                     });
                 }
-                if split_weights.iter().any(|w| *w == 0) {
+                if split_weights.contains(&0) {
                     return Err(Error::InvalidInput {
                         message: "Split weights must be greater than 0".to_string(),
                     });
@@ -158,7 +158,7 @@ impl Splitter {
                 remaining_in_split
             };
 
-            split_ids.extend(iter::repeat_n(split_id as u64, rows_to_add as usize));
+            split_ids.extend(iter::repeat(split_id as u64).take(rows_to_add as usize));
             if done {
                 // Quit early if we've run out of splits
                 break;
@@ -453,7 +453,7 @@ impl SplitSizes {
                         ),
                     });
                 }
-                if counts.iter().any(|c| *c == 0) {
+                if counts.contains(&0) {
                     return Err(Error::InvalidInput {
                         message: "Split counts must be greater than 0".to_string(),
                     });
@@ -662,7 +662,7 @@ mod tests {
         assert_eq!(split_batch.num_rows(), total_split_sizes as usize);
         let mut expected = Vec::with_capacity(total_split_sizes as usize);
         for (i, size) in expected_split_sizes.iter().enumerate() {
-            expected.extend(iter::repeat_n(i as u64, *size as usize));
+            expected.extend(iter::repeat(i as u64).take(*size as usize));
         }
         let expected = Arc::new(UInt64Array::from(expected)) as Arc<dyn Array>;
 
