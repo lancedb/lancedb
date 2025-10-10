@@ -5,6 +5,7 @@
 //! the rows from a source table that correspond to row IDs stored in a separate table.
 
 use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
+use crate::dataloader::permutation::split::SPLIT_ID_COLUMN;
 use crate::error::Error;
 use crate::query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select};
 use crate::table::{AnyQuery, BaseTable};
@@ -44,12 +45,12 @@ impl PermutationReader {
         permutation_table: Arc<dyn BaseTable>,
     ) -> Result<Self> {
         let schema = permutation_table.schema().await?;
-        if !schema.column_with_name("row_id").is_some() {
+        if schema.column_with_name(ROW_ID).is_none() {
             return Err(Error::InvalidInput {
                 message: "Permutation table must contain a column named row_id".to_string(),
             });
         }
-        if !schema.column_with_name("split_id").is_some() {
+        if schema.column_with_name(SPLIT_ID_COLUMN).is_none() {
             return Err(Error::InvalidInput {
                 message: "Permutation table must contain a column named split_id".to_string(),
             });
@@ -61,12 +62,10 @@ impl PermutationReader {
     }
 
     fn is_sorted_already<'a, T: Iterator<Item = &'a u64>>(iter: T) -> bool {
-        let mut expected = 0;
-        for idx in iter {
-            if *idx != expected {
+        for (expected, idx) in iter.enumerate() {
+            if *idx != expected as u64 {
                 return false;
             }
-            expected += 1;
         }
         true
     }
@@ -123,7 +122,7 @@ impl PermutationReader {
                 message: "Base table returned no batches".to_string(),
             });
         };
-        if !data.try_next().await?.is_none() {
+        if data.try_next().await?.is_some() {
             return Err(Error::InvalidInput {
                 message: "Base table returned more than one batch".to_string(),
             });
@@ -175,7 +174,7 @@ impl PermutationReader {
     ) -> Result<SendableRecordBatchStream> {
         let has_row_id = Self::has_row_id(&selection)?;
         let mut stream = row_ids
-            .map_err(|e| Error::from(e))
+            .map_err(Error::from)
             .try_filter_map(move |batch| {
                 let selection = selection.clone();
                 let base_table = base_table.clone();
@@ -237,8 +236,8 @@ impl PermutationReader {
             .permutation_table
             .query(
                 &AnyQuery::Query(QueryRequest {
-                    select: Select::Columns(vec!["row_id".to_string()]),
-                    filter: Some(QueryFilter::Sql(format!("split_id = {}", split))),
+                    select: Select::Columns(vec![ROW_ID.to_string()]),
+                    filter: Some(QueryFilter::Sql(format!("{} = {}", SPLIT_ID_COLUMN, split))),
                     ..Default::default()
                 }),
                 execution_options,
@@ -307,8 +306,8 @@ mod tests {
         );
         let permutation_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new("row_id", DataType::UInt64, false),
-                Field::new("split_id", DataType::UInt64, false),
+                Field::new(ROW_ID, DataType::UInt64, false),
+                Field::new(SPLIT_ID_COLUMN, DataType::UInt64, false),
             ])),
             vec![
                 Arc::new(UInt64Array::from(row_ids.clone())),
