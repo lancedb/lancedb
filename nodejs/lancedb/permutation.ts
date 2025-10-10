@@ -161,7 +161,6 @@ export class PermutationBuilder {
  * Create a permutation builder for the given table.
  *
  * @param table - The source table to create a permutation from
- * @param destTableName - The name for the destination permutation table
  * @returns A PermutationBuilder instance
  * @example
  * ```ts
@@ -174,7 +173,6 @@ export class PermutationBuilder {
  */
 export function permutationBuilder(
   table: Table,
-  destTableName: string,
 ): PermutationBuilder {
   // Extract the inner native table from the TypeScript wrapper
   const localTable = table as LocalTable;
@@ -182,7 +180,6 @@ export function permutationBuilder(
   const nativeBuilder = nativePermutationBuilder(
     // biome-ignore lint/suspicious/noExplicitAny: need access to private variable
     (localTable as any).inner,
-    destTableName,
   );
   return new PermutationBuilder(nativeBuilder);
 }

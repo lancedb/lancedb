@@ -35,6 +35,7 @@ arrow-data = "56.2"
 arrow-ipc = "56.2"
 arrow-ord = "56.2"
 arrow-schema = "56.2"
+arrow-select = "56.2"
 arrow-cast = "56.2"
 async-trait = "0"
 datafusion = { version = "50.1", default-features = false }

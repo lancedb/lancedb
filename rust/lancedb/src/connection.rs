@@ -1182,7 +1182,7 @@ mod tests {
     use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, QueryExecutionOptions};
-    use crate::test_connection::test_utils::new_test_connection;
+    use crate::test_utils::connection::new_test_connection;
     use arrow::compute::concat_batches;
     use arrow_array::RecordBatchReader;
     use arrow_schema::{DataType, Field, Schema};
