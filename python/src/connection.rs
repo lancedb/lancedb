@@ -4,7 +4,10 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
-use lancedb::{connection::Connection as LanceConnection, database::CreateTableMode};
+use lancedb::{
+    connection::Connection as LanceConnection,
+    database::{CreateTableMode, ReadConsistency},
+};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods, Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
@@ -23,7 +26,7 @@ impl Connection {
         Self { inner: Some(inner) }
     }
 
-    fn get_inner(&self) -> PyResult<&LanceConnection> {
+    pub(crate) fn get_inner(&self) -> PyResult<&LanceConnection> {
         self.inner
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Connection is closed"))
@@ -61,6 +64,18 @@ impl Connection {
     #[getter]
     pub fn uri(&self) -> PyResult<String> {
         self.get_inner().map(|inner| inner.uri().to_string())
+    }
+
+    #[pyo3(signature = ())]
+    pub fn get_read_consistency_interval(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            Ok(match inner.read_consistency().await.infer_error()? {
+                ReadConsistency::Manual => None,
+                ReadConsistency::Eventual(duration) => Some(duration.as_secs_f64()),
+                ReadConsistency::Strong => Some(0.0_f64),
+            })
+        })
     }
 
     #[pyo3(signature = (namespace=vec![], start_after=None, limit=None))]

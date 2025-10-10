@@ -12,6 +12,7 @@ mod header;
 mod index;
 mod iterator;
 pub mod merge;
+pub mod permutation;
 mod query;
 pub mod remote;
 mod rerankers;

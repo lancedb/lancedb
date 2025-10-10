@@ -11,6 +11,7 @@ rust-version.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
+ahash = { workspace = true }
 arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-data = { workspace = true }
@@ -24,12 +25,16 @@ datafusion-common.workspace = true
 datafusion-execution.workspace = true
 datafusion-expr.workspace = true
 datafusion-physical-plan.workspace = true
+datafusion.workspace = true
 object_store = { workspace = true }
 snafu = { workspace = true }
 half = { workspace = true }
 lazy_static.workspace = true
 lance = { workspace = true }
+lance-core = { workspace = true }
 lance-datafusion.workspace = true
+lance-datagen = { workspace = true }
+lance-file = { workspace = true }
 lance-io = { workspace = true }
 lance-index = { workspace = true }
 lance-table = { workspace = true }
@@ -46,11 +51,13 @@ bytes = "1"
 futures.workspace = true
 num-traits.workspace = true
 url.workspace = true
+rand.workspace = true
 regex.workspace = true
 serde = { version = "^1" }
 serde_json = { version = "1" }
 async-openai = { version = "0.20.0", optional = true }
 serde_with = { version = "3.8.1" }
+tempfile = "3.5.0"
 aws-sdk-bedrockruntime = { version = "1.27.0", optional = true }
 # For remote feature
 reqwest = { version = "0.12.0", default-features = false, features = [
@@ -61,9 +68,8 @@ reqwest = { version = "0.12.0", default-features = false, features = [
     "macos-system-configuration",
     "stream",
 ], optional = true }
-rand = { version = "0.9", features = ["small_rng"], optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
-uuid = { version = "1.7.0", features = ["v4"], optional = true }
+uuid = { version = "1.7.0", features = ["v4"] }
 polars-arrow = { version = ">=0.37,<0.40.0", optional = true }
 polars = { version = ">=0.37,<0.40.0", optional = true }
 hf-hub = { version = "0.4.1", optional = true, default-features = false, features = [
@@ -84,7 +90,6 @@ bytemuck_derive.workspace = true
 [dev-dependencies]
 anyhow = "1"
 tempfile = "3.5.0"
-rand = { version = "0.9", features = ["small_rng"] }
 random_word = { version = "0.4.3", features = ["en"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 walkdir = "2"
@@ -96,6 +101,7 @@ aws-smithy-runtime = { version = "1.9.1" }
 datafusion.workspace = true
 http-body = "1"                                        # Matching reqwest
 rstest = "0.23.0"
+test-log = "0.2"
 
 
 [features]
@@ -105,7 +111,7 @@ oss = ["lance/oss", "lance-io/oss"]
 gcs = ["lance/gcp", "lance-io/gcp"]
 azure = ["lance/azure", "lance-io/azure"]
 dynamodb = ["lance/dynamodb", "aws"]
-remote = ["dep:reqwest", "dep:http", "dep:rand", "dep:uuid"]
+remote = ["dep:reqwest", "dep:http"]
 fp16kernels = ["lance-linalg/fp16kernels"]
 s3-test = []
 bedrock = ["dep:aws-sdk-bedrockruntime"]

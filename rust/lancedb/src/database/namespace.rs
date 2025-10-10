@@ -16,9 +16,9 @@ use lance_namespace::{
     LanceNamespace,
 };
 
-use crate::connection::ConnectRequest;
 use crate::database::listing::ListingDatabase;
 use crate::error::{Error, Result};
+use crate::{connection::ConnectRequest, database::ReadConsistency};
 
 use super::{
     BaseTable, CloneTableRequest, CreateNamespaceRequest as DbCreateNamespaceRequest,
@@ -36,6 +36,8 @@ pub struct LanceNamespaceDatabase {
     read_consistency_interval: Option<std::time::Duration>,
     // Optional session for object stores and caching
     session: Option<Arc<lance::session::Session>>,
+    // database URI
+    uri: String,
 }
 
 impl LanceNamespaceDatabase {
@@ -57,6 +59,7 @@ impl LanceNamespaceDatabase {
             storage_options,
             read_consistency_interval,
             session,
+            uri: format!("namespace://{}", ns_impl),
         })
     }
 
@@ -130,6 +133,22 @@ impl std::fmt::Display for LanceNamespaceDatabase {
 
 #[async_trait]
 impl Database for LanceNamespaceDatabase {
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    async fn read_consistency(&self) -> Result<ReadConsistency> {
+        if let Some(read_consistency_inverval) = self.read_consistency_interval {
+            if read_consistency_inverval.is_zero() {
+                Ok(ReadConsistency::Strong)
+            } else {
+                Ok(ReadConsistency::Eventual(read_consistency_inverval))
+            }
+        } else {
+            Ok(ReadConsistency::Manual)
+        }
+    }
+
     async fn list_namespaces(&self, request: DbListNamespacesRequest) -> Result<Vec<String>> {
         let ns_request = ListNamespacesRequest {
             id: if request.namespace.is_empty() {

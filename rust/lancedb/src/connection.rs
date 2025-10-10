@@ -19,7 +19,7 @@ use crate::database::listing::{
 use crate::database::{
     CloneTableRequest, CreateNamespaceRequest, CreateTableData, CreateTableMode,
     CreateTableRequest, Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest,
-    OpenTableRequest, TableNamesRequest,
+    OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::embeddings::{
     EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
@@ -152,6 +152,7 @@ impl CreateTableBuilder<true> {
         let request = self.into_request()?;
         Ok(Table::new_with_embedding_registry(
             parent.create_table(request).await?,
+            parent,
             embedding_registry,
         ))
     }
@@ -211,9 +212,9 @@ impl CreateTableBuilder<false> {
 
     /// Execute the create table operation
     pub async fn execute(self) -> Result<Table> {
-        Ok(Table::new(
-            self.parent.clone().create_table(self.request).await?,
-        ))
+        let parent = self.parent.clone();
+        let table = parent.create_table(self.request).await?;
+        Ok(Table::new(table, parent))
     }
 }
 
@@ -462,8 +463,10 @@ impl OpenTableBuilder {
 
     /// Open the table
     pub async fn execute(self) -> Result<Table> {
+        let table = self.parent.open_table(self.request).await?;
         Ok(Table::new_with_embedding_registry(
-            self.parent.clone().open_table(self.request).await?,
+            table,
+            self.parent,
             self.embedding_registry,
         ))
     }
@@ -519,16 +522,15 @@ impl CloneTableBuilder {
 
     /// Execute the clone operation
     pub async fn execute(self) -> Result<Table> {
-        Ok(Table::new(
-            self.parent.clone().clone_table(self.request).await?,
-        ))
+        let parent = self.parent.clone();
+        let table = parent.clone_table(self.request).await?;
+        Ok(Table::new(table, parent))
     }
 }
 
 /// A connection to LanceDB
 #[derive(Clone)]
 pub struct Connection {
-    uri: String,
     internal: Arc<dyn Database>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
@@ -540,9 +542,19 @@ impl std::fmt::Display for Connection {
 }
 
 impl Connection {
+    pub fn new(
+        internal: Arc<dyn Database>,
+        embedding_registry: Arc<dyn EmbeddingRegistry>,
+    ) -> Self {
+        Self {
+            internal,
+            embedding_registry,
+        }
+    }
+
     /// Get the URI of the connection
     pub fn uri(&self) -> &str {
-        self.uri.as_str()
+        self.internal.uri()
     }
 
     /// Get access to the underlying database
@@ -673,6 +685,11 @@ impl Connection {
                 new_namespace,
             )
             .await
+    }
+
+    /// Get the read consistency of the connection
+    pub async fn read_consistency(&self) -> Result<ReadConsistency> {
+        self.internal.read_consistency().await
     }
 
     /// Drop a table in the database.
@@ -973,7 +990,6 @@ impl ConnectBuilder {
         )?);
         Ok(Connection {
             internal,
-            uri: self.request.uri,
             embedding_registry: self
                 .embedding_registry
                 .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
@@ -996,7 +1012,6 @@ impl ConnectBuilder {
             let internal = Arc::new(ListingDatabase::connect_with_options(&self.request).await?);
             Ok(Connection {
                 internal,
-                uri: self.request.uri,
                 embedding_registry: self
                     .embedding_registry
                     .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
@@ -1104,7 +1119,6 @@ impl ConnectNamespaceBuilder {
 
         Ok(Connection {
             internal,
-            uri: format!("namespace://{}", self.ns_impl),
             embedding_registry: self
                 .embedding_registry
                 .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
@@ -1139,7 +1153,6 @@ mod test_utils {
             let internal = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
                 internal,
-                uri: "db://test".to_string(),
                 embedding_registry: Arc::new(MemoryRegistry::new()),
             }
         }
@@ -1156,7 +1169,6 @@ mod test_utils {
             ));
             Self {
                 internal,
-                uri: "db://test".to_string(),
                 embedding_registry: Arc::new(MemoryRegistry::new()),
             }
         }
@@ -1187,7 +1199,7 @@ mod tests {
     #[tokio::test]
     async fn test_connect() {
         let tc = new_test_connection().await.unwrap();
-        assert_eq!(tc.connection.uri, tc.uri);
+        assert_eq!(tc.connection.uri(), tc.uri);
     }
 
     #[cfg(not(windows))]
@@ -1208,7 +1220,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(db.uri, relative_uri.to_str().unwrap().to_string());
+        assert_eq!(db.uri(), relative_uri.to_str().unwrap().to_string());
     }
 
     #[tokio::test]

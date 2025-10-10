@@ -3,6 +3,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
+    connection::Connection,
     error::PythonErrorExt,
     index::{extract_index_params, IndexConfig},
     query::{Query, TakeQuery},
@@ -249,7 +250,7 @@ impl Table {
 }
 
 impl Table {
-    fn inner_ref(&self) -> PyResult<&LanceDbTable> {
+    pub(crate) fn inner_ref(&self) -> PyResult<&LanceDbTable> {
         self.inner
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err(format!("Table {} is closed", self.name)))
@@ -270,6 +271,13 @@ impl Table {
     /// Closes the table, releasing any resources associated with it.
     pub fn close(&mut self) {
         self.inner.take();
+    }
+
+    pub fn database(&self) -> PyResult<Connection> {
+        let inner = self.inner_ref()?.clone();
+        let inner_connection =
+            lancedb::Connection::new(inner.database().clone(), inner.embedding_registry().clone());
+        Ok(Connection::new(inner_connection))
     }
 
     pub fn schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {

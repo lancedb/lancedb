@@ -74,6 +74,7 @@ from .index import lang_mapping
 
 
 if TYPE_CHECKING:
+    from .db import LanceDBConnection
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -88,7 +89,6 @@ if TYPE_CHECKING:
         MergeResult,
         UpdateResult,
     )
-    from .db import LanceDBConnection
     from .index import IndexConfig
     import pandas
     import PIL
@@ -1707,21 +1707,37 @@ class LanceTable(Table):
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        _async: AsyncTable = None,
     ):
         self._conn = connection
         self._namespace = namespace
-        self._table = LOOP.run(
-            connection._conn.open_table(
-                name,
-                namespace=namespace,
-                storage_options=storage_options,
-                index_cache_size=index_cache_size,
+        if _async is not None:
+            self._table = _async
+        else:
+            self._table = LOOP.run(
+                connection._conn.open_table(
+                    name,
+                    namespace=namespace,
+                    storage_options=storage_options,
+                    index_cache_size=index_cache_size,
+                )
             )
-        )
 
     @property
     def name(self) -> str:
         return self._table.name
+
+    @classmethod
+    def from_inner(cls, tbl: LanceDBTable):
+        from .db import LanceDBConnection
+
+        async_tbl = AsyncTable(tbl)
+        conn = LanceDBConnection.from_inner(tbl.database())
+        return cls(
+            conn,
+            async_tbl.name,
+            _async=async_tbl,
+        )
 
     @classmethod
     def open(cls, db, name, *, namespace: List[str] = [], **kwargs):
@@ -2755,6 +2771,10 @@ class LanceTable(Table):
         return LOOP.run(
             self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
         )
+
+    @property
+    def _inner(self) -> LanceDBTable:
+        return self._table._inner
 
     @deprecation.deprecated(
         deprecated_in="0.21.0",

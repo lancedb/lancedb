@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from datetime import timedelta
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
@@ -40,7 +41,6 @@ import deprecation
 if TYPE_CHECKING:
     import pyarrow as pa
     from .pydantic import LanceModel
-    from datetime import timedelta
 
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
@@ -452,7 +452,12 @@ class LanceDBConnection(DBConnection):
         read_consistency_interval: Optional[timedelta] = None,
         storage_options: Optional[Dict[str, str]] = None,
         session: Optional[Session] = None,
+        _inner: Optional[LanceDbConnection] = None,
     ):
+        if _inner is not None:
+            self._conn = _inner
+            return
+
         if not isinstance(uri, Path):
             scheme = get_uri_scheme(uri)
         is_local = isinstance(uri, Path) or scheme == "file"
@@ -461,11 +466,6 @@ class LanceDBConnection(DBConnection):
                 uri = Path(uri)
             uri = uri.expanduser().absolute()
             Path(uri).mkdir(parents=True, exist_ok=True)
-        self._uri = str(uri)
-        self._entered = False
-        self.read_consistency_interval = read_consistency_interval
-        self.storage_options = storage_options
-        self.session = session
 
         if read_consistency_interval is not None:
             read_consistency_interval_secs = read_consistency_interval.total_seconds()
@@ -484,10 +484,32 @@ class LanceDBConnection(DBConnection):
                 session,
             )
 
+        # TODO: It would be nice if we didn't store self.storage_options but it is
+        # currently used by the LanceTable.to_lance method.  This doesn't _really_
+        # work because some paths like LanceDBConnection.from_inner will lose the
+        # storage_options.  Also, this class really shouldn't be holding any state
+        # beyond _conn.
+        self.storage_options = storage_options
         self._conn = AsyncConnection(LOOP.run(do_connect()))
 
+    @property
+    def read_consistency_interval(self) -> Optional[timedelta]:
+        return LOOP.run(self._conn.get_read_consistency_interval())
+
+    @property
+    def session(self) -> Optional[Session]:
+        return self._conn.session
+
+    @property
+    def uri(self) -> str:
+        return self._conn.uri
+
+    @classmethod
+    def from_inner(cls, inner: LanceDbConnection):
+        return cls(None, _inner=inner)
+
     def __repr__(self) -> str:
-        val = f"{self.__class__.__name__}(uri={self._uri!r}"
+        val = f"{self.__class__.__name__}(uri={self._conn.uri!r}"
         if self.read_consistency_interval is not None:
             val += f", read_consistency_interval={repr(self.read_consistency_interval)}"
         val += ")"
@@ -496,6 +518,10 @@ class LanceDBConnection(DBConnection):
     async def _async_get_table_names(self, start_after: Optional[str], limit: int):
         conn = AsyncConnection(await lancedb_connect(self.uri))
         return await conn.table_names(start_after=start_after, limit=limit)
+
+    @property
+    def _inner(self) -> LanceDbConnection:
+        return self._conn._inner
 
     @override
     def list_namespaces(
@@ -855,6 +881,13 @@ class AsyncConnection(object):
     @property
     def uri(self) -> str:
         return self._inner.uri
+
+    async def get_read_consistency_interval(self) -> Optional[timedelta]:
+        interval_secs = await self._inner.get_read_consistency_interval()
+        if interval_secs is not None:
+            return timedelta(seconds=interval_secs)
+        else:
+            return None
 
     async def list_namespaces(
         self,

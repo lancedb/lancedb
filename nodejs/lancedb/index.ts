@@ -43,6 +43,10 @@ export {
   DeleteResult,
   DropColumnsResult,
   UpdateResult,
+  SplitRandomOptions,
+  SplitHashOptions,
+  SplitSequentialOptions,
+  ShuffleOptions,
 } from "./native.js";
 
 export {
@@ -111,6 +115,7 @@ export {
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 
 export * as embedding from "./embedding";
+export { permutationBuilder, PermutationBuilder } from "./permutation";
 export * as rerankers from "./rerankers";
 export {
   SchemaLike,

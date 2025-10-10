@@ -17,6 +17,7 @@ use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
 
 use crate::connection::ConnectRequest;
+use crate::database::ReadConsistency;
 use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::NativeTable;
@@ -596,6 +597,22 @@ impl Database for ListingDatabase {
         }
 
         Ok(Vec::new())
+    }
+
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    async fn read_consistency(&self) -> Result<ReadConsistency> {
+        if let Some(read_consistency_inverval) = self.read_consistency_interval {
+            if read_consistency_inverval.is_zero() {
+                Ok(ReadConsistency::Strong)
+            } else {
+                Ok(ReadConsistency::Eventual(read_consistency_inverval))
+            }
+        } else {
+            Ok(ReadConsistency::Manual)
+        }
     }
 
     async fn create_namespace(&self, _request: CreateNamespaceRequest) -> Result<()> {
@@ -1249,7 +1266,8 @@ mod tests {
         )
         .unwrap();
 
-        let source_table_obj = Table::new(source_table.clone());
+        let db = Arc::new(db);
+        let source_table_obj = Table::new(source_table.clone(), db.clone());
         source_table_obj
             .add(Box::new(arrow_array::RecordBatchIterator::new(
                 vec![Ok(batch2)],
@@ -1320,7 +1338,8 @@ mod tests {
             .unwrap();
 
         // Create a tag for the current version
-        let source_table_obj = Table::new(source_table.clone());
+        let db = Arc::new(db);
+        let source_table_obj = Table::new(source_table.clone(), db.clone());
         let mut tags = source_table_obj.tags().await.unwrap();
         tags.create("v1.0", source_table.version().await.unwrap())
             .await
@@ -1336,7 +1355,7 @@ mod tests {
         )
         .unwrap();
 
-        let source_table_obj = Table::new(source_table.clone());
+        let source_table_obj = Table::new(source_table.clone(), db.clone());
         source_table_obj
             .add(Box::new(arrow_array::RecordBatchIterator::new(
                 vec![Ok(batch2)],
@@ -1432,7 +1451,8 @@ mod tests {
         )
         .unwrap();
 
-        let cloned_table_obj = Table::new(cloned_table.clone());
+        let db = Arc::new(db);
+        let cloned_table_obj = Table::new(cloned_table.clone(), db.clone());
         cloned_table_obj
             .add(Box::new(arrow_array::RecordBatchIterator::new(
                 vec![Ok(batch_clone)],
@@ -1452,7 +1472,7 @@ mod tests {
         )
         .unwrap();
 
-        let source_table_obj = Table::new(source_table.clone());
+        let source_table_obj = Table::new(source_table.clone(), db);
         source_table_obj
             .add(Box::new(arrow_array::RecordBatchIterator::new(
                 vec![Ok(batch_source)],
@@ -1495,6 +1515,7 @@ mod tests {
             .unwrap();
 
         // Add more data to create new versions
+        let db = Arc::new(db);
         for i in 0..3 {
             let batch = RecordBatch::try_new(
                 schema.clone(),
@@ -1502,7 +1523,7 @@ mod tests {
             )
             .unwrap();
 
-            let source_table_obj = Table::new(source_table.clone());
+            let source_table_obj = Table::new(source_table.clone(), db.clone());
             source_table_obj
                 .add(Box::new(arrow_array::RecordBatchIterator::new(
                     vec![Ok(batch)],

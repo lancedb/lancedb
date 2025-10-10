@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::RecordBatchReader;
 use async_trait::async_trait;
@@ -213,6 +214,20 @@ impl CloneTableRequest {
     }
 }
 
+/// How long until a change is reflected from one Table instance to another
+///
+/// Tables are always internally consistent.  If a write method is called on
+/// a table instance it will be immediately visible in that same table instance.
+pub enum ReadConsistency {
+    /// Changes will not be automatically propagated until the checkout_latest
+    /// method is called on the target table
+    Manual,
+    /// Changes will be propagated automatically within the given duration
+    Eventual(Duration),
+    /// Changes are immediately visible in target tables
+    Strong,
+}
+
 /// The `Database` trait defines the interface for database implementations.
 ///
 /// A database is responsible for managing tables and their metadata.
@@ -220,6 +235,10 @@ impl CloneTableRequest {
 pub trait Database:
     Send + Sync + std::any::Any + std::fmt::Debug + std::fmt::Display + 'static
 {
+    /// Get the uri of the database
+    fn uri(&self) -> &str;
+    /// Get the read consistency of the database
+    async fn read_consistency(&self) -> Result<ReadConsistency>;
     /// List immediate child namespace names in the given namespace
     async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>>;
     /// Create a new namespace
