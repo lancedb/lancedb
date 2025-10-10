@@ -147,11 +147,12 @@ impl CreateTableBuilder<true> {
 
     /// Execute the create table operation
     pub async fn execute(self) -> Result<Table> {
-        let parent = self.parent.clone();
         let embedding_registry = self.embedding_registry.clone();
+        let parent = self.parent.clone();
         let request = self.into_request()?;
         Ok(Table::new_with_embedding_registry(
             parent.create_table(request).await?,
+            parent,
             embedding_registry,
         ))
     }
@@ -213,7 +214,7 @@ impl CreateTableBuilder<false> {
     pub async fn execute(self) -> Result<Table> {
         let parent = self.parent.clone();
         let table = parent.create_table(self.request).await?;
-        Ok(Table::new(table))
+        Ok(Table::new(table, parent))
     }
 }
 
@@ -465,6 +466,7 @@ impl OpenTableBuilder {
         let table = self.parent.open_table(self.request).await?;
         Ok(Table::new_with_embedding_registry(
             table,
+            self.parent,
             self.embedding_registry,
         ))
     }
@@ -520,8 +522,9 @@ impl CloneTableBuilder {
 
     /// Execute the clone operation
     pub async fn execute(self) -> Result<Table> {
-        let table = self.parent.clone_table(self.request).await?;
-        Ok(Table::new(table))
+        let parent = self.parent.clone();
+        let table = parent.clone_table(self.request).await?;
+        Ok(Table::new(table, parent))
     }
 }
 

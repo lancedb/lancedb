@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::{error::NapiErrorExt, table::Table};
 use lancedb::dataloader::{
-    permutation::{PermutationBuilder as LancePermutationBuilder, ShuffleStrategy},
-    split::{SplitSizes, SplitStrategy},
+    permutation::builder::{PermutationBuilder as LancePermutationBuilder, ShuffleStrategy},
+    permutation::split::{SplitSizes, SplitStrategy},
 };
 use napi_derive::napi;
 
@@ -40,7 +40,6 @@ pub struct ShuffleOptions {
 
 pub struct PermutationBuilderState {
     pub builder: Option<LancePermutationBuilder>,
-    pub dest_table_name: String,
 }
 
 #[napi]
@@ -49,11 +48,10 @@ pub struct PermutationBuilder {
 }
 
 impl PermutationBuilder {
-    pub fn new(builder: LancePermutationBuilder, dest_table_name: String) -> Self {
+    pub fn new(builder: LancePermutationBuilder) -> Self {
         Self {
             state: Arc::new(Mutex::new(PermutationBuilderState {
                 builder: Some(builder),
-                dest_table_name,
             })),
         }
     }
@@ -191,32 +189,28 @@ impl PermutationBuilder {
     /// Execute the permutation builder and create the table
     #[napi]
     pub async fn execute(&self) -> napi::Result<Table> {
-        let (builder, dest_table_name) = {
+        let builder = {
             let mut state = self.state.lock().unwrap();
             let builder = state
                 .builder
                 .take()
                 .ok_or_else(|| napi::Error::from_reason("Builder already consumed"))?;
 
-            let dest_table_name = std::mem::take(&mut state.dest_table_name);
-            (builder, dest_table_name)
+            builder
         };
 
-        let table = builder.build(&dest_table_name).await.default_error()?;
+        let table = builder.build().await.default_error()?;
         Ok(Table::new(table))
     }
 }
 
 /// Create a permutation builder for the given table
 #[napi]
-pub fn permutation_builder(
-    table: &crate::table::Table,
-    dest_table_name: String,
-) -> napi::Result<PermutationBuilder> {
-    use lancedb::dataloader::permutation::PermutationBuilder as LancePermutationBuilder;
+pub fn permutation_builder(table: &crate::table::Table) -> napi::Result<PermutationBuilder> {
+    use lancedb::dataloader::permutation::builder::PermutationBuilder as LancePermutationBuilder;
 
     let inner_table = table.inner_ref()?.clone();
     let inner_builder = LancePermutationBuilder::new(inner_table);
 
-    Ok(PermutationBuilder::new(inner_builder, dest_table_name))
+    Ok(PermutationBuilder::new(inner_builder))
 }

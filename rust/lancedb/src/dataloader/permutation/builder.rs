@@ -7,6 +7,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_execution::{disk_manager::DiskManagerBuilder, runtime_env::RuntimeEnvBuilder};
 use datafusion_expr::col;
 use futures::TryStreamExt;
+use lance_core::ROW_ID;
 use lance_datafusion::exec::SessionContextExt;
 
 use crate::{
@@ -21,6 +22,8 @@ use crate::{
     query::{ExecutableQuery, QueryBase},
     Error, Result, Table,
 };
+
+pub const SRC_ROW_ID_COL: &str = "row_id";
 
 /// Where to store the permutation table
 #[derive(Debug, Clone, Default)]
@@ -240,7 +243,7 @@ impl PermutationBuilder {
         };
 
         // Rename _rowid to row_id
-        let renamed = rename_column(sorted, "_rowid", "row_id")?;
+        let renamed = rename_column(sorted, ROW_ID, SRC_ROW_ID_COL)?;
 
         let (name, database) = match &self.config.destination {
             PermutationDestination::Permanent(database, table_name) => {
@@ -255,9 +258,8 @@ impl PermutationBuilder {
         let create_table_request =
             CreateTableRequest::new(name.to_string(), CreateTableData::StreamingData(renamed));
 
-        Ok(Table::new(
-            database.create_table(create_table_request).await?,
-        ))
+        let table = database.create_table(create_table_request).await?;
+        Ok(Table::new(table, database))
     }
 }
 
