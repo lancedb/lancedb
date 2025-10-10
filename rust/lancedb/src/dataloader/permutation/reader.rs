@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 //! Row ID-based views for LanceDB tables
 //!
 //! This module provides functionality for creating views that are based on specific row IDs.
