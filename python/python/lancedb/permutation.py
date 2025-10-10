@@ -8,8 +8,8 @@ from typing import Optional
 
 
 class PermutationBuilder:
-    def __init__(self, table: LanceTable, dest_table_name: str):
-        self._async = async_permutation_builder(table, dest_table_name)
+    def __init__(self, table: LanceTable):
+        self._async = async_permutation_builder(table)
 
     def select(self, projections: dict[str, str]) -> "PermutationBuilder":
         self._async.select(projections)
@@ -68,5 +68,5 @@ class PermutationBuilder:
         return LOOP.run(do_execute())
 
 
-def permutation_builder(table: LanceTable, dest_table_name: str) -> PermutationBuilder:
-    return PermutationBuilder(table, dest_table_name)
+def permutation_builder(table: LanceTable) -> PermutationBuilder:
+    return PermutationBuilder(table)

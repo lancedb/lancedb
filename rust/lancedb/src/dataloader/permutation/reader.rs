@@ -8,6 +8,7 @@
 //! the rows from a source table that correspond to row IDs stored in a separate table.
 
 use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
+use crate::dataloader::permutation::builder::SRC_ROW_ID_COL;
 use crate::dataloader::permutation::split::SPLIT_ID_COLUMN;
 use crate::error::Error;
 use crate::query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select};
@@ -48,7 +49,7 @@ impl PermutationReader {
         permutation_table: Arc<dyn BaseTable>,
     ) -> Result<Self> {
         let schema = permutation_table.schema().await?;
-        if schema.column_with_name(ROW_ID).is_none() {
+        if schema.column_with_name(SRC_ROW_ID_COL).is_none() {
             return Err(Error::InvalidInput {
                 message: "Permutation table must contain a column named row_id".to_string(),
             });
@@ -85,14 +86,6 @@ impl PermutationReader {
             .as_primitive_opt::<UInt64Type>()
             .expect_ok()?
             .values();
-
-        // Map from row id to order in batch, used to restore original ordering
-        let ordering = row_ids
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(i, o)| (o, i as u64))
-            .collect::<HashMap<_, _>>();
 
         let filter = format!(
             "_rowid in ({})",
@@ -147,7 +140,15 @@ impl PermutationReader {
             .expect_ok()?
             .values();
 
-        let desired_idx_order = actual_row_ids
+        // Map from row id to order in batch, used to restore original ordering
+        let ordering = actual_row_ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, o)| (o, i as u64))
+            .collect::<HashMap<_, _>>();
+
+        let desired_idx_order = row_ids
             .iter()
             .map(|o| ordering.get(o).copied().expect_ok().map_err(Error::from))
             .collect::<Result<Vec<_>>>()?;
@@ -239,7 +240,7 @@ impl PermutationReader {
             .permutation_table
             .query(
                 &AnyQuery::Query(QueryRequest {
-                    select: Select::Columns(vec![ROW_ID.to_string()]),
+                    select: Select::Columns(vec![SRC_ROW_ID_COL.to_string()]),
                     filter: Some(QueryFilter::Sql(format!("{} = {}", SPLIT_ID_COLUMN, split))),
                     ..Default::default()
                 }),
@@ -309,7 +310,7 @@ mod tests {
         );
         let permutation_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
-                Field::new(ROW_ID, DataType::UInt64, false),
+                Field::new("row_id", DataType::UInt64, false),
                 Field::new(SPLIT_ID_COLUMN, DataType::UInt64, false),
             ])),
             vec![

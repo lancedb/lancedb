@@ -50,6 +50,7 @@ use std::sync::Arc;
 
 use crate::arrow::IntoArrow;
 use crate::connection::NoData;
+use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::index::vector::{suggested_num_partitions_for_hnsw, VectorIndex};
@@ -529,17 +530,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         query: &AnyQuery,
         options: QueryExecutionOptions,
-    ) -> Result<DatasetRecordBatchStream> {
-        // Default impl is to create a plan and execute it
-        let plan = self.create_plan(query, options.clone()).await?;
-        let inner = execute_plan(plan, Default::default())?;
-        let inner = if let Some(timeout) = options.timeout {
-            TimeoutStream::new_boxed(inner, timeout)
-        } else {
-            inner
-        };
-        Ok(DatasetRecordBatchStream::new(inner))
-    }
+    ) -> Result<DatasetRecordBatchStream>;
     /// Explain the plan for a query.
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
         let plan = self.create_plan(query, Default::default()).await?;
@@ -551,11 +542,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         query: &AnyQuery,
         options: QueryExecutionOptions,
-    ) -> Result<String> {
-        // Default impl is to create a plan and analyze it
-        let plan = self.create_plan(query, options).await?;
-        Ok(lance_analyze_plan(plan, Default::default()).await?)
-    }
+    ) -> Result<String>;
 
     /// Add new records to the table.
     async fn add(
@@ -631,6 +618,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
 #[derive(Clone, Debug)]
 pub struct Table {
     inner: Arc<dyn BaseTable>,
+    database: Arc<dyn Database>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
 
@@ -651,8 +639,10 @@ mod test_utils {
                 handler.clone(),
                 None,
             ));
+            let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
                 inner,
+                database,
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
             }
@@ -671,8 +661,10 @@ mod test_utils {
                 handler.clone(),
                 Some(version),
             ));
+            let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
                 inner,
+                database,
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
             }
@@ -687,9 +679,10 @@ impl std::fmt::Display for Table {
 }
 
 impl Table {
-    pub fn new(inner: Arc<dyn BaseTable>) -> Self {
+    pub fn new(inner: Arc<dyn BaseTable>, database: Arc<dyn Database>) -> Self {
         Self {
             inner,
+            database,
             embedding_registry: Arc::new(MemoryRegistry::new()),
         }
     }
@@ -698,16 +691,22 @@ impl Table {
         &self.inner
     }
 
+    pub fn database(&self) -> &Arc<dyn Database> {
+        &self.database
+    }
+
     pub fn embedding_registry(&self) -> &Arc<dyn EmbeddingRegistry> {
         &self.embedding_registry
     }
 
     pub(crate) fn new_with_embedding_registry(
         inner: Arc<dyn BaseTable>,
+        database: Arc<dyn Database>,
         embedding_registry: Arc<dyn EmbeddingRegistry>,
     ) -> Self {
         Self {
             inner,
+            database,
             embedding_registry,
         }
     }
