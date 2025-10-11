@@ -24,6 +24,19 @@ commit = true
 message = "Bump version: {current_version} → {new_version}"
 commit_args = ""
 
+# Update Cargo.lock after version bump
+pre_commit_hooks = [
+  """
+    cd python && cargo update -p lancedb-python
+    if git diff --quiet ../Cargo.lock; then
+        echo "Cargo.lock unchanged"
+    else
+        git add ../Cargo.lock
+        echo "Updated and staged Cargo.lock"
+    fi
+    """,
+]
+
 [tool.bumpversion.parts.pre_l]
 values = ["beta", "final"]
 optional_value = "final"
