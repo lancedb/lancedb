@@ -16,7 +16,7 @@ use lance_namespace::{
     LanceNamespace,
 };
 
-use crate::database::listing::ListingDatabase;
+use crate::database::listing::{ListingDatabase, OPT_MANIFEST_ENABLED};
 use crate::error::{Error, Result};
 use crate::{connection::ConnectRequest, database::ReadConsistency};
 
@@ -96,6 +96,9 @@ impl LanceNamespaceDatabase {
         if let Some(opts) = additional_storage_options {
             merged_storage_options.extend(opts);
         }
+
+        // Disable manifest for namespace-managed tables
+        merged_storage_options.insert(OPT_MANIFEST_ENABLED.to_string(), "false".to_string());
 
         let connect_request = ConnectRequest {
             uri: parent_dir,
