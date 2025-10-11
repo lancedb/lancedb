@@ -1,0 +1,3232 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+//! Manifest table management for v2 listing databases
+
+use std::hash::{DefaultHasher, Hash, Hasher};
+use crate::database::listing::{ListingDatabase, NewTableConfig, LANCE_FILE_EXTENSION};
+use crate::error::{Error, Result};
+use crate::table::dataset::DatasetConsistencyWrapper;
+use arrow_array::{RecordBatch, RecordBatchIterator, StringArray};
+use arrow_schema::{DataType, Field, Schema};
+use futures::StreamExt;
+use lance::dataset::{builder::DatasetBuilder, InsertBuilder, ReadParams, WriteMode, WriteParams};
+use lance::session::Session;
+use lance_index::scalar::ScalarIndexParams;
+use lance_index::{DatasetIndexExt, IndexType};
+use lance_io::object_store::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+use lance::Dataset;
+use lance::dataset::optimize::{compact_files, CompactionOptions};
+use lance::dataset::refs::Ref;
+use lance_index::optimize::OptimizeOptions;
+use crate::utils::{validate_table_name, validate_namespace};
+
+/// Configuration for the manifest listing database
+#[derive(Debug, Clone)]
+pub struct ManifestListingDatabaseConfig {
+    /// Read consistency interval for the manifest table
+    pub read_consistency_interval: Option<std::time::Duration>,
+    /// Whether to enable inline optimization (compaction and indexing) on the manifest table
+    pub inline_optimization_enabled: bool,
+    /// Whether directory listing is enabled in the parent database
+    /// If false, new tables can use UUID-based names without .lance extension
+    pub parent_dir_listing_enabled: bool,
+}
+
+impl Default for ManifestListingDatabaseConfig {
+    fn default() -> Self {
+        Self {
+            read_consistency_interval: None,
+            inline_optimization_enabled: true,
+            parent_dir_listing_enabled: true, // Default to true for backward compatibility
+        }
+    }
+}
+
+/// Delimiter used in object IDs to separate namespace components and table names
+const DELIMITER: &str = "$";
+
+/// A manifest-based listing database that uses __manifest (without .lance extension) for metadata
+#[derive(Debug)]
+pub struct ManifestListingDatabase {
+    /// Base URI of the database
+    uri: String,
+    /// Query string for the URI
+    query_string: Option<String>,
+    /// Lance session for dataset operations
+    session: Arc<Session>,
+    /// The manifest dataset (lazily initialized)
+    manifest_dataset: std::sync::Mutex<Option<DatasetConsistencyWrapper>>,
+    /// Manifest table URI
+    manifest_uri: String,
+    /// Configuration for the manifest listing database
+    manifest_config: ManifestListingDatabaseConfig,
+    /// Object store for file operations
+    object_store: Arc<ObjectStore>,
+    /// Storage options to be inherited by tables
+    storage_options: std::collections::HashMap<String, String>,
+    /// Configuration for new tables
+    new_table_config: NewTableConfig,
+    /// Object store wrapper
+    store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+    /// Read consistency interval for tables
+    read_consistency_interval: Option<Duration>,
+}
+
+impl ManifestListingDatabase {
+    /// Create a new ManifestListingDatabase
+    ///
+    /// This will attempt to load an existing manifest dataset if it exists.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new(
+        uri: String,
+        query_string: Option<String>,
+        session: Arc<Session>,
+        manifest_config: ManifestListingDatabaseConfig,
+        object_store: Arc<ObjectStore>,
+        storage_options: std::collections::HashMap<String, String>,
+        new_table_config: NewTableConfig,
+        store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+        read_consistency_interval: Option<Duration>,
+    ) -> Self {
+        let manifest_uri = Self::build_object_uri(&uri, "__manifest", query_string.as_deref(), false).unwrap();
+        let manifest_dataset = {
+            let read_params = ReadParams {
+                session: Some(session.clone()),
+                ..Default::default()
+            };
+
+            DatasetBuilder::from_uri(&manifest_uri)
+                .with_read_params(read_params)
+                .load()
+                .await
+                .ok()
+                .map(|dataset| {
+                    DatasetConsistencyWrapper::new_latest(
+                        dataset,
+                        manifest_config.read_consistency_interval,
+                    )
+                })
+        };
+
+        Self {
+            uri,
+            query_string,
+            session,
+            manifest_dataset: std::sync::Mutex::new(manifest_dataset),
+            manifest_uri,
+            manifest_config,
+            object_store,
+            storage_options,
+            new_table_config,
+            store_wrapper,
+            read_consistency_interval,
+        }
+    }
+
+    /// Build hierarchical object ID from namespace and name
+    pub fn build_object_id(namespace: &[String], name: &str) -> String {
+        if namespace.is_empty() {
+            name.to_string()
+        } else {
+            let mut id = namespace.join(DELIMITER);
+            id.push_str(DELIMITER);
+            id.push_str(name);
+            id
+        }
+    }
+
+    fn manifest_table_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("object_id", DataType::Utf8, false),
+            Field::new("object_type", DataType::Utf8, false),
+            Field::new("location", DataType::Utf8, true), // Optional: namespaces don't have location
+            Field::new("metadata", DataType::Utf8, true), // Optional: tables don't have metadata
+            Field::new(
+                "base_objects",
+                DataType::List(Arc::new(Field::new("object_id", DataType::Utf8, true))),
+                true,
+            ),
+        ]))
+    }
+
+    /// Create a new manifest table with indices
+    async fn create_manifest_table(&self) -> Result<DatasetConsistencyWrapper> {
+        let schema = Self::manifest_table_schema();
+        let write_params = WriteParams {
+            mode: WriteMode::Create,
+            session: Some(self.session.clone()),
+            ..Default::default()
+        };
+
+        let insert_builder = InsertBuilder::new(&self.manifest_uri).with_params(&write_params);
+
+        let mut dataset = insert_builder
+            .execute_stream(Box::new(RecordBatchIterator::new(
+                vec![Ok(RecordBatch::new_empty(schema.clone()))],
+                schema.clone(),
+            )))
+            .await
+            .map_err(|e| Error::Lance { source: e })?;
+
+        if let Err(e) = Self::create_manifest_table_index_object_id_btree(&mut dataset).await {
+            log::warn!(
+                "Failed to create BTree index on object_id: {}. Query performance may be impacted.",
+                e
+            );
+        }
+
+        if let Err(e) = Self::create_manifest_table_index_object_type_bitmap(&mut dataset).await {
+            log::warn!(
+                "Failed to create Bitmap index on object_type: {}. Query performance may be impacted.",
+                e
+            );
+        }
+
+        if let Err(e) = Self::create_manifest_table_index_base_objects_label_list(&mut dataset).await {
+            log::warn!(
+                "Failed to create LabelList index on base_objects: {}. Query performance may be impacted.",
+                e
+            );
+        }
+
+        let result = DatasetConsistencyWrapper::new_latest(
+            dataset,
+            self.manifest_config.read_consistency_interval,
+        );
+        Ok(result)
+    }
+
+    async fn create_manifest_table_index_object_id_btree(
+        dataset: &mut Dataset,
+    ) -> lance::Result<()> {
+        let btree_params = ScalarIndexParams::default();
+        dataset
+            .create_index(
+                &["object_id"],
+                IndexType::BTree,
+                Some("object_id_btree".to_string()),
+                &btree_params,
+                true,
+            )
+            .await
+    }
+
+    async fn create_manifest_table_index_object_type_bitmap(
+        dataset: &mut Dataset,
+    ) -> lance::Result<()> {
+        let bitmap_params = ScalarIndexParams::default();
+        dataset
+            .create_index(
+                &["object_type"],
+                IndexType::Bitmap,
+                Some("object_type_bitmap".to_string()),
+                &bitmap_params,
+                true,
+            )
+            .await
+    }
+
+    async fn create_manifest_table_index_base_objects_label_list(
+        dataset: &mut Dataset,
+    ) -> lance::Result<()> {
+        let label_list_params = ScalarIndexParams::default();
+        dataset
+            .create_index(
+                &["base_objects"],
+                IndexType::LabelList,
+                Some("base_objects_label_list".to_string()),
+                &label_list_params,
+                true,
+            )
+            .await
+    }
+
+    async fn ensure_manifest_table_exists(&self) -> Result<()> {
+        let dataset_exists = {
+            let guard = self.manifest_dataset.lock().unwrap();
+            guard.is_some()
+        };
+
+        if !dataset_exists {
+            let manifest_dataset = self.create_manifest_table().await?;
+            let mut guard = self.manifest_dataset.lock().unwrap();
+            if guard.is_none() {
+                *guard = Some(manifest_dataset);
+            }
+            return Ok(());
+        }
+
+        let dataset_opt = self.manifest_dataset.lock().unwrap().clone();
+        let dataset = dataset_opt.ok_or_else(|| Error::Runtime {
+            message: "Manifest table not initialized".to_string(),
+        })?;
+
+        let dataset_guard = dataset.get().await?;
+        let indices = dataset_guard.load_indices().await.map_err(|e| Error::Lance { source: e })?;
+
+        let has_object_id_btree = indices.iter().any(|idx| idx.name == "object_id_btree");
+        let has_object_type_bitmap = indices.iter().any(|idx| idx.name == "object_type_bitmap");
+        let has_base_objects_label_list = indices.iter().any(|idx| idx.name == "base_objects_label_list");
+
+        drop(dataset_guard);
+        drop(indices);
+
+        if !has_object_id_btree {
+            let mut dataset_mut = dataset.get_mut().await?;
+            if let Err(e) = Self::create_manifest_table_index_object_id_btree(&mut dataset_mut).await {
+                log::warn!(
+                    "Failed to create BTree index on object_id: {:?}. Query performance may be impacted.",
+                    e
+                );
+            }
+        }
+
+        if !has_object_type_bitmap {
+            let mut dataset_mut = dataset.get_mut().await?;
+            if let Err(e) = Self::create_manifest_table_index_object_type_bitmap(&mut dataset_mut).await {
+                log::warn!(
+                    "Failed to create Bitmap index on object_type: {:?}. Query performance may be impacted.",
+                    e
+                );
+            }
+        }
+
+        if !has_base_objects_label_list {
+            let mut dataset_mut = dataset.get_mut().await?;
+            if let Err(e) = Self::create_manifest_table_index_base_objects_label_list(&mut dataset_mut).await {
+                log::warn!(
+                    "Failed to create LabelList index on base_objects: {:?}. Query performance may be impacted.",
+                    e
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn query_manifest(
+        &self,
+        filter: Option<&str>,
+    ) -> Result<futures::stream::BoxStream<'static, Result<RecordBatch>>> {
+        let dataset_opt = self.manifest_dataset.lock().unwrap().clone();
+
+        let dataset = dataset_opt.ok_or_else(|| Error::Runtime {
+            message: "Manifest table not initialized".to_string(),
+        })?;
+
+        let dataset_guard = dataset.get().await?;
+        let mut scanner = dataset_guard.scan();
+
+        if let Some(filter_expr) = filter {
+            scanner
+                .filter(filter_expr)
+                .map_err(|e| Error::Lance { source: e })?;
+        }
+
+        let stream = scanner
+            .try_into_stream()
+            .await
+            .map_err(|e| Error::Lance { source: e })?;
+
+        Ok(stream
+            .map(|result| result.map_err(|e| Error::Lance { source: e }))
+            .boxed())
+    }
+
+    async fn manifest_contains_object(&self, object_id: &str) -> Result<bool> {
+        let filter = format!("object_id = '{}'", object_id);
+        let mut stream = self.query_manifest(Some(&filter)).await?;
+
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            if batch.num_rows() > 0 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn query_manifest_for_object(&self, object_id: &str) -> Result<Option<(String, String)>> {
+        let filter = format!("object_id = '{}'", object_id);
+        let mut stream = self.query_manifest(Some(&filter)).await?;
+
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+
+            let object_type_array = batch
+                .column_by_name("object_type")
+                .ok_or_else(|| Error::Runtime {
+                    message: "Missing object_type column".to_string(),
+                })?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| Error::Runtime {
+                    message: "Invalid object_type type".to_string(),
+                })?;
+
+            let location_array = batch
+                .column_by_name("location")
+                .ok_or_else(|| Error::Runtime {
+                    message: "Missing location column".to_string(),
+                })?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| Error::Runtime {
+                    message: "Invalid location type".to_string(),
+                })?;
+
+            return Ok(Some((
+                object_type_array.value(0).to_string(),
+                location_array.value(0).to_string(),
+            )));
+        }
+
+        Ok(None)
+    }
+
+    /// Register a table in the manifest without creating the physical table
+    ///
+    /// This is used during migration to register existing tables.
+    /// TODO: this could be in public database API
+    pub async fn register_table(
+        &self,
+        name: &str,
+        namespace: &[String],
+        location: String,
+    ) -> Result<()> {
+        self.ensure_manifest_table_exists().await?;
+
+        let object_id = Self::build_object_id(namespace, name);
+        if self.manifest_contains_object(&object_id).await? {
+            return Err(Error::TableAlreadyExists {
+                name: name.to_string(),
+            });
+        }
+
+        self.insert_into_manifest(object_id, "table", Some(location), None, None)
+            .await
+    }
+
+    /// List all tables with their locations
+    ///
+    /// Returns a vector of tuples: (namespace, name, location)
+    pub async fn list_tables_with_location(&self) -> Result<Vec<(Vec<String>, String, String)>> {
+        self.ensure_manifest_table_exists().await?;
+
+        let mut stream = self.query_manifest(Some("object_type = 'table'")).await?;
+        let mut results = Vec::new();
+
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            let object_id_array = batch
+                .column_by_name("object_id")
+                .ok_or_else(|| Error::Runtime {
+                    message: "Missing object_id column".to_string(),
+                })?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| Error::Runtime {
+                    message: "Invalid object_id type".to_string(),
+                })?;
+
+            let location_array = batch
+                .column_by_name("location")
+                .ok_or_else(|| Error::Runtime {
+                    message: "Missing location column".to_string(),
+                })?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| Error::Runtime {
+                    message: "Invalid location type".to_string(),
+                })?;
+
+            for i in 0..batch.num_rows() {
+                let object_id = object_id_array.value(i);
+                let location = location_array.value(i);
+
+                // Parse object_id to extract namespace and name
+                let parts: Vec<&str> = object_id.split(DELIMITER).collect();
+                let (namespace, name) = if parts.len() == 1 {
+                    (Vec::new(), parts[0].to_string())
+                } else {
+                    let namespace = parts[..parts.len() - 1]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect();
+                    let name = parts[parts.len() - 1].to_string();
+                    (namespace, name)
+                };
+
+                results.push((namespace, name, location.to_string()));
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Insert an entry into the manifest table
+    /// TODO: pending https://github.com/lancedb/lance/pull/4787 for true object_id uniqueness
+    async fn insert_into_manifest(
+        &self,
+        object_id: String,
+        object_type: &str,
+        location: Option<String>,
+        metadata: Option<String>,
+        base_objects: Option<Vec<String>>,
+    ) -> Result<()> {
+        let dataset_opt = self.manifest_dataset.lock().unwrap().clone();
+        let dataset = dataset_opt.ok_or_else(|| Error::Runtime {
+            message: "Manifest table not initialized".to_string(),
+        })?;
+
+        let schema = Self::manifest_table_schema();
+
+        // Create base_objects array from the provided list
+        use arrow_array::builder::{ListBuilder, StringBuilder};
+        let string_builder = StringBuilder::new();
+        let mut list_builder = ListBuilder::new(string_builder).with_field(Arc::new(Field::new(
+            "object_id",
+            DataType::Utf8,
+            true,
+        )));
+
+        match base_objects {
+            Some(objects) => {
+                for obj in objects {
+                    list_builder.values().append_value(obj);
+                }
+                list_builder.append(true);
+            }
+            None => {
+                list_builder.append_null();
+            }
+        }
+
+        let base_objects_array = list_builder.finish();
+
+        // Create arrays with optional values
+        let location_array = match location {
+            Some(loc) => Arc::new(StringArray::from(vec![Some(loc)])),
+            None => Arc::new(StringArray::from(vec![None::<String>])),
+        };
+
+        let metadata_array = match metadata {
+            Some(meta) => Arc::new(StringArray::from(vec![Some(meta)])),
+            None => Arc::new(StringArray::from(vec![None::<String>])),
+        };
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec![object_id.as_str()])),
+                Arc::new(StringArray::from(vec![object_type])),
+                location_array,
+                metadata_array,
+                Arc::new(base_objects_array),
+            ],
+        )
+        .map_err(|e| Error::Runtime {
+            message: format!("Failed to create manifest entry: {}", e),
+        })?;
+
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        // Use MergeInsert to ensure uniqueness on object_id
+        let dataset_guard = dataset.get().await?;
+        let dataset_arc = Arc::new(dataset_guard.clone());
+        drop(dataset_guard); // Drop read guard before merge insert
+
+        let mut merge_builder = lance::dataset::MergeInsertBuilder::try_new(
+            dataset_arc,
+            vec!["object_id".to_string()],
+        )
+        .map_err(|e| Error::Lance { source: e })?;
+
+        // When matched: update all fields
+        merge_builder.when_matched(lance::dataset::WhenMatched::UpdateAll);
+        // When not matched: insert new row
+        merge_builder.when_not_matched(lance::dataset::WhenNotMatched::InsertAll);
+
+        let (new_dataset_arc, _merge_stats) = merge_builder
+            .try_build()
+            .map_err(|e| Error::Lance { source: e })?
+            .execute_reader(reader)
+            .await
+            .map_err(|e| Error::Lance { source: e })?;
+
+        // Update the dataset wrapper with the new version
+        let new_dataset = Arc::try_unwrap(new_dataset_arc).unwrap_or_else(|arc| (*arc).clone());
+        dataset.set_latest(new_dataset).await;
+
+        // Optimize manifest table after insert if enabled
+        if self.manifest_config.inline_optimization_enabled {
+            self.optimize_manifest_table().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Delete an entry from the manifest table
+    pub async fn delete_from_manifest(&self, object_id: &str) -> Result<()> {
+        let dataset_opt = self.manifest_dataset.lock().unwrap().clone();
+
+        let dataset = dataset_opt.ok_or_else(|| Error::Runtime {
+            message: "Manifest table not initialized".to_string(),
+        })?;
+
+        let predicate = format!("object_id = '{}'", object_id);
+
+
+        let mut dataset_guard = dataset.get_mut().await?;
+        dataset_guard
+            .delete(&predicate)
+            .await
+            .map_err(|e| Error::Lance { source: e })?;
+
+        Ok(())
+    }
+
+    async fn optimize_manifest_table(&self) -> Result<()> {
+        let dataset_opt = self.manifest_dataset.lock().unwrap().clone();
+
+        let dataset = dataset_opt.ok_or_else(|| Error::Runtime {
+            message: "Manifest table not initialized".to_string(),
+        })?;
+
+        let dataset_guard = dataset.get().await?;
+        let mut ds = (*dataset_guard).clone();
+
+        if let Err(e) = compact_files(&mut ds, CompactionOptions::default(), None).await {
+            log::warn!("Failed to compact manifest table files: {:?}. This may impact query performance.", e);
+        }
+
+        if let Err(e) = ds.optimize_indices(&OptimizeOptions::default()).await {
+            log::warn!("Failed to optimize manifest table indices: {:?}. This may impact query performance.", e);
+        }
+
+        Ok(())
+    }
+
+    fn manifest_table_initialized(&self) -> bool {
+        self.manifest_dataset.lock().unwrap().is_some()
+    }
+
+    /// Generate a new directory prefix in format: <hash>_<object_id>
+    /// The hash is computed from timestamp + object_id to ensure high enough entropy,
+    /// while keeping the table name visible for easier debugging.
+    fn generate_dir_name_prefix(&self, object_id: &str) -> String {
+        // Get current timestamp in nanoseconds
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
+        // Create hash from timestamp + table_id
+        let mut hasher = DefaultHasher::new();
+        timestamp.hash(&mut hasher);
+        object_id.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        // Format as lowercase hex (8 characters - sufficient entropy for uniqueness)
+        format!("{:08x}_{}", (hash & 0xFFFFFFFF) as u32, object_id)
+    }
+
+    fn build_object_uri(
+        base_uri: &str,
+        dir_name_prefix: &str,
+        query_string: Option<&str>,
+        include_lance_suffix: bool,
+    ) -> Result<String> {
+        let mut uri = base_uri.to_string();
+
+        // If the URI does not end with a slash, add one
+        if !uri.ends_with('/') {
+            uri.push('/');
+        }
+
+        // Append the name/path with or without the lance file extension
+        if include_lance_suffix {
+            uri.push_str(&format!("{}.{}", dir_name_prefix, LANCE_FILE_EXTENSION));
+        } else {
+            uri.push_str(dir_name_prefix);
+        }
+
+        // If there are query string set on the connection, propagate to lance
+        if let Some(query) = query_string {
+            uri.push('?');
+            uri.push_str(query);
+        }
+
+        Ok(uri)
+    }
+
+    async fn handle_table_exists(
+        &self,
+        table_name: &str,
+        namespace: Vec<String>,
+        mode: crate::database::CreateTableMode,
+        data_schema: &Schema,
+    ) -> Result<Arc<dyn crate::table::BaseTable>> {
+        match mode {
+            crate::database::CreateTableMode::Create => Err(Error::TableAlreadyExists {
+                name: table_name.to_string(),
+            }),
+            crate::database::CreateTableMode::ExistOk(callback) => {
+                let req = crate::database::OpenTableRequest {
+                    name: table_name.to_string(),
+                    namespace: namespace.clone(),
+                    index_cache_size: None,
+                    lance_read_params: None,
+                };
+                let req = (callback)(req);
+                let table = crate::database::Database::open_table(self, req).await?;
+
+                let table_schema = table.schema().await?;
+
+                if table_schema.as_ref() != data_schema {
+                    return Err(Error::Schema {
+                        message: "Provided schema does not match existing table schema".to_string(),
+                    });
+                }
+
+                Ok(table)
+            }
+            crate::database::CreateTableMode::Overwrite => unreachable!(),
+        }
+    }
+}
+
+/// Database trait implementation for ManifestListingDatabase
+///
+/// This implementation ONLY uses the manifest dataset and does not fall back
+/// to directory listing. The calling code (ListingDatabase) is responsible
+/// for handling fallback to directory-based operations when needed.
+#[async_trait::async_trait]
+impl crate::database::Database for ManifestListingDatabase {
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    async fn read_consistency(&self) -> Result<crate::database::ReadConsistency> {
+        if let Some(read_consistency_interval) = self.read_consistency_interval {
+            if read_consistency_interval.is_zero() {
+                Ok(crate::database::ReadConsistency::Strong)
+            } else {
+                Ok(crate::database::ReadConsistency::Eventual(
+                    read_consistency_interval,
+                ))
+            }
+        } else {
+            Ok(crate::database::ReadConsistency::Manual)
+        }
+    }
+
+    async fn list_namespaces(
+        &self,
+        request: crate::database::ListNamespacesRequest,
+    ) -> Result<Vec<String>> {
+        self.ensure_manifest_table_exists().await?;
+
+        let parent_prefix = if request.namespace.is_empty() {
+            String::new()
+        } else {
+            let mut prefix = request.namespace.join(DELIMITER);
+            prefix.push_str(DELIMITER);
+            prefix
+        };
+
+        // Query manifest for namespace entries
+        let mut stream = self
+            .query_manifest(Some("object_type = 'namespace'"))
+            .await?;
+        let mut namespaces: Vec<String> = Vec::new();
+
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            let object_id_array = batch
+                .column_by_name("object_id")
+                .ok_or_else(|| Error::Runtime {
+                    message: "Missing object_id column".to_string(),
+                })?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| Error::Runtime {
+                    message: "Invalid object_id type".to_string(),
+                })?;
+
+            for i in 0..batch.num_rows() {
+                let object_id = object_id_array.value(i);
+
+                if request.namespace.is_empty() {
+                    // Root level: only top-level namespaces (no separator)
+                    if !object_id.contains(DELIMITER) {
+                        namespaces.push(object_id.to_string());
+                    }
+                } else {
+                    // Nested level: namespaces starting with parent prefix
+                    if object_id.starts_with(&parent_prefix) {
+                        let remainder = object_id.strip_prefix(&parent_prefix).unwrap();
+                        // Only direct children (no further nesting)
+                        if !remainder.contains(DELIMITER) {
+                            namespaces.push(remainder.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(namespaces)
+    }
+
+    async fn create_namespace(
+        &self,
+        request: crate::database::CreateNamespaceRequest,
+    ) -> Result<()> {
+        // Ensure manifest table exists (create lazily on first write)
+        self.ensure_manifest_table_exists().await?;
+
+        // The namespace field contains the full path, last element is the name
+        let object_id = request.namespace.join(DELIMITER);
+
+        // Check if parent namespace exists (if not root)
+        if request.namespace.len() > 1 {
+            for i in 1..request.namespace.len() {
+                let parent_id = request.namespace[..i].join(DELIMITER);
+                if !self.manifest_contains_object(&parent_id).await? {
+                    return Err(Error::NamespaceNotFound { name: parent_id });
+                }
+            }
+        }
+
+        // Check if namespace already exists
+        if self.manifest_contains_object(&object_id).await? {
+            return Err(Error::DatabaseAlreadyExists { name: object_id });
+        }
+
+        // Insert namespace entry into manifest (namespaces have no location, metadata, or base_objects)
+        self.insert_into_manifest(object_id, "namespace", None, None, None)
+            .await
+    }
+
+    async fn drop_namespace(&self, request: crate::database::DropNamespaceRequest) -> Result<()> {
+        self.ensure_manifest_table_exists().await?;
+
+        let object_id = request.namespace.join(DELIMITER);
+
+        // Check if namespace exists
+        if !self.manifest_contains_object(&object_id).await? {
+            return Err(Error::NamespaceNotFound {
+                name: object_id.clone(),
+            });
+        }
+
+        // Check if namespace is empty (no tables or sub-namespaces)
+        let prefix = format!("{}{}", object_id, DELIMITER);
+        let mut stream = self.query_manifest(None).await?;
+
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            let object_id_array = batch
+                .column_by_name("object_id")
+                .ok_or_else(|| Error::Runtime {
+                    message: "Missing object_id column".to_string(),
+                })?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| Error::Runtime {
+                    message: "Invalid object_id type".to_string(),
+                })?;
+
+            for i in 0..batch.num_rows() {
+                let id = object_id_array.value(i);
+                if id.starts_with(&prefix) {
+                    return Err(Error::Runtime {
+                        message: format!("Namespace {} is not empty", object_id),
+                    });
+                }
+            }
+        }
+
+        // Delete namespace from manifest
+        self.delete_from_manifest(&object_id).await
+    }
+
+    async fn table_names(
+        &self,
+        request: crate::database::TableNamesRequest,
+    ) -> Result<Vec<String>> {
+        self.ensure_manifest_table_exists().await?;
+
+        let namespace_prefix = if request.namespace.is_empty() {
+            String::new()
+        } else {
+            let mut prefix = request.namespace.join(DELIMITER);
+            prefix.push_str(DELIMITER);
+            prefix
+        };
+
+        // Get tables from manifest
+        let mut stream = self.query_manifest(Some("object_type = 'table'")).await?;
+        let mut table_names: Vec<String> = Vec::new();
+
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            let object_id_array = batch
+                .column_by_name("object_id")
+                .ok_or_else(|| Error::Runtime {
+                    message: "Missing object_id column".to_string(),
+                })?
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| Error::Runtime {
+                    message: "Invalid object_id type".to_string(),
+                })?;
+
+            for i in 0..batch.num_rows() {
+                let object_id = object_id_array.value(i);
+
+                if request.namespace.is_empty() {
+                    // Root namespace: only tables without separator
+                    if !object_id.contains(DELIMITER) {
+                        table_names.push(object_id.to_string());
+                    }
+                } else {
+                    // Specific namespace: tables matching the namespace prefix
+                    if object_id.starts_with(&namespace_prefix) {
+                        let name = object_id.strip_prefix(&namespace_prefix).unwrap();
+                        // Ensure it's a direct child (no further nesting)
+                        if !name.contains(DELIMITER) {
+                            table_names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        table_names.sort();
+
+        // Apply pagination
+        if let Some(start_after) = request.start_after {
+            let index = table_names
+                .iter()
+                .position(|name| name.as_str() > start_after.as_str())
+                .unwrap_or(table_names.len());
+            table_names.drain(0..index);
+        }
+        if let Some(limit) = request.limit {
+            table_names.truncate(limit as usize);
+        }
+
+        Ok(table_names)
+    }
+
+    async fn create_table(
+        &self,
+        request: crate::database::CreateTableRequest,
+    ) -> Result<Arc<dyn crate::table::BaseTable>> {
+        self.ensure_manifest_table_exists().await?;
+
+        validate_table_name(&request.name)?;
+        validate_namespace(&request.namespace)?;
+
+        if !request.namespace.is_empty() {
+            for i in 1..=request.namespace.len() {
+                let ns_id = request.namespace[..i].join(DELIMITER);
+                if !self.manifest_contains_object(&ns_id).await? {
+                    return Err(Error::NamespaceNotFound { name: ns_id });
+                }
+            }
+        }
+
+        let object_id = Self::build_object_id(&request.namespace, &request.name);
+
+        // Check if table already exists in manifest
+        if self.manifest_contains_object(&object_id).await? {
+            // If overwrite mode, drop the existing table first
+            if matches!(request.mode, crate::database::CreateTableMode::Overwrite) {
+                self.drop_table(&request.name, &request.namespace).await?;
+            } else {
+                let data_schema = request.data.schema();
+                return self
+                    .handle_table_exists(
+                        &request.name,
+                        request.namespace.clone(),
+                        request.mode,
+                        &data_schema,
+                    )
+                    .await;
+            }
+        }
+
+        let table_uri = if self.manifest_config.parent_dir_listing_enabled && request.namespace.is_empty() {
+            // Root namespace with dir_listing enabled: use table name with .lance for backward compatibility
+            Self::build_object_uri(&self.uri, &request.name, self.query_string.as_deref(), true)?
+        } else {
+            let dir_name = self.generate_dir_name_prefix(&object_id);
+            Self::build_object_uri(&self.uri, &dir_name, self.query_string.as_deref(), false)?
+        };
+
+        let (storage_version_override, v2_manifest_override) =
+            ListingDatabase::extract_storage_overrides(&request)?;
+
+        let write_params = ListingDatabase::prepare_write_params(
+            &request,
+            storage_version_override,
+            v2_manifest_override,
+            &self.storage_options,
+            &self.new_table_config,
+            self.session.clone(),
+        );
+
+        // Create the table
+        let table = crate::table::NativeTable::create(
+            &table_uri,
+            &request.name,
+            request.data,
+            self.store_wrapper.clone(),
+            Some(write_params),
+            self.read_consistency_interval,
+        )
+        .await?;
+
+        // Insert entry into manifest with full table_uri as location
+        self.insert_into_manifest(object_id, "table", Some(table_uri), None, None)
+            .await?;
+
+        Ok(Arc::new(table))
+    }
+
+    async fn clone_table(
+        &self,
+        request: crate::database::CloneTableRequest,
+    ) -> Result<Arc<dyn crate::table::BaseTable>> {
+        self.ensure_manifest_table_exists().await?;
+
+        // Check if namespace exists (if not root)
+        if !request.target_namespace.is_empty() {
+            for i in 1..=request.target_namespace.len() {
+                let ns_id = request.target_namespace[..i].join(DELIMITER);
+                if !self.manifest_contains_object(&ns_id).await? {
+                    return Err(Error::NamespaceNotFound { name: ns_id });
+                }
+            }
+        }
+
+        // TODO: support deep clone
+        if !request.is_shallow {
+            return Err(Error::NotSupported {
+                message: "Deep clone is not yet implemented".to_string(),
+            });
+        }
+
+        validate_table_name(&request.target_table_name)?;
+        validate_namespace(&request.target_namespace)?;
+
+        let target_object_id =
+            Self::build_object_id(&request.target_namespace, &request.target_table_name);
+
+        // Check if target table already exists
+        if self.manifest_contains_object(&target_object_id).await? {
+            return Err(Error::TableAlreadyExists {
+                name: request.target_table_name.clone(),
+            });
+        }
+
+        let storage_params = ObjectStoreParams {
+            storage_options: Some(self.storage_options.clone()),
+            ..Default::default()
+        };
+        let read_params = ReadParams {
+            store_options: Some(storage_params.clone()),
+            session: Some(self.session.clone()),
+            ..Default::default()
+        };
+
+        let mut source_dataset = DatasetBuilder::from_uri(&request.source_uri)
+            .with_read_params(read_params.clone())
+            .load()
+            .await
+            .map_err(|e| Error::Lance { source: e })?;
+
+        let version_ref = match (request.source_version, request.source_tag) {
+            (Some(v), None) => Ok(Ref::Version(None, Some(v))),
+            (None, Some(tag)) => Ok(Ref::Tag(tag)),
+            (None, None) => Ok(Ref::Version(None, Some(source_dataset.version().version))),
+            _ => Err(Error::InvalidInput {
+                message: "Cannot specify both source_version and source_tag".to_string(),
+            }),
+        }?;
+
+        let target_uri = if self.manifest_config.parent_dir_listing_enabled && request.target_namespace.is_empty() {
+            // Root namespace with dir_listing enabled: use table name with .lance for backward compatibility
+            Self::build_object_uri(&self.uri, &request.target_table_name, self.query_string.as_deref(), true)?
+        } else {
+            let dir_name = self.generate_dir_name_prefix(&target_object_id);
+            Self::build_object_uri(&self.uri, &dir_name, self.query_string.as_deref(), false)?
+        };
+
+        source_dataset
+            .shallow_clone(&target_uri, version_ref, Some(storage_params))
+            .await
+            .map_err(|e| Error::Lance { source: e })?;
+
+        let cloned_table = crate::table::NativeTable::open_with_params(
+            &target_uri,
+            &request.target_table_name,
+            self.store_wrapper.clone(),
+            None,
+            self.read_consistency_interval,
+        )
+        .await?;
+
+        self.insert_into_manifest(target_object_id, "table", Some(target_uri), None, None)
+            .await?;
+
+        Ok(Arc::new(cloned_table))
+    }
+
+    async fn open_table(
+        &self,
+        request: crate::database::OpenTableRequest,
+    ) -> Result<std::sync::Arc<dyn crate::table::BaseTable>> {
+        self.ensure_manifest_table_exists().await?;
+
+        let object_id = Self::build_object_id(&request.namespace, &request.name);
+
+        // Get table info from manifest
+        let (object_type, location) =
+            self.query_manifest_for_object(&object_id)
+                .await?
+                .ok_or_else(|| Error::TableNotFound {
+                    name: request.name.clone(),
+                })?;
+
+        if object_type != "table" {
+            return Err(Error::Runtime {
+                message: format!("Object {} is not a table", object_id),
+            });
+        }
+
+        // Use location directly as table_uri (location now stores the full URI)
+        let table_uri = location;
+
+        let mut read_params = request.lance_read_params.unwrap_or_else(|| {
+            let mut default_params = ReadParams::default();
+            if let Some(index_cache_size) = request.index_cache_size {
+                #[allow(deprecated)]
+                default_params.index_cache_size(index_cache_size as usize);
+            }
+            default_params
+        });
+        read_params.session(self.session.clone());
+
+        let native_table = std::sync::Arc::new(
+            crate::table::NativeTable::open_with_params(
+                &table_uri,
+                &request.name,
+                self.store_wrapper.clone(),
+                Some(read_params),
+                self.read_consistency_interval,
+            )
+            .await?,
+        );
+        Ok(native_table)
+    }
+
+    async fn rename_table(
+        &self,
+        cur_name: &str,
+        new_name: &str,
+        cur_namespace: &[String],
+        new_namespace: &[String],
+    ) -> Result<()> {
+        self.ensure_manifest_table_exists().await?;
+
+        let cur_object_id = Self::build_object_id(cur_namespace, cur_name);
+        let new_object_id = Self::build_object_id(new_namespace, new_name);
+
+        // Check if source table exists
+        let (object_type, location) =
+            self.query_manifest_for_object(&cur_object_id)
+                .await?
+                .ok_or_else(|| Error::TableNotFound {
+                    name: cur_name.to_string(),
+                })?;
+
+        if object_type != "table" {
+            return Err(Error::Runtime {
+                message: format!("Object {} is not a table", cur_object_id),
+            });
+        }
+
+        // Check if target already exists
+        if self.manifest_contains_object(&new_object_id).await? {
+            return Err(Error::TableAlreadyExists {
+                name: new_name.to_string(),
+            });
+        }
+
+        // Check if target namespace exists (if not root)
+        if !new_namespace.is_empty() {
+            for i in 1..=new_namespace.len() {
+                let ns_id = new_namespace[..i].join(DELIMITER);
+                if i < new_namespace.len() && !self.manifest_contains_object(&ns_id).await? {
+                    return Err(Error::NamespaceNotFound { name: ns_id });
+                }
+            }
+        }
+
+        // Generate new URI with hash_tablename format
+        let dir_name = self.generate_dir_name_prefix(&new_object_id);
+        let new_uri = Self::build_object_uri(&self.uri, &dir_name, self.query_string.as_deref(), false)?;
+
+        // location is already the full URI
+        let old_uri = location;
+
+        // For local filesystem, use simple directory rename/move
+        // For remote object stores, we'd need to copy all objects
+        use std::path::Path;
+        let old_path = Path::new(&old_uri);
+        let new_path = Path::new(&new_uri);
+
+        // Check if old path exists
+        if !old_path.exists() {
+            return Err(Error::TableNotFound {
+                name: cur_name.to_string(),
+            });
+        }
+
+        // Try to rename/move the directory
+        std::fs::rename(old_path, new_path).map_err(|e| Error::Runtime {
+            message: format!("Failed to rename dataset directory: {}", e),
+        })?;
+
+        // Update manifest: delete old entry and insert new one with full new_uri
+        self.delete_from_manifest(&cur_object_id).await?;
+        self.insert_into_manifest(new_object_id, "table", Some(new_uri), None, None)
+            .await
+    }
+
+    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()> {
+        use lance::io::ObjectStoreParams;
+        use lance_table::io::commit::commit_handler_from_url;
+
+        self.ensure_manifest_table_exists().await?;
+
+        let object_id = Self::build_object_id(namespace, name);
+
+        // Get table info from manifest (includes location for physical deletion)
+        let (object_type, location) =
+            self.query_manifest_for_object(&object_id)
+                .await?
+                .ok_or_else(|| Error::TableNotFound {
+                    name: name.to_string(),
+                })?;
+
+        if object_type != "table" {
+            return Err(Error::Runtime {
+                message: format!("Object {} is not a table", object_id),
+            });
+        }
+
+        // Delete physical table data
+        let object_store_params = ObjectStoreParams {
+            storage_options: Some(self.storage_options.clone()),
+            ..Default::default()
+        };
+        let mut uri = self.uri.clone();
+        if let Some(query_string) = &self.query_string {
+            uri.push_str(&format!("?{}", query_string));
+        }
+        let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params)).await?;
+
+        // Build full path using the object store's base path
+        let full_path = object_store::path::Path::from(location.as_str());
+        commit_handler.delete(&full_path).await?;
+
+        self.object_store
+            .remove_dir_all(full_path)
+            .await
+            .map_err(|e| Error::Lance { source: e })?;
+
+        // Delete from manifest
+        self.delete_from_manifest(&object_id).await
+    }
+
+    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
+        self.ensure_manifest_table_exists().await?;
+
+        // Get all tables in the namespace
+        let tables = self
+            .table_names(crate::database::TableNamesRequest {
+                namespace: namespace.to_vec(),
+                start_after: None,
+                limit: None,
+            })
+            .await?;
+
+        // Drop each table
+        for table in tables {
+            self.drop_table(&table, namespace).await?;
+        }
+
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl std::fmt::Display for ManifestListingDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ManifestListingDatabase({})", self.uri)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::{
+        CreateNamespaceRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
+        DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest, TableNamesRequest,
+    };
+    use crate::table::TableDefinition;
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
+    use arrow_schema::{DataType, Field, Schema};
+    use tempfile::tempdir;
+
+    /// Setup helper that creates a ManifestListingDatabase for testing
+    async fn setup_manifest_database() -> (tempfile::TempDir, ManifestListingDatabase) {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap().to_string();
+
+        // Disable inline optimization for faster tests
+        let config = ManifestListingDatabaseConfig {
+            inline_optimization_enabled: false,
+            ..Default::default()
+        };
+
+        let db = ManifestListingDatabase::new(
+            uri,
+            None, // No query string
+            Arc::new(lance::session::Session::default()),
+            config,
+            Arc::new(lance::io::ObjectStore::local()),
+            std::collections::HashMap::new(), // No storage options
+            crate::database::listing::NewTableConfig::default(),
+            None, // No store wrapper
+            None, // No read consistency interval
+        )
+        .await;
+
+        // Note: manifest table will be created lazily on first write operation
+        (tempdir, db)
+    }
+
+    // ============================================================================
+    // Namespace Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_cannot_create_table_with_namespace_name() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Try to create a table in root with the same name as the namespace
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let result = db
+            .create_table(CreateTableRequest {
+                name: "ns1".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await;
+
+        // Should fail because "ns1" already exists as a namespace
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::TableAlreadyExists { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_cannot_create_namespace_with_table_name() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create table in root
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "table1".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        // Try to create a namespace with the same name
+        let result = db
+            .create_namespace(CreateNamespaceRequest {
+                namespace: vec!["table1".to_string()],
+            })
+            .await;
+
+        // Should fail because "table1" already exists as a table
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::DatabaseAlreadyExists { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_and_list() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create a namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // List namespaces
+        let namespaces = db
+            .list_namespaces(ListNamespacesRequest {
+                namespace: vec![],
+                page_token: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(namespaces, vec!["ns1"]);
+
+        // Create nested namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string(), "ns2".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // List nested namespaces
+        let nested_namespaces = db
+            .list_namespaces(ListNamespacesRequest {
+                namespace: vec!["ns1".to_string()],
+                page_token: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(nested_namespaces, vec!["ns2"]);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_drop() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Drop namespace
+        db.drop_namespace(DropNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Verify it's gone
+        let namespaces = db
+            .list_namespaces(ListNamespacesRequest {
+                namespace: vec![],
+                page_token: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert!(namespaces.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_namespace_cannot_drop_with_tables() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create table in namespace
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "table1".to_string(),
+            namespace: vec!["ns1".to_string()],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        // Try to drop namespace (should fail)
+        let result = db
+            .drop_namespace(DropNamespaceRequest {
+                namespace: vec!["ns1".to_string()],
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_cannot_create_table_in_nonexistent_namespace() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Try to create table in non-existent namespace
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let result = db
+            .create_table(CreateTableRequest {
+                name: "table1".to_string(),
+                namespace: vec!["nonexistent".to_string()],
+                data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await;
+
+        // Should fail because namespace doesn't exist
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::NamespaceNotFound { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_cannot_create_child_namespace_without_parent() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Try to create nested namespace without creating parent first
+        let result = db
+            .create_namespace(CreateNamespaceRequest {
+                namespace: vec!["parent".to_string(), "child".to_string()],
+            })
+            .await;
+
+        // Should fail because parent namespace doesn't exist
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::NamespaceNotFound { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_create_deeply_nested_namespaces() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create parent namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["level1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create child namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["level1".to_string(), "level2".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create grandchild namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec![
+                "level1".to_string(),
+                "level2".to_string(),
+                "level3".to_string(),
+            ],
+        })
+        .await
+        .unwrap();
+
+        // Verify all levels exist
+        let root_namespaces = db
+            .list_namespaces(ListNamespacesRequest {
+                namespace: vec![],
+                page_token: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(root_namespaces, vec!["level1"]);
+
+        let level1_namespaces = db
+            .list_namespaces(ListNamespacesRequest {
+                namespace: vec!["level1".to_string()],
+                page_token: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(level1_namespaces, vec!["level2"]);
+
+        let level2_namespaces = db
+            .list_namespaces(ListNamespacesRequest {
+                namespace: vec!["level1".to_string(), "level2".to_string()],
+                page_token: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(level2_namespaces, vec!["level3"]);
+    }
+
+    // ============================================================================
+    // Table in Namespace Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_table_in_namespace() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create table in namespace
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "table1".to_string(),
+            namespace: vec!["ns1".to_string()],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        // List tables in namespace
+        let tables = db
+            .table_names(TableNamesRequest {
+                namespace: vec!["ns1".to_string()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(tables, vec!["table1"]);
+
+        // Open table from namespace
+        let table = db
+            .open_table(OpenTableRequest {
+                name: "table1".to_string(),
+                namespace: vec!["ns1".to_string()],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table.schema().await.unwrap().fields().len(), 1);
+    }
+
+    // ============================================================================
+    // Rename Table Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_rename_table_in_root() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "table1".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        // Rename table
+        db.rename_table("table1", "table2", &[], &[]).await.unwrap();
+
+        // Verify old name doesn't exist
+        let result = db
+            .open_table(OpenTableRequest {
+                name: "table1".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await;
+        assert!(result.is_err());
+
+        // Verify new name exists
+        let table = db
+            .open_table(OpenTableRequest {
+                name: "table2".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table.schema().await.unwrap().fields().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_rename_table_to_namespace() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create table in root
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "table1".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        // Rename table to namespace
+        db.rename_table("table1", "table2", &[], &["ns1".to_string()])
+            .await
+            .unwrap();
+
+        // Verify old location doesn't exist
+        let result = db
+            .open_table(OpenTableRequest {
+                name: "table1".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await;
+        assert!(result.is_err());
+
+        // Verify new location exists
+        let table = db
+            .open_table(OpenTableRequest {
+                name: "table2".to_string(),
+                namespace: vec!["ns1".to_string()],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table.schema().await.unwrap().fields().len(), 1);
+    }
+
+    // ============================================================================
+    // Inline Optimization Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_manifest_table_inline_optimization() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap().to_string();
+
+        // Test with inline optimization enabled (default)
+        let config = ManifestListingDatabaseConfig {
+            inline_optimization_enabled: true,
+            ..Default::default()
+        };
+
+        let db = ManifestListingDatabase::new(
+            uri,
+            None,
+            Arc::new(lance::session::Session::default()),
+            config,
+            Arc::new(lance::io::ObjectStore::local()),
+            std::collections::HashMap::new(),
+            crate::database::listing::NewTableConfig::default(),
+            None,
+            None,
+        )
+        .await;
+
+        // Manifest table will be created lazily on first write (create_namespace)
+
+        // Create a namespace to trigger manifest updates
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["test_ns".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a table to trigger manifest updates
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batches = vec![RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3])) as _],
+        )
+        .unwrap()];
+
+        let reader = Box::new(RecordBatchIterator::new(
+            batches.into_iter().map(Ok),
+            schema.clone(),
+        ));
+
+        db.create_table(CreateTableRequest {
+            namespace: vec!["test_ns".to_string()],
+            name: "test_table".to_string(),
+            mode: CreateTableMode::Create,
+            data: CreateTableData::Data(reader),
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        // Verify that manifest table exists
+        assert!(db.manifest_table_initialized(), "Manifest table should exist");
+    }
+
+    #[tokio::test]
+    async fn test_manifest_table_inline_optimization_disabled() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap().to_string();
+
+        // Test with inline optimization disabled
+        let config = ManifestListingDatabaseConfig {
+            inline_optimization_enabled: false,
+            ..Default::default()
+        };
+
+        let db = ManifestListingDatabase::new(
+            uri,
+            None,
+            Arc::new(lance::session::Session::default()),
+            config,
+            Arc::new(lance::io::ObjectStore::local()),
+            std::collections::HashMap::new(),
+            crate::database::listing::NewTableConfig::default(),
+            None,
+            None,
+        )
+        .await;
+
+        // Manifest table will be created lazily on first write (create_namespace)
+
+        // Create a namespace to trigger manifest updates
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["test_ns".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // The manifest table should still work, just without automatic optimization
+        assert!(db.manifest_table_initialized());
+    }
+
+    // ============================================================================
+    // UUID Path Generation Tests
+    // ============================================================================
+
+    #[test]
+    fn test_generate_uuid_path_format() {
+        let db = ManifestListingDatabase {
+            uri: "test".to_string(),
+            query_string: None,
+            session: Arc::new(lance::session::Session::default()),
+            manifest_dataset: std::sync::Mutex::new(None),
+            manifest_uri: "test/__manifest.lance".to_string(),
+            manifest_config: ManifestListingDatabaseConfig::default(),
+            object_store: Arc::new(lance::io::ObjectStore::local()),
+            storage_options: std::collections::HashMap::new(),
+            new_table_config: crate::database::listing::NewTableConfig::default(),
+            store_wrapper: None,
+            read_consistency_interval: None,
+        };
+
+        // Generate a few directory names and verify format: <hash>_<tablename>
+        for i in 0..10 {
+            let table_name = format!("test_table_{}", i);
+            let object_id = format!("namespace$test_table_{}", i);
+            let dir_name = db.generate_dir_name_prefix(&object_id);
+
+            // Should NOT end with .lance
+            assert!(!dir_name.ends_with(".lance"));
+
+            // Should contain underscore separator
+            assert!(dir_name.contains('_'));
+
+            // Should end with the table name
+            assert!(dir_name.ends_with(&table_name),
+                "Directory name should end with table name, got: {}", dir_name);
+
+            // Hash part should be 8 characters (hex format of u32)
+            let parts: Vec<&str> = dir_name.splitn(2, '_').collect();
+            assert_eq!(parts.len(), 2, "Should have hash and table name parts");
+            assert_eq!(parts[0].len(), 8, "Hash should be 8 hex characters");
+            assert!(parts[0].chars().all(|c| c.is_ascii_hexdigit()),
+                "Hash should be hexadecimal");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_basic() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table with schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "source_table".to_string(),
+                namespace: vec!["ns1".to_string()],
+                data: CreateTableData::Empty(TableDefinition::new_from_schema(schema.clone())),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Get the source table location from manifest (location is already the full URI)
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, source_uri) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "source_table")
+            .unwrap();
+        let source_uri = source_uri.clone();
+
+        // Clone the table to the same namespace
+        let cloned_table = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned_table".to_string(),
+                target_namespace: vec!["ns1".to_string()],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Verify both tables exist
+        let table_names = db
+            .table_names(TableNamesRequest {
+                namespace: vec!["ns1".to_string()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(table_names.contains(&"source_table".to_string()));
+        assert!(table_names.contains(&"cloned_table".to_string()));
+
+        // Verify schemas match
+        assert_eq!(
+            source_table.schema().await.unwrap(),
+            cloned_table.schema().await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_data() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table with actual data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(arrow_array::StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "source_with_data".to_string(),
+                namespace: vec!["ns1".to_string()],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Get source URI
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, location) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "source_with_data")
+            .unwrap();
+        let source_uri = location.clone(); // location is already the full URI
+
+        // Clone the table
+        let cloned_table = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned_with_data".to_string(),
+                target_namespace: vec!["ns1".to_string()],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Verify data counts match
+        let source_count = source_table.count_rows(None).await.unwrap();
+        let cloned_count = cloned_table.count_rows(None).await.unwrap();
+        assert_eq!(source_count, cloned_count);
+        assert_eq!(source_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_deep_not_supported() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace: vec!["ns1".to_string()],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, location) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "source")
+            .unwrap();
+        let source_uri = location.clone(); // location is already the full URI
+
+        // Try deep clone (should fail)
+        let result = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace: vec!["ns1".to_string()],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: false, // Request deep clone
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::NotSupported { message } if message.contains("Deep clone")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_namespace_not_found() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace: vec!["ns1".to_string()],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, location) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "source")
+            .unwrap();
+        let source_uri = location.clone(); // location is already the full URI
+
+        // Try clone to non-existent namespace (should fail)
+        let result = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace: vec!["nonexistent".to_string()],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::NamespaceNotFound { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_invalid_target_name() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace: vec!["ns1".to_string()],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, location) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "source")
+            .unwrap();
+        let source_uri = location.clone(); // location is already the full URI
+
+        // Try clone with invalid target name
+        let result = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "invalid/name".to_string(), // Invalid name with slash
+                target_namespace: vec!["ns1".to_string()],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_source_not_found() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Try to clone from non-existent source
+        let result = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace: vec!["ns1".to_string()],
+                source_uri: "/nonexistent/table.lance".to_string(),
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_version_and_tag_error() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace: vec!["ns1".to_string()],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, location) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "source")
+            .unwrap();
+        let source_uri = location.clone(); // location is already the full URI
+
+        // Try clone with both version and tag (should fail)
+        let result = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace: vec!["ns1".to_string()],
+                source_uri,
+                source_version: Some(1),
+                source_tag: Some("v1.0".to_string()),
+                is_shallow: true,
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidInput { message } if message.contains("Cannot specify both source_version and source_tag")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_target_already_exists() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace: vec!["ns1".to_string()],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema.clone())),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        // Create target table (that will conflict)
+        db.create_table(CreateTableRequest {
+            name: "target".to_string(),
+            namespace: vec!["ns1".to_string()],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, location) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "source")
+            .unwrap();
+        let source_uri = location.clone(); // location is already the full URI
+
+        // Try clone to existing table (should fail)
+        let result = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "target".to_string(),
+                target_namespace: vec!["ns1".to_string()],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::TableAlreadyExists { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_to_root_namespace() {
+        let (_tempdir, db) = setup_manifest_database().await;
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table in namespace
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "source".to_string(),
+                namespace: vec!["ns1".to_string()],
+                data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, location) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "source")
+            .unwrap();
+        let source_uri = location.clone(); // location is already the full URI
+
+        // Clone to root namespace
+        let cloned_table = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned_in_root".to_string(),
+                target_namespace: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Verify both exist
+        let ns_tables = db
+            .table_names(TableNamesRequest {
+                namespace: vec!["ns1".to_string()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(ns_tables.contains(&"source".to_string()));
+
+        let root_tables = db
+            .table_names(TableNamesRequest {
+                namespace: vec![],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(root_tables.contains(&"cloned_in_root".to_string()));
+
+        // Verify schemas match
+        assert_eq!(
+            source_table.schema().await.unwrap(),
+            cloned_table.schema().await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_specific_version() {
+        use crate::table::Table;
+
+        let (_tempdir, db_raw) = setup_manifest_database().await;
+        let db = Arc::new(db_raw);
+        let db_clone = db.clone();
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]));
+
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(arrow_array::StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch1)], schema.clone()));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "versioned_source".to_string(),
+                namespace: vec!["ns1".to_string()],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Get the initial version
+        let initial_version = source_table.version().await.unwrap();
+
+        // Add more data to create a new version
+        let batch2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![3, 4])),
+                Arc::new(arrow_array::StringArray::from(vec!["c", "d"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table_obj = Table::new(source_table.clone(), db_clone.clone());
+        source_table_obj
+            .add(Box::new(RecordBatchIterator::new(
+                vec![Ok(batch2)],
+                schema.clone(),
+            )))
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify source table now has 4 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
+
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, location) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "versioned_source")
+            .unwrap();
+        let source_uri = location.clone(); // location is already the full URI
+
+        // Clone from the initial version (should have only 2 rows)
+        let cloned_table = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned_from_version".to_string(),
+                target_namespace: vec!["ns1".to_string()],
+                source_uri,
+                source_version: Some(initial_version),
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Verify cloned table has only the initial 2 rows
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 2);
+
+        // Source table should still have 4 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_tag() {
+        use crate::table::Table;
+
+        let (_tempdir, db_raw) = setup_manifest_database().await;
+        let db = Arc::new(db_raw);
+        let db_clone = db.clone();
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]));
+
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(arrow_array::StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch1)], schema.clone()));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "tagged_source".to_string(),
+                namespace: vec!["ns1".to_string()],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Create a tag for the current version
+        let source_table_obj = Table::new(source_table.clone(), db_clone.clone());
+        let mut tags = source_table_obj.tags().await.unwrap();
+        tags.create("v1.0", source_table.version().await.unwrap())
+            .await
+            .unwrap();
+
+        // Add more data after the tag
+        let batch2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![3, 4])),
+                Arc::new(arrow_array::StringArray::from(vec!["c", "d"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table_obj = Table::new(source_table.clone(), db_clone.clone());
+        source_table_obj
+            .add(Box::new(RecordBatchIterator::new(
+                vec![Ok(batch2)],
+                schema.clone(),
+            )))
+            .execute()
+            .await
+            .unwrap();
+
+        // Source table should have 4 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
+
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, location) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "tagged_source")
+            .unwrap();
+        let source_uri = location.clone(); // location is already the full URI
+
+        // Clone from the tag (should have only 2 rows)
+        let cloned_table = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned_from_tag".to_string(),
+                target_namespace: vec!["ns1".to_string()],
+                source_uri,
+                source_version: None,
+                source_tag: Some("v1.0".to_string()),
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Verify cloned table has only the tagged version's 2 rows
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_cloned_tables_evolve_independently() {
+        use crate::table::Table;
+
+        let (_tempdir, db_raw) = setup_manifest_database().await;
+        let db = Arc::new(db_raw);
+        let db_clone = db.clone();
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]));
+
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(arrow_array::StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch1)], schema.clone()));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "independent_source".to_string(),
+                namespace: vec!["ns1".to_string()],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, location) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "independent_source")
+            .unwrap();
+        let source_uri = location.clone(); // location is already the full URI
+
+        // Clone the table
+        let cloned_table = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "independent_clone".to_string(),
+                target_namespace: vec!["ns1".to_string()],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Both should start with 2 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 2);
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 2);
+
+        // Add data to the cloned table
+        let batch_clone = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![3, 4, 5])),
+                Arc::new(arrow_array::StringArray::from(vec!["c", "d", "e"])),
+            ],
+        )
+        .unwrap();
+
+        let cloned_table_obj = Table::new(cloned_table.clone(), db_clone.clone());
+        cloned_table_obj
+            .add(Box::new(RecordBatchIterator::new(
+                vec![Ok(batch_clone)],
+                schema.clone(),
+            )))
+            .execute()
+            .await
+            .unwrap();
+
+        // Add different data to the source table
+        let batch_source = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![10, 11])),
+                Arc::new(arrow_array::StringArray::from(vec!["x", "y"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table_obj = Table::new(source_table.clone(), db_clone.clone());
+        source_table_obj
+            .add(Box::new(RecordBatchIterator::new(
+                vec![Ok(batch_source)],
+                schema.clone(),
+            )))
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify they have evolved independently
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4); // 2 + 2
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 5); // 2 + 3
+    }
+
+    #[tokio::test]
+    async fn test_clone_latest_version() {
+        use crate::table::Table;
+
+        let (_tempdir, db_raw) = setup_manifest_database().await;
+        let db = Arc::new(db_raw);
+        let db_clone = db.clone();
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["ns1".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch1 =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1, 2]))])
+                .unwrap();
+
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch1)], schema.clone()));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "latest_version_source".to_string(),
+                namespace: vec!["ns1".to_string()],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Add more data to create new versions
+        for i in 0..3 {
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![i * 10, i * 10 + 1]))],
+            )
+            .unwrap();
+
+            let source_table_obj = Table::new(source_table.clone(), db_clone.clone());
+            source_table_obj
+                .add(Box::new(RecordBatchIterator::new(
+                    vec![Ok(batch)],
+                    schema.clone(),
+                )))
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        // Source should have 8 rows total (2 + 2 + 2 + 2)
+        let source_count = source_table.count_rows(None).await.unwrap();
+        assert_eq!(source_count, 8);
+
+        let tables = db.list_tables_with_location().await.unwrap();
+        let (_, _, location) = tables
+            .iter()
+            .find(|(ns, name, _)| ns == &vec!["ns1".to_string()] && name == "latest_version_source")
+            .unwrap();
+        let source_uri = location.clone(); // location is already the full URI
+
+        // Clone without specifying version or tag (should get latest)
+        let cloned_table = db
+            .clone_table(crate::database::CloneTableRequest {
+                target_table_name: "cloned_latest".to_string(),
+                target_namespace: vec!["ns1".to_string()],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+            })
+            .await
+            .unwrap();
+
+        // Cloned table should have all 8 rows from the latest version
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 8);
+    }
+
+    #[tokio::test]
+    async fn test_parent_dir_listing_disabled_root_namespace_uses_uuid() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with dir_listing_enabled=false
+        let mut options = std::collections::HashMap::new();
+        options.insert("manifest_enabled".to_string(), "true".to_string());
+        options.insert("dir_listing_enabled".to_string(), "false".to_string());
+
+        let request = crate::connection::ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = super::super::ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        // Create a table in root namespace
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        db.create_table(CreateTableRequest {
+            name: "test_table".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Data(reader),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        // Check that the table location does NOT have .lance extension
+        let tables = db.manifest_db.list_tables_with_location().await.unwrap();
+        let (_, name, location) = tables
+            .iter()
+            .find(|(ns, tname, _)| ns.is_empty() && tname == "test_table")
+            .unwrap();
+
+        assert_eq!(name, "test_table");
+        assert!(
+            !location.ends_with(".lance"),
+            "Expected UUID without .lance extension, got: {}",
+            location
+        );
+
+        // Extract just the filename from the full URI path
+        let filename = location.split('/').last().unwrap();
+
+        // Verify the filename has format: <8hex>_<tablename>
+        assert!(filename.contains('_'), "Filename should contain underscore separator");
+        assert!(filename.ends_with("test_table"), "Filename should end with table name");
+        let parts: Vec<&str> = filename.splitn(2, '_').collect();
+        assert_eq!(parts.len(), 2, "Should have hash and table name parts");
+        assert_eq!(parts[0].len(), 8, "Hash should be 8 hex characters");
+        assert!(
+            parts[0].chars().all(|c| c.is_ascii_hexdigit()),
+            "Expected base32 characters only, got: {}",
+            filename
+        );
+    }
+
+    #[tokio::test]
+    async fn test_parent_dir_listing_disabled_namespaced_uses_uuid() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with dir_listing_enabled=false
+        let mut options = std::collections::HashMap::new();
+        options.insert("manifest_enabled".to_string(), "true".to_string());
+        options.insert("dir_listing_enabled".to_string(), "false".to_string());
+
+        let request = crate::connection::ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = super::super::ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        // Create namespace
+        db.create_namespace(CreateNamespaceRequest {
+            namespace: vec!["myspace".to_string()],
+        })
+        .await
+        .unwrap();
+
+        // Create a table in namespace
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        db.create_table(CreateTableRequest {
+            name: "namespaced_table".to_string(),
+            namespace: vec!["myspace".to_string()],
+            data: CreateTableData::Data(reader),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        // Check that the table location does NOT have .lance extension
+        let tables = db.manifest_db.list_tables_with_location().await.unwrap();
+        let (ns, name, location) = tables
+            .iter()
+            .find(|(namespace, tname, _)| {
+                namespace == &vec!["myspace".to_string()] && tname == "namespaced_table"
+            })
+            .unwrap();
+
+        assert_eq!(ns, &vec!["myspace".to_string()]);
+        assert_eq!(name, "namespaced_table");
+        assert!(
+            !location.ends_with(".lance"),
+            "Expected UUID without .lance extension, got: {}",
+            location
+        );
+
+        // Extract just the filename from the full URI path
+        let filename = location.split('/').last().unwrap();
+
+        // Verify the filename has format: <8hex>_<tablename>
+        assert!(filename.contains('_'), "Filename should contain underscore separator");
+        assert!(filename.ends_with("namespaced_table"), "Filename should end with table name");
+        let parts: Vec<&str> = filename.splitn(2, '_').collect();
+        assert_eq!(parts.len(), 2, "Should have hash and table name parts");
+        assert_eq!(parts[0].len(), 8, "Hash should be 8 hex characters");
+        assert!(
+            parts[0].chars().all(|c| c.is_ascii_hexdigit()),
+            "Hash should be hexadecimal, got: {}",
+            filename
+        );
+    }
+
+    #[tokio::test]
+    async fn test_parent_dir_listing_disabled_old_clients_cannot_see() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with dir_listing_enabled=false (new client)
+        let mut options_new = std::collections::HashMap::new();
+        options_new.insert("manifest_enabled".to_string(), "true".to_string());
+        options_new.insert("dir_listing_enabled".to_string(), "false".to_string());
+
+        let request_new = crate::connection::ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_new,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_new = super::super::ListingDatabase::connect_with_options(&request_new)
+            .await
+            .unwrap();
+
+        // Create a table with new client
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        db_new
+            .create_table(CreateTableRequest {
+                name: "hidden_table".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Create old client (manifest disabled)
+        let mut options_old = std::collections::HashMap::new();
+        options_old.insert("manifest_enabled".to_string(), "false".to_string());
+
+        let request_old = crate::connection::ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_old,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_old = super::super::ListingDatabase::connect_with_options(&request_old)
+            .await
+            .unwrap();
+
+        // Old client should NOT see the table (no .lance extension)
+        let table_names = db_old
+            .table_names(super::super::TableNamesRequest::default())
+            .await
+            .unwrap();
+        assert!(
+            !table_names.contains(&"hidden_table".to_string()),
+            "Old client should not see table without .lance extension"
+        );
+
+        // Old client should NOT be able to open the table
+        let result = db_old
+            .open_table(super::super::OpenTableRequest {
+                name: "hidden_table".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await;
+        assert!(
+            result.is_err(),
+            "Old client should not be able to open hidden table"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_parent_dir_listing_enabled_backward_compatible() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with dir_listing_enabled=true (default, backward compatible)
+        let mut options_new = std::collections::HashMap::new();
+        options_new.insert("manifest_enabled".to_string(), "true".to_string());
+        options_new.insert("dir_listing_enabled".to_string(), "true".to_string());
+
+        let request_new = crate::connection::ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_new,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_new = super::super::ListingDatabase::connect_with_options(&request_new)
+            .await
+            .unwrap();
+
+        // Create a table in root namespace
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let reader = Box::new(RecordBatchIterator::new(
+            vec![Ok(batch.clone())],
+            schema.clone(),
+        ));
+
+        db_new
+            .create_table(CreateTableRequest {
+                name: "root_table".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Create namespace and table in namespace
+        db_new
+            .create_namespace(CreateNamespaceRequest {
+                namespace: vec!["myspace".to_string()],
+            })
+            .await
+            .unwrap();
+
+        let reader2 = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        db_new
+            .create_table(CreateTableRequest {
+                name: "ns_table".to_string(),
+                namespace: vec!["myspace".to_string()],
+                data: CreateTableData::Data(reader2),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Check locations
+        let tables = db_new
+            .manifest_db
+            .list_tables_with_location()
+            .await
+            .unwrap();
+
+        // Root namespace table should use table_name.lance (backward compatible)
+        let (_, name, location) = tables
+            .iter()
+            .find(|(ns, tname, _)| ns.is_empty() && tname == "root_table")
+            .unwrap();
+        assert_eq!(name, "root_table");
+        assert!(
+            location.ends_with("/root_table.lance"),
+            "Root table location should end with table_name.lance format for backward compatibility, got: {}",
+            location
+        );
+
+        // Namespaced table should use UUID without .lance (old clients don't support namespaces anyway)
+        let (ns, name, location) = tables
+            .iter()
+            .find(|(namespace, tname, _)| {
+                namespace == &vec!["myspace".to_string()] && tname == "ns_table"
+            })
+            .unwrap();
+        assert_eq!(ns, &vec!["myspace".to_string()]);
+        assert_eq!(name, "ns_table");
+        assert!(
+            !location.ends_with(".lance"),
+            "Namespaced table location should NOT have .lance extension (old clients don't support namespaces), got: {}",
+            location
+        );
+        // Verify the filename has format: <8hex>_<tablename>
+        let filename = location.split('/').last().unwrap();
+        assert!(filename.contains('_'), "Filename should contain underscore separator");
+        assert!(filename.ends_with("ns_table"), "Filename should end with table name");
+        let parts: Vec<&str> = filename.splitn(2, '_').collect();
+        assert_eq!(parts.len(), 2, "Should have hash and table name parts");
+        assert_eq!(parts[0].len(), 8, "Hash should be 8 hex characters");
+
+        // Old client should be able to see root table
+        let mut options_old = std::collections::HashMap::new();
+        options_old.insert("manifest_enabled".to_string(), "false".to_string());
+
+        let request_old = crate::connection::ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_old,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_old = super::super::ListingDatabase::connect_with_options(&request_old)
+            .await
+            .unwrap();
+
+        let table_names = db_old
+            .table_names(super::super::TableNamesRequest::default())
+            .await
+            .unwrap();
+        assert!(
+            table_names.contains(&"root_table".to_string()),
+            "Old client should see root table with .lance extension"
+        );
+
+        // Old client should be able to open the root table
+        let table = db_old
+            .open_table(super::super::OpenTableRequest {
+                name: "root_table".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_parent_dir_listing_new_manifest_client_can_access_hidden_tables() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with dir_listing_enabled=false
+        let mut options = std::collections::HashMap::new();
+        options.insert("manifest_enabled".to_string(), "true".to_string());
+        options.insert("dir_listing_enabled".to_string(), "false".to_string());
+
+        let request = crate::connection::ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = super::super::ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        // Create a table (will be hidden from old clients)
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let reader = Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+
+        db.create_table(CreateTableRequest {
+            name: "hidden_table".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Data(reader),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+        })
+        .await
+        .unwrap();
+
+        // New manifest client should be able to list the table
+        let table_names = db
+            .table_names(super::super::TableNamesRequest::default())
+            .await
+            .unwrap();
+        assert!(
+            table_names.contains(&"hidden_table".to_string()),
+            "New manifest client should see hidden table"
+        );
+
+        // New manifest client should be able to open the table
+        let table = db
+            .open_table(super::super::OpenTableRequest {
+                name: "hidden_table".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        // Verify the table can be queried and operated on correctly
+        let row_count = table.count_rows(None).await.unwrap();
+        assert_eq!(
+            row_count, 3,
+            "New manifest client should be able to count rows"
+        );
+    }
+}
