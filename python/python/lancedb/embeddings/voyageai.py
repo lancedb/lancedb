@@ -120,6 +120,9 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
     name: str
         The name of the model to use. List of acceptable models:
 
+            * voyage-context-3
+            * voyage-3.5
+            * voyage-3.5-lite
             * voyage-3
             * voyage-3-lite
             * voyage-multimodal-3
@@ -157,18 +160,25 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
     name: str
     client: ClassVar = None
     text_embedding_models: list = [
+        "voyage-3.5",
+        "voyage-3.5-lite",
         "voyage-3",
         "voyage-3-lite",
         "voyage-finance-2",
+        "voyage-multilingual-2",
         "voyage-law-2",
         "voyage-code-2",
     ]
     multimodal_embedding_models: list = ["voyage-multimodal-3"]
+    contextual_embedding_models: list = ["voyage-context-3"]
 
     def _is_multimodal_model(self, model_name: str):
         return (
             model_name in self.multimodal_embedding_models or "multimodal" in model_name
         )
+
+    def _is_contextual_model(self, model_name: str):
+        return model_name in self.contextual_embedding_models or "context" in model_name
 
     def ndims(self):
         if self.name == "voyage-3-lite":
@@ -176,6 +186,9 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         elif self.name == "voyage-code-2":
             return 1536
         elif self.name in [
+            "voyage-context-3",
+            "voyage-3.5",
+            "voyage-3.5-lite",
             "voyage-3",
             "voyage-multimodal-3",
             "voyage-finance-2",
@@ -207,6 +220,11 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
             result = client.multimodal_embed(
                 inputs=[[query]], model=self.name, input_type="query", **kwargs
             )
+        elif self._is_contextual_model(self.name):
+            result = client.contextualized_embed(
+                inputs=[[query]], model=self.name, input_type="query", **kwargs
+            )
+            result = result.results[0]
         else:
             result = client.embed(
                 texts=[query], model=self.name, input_type="query", **kwargs
@@ -236,13 +254,21 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
             result = client.multimodal_embed(
                 inputs=inputs, model=self.name, input_type="document", **kwargs
             )
+            embeddings = result.embeddings
+        elif self._is_contextual_model(self.name):
+            inputs = sanitize_text_input(inputs)
+            result = client.contextualized_embed(
+                inputs=[inputs], model=self.name, input_type="document", **kwargs
+            )
+            embeddings = result.results[0].embeddings
         else:
             inputs = sanitize_text_input(inputs)
             result = client.embed(
                 texts=inputs, model=self.name, input_type="document", **kwargs
             )
+            embeddings = result.embeddings
 
-        return result.embeddings
+        return embeddings
 
     @staticmethod
     def _get_client():
