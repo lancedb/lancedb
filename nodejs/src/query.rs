@@ -22,7 +22,7 @@ use crate::error::NapiErrorExt;
 use crate::iterator::RecordBatchIterator;
 use crate::rerankers::Reranker;
 use crate::rerankers::RerankerCallbacks;
-use crate::util::parse_distance_type;
+use crate::util::{parse_distance_type, schema_to_buffer};
 
 #[napi]
 pub struct Query {
@@ -86,6 +86,12 @@ impl Query {
     #[napi]
     pub fn with_row_id(&mut self) {
         self.inner = self.inner.clone().with_row_id();
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn output_schema(&self) -> napi::Result<Buffer> {
+        let schema = self.inner.output_schema().await.default_error()?;
+        schema_to_buffer(&schema)
     }
 
     #[napi(catch_unwind)]
@@ -274,6 +280,12 @@ impl VectorQuery {
     }
 
     #[napi(catch_unwind)]
+    pub async fn output_schema(&self) -> napi::Result<Buffer> {
+        let schema = self.inner.output_schema().await.default_error()?;
+        schema_to_buffer(&schema)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn execute(
         &self,
         max_batch_length: Option<u32>,
@@ -344,6 +356,12 @@ impl TakeQuery {
     #[napi]
     pub fn with_row_id(&mut self) {
         self.inner = self.inner.clone().with_row_id();
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn output_schema(&self) -> napi::Result<Buffer> {
+        let schema = self.inner.output_schema().await.default_error()?;
+        schema_to_buffer(&schema)
     }
 
     #[napi(catch_unwind)]

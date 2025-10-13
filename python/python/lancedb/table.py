@@ -1249,6 +1249,9 @@ class Table(ABC):
     def _analyze_plan(self, query: Query) -> str: ...
 
     @abstractmethod
+    def _output_schema(self, query: Query) -> pa.Schema: ...
+
+    @abstractmethod
     def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
@@ -2761,6 +2764,9 @@ class LanceTable(Table):
     def _analyze_plan(self, query: Query) -> str:
         return LOOP.run(self._table._analyze_plan(query))
 
+    def _output_schema(self, query: Query) -> pa.Schema:
+        return LOOP.run(self._table._output_schema(query))
+
     def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
@@ -3917,6 +3923,10 @@ class AsyncTable:
         # This method is used by the sync table
         async_query = self._sync_query_to_async(query)
         return await async_query.analyze_plan()
+
+    async def _output_schema(self, query: Query) -> pa.Schema:
+        async_query = self._sync_query_to_async(query)
+        return await async_query.output_schema()
 
     async def _do_merge(
         self,

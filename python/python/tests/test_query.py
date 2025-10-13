@@ -1298,6 +1298,79 @@ async def test_query_serialization_async(table_async: AsyncTable):
     )
 
 
+def test_query_schema(tmp_path):
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table(
+        "test",
+        pa.table(
+            {
+                "a": [1, 2, 3],
+                "text": ["a", "b", "c"],
+                "vec": pa.array(
+                    [[1, 2], [3, 4], [5, 6]], pa.list_(pa.float32(), list_size=2)
+                ),
+            }
+        ),
+    )
+
+    assert tbl.search(None).output_schema() == pa.schema(
+        {
+            "a": pa.int64(),
+            "text": pa.string(),
+            "vec": pa.list_(pa.float32(), list_size=2),
+        }
+    )
+    assert tbl.search(None).select({"bl": "a * 2"}).output_schema() == pa.schema(
+        {"bl": pa.int64()}
+    )
+    assert tbl.search([1, 2]).select(["a"]).output_schema() == pa.schema(
+        {"a": pa.int64(), "_distance": pa.float32()}
+    )
+    assert tbl.search("blah").select(["a"]).output_schema() == pa.schema(
+        {"a": pa.int64()}
+    )
+    assert tbl.take_offsets([0]).select(["text"]).output_schema() == pa.schema(
+        {"text": pa.string()}
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_schema_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    tbl = await db.create_table(
+        "test",
+        pa.table(
+            {
+                "a": [1, 2, 3],
+                "text": ["a", "b", "c"],
+                "vec": pa.array(
+                    [[1, 2], [3, 4], [5, 6]], pa.list_(pa.float32(), list_size=2)
+                ),
+            }
+        ),
+    )
+
+    assert await tbl.query().output_schema() == pa.schema(
+        {
+            "a": pa.int64(),
+            "text": pa.string(),
+            "vec": pa.list_(pa.float32(), list_size=2),
+        }
+    )
+    assert await tbl.query().select({"bl": "a * 2"}).output_schema() == pa.schema(
+        {"bl": pa.int64()}
+    )
+    assert await tbl.vector_search([1, 2]).select(["a"]).output_schema() == pa.schema(
+        {"a": pa.int64(), "_distance": pa.float32()}
+    )
+    assert await (await tbl.search("blah")).select(["a"]).output_schema() == pa.schema(
+        {"a": pa.int64()}
+    )
+    assert await tbl.take_offsets([0]).select(["text"]).output_schema() == pa.schema(
+        {"text": pa.string()}
+    )
+
+
 def test_query_timeout(tmp_path):
     # Use local directory instead of memory:// to add a bit of latency to
     # operations so a timeout of zero will trigger exceptions.
