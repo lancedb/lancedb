@@ -3,14 +3,21 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::{error::PythonErrorExt, table::Table};
-use lancedb::dataloader::{
-    permutation::builder::{PermutationBuilder as LancePermutationBuilder, ShuffleStrategy},
-    permutation::split::{SplitSizes, SplitStrategy},
+use crate::{arrow::RecordBatchStream, error::PythonErrorExt, table::Table};
+use arrow::pyarrow::ToPyArrow;
+use lancedb::{
+    dataloader::permutation::{
+        builder::{PermutationBuilder as LancePermutationBuilder, ShuffleStrategy},
+        reader::PermutationReader,
+        split::{SplitSizes, SplitStrategy},
+    },
+    query::Select,
 };
 use pyo3::{
-    exceptions::PyRuntimeError, pyclass, pymethods, types::PyAnyMethods, Bound, PyAny, PyRefMut,
-    PyResult,
+    exceptions::PyRuntimeError,
+    pyclass, pymethods,
+    types::{PyAnyMethods, PyDict, PyDictMethods, PyType},
+    Bound, PyAny, PyRef, PyRefMut, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -165,6 +172,115 @@ impl PyAsyncPermutationBuilder {
         future_into_py(slf.py(), async move {
             let table = builder.build().await.infer_error()?;
             Ok(Table::new(table))
+        })
+    }
+}
+
+#[pyclass(name = "PermutationReader")]
+pub struct PyPermutationReader {
+    reader: Arc<PermutationReader>,
+}
+
+impl PyPermutationReader {
+    fn from_reader(reader: PermutationReader) -> Self {
+        Self {
+            reader: Arc::new(reader),
+        }
+    }
+
+    fn parse_selection(selection: Option<Bound<'_, PyAny>>) -> PyResult<Select> {
+        let Some(selection) = selection else {
+            return Ok(Select::All);
+        };
+        let selection = selection.downcast_into::<PyDict>()?;
+        let selection = selection
+            .iter()
+            .map(|(key, value)| {
+                let key = key.extract::<String>()?;
+                let value = value.extract::<String>()?;
+                Ok((key, value))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(Select::dynamic(&selection))
+    }
+}
+
+#[pymethods]
+impl PyPermutationReader {
+    #[classmethod]
+    pub fn from_tables<'py>(
+        cls: &Bound<'py, PyType>,
+        base_table: Bound<'py, PyAny>,
+        permutation_table: Bound<'py, PyAny>,
+        split: u64,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let base_table = base_table.getattr("_inner")?.downcast_into::<Table>()?;
+        let permutation_table = permutation_table
+            .getattr("_inner")?
+            .downcast_into::<Table>()?;
+
+        let base_table = base_table.borrow().inner_ref()?.base_table().clone();
+        let permutation_table = permutation_table.borrow().inner_ref()?.base_table().clone();
+
+        future_into_py(cls.py(), async move {
+            let reader = PermutationReader::try_new(base_table, permutation_table, split)
+                .await
+                .infer_error()?;
+            Ok(Self::from_reader(reader))
+        })
+    }
+
+    #[pyo3(signature = (selection=None))]
+    pub fn output_schema<'py>(
+        slf: PyRef<'py, Self>,
+        selection: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let selection = Self::parse_selection(selection)?;
+        let reader = slf.reader.clone();
+        future_into_py(slf.py(), async move {
+            let schema = reader.output_schema(selection).await.infer_error()?;
+            Python::with_gil(|py| schema.to_pyarrow(py))
+        })
+    }
+
+    #[pyo3(signature = ())]
+    pub fn count_rows<'py>(slf: PyRef<'py, Self>) -> u64 {
+        slf.reader.count_rows()
+    }
+
+    #[pyo3(signature = (offset))]
+    pub fn with_offset<'py>(slf: PyRef<'py, Self>, offset: u64) -> PyResult<Bound<'py, PyAny>> {
+        let reader = slf.reader.as_ref().clone();
+        future_into_py(slf.py(), async move {
+            let reader = reader.with_offset(offset).await.infer_error()?;
+            Ok(Self::from_reader(reader))
+        })
+    }
+
+    #[pyo3(signature = (limit))]
+    pub fn with_limit<'py>(slf: PyRef<'py, Self>, limit: u64) -> PyResult<Bound<'py, PyAny>> {
+        let reader = slf.reader.as_ref().clone();
+        future_into_py(slf.py(), async move {
+            let reader = reader.with_limit(limit).await.infer_error()?;
+            Ok(Self::from_reader(reader))
+        })
+    }
+
+    #[pyo3(signature = (selection=None, *, batch_size=None))]
+    pub fn read<'py>(
+        slf: PyRef<'py, Self>,
+        selection: Option<Bound<'py, PyAny>>,
+        batch_size: Option<u32>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let selection = Self::parse_selection(selection)?;
+        let reader = slf.reader.clone();
+        let batch_size = batch_size.unwrap_or(1024);
+        future_into_py(slf.py(), async move {
+            use lancedb::query::QueryExecutionOptions;
+            let mut execution_options = QueryExecutionOptions::default();
+            execution_options.max_batch_length = batch_size;
+            let stream = reader.read(selection, execution_options).await.infer_error()?;
+            Ok(RecordBatchStream::new(stream))
         })
     }
 }

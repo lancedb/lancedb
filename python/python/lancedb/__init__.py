@@ -17,7 +17,7 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .schema import vector
-from .table import AsyncTable
+from .table import AsyncTable, Table
 from ._lancedb import Session
 from .namespace import connect_namespace, LanceNamespaceDBConnection
 
@@ -233,6 +233,7 @@ __all__ = [
     "LanceNamespaceDBConnection",
     "RemoteDBConnection",
     "Session",
+    "Table",
     "__version__",
 ]
 
