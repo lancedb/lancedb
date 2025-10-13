@@ -191,12 +191,10 @@ impl PermutationBuilder {
     pub async fn execute(&self) -> napi::Result<Table> {
         let builder = {
             let mut state = self.state.lock().unwrap();
-            let builder = state
+            state
                 .builder
                 .take()
-                .ok_or_else(|| napi::Error::from_reason("Builder already consumed"))?;
-
-            builder
+                .ok_or_else(|| napi::Error::from_reason("Builder already consumed"))?
         };
 
         let table = builder.build().await.default_error()?;
