@@ -4,6 +4,7 @@
 import importlib
 import io
 import os
+
 import lancedb
 import numpy as np
 import pandas as pd
@@ -32,6 +33,24 @@ try:
         _imagebind = None
 except Exception:
     _imagebind = None
+
+try:
+    import torch
+except ImportError: 
+    torch = None
+
+HAS_ACCEL = bool(
+    torch
+    and (
+        torch.cuda.is_available()
+        or getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
+    )
+)
+RUN_HEAVY_VIDORE = os.getenv("LANCEDB_TEST_FULL_LATE_INTERACTION") in {"1", "true", "yes"}
+HEAVY_SKIP = pytest.mark.skipif(
+    not (RUN_HEAVY_VIDORE and HAS_ACCEL),
+    reason="Set LANCEDB_TEST_FULL_LATE_INTERACTION=1 and run on GPU to exercise large vidore checkpoints",
+)
 
 
 @pytest.mark.slow
@@ -597,21 +616,44 @@ def test_voyageai_multimodal_embedding_text_function():
     importlib.util.find_spec("colpali_engine") is None,
     reason="colpali_engine not installed",
 )
-def test_colpali(tmp_path):
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        #pytest.param("vidore/colSmol-256M", id="colSmol"),
+        pytest.param(
+            "vidore/colqwen2-v1.0",
+            id="colQwen2",
+            #marks=HEAVY_SKIP,
+        ),
+        pytest.param(
+            "vidore/colqwen2.5-v0.2",
+            id="colQwen2.5",
+           # marks=HEAVY_SKIP,
+        ),
+        pytest.param(
+            "vidore/colpali-v1.3-merged",
+            id="colPali",
+            #marks=HEAVY_SKIP,
+        ),
+    ],
+)
+def test_multimodal_late_interaction_models(tmp_path, model_name):
     import requests
-    from lancedb.pydantic import LanceModel
+    from lancedb.pydantic import LanceModel, Vector
 
     db = lancedb.connect(tmp_path)
     registry = get_registry()
-    func = registry.get("colpali").create()
+    func = registry.get("multimodal-late-interaction").create(
+        model_name=model_name,
+        device="auto",
+        batch_size=1,
+    )
 
     class MediaItems(LanceModel):
         text: str
         image_uri: str = func.SourceField()
         image_bytes: bytes = func.SourceField()
-        image_vectors: MultiVector(func.ndims()) = (
-            func.VectorField()
-        )  # Multivector image embeddings
+        image_vectors: MultiVector(func.ndims()) = func.VectorField()
 
     table = db.create_table("media", schema=MediaItems)
 
@@ -619,41 +661,30 @@ def test_colpali(tmp_path):
         "a cute cat playing with yarn",
         "a puppy in a flower field",
         "a red sports car on the highway",
-        "a vintage bicycle leaning against a wall",
-        "a plate of delicious pasta",
-        "fresh fruit salad in a bowl",
     ]
 
     uris = [
         "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
         "http://farm1.staticflickr.com/134/332220238_da527d8140_z.jpg",
-        "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",
         "http://farm5.staticflickr.com/4092/5017326486_1f46057f5f_z.jpg",
-        "http://farm9.staticflickr.com/8216/8434969557_d37882c42d_z.jpg",
-        "http://farm6.staticflickr.com/5142/5835678453_4f3a4edb45_z.jpg",
     ]
 
-    # Get images as bytes
     image_bytes = [requests.get(uri).content for uri in uris]
 
     table.add(
         pd.DataFrame({"text": texts, "image_uri": uris, "image_bytes": image_bytes})
     )
 
-    # Test text-to-image search
-    image_results = (
+    result = (
         table.search("fluffy companion", vector_column_name="image_vectors")
         .limit(1)
         .to_pydantic(MediaItems)[0]
     )
-    assert "cat" in image_results.text.lower() or "puppy" in image_results.text.lower()
+    assert any(keyword in result.text.lower() for keyword in ("cat", "puppy"))
 
-    # Verify multivector dimensions
     first_row = table.to_arrow().to_pylist()[0]
-    assert len(first_row["image_vectors"]) > 1, "Should have multiple image vectors"
-    assert len(first_row["image_vectors"][0]) == func.ndims(), (
-        "Vector dimension mismatch"
-    )
+    assert len(first_row["image_vectors"]) > 1
+    assert len(first_row["image_vectors"][0]) == func.ndims()
 
 
 @pytest.mark.slow

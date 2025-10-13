@@ -17,6 +17,7 @@ from lancedb.embeddings import (
     EmbeddingFunctionRegistry,
 )
 from lancedb.embeddings.base import TextEmbeddingFunction
+from lancedb.embeddings.colpali import MultimodalLateInteractionEmbeddings
 from lancedb.embeddings.registry import get_registry, register
 from lancedb.embeddings.utils import retry
 from lancedb.pydantic import LanceModel, Vector
@@ -515,3 +516,16 @@ def test_openai_propagates_api_key(monkeypatch):
     query = "greetings"
     actual = table.search(query).limit(1).to_pydantic(Words)[0]
     assert len(actual.text) > 0
+
+
+def test_multimodal_late_interaction_family_detection():
+    resolver = MultimodalLateInteractionEmbeddings._resolve_family
+
+    assert resolver("vidore/colSmol-256M", None) == "colsmol"
+    assert resolver("vidore/colqwen2.5-v0.2", None) == "colqwen2.5"
+    assert resolver("vidore/colqwen2-v1.0", None) == "colqwen2"
+    assert resolver("vidore/colpali-v1.3", None) == "colpali"
+    assert resolver("custom/model", None) == "colpali"
+    assert resolver("any/model", "colqwen2") == "colqwen2"
+    with pytest.raises(ValueError):
+        resolver("any/model", "unknown")

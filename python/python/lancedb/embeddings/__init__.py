@@ -19,5 +19,5 @@ from .imagebind import ImageBindEmbeddings
 from .jinaai import JinaEmbeddings
 from .watsonx import WatsonxEmbeddings
 from .voyageai import VoyageAIEmbeddingFunction
-from .colpali import ColPaliEmbeddings
+from .colpali import MultimodalLateInteractionEmbeddings, ColPaliEmbeddings  # noqa: F401
 from .siglip import SigLipEmbeddings
