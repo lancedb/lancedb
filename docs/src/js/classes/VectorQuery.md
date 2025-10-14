@@ -498,6 +498,29 @@ This is useful for pagination.
 
 ***
 
+### outputSchema()
+
+```ts
+outputSchema(): Promise<Schema<any>>
+```
+
+Returns the schema of the output that will be returned by this query.
+
+This can be used to inspect the types and names of the columns that will be
+returned by the query before executing it.
+
+#### Returns
+
+`Promise`&lt;`Schema`&lt;`any`&gt;&gt;
+
+An Arrow Schema describing the output columns.
+
+#### Inherited from
+
+`StandardQueryBase.outputSchema`
+
+***
+
 ### postfilter()
 
 ```ts

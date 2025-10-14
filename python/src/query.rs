@@ -9,6 +9,7 @@ use arrow::array::Array;
 use arrow::array::ArrayData;
 use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
+use arrow::pyarrow::ToPyArrow;
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
     Operator, PhraseQuery,
@@ -30,6 +31,7 @@ use pyo3::IntoPyObject;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
+use pyo3::Python;
 use pyo3::{exceptions::PyRuntimeError, FromPyObject};
 use pyo3::{
     exceptions::{PyNotImplementedError, PyValueError},
@@ -445,6 +447,15 @@ impl Query {
         })
     }
 
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::with_gil(|py| schema.to_pyarrow(py))
+        })
+    }
+
     #[pyo3(signature = (max_batch_length=None, timeout=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
@@ -513,6 +524,15 @@ impl TakeQuery {
 
     pub fn with_row_id(&mut self) {
         self.inner = self.inner.clone().with_row_id();
+    }
+
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::with_gil(|py| schema.to_pyarrow(py))
+        })
     }
 
     #[pyo3(signature = (max_batch_length=None, timeout=None))]
@@ -599,6 +619,15 @@ impl FTSQuery {
 
     pub fn postfilter(&mut self) {
         self.inner = self.inner.clone().postfilter();
+    }
+
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::with_gil(|py| schema.to_pyarrow(py))
+        })
     }
 
     #[pyo3(signature = (max_batch_length=None, timeout=None))]
@@ -769,6 +798,15 @@ impl VectorQuery {
 
     pub fn bypass_vector_index(&mut self) {
         self.inner = self.inner.clone().bypass_vector_index()
+    }
+
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::with_gil(|py| schema.to_pyarrow(py))
+        })
     }
 
     #[pyo3(signature = (max_batch_length=None, timeout=None))]

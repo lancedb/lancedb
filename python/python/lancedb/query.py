@@ -1237,6 +1237,14 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._refine_factor = refine_factor
         return self
 
+    def output_schema(self) -> pa.Schema:
+        """
+        Return the output schema for the query
+
+        This does not execute the query.
+        """
+        return self._table._output_schema(self.to_query_object())
+
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         """
         Execute the query and return the results as an
@@ -1452,6 +1460,14 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             offset=self._offset,
         )
 
+    def output_schema(self) -> pa.Schema:
+        """
+        Return the output schema for the query
+
+        This does not execute the query.
+        """
+        return self._table._output_schema(self.to_query_object())
+
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         path, fs, exist = self._table._get_fts_index_path()
         if exist:
@@ -1594,6 +1610,10 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             with_row_id=self._with_row_id,
             offset=self._offset,
         )
+
+    def output_schema(self) -> pa.Schema:
+        query = self.to_query_object()
+        return self._table._output_schema(query)
 
     def to_batches(
         self, /, batch_size: Optional[int] = None, timeout: Optional[timedelta] = None
@@ -2237,6 +2257,14 @@ class AsyncQueryBase(object):
                 max_batch_length=max_batch_length, timeout=timeout
             )
         )
+
+    async def output_schema(self) -> pa.Schema:
+        """
+        Return the output schema for the query
+
+        This does not execute the query.
+        """
+        return await self._inner.output_schema()
 
     async def to_arrow(self, timeout: Optional[timedelta] = None) -> pa.Table:
         """
@@ -3192,6 +3220,14 @@ class BaseQueryBuilder(object):
         """
         self._inner.with_row_id()
         return self
+
+    def output_schema(self) -> pa.Schema:
+        """
+        Return the output schema for the query
+
+        This does not execute the query.
+        """
+        return LOOP.run(self._inner.output_schema())
 
     def to_batches(
         self,

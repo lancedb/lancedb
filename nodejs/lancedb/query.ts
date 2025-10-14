@@ -326,6 +326,25 @@ export class QueryBase<
       return this.inner.analyzePlan();
     }
   }
+
+  /**
+   * Returns the schema of the output that will be returned by this query.
+   *
+   * This can be used to inspect the types and names of the columns that will be
+   * returned by the query before executing it.
+   *
+   * @returns An Arrow Schema describing the output columns.
+   */
+  async outputSchema(): Promise<import("./arrow").Schema> {
+    let schemaBuffer: Buffer;
+    if (this.inner instanceof Promise) {
+      schemaBuffer = await this.inner.then((inner) => inner.outputSchema());
+    } else {
+      schemaBuffer = await this.inner.outputSchema();
+    }
+    const schema = tableFromIPC(schemaBuffer).schema;
+    return schema;
+  }
 }
 
 export class StandardQueryBase<

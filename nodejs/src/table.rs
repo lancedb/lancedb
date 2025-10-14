@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 
-use arrow_ipc::writer::FileWriter;
 use lancedb::ipc::ipc_file_to_batches;
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
@@ -16,6 +15,7 @@ use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
+use crate::util::schema_to_buffer;
 
 #[napi]
 pub struct Table {
@@ -64,14 +64,7 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn schema(&self) -> napi::Result<Buffer> {
         let schema = self.inner_ref()?.schema().await.default_error()?;
-        let mut writer = FileWriter::try_new(vec![], &schema)
-            .map_err(|e| napi::Error::from_reason(format!("Failed to create IPC file: {}", e)))?;
-        writer
-            .finish()
-            .map_err(|e| napi::Error::from_reason(format!("Failed to finish IPC file: {}", e)))?;
-        Ok(Buffer::from(writer.into_inner().map_err(|e| {
-            napi::Error::from_reason(format!("Failed to get IPC file: {}", e))
-        })?))
+        schema_to_buffer(&schema)
     }
 
     #[napi(catch_unwind)]

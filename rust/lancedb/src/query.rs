@@ -6,10 +6,10 @@ use std::{future::Future, time::Duration};
 
 use arrow::compute::concat_batches;
 use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, SchemaRef};
 use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
-use futures::{stream, try_join, FutureExt, TryStreamExt};
+use futures::{stream, try_join, FutureExt, TryFutureExt, TryStreamExt};
 use half::f16;
 use lance::{
     arrow::RecordBatchExt,
@@ -582,16 +582,40 @@ pub trait ExecutableQuery {
         options: QueryExecutionOptions,
     ) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send;
 
+    /// Explain the plan for a query
+    ///
+    /// This will create a string representation of the plan that will be used to
+    /// execute the query.  This will not execute the query.
+    ///
+    /// This function can be used to get an understanding of what work will be done by the query
+    /// and is useful for debugging query performance.
     fn explain_plan(&self, verbose: bool) -> impl Future<Output = Result<String>> + Send;
 
+    /// Execute the query and display the runtime metrics
+    ///
+    /// This shows the same plan as [`ExecutableQuery::explain_plan`] but includes runtime metrics.
+    ///
+    /// This function will actually execute the query in order to get the runtime metrics.
     fn analyze_plan(&self) -> impl Future<Output = Result<String>> + Send {
         self.analyze_plan_with_options(QueryExecutionOptions::default())
     }
 
+    /// Execute the query and display the runtime metrics
+    ///
+    /// This is the same as [`ExecutableQuery::analyze_plan`] but allows for specifying the execution options.
     fn analyze_plan_with_options(
         &self,
         options: QueryExecutionOptions,
     ) -> impl Future<Output = Result<String>> + Send;
+
+    /// Return the output schema for data returned by the query without actually executing the query
+    ///
+    /// This can be useful when the selection for a query is built dynamically as it is not always
+    /// obvious what the output schema will be.
+    fn output_schema(&self) -> impl Future<Output = Result<SchemaRef>> + Send {
+        self.create_plan(QueryExecutionOptions::default())
+            .and_then(|plan| std::future::ready(Ok(plan.schema())))
+    }
 }
 
 /// A query filter that can be applied to a query
@@ -1505,6 +1529,16 @@ mod tests {
             .query()
             .limit(10)
             .select(Select::dynamic(&[("id2", "id * 2"), ("id", "id")]));
+
+        let schema = query.output_schema().await.unwrap();
+        assert_eq!(
+            schema,
+            Arc::new(ArrowSchema::new(vec![
+                ArrowField::new("id2", DataType::Int32, true),
+                ArrowField::new("id", DataType::Int32, true),
+            ]))
+        );
+
         let result = query.execute().await;
         let mut batches = result
             .expect("should have result")
