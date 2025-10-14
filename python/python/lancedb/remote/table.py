@@ -436,6 +436,9 @@ class RemoteTable(Table):
     def _analyze_plan(self, query: Query) -> str:
         return LOOP.run(self._table._analyze_plan(query))
 
+    def _output_schema(self, query: Query) -> pa.Schema:
+        return LOOP.run(self._table._output_schema(query))
+
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
         that can be used to create a "merge insert" operation.
