@@ -1,6 +1,6 @@
 {
 	"name": "@lancedb/lancedb-linux-x64-gnu",
-	"version": "0.22.2",
+	"version": "0.22.3-beta.0",
 	"os": ["linux"],
 	"cpu": ["x64"],
 	"main": "lancedb.linux-x64-gnu.node",
