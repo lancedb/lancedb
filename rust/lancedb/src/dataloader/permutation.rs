@@ -7,8 +7,9 @@
 //! The permutation table only stores the split ids and row ids.  It is not a materialized copy of
 //! the underlying data and can be very lightweight.
 //!
-//! Building a permutation table should be fairly quick and memory efficient, even for billions or
-//! trillions of rows.
+//! Building a permutation table should be fairly quick (it is an O(N) operation where N is
+//! the number of rows in the base table) and memory efficient, even for billions or trillions
+//! of rows.
 
 pub mod builder;
 pub mod reader;

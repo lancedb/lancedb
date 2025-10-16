@@ -121,9 +121,9 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation with sequential splits", async () => {
-    const builder = permutationBuilder(
-      table,
-    ).splitSequential({ ratios: [0.5, 0.5] });
+    const builder = permutationBuilder(table).splitSequential({
+      ratios: [0.5, 0.5],
+    });
 
     const permutationTable = await builder.execute();
     const rowCount = await permutationTable.countRows();
@@ -138,9 +138,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation with calculated splits", async () => {
-    const builder = permutationBuilder(
-      table,
-    ).splitCalculated("id % 2");
+    const builder = permutationBuilder(table).splitCalculated("id % 2");
 
     const permutationTable = await builder.execute();
     const rowCount = await permutationTable.countRows();
@@ -177,9 +175,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation with filter", async () => {
-    const builder = permutationBuilder(table).filter(
-      "value > 50",
-    );
+    const builder = permutationBuilder(table).filter("value > 50");
 
     const permutationTable = await builder.execute();
     const rowCount = await permutationTable.countRows();

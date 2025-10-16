@@ -513,7 +513,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Get the id of the table
     ///
     /// This is the namespace of the table concatenated with the name
-    /// separated by a .
+    /// separated by a dot (".")
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;

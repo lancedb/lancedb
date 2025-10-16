@@ -84,7 +84,11 @@ impl Default for ShuffleStrategy {
 /// Builder for creating a permutation table.
 ///
 /// A permutation table is a table that stores split assignments and a shuffled order of rows.  This
-/// can be used to create a
+/// can be used to create a permutation reader that reads rows in the order defined by the permutation.
+///
+/// The permutation table is not a materialized copy of the underlying data and can be very lightweight.
+/// It is not a view of the underlying data and is not a copy of the data.  It is a separate table that
+/// stores just row id and split id.
 pub struct PermutationBuilder {
     config: PermutationConfig,
     base_table: Table,
@@ -115,7 +119,7 @@ impl PermutationBuilder {
 
     /// Configures the strategy for shuffling the data.
     ///
-    /// The default is to shuffle the data randomly at row-level granularity (no shard size) and
+    /// The default is to shuffle the data randomly at row-level granularity (no clump size) and
     /// with a random seed.
     pub fn with_shuffle_strategy(mut self, shuffle_strategy: ShuffleStrategy) -> Self {
         self.config.shuffle_strategy = shuffle_strategy;

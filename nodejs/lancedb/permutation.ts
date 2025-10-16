@@ -171,9 +171,7 @@ export class PermutationBuilder {
  * const trainingTable = await builder.execute();
  * ```
  */
-export function permutationBuilder(
-  table: Table,
-): PermutationBuilder {
+export function permutationBuilder(table: Table): PermutationBuilder {
   // Extract the inner native table from the TypeScript wrapper
   const localTable = table as LocalTable;
   // Access inner through type assertion since it's private
