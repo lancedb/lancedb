@@ -22,13 +22,18 @@ class ColPaliEmbeddings(EmbeddingFunction):
     multimodal multi-vector embeddings.
 
     This embedding function supports ColPali models, producing multivector outputs
-    for both text and image inputs. The output embeddings are lists of vectors,
-    each vector being 128-dimensional by default, represented as List[List[float]].
+    for both text and image inputs.
 
     Parameters
     ----------
     model_name : str
         The name of the model to use (e.g., "Metric-AI/ColQwen2.5-3b-multilingual-v1.0")
+        Supports models based on these engines:
+        - ColPali: "vidore/colpali-v1.3" and others
+        - ColQwen2.5: "Metric-AI/ColQwen2.5-3b-multilingual-v1.0" and others
+        - ColQwen2: "vidore/colqwen2-v1.0" and others
+        - ColSmol: "vidore/colSmol-256M" and others
+
     device : str
         The device for inference (default "auto").
     dtype : str
@@ -47,6 +52,9 @@ class ColPaliEmbeddings(EmbeddingFunction):
         Quantization configuration for the model. (default None, bitsandbytes needed)
     batch_size : int
         Batch size for processing inputs (default 2).
+    offload_folder: str, optional
+        Folder to offload model weights if using CPU offloading (default None). This is
+        useful for large models that do not fit in memory.
     """
 
     model_name: str = "Metric-AI/ColQwen2.5-3b-multilingual-v1.0"
@@ -81,7 +89,6 @@ class ColPaliEmbeddings(EmbeddingFunction):
                 "pooling_func must be provided when pooling_strategy is 'lambda'"
             )
 
-        # 1. Resolve device string
         device = self.device
         if device == "auto":
             if torch.cuda.is_available():
@@ -91,12 +98,10 @@ class ColPaliEmbeddings(EmbeddingFunction):
             else:
                 device = "cpu"
 
-        # 2. Resolve dtype based on the resolved device
         dtype = self.dtype
         if device == "mps" and dtype == "bfloat16":
             dtype = "float32"  # Avoid NaNs on MPS
 
-        # 3. Attempt to load on the resolved device
         (
             self._model,
             self._processor,
@@ -109,7 +114,6 @@ class ColPaliEmbeddings(EmbeddingFunction):
             self.pooling_func,
             self.quantization_config,
         )
- 
 
     @staticmethod
     @lru_cache(maxsize=1)
@@ -127,9 +131,9 @@ class ColPaliEmbeddings(EmbeddingFunction):
         if device.startswith("mps"):
             # warn some torch ops in late interaction architecture result in nans on mps
             warning(
-                    "MPS device detected. Some operations may result in NaNs. "
-                    "If you encounter issues, consider using 'cpu' or 'cuda' devices."
-                )
+                "MPS device detected. Some operations may result in NaNs. "
+                "If you encounter issues, consider using 'cpu' or 'cuda' devices."
+            )
         torch = attempt_import_or_raise("torch", "torch")
         transformers = attempt_import_or_raise("transformers", "transformers")
         colpali_engine = attempt_import_or_raise("colpali_engine", "colpali_engine")
