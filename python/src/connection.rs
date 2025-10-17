@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::{
     connection::Connection as LanceConnection,
-    database::{CreateTableMode, ReadConsistency},
+    database::{CreateTableMode, Database, ReadConsistency},
 };
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
@@ -41,6 +41,10 @@ impl Connection {
             "exist_ok" => Ok(CreateTableMode::exist_ok(|builder| builder)),
             _ => Err(PyValueError::new_err(format!("Invalid mode {}", mode))),
         }
+    }
+
+    pub fn database(&self) -> PyResult<Arc<dyn Database>> {
+        Ok(self.get_inner()?.database().clone())
     }
 }
 

@@ -2,7 +2,9 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from deprecation import deprecated
+from lancedb import AsyncConnection, DBConnection
 import pyarrow as pa
+import json
 
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable
@@ -14,11 +16,47 @@ if TYPE_CHECKING:
 
 
 class PermutationBuilder:
+    """
+    A utility for creating a "permutation table" which is a table that defines an
+    ordering on a base table.
+
+    The permutation table does not store the actual data.  It only stores row
+    ids and split ids to define the ordering.  The [Permutation] class can be used to
+    read the data from the base table in the order defined by the permutation table.
+
+    Permutations can split, shuffle, and filter the data in the base table.
+
+    A filter limits the rows that are included in the permutation.
+    Splits divide the data into subsets (for example, a test/train split, or K
+    different splits for cross-validation).
+    Shuffling randomizes the order of the rows in the permutation.
+
+    Splits can optionally be named.  If names are provided it will enable them to
+    be referenced by name in the future.  If names are not provided then they can only
+    be referenced by their ordinal index.  There is no requirement to name every split.
+
+    By default, the permutation will be stored in memory and will be lost when the
+    program exits.  To persist the permutation (for very large datasets or to share
+    the permutation across multiple workers) use the [persist](#persist) method to
+    create a permanent table.
+    """
+
     def __init__(self, table: LanceTable):
+        """
+        Creates a new permutation builder for the given table.
+
+        By default, the permutation builder will create a single split that contains all
+        rows in the same order as the base table.
+        """
         self._async = async_permutation_builder(table)
 
-    def select(self, projections: dict[str, str]) -> "PermutationBuilder":
-        self._async.select(projections)
+    def persist(
+        self, database: DBConnection | AsyncConnection, table_name: str
+    ) -> "PermutationBuilder":
+        """
+        Persist the permutation to the given database.
+        """
+        self._async.persist(database, table_name)
         return self
 
     def split_random(
@@ -28,8 +66,38 @@ class PermutationBuilder:
         counts: Optional[list[int]] = None,
         fixed: Optional[int] = None,
         seed: Optional[int] = None,
+        split_names: Optional[list[str]] = None,
     ) -> "PermutationBuilder":
-        self._async.split_random(ratios=ratios, counts=counts, fixed=fixed, seed=seed)
+        """
+        Configure random splits for the permutation.
+
+        One of ratios, counts, or fixed must be provided.
+
+        If ratios are provided, they will be used to determine the relative size of each
+        split. For example, if ratios are [0.3, 0.7] then the first split will contain
+        30% of the rows and the second split will contain 70% of the rows.
+
+        If counts are provided, they will be used to determine the absolute number of
+        rows in each split. For example, if counts are [100, 200] then the first split
+        will contain 100 rows and the second split will contain 200 rows.
+
+        If fixed is provided, it will be used to determine the number of splits.
+        For example, if fixed is 3 then the permutation will be split evenly into 3
+        splits.
+
+        Rows will be randomly assigned to splits.  The optional seed can be provided to
+        make the assignment deterministic.
+
+        The optional split_names can be provided to name the splits.  If not provided,
+        the splits can only be referenced by their index.
+        """
+        self._async.split_random(
+            ratios=ratios,
+            counts=counts,
+            fixed=fixed,
+            seed=seed,
+            split_names=split_names,
+        )
         return self
 
     def split_hash(
@@ -38,8 +106,33 @@ class PermutationBuilder:
         split_weights: list[int],
         *,
         discard_weight: Optional[int] = None,
+        split_names: Optional[list[str]] = None,
     ) -> "PermutationBuilder":
-        self._async.split_hash(columns, split_weights, discard_weight=discard_weight)
+        """
+        Configure hash-based splits for the permutation.
+
+        First, a hash will be calculated over the specified columns.  The splits weights
+        are then used to determine how many rows to assign to each split.  For example,
+        if split weights are [1, 2] then the first split will contain 1/3 of the rows
+        and the second split will contain 2/3 of the rows.
+
+        The optional discard weight can be provided to determine what percentage of rows
+        should be discarded.  For example, if split weights are [1, 2] and discard
+        weight is 1 then 25% of the rows will be discarded.
+
+        Hash-based splits are useful if you want the split to be more or less random but
+        you don't want the split assignments to change if rows are added or removed
+        from the table.
+
+        The optional split_names can be provided to name the splits.  If not provided,
+        the splits can only be referenced by their index.
+        """
+        self._async.split_hash(
+            columns,
+            split_weights,
+            discard_weight=discard_weight,
+            split_names=split_names,
+        )
         return self
 
     def split_sequential(
@@ -48,25 +141,85 @@ class PermutationBuilder:
         ratios: Optional[list[float]] = None,
         counts: Optional[list[int]] = None,
         fixed: Optional[int] = None,
+        split_names: Optional[list[str]] = None,
     ) -> "PermutationBuilder":
-        self._async.split_sequential(ratios=ratios, counts=counts, fixed=fixed)
+        """
+        Configure sequential splits for the permutation.
+
+        One of ratios, counts, or fixed must be provided.
+
+        If ratios are provided, they will be used to determine the relative size of each
+        split. For example, if ratios are [0.3, 0.7] then the first split will contain
+        30% of the rows and the second split will contain 70% of the rows.
+
+        If counts are provided, they will be used to determine the absolute number of
+        rows in each split. For example, if counts are [100, 200] then the first split
+        will contain 100 rows and the second split will contain 200 rows.
+
+        If fixed is provided, it will be used to determine the number of splits.
+        For example, if fixed is 3 then the permutation will be split evenly into 3
+        splits.
+
+        Rows will be assigned to splits sequentially.  The first N1 rows are assigned to
+        split 1, the next N2 rows are assigned to split 2, etc.
+
+        The optional split_names can be provided to name the splits.  If not provided,
+        the splits can only be referenced by their index.
+        """
+        self._async.split_sequential(
+            ratios=ratios, counts=counts, fixed=fixed, split_names=split_names
+        )
         return self
 
-    def split_calculated(self, calculation: str) -> "PermutationBuilder":
-        self._async.split_calculated(calculation)
+    def split_calculated(
+        self, calculation: str, split_names: Optional[list[str]] = None
+    ) -> "PermutationBuilder":
+        """
+        Use pre-calculated splits for the permutation.
+
+        The calculation should be an SQL statement that returns an integer value between
+        0 and the number of splits - 1.  For example, if you have 3 splits then the
+        calculation should return 0 for the first split, 1 for the second split, and 2
+        for the third split.
+
+        This can be used to implement any kind of user-defined split strategy.
+
+        The optional split_names can be provided to name the splits.  If not provided,
+        the splits can only be referenced by their index.
+        """
+        self._async.split_calculated(calculation, split_names=split_names)
         return self
 
     def shuffle(
         self, *, seed: Optional[int] = None, clump_size: Optional[int] = None
     ) -> "PermutationBuilder":
+        """
+        Randomly shuffle the rows in the permutation.
+
+        An optional seed can be provided to make the shuffle deterministic.
+
+        If a clump size is provided, then data will be shuffled as small "clumps"
+        of contiguous rows.  This allows for a balance between randomization and
+        I/O performance.  It can be useful when reading from cloud storage.
+        """
         self._async.shuffle(seed=seed, clump_size=clump_size)
         return self
 
     def filter(self, filter: str) -> "PermutationBuilder":
+        """
+        Configure a filter for the permutation.
+
+        The filter should be an SQL statement that returns a boolean value for each row.
+        Only rows where the filter is true will be included in the permutation.
+        """
         self._async.filter(filter)
         return self
 
     def execute(self) -> LanceTable:
+        """
+        Execute the configuration and create the permutation table.
+        """
+
         async def do_execute():
             inner_tbl = await self._async.execute()
             return LanceTable.from_inner(inner_tbl)
@@ -80,13 +233,77 @@ def permutation_builder(table: LanceTable) -> PermutationBuilder:
 
 class Permutations:
     """
-    A collection of permutations indexed by name.
+    A collection of permutations indexed by name or ordinal index.
+
+    Splits are defined when the permutation is created.  Splits can always be referenced
+    by their ordinal index.  If names were provided when the permutation was created
+    then they can also be referenced by name.
 
     Each permutation or "split" is a view of a portion of the base table.  For more
-    details see [Permutation](#permutation).
+    details see [Permutation].
+
+    Attributes
+    ----------
+    base_table: LanceTable
+        The base table that the permutations are based on.
+    permutation_table: LanceTable
+        The permutation table that defines the splits.
+    split_names: list[str]
+        The names of the splits.
+    split_dict: dict[str, int]
+        A dictionary mapping split names to their ordinal index.
+
+    Examples
+    --------
+    >>> permutations = Permutations(base_table, permutation_table)
+    >>> permutations["train"]
+    <Permutation>
+    >>> permutations[0]
+    <Permutation>
+    >>> permutations.split_names
+    ["train", "test"]
+    >>> permutations.split_dict
+    {"train": 0, "test": 1}
     """
 
-    pass
+    def __init__(self, base_table: LanceTable, permutation_table: LanceTable):
+        self.base_table = base_table
+        self.permutation_table = permutation_table
+
+        split_names = permutation_table.schema.metadata.get(
+            b"split_names", None
+        ).decode("utf-8")
+        if split_names is not None:
+            self.split_names = json.loads(split_names)
+            self.split_dict = {name: idx for idx, name in enumerate(self.split_names)}
+        else:
+            self.split_names = []
+            self.split_dict = {}
+
+    def get_by_name(self, name: str) -> "Permutation":
+        """
+        Get a permutation by name.
+
+        If no split named `name` is found then an error will be raised.
+        """
+        idx = self.split_dict.get(name, None)
+        if idx is None:
+            raise ValueError(f"No split named `{name}` found")
+        return self.get_by_index(idx)
+
+    def get_by_index(self, index: int) -> "Permutation":
+        """
+        Get a permutation by index.
+        """
+        return Permutation.from_tables(self.base_table, self.permutation_table, index)
+
+    def __getitem__(self, name: str | int) -> "Permutation":
+        if isinstance(name, str):
+            return self.get_by_name(name)
+        elif isinstance(name, int):
+            return self.get_by_index(name)
+        else:
+            raise TypeError(f"Invalid split name or index: {name}")
 
 
 class Transforms:
@@ -191,15 +408,41 @@ class Permutation:
         cls,
         base_table: LanceTable,
         permutation_table: LanceTable,
-        split: Optional[str] = None,
+        split: Optional[str | int] = None,
     ) -> "Permutation":
         """
         Creates a permutation from the given base table and permutation table.
+
+        The split parameter identifies which split to use.  If no split is provided
+        then the first split will be used.
         """
         assert base_table is not None, "base_table is required"
         assert permutation_table is not None, "permutation_table is required"
-        # TODO: Add str->int mapping for splits in permutation builder
-        split = int(split) if split is not None else 0
+        if split is not None:
+            if isinstance(split, str):
+                split_names = permutation_table.schema.metadata.get(
+                    b"split_names", None
+                ).decode("utf-8")
+                if split_names is None:
+                    raise ValueError(
+                        f"Cannot create a permutation on split `{split}`"
+                        " because no split names are defined in the permutation table"
+                    )
+                split_names = json.loads(split_names)
+                try:
+                    split = split_names.index(split)
+                except ValueError:
+                    raise ValueError(
+                        f"Cannot create a permutation on split `{split}`"
+                        f" because split `{split}` is not defined in the "
+                        "permutation table"
+                    )
+            elif isinstance(split, int):
+                split = split
+            else:
+                raise TypeError(f"Invalid split: {split}")
+        else:
+            split = 0
 
         async def do_from_tables():
             reader = await PermutationReader.from_tables(

@@ -72,6 +72,11 @@ impl PermutationReader {
         slf.validate().await?;
         // Calculate the number of available rows
         slf.available_rows = slf.verify_limit_offset(None, None).await?;
+        if slf.available_rows == 0 {
+            return Err(Error::InvalidInput {
+                message: "No rows found in the permutation table for the given split".to_string(),
+            });
+        }
         Ok(slf)
     }
 
