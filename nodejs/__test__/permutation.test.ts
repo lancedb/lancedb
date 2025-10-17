@@ -38,23 +38,22 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation builder", () => {
-    const builder = permutationBuilder(table, "permutation_table");
+    const builder = permutationBuilder(table);
     expect(builder).toBeDefined();
   });
 
   test("should execute basic permutation", async () => {
-    const builder = permutationBuilder(table, "permutation_table");
+    const builder = permutationBuilder(table);
     const permutationTable = await builder.execute();
 
     expect(permutationTable).toBeDefined();
-    expect(permutationTable.name).toBe("permutation_table");
 
     const rowCount = await permutationTable.countRows();
     expect(rowCount).toBe(10);
   });
 
   test("should create permutation with random splits", async () => {
-    const builder = permutationBuilder(table, "permutation_table").splitRandom({
+    const builder = permutationBuilder(table).splitRandom({
       ratios: [1.0],
       seed: 42,
     });
@@ -65,7 +64,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation with percentage splits", async () => {
-    const builder = permutationBuilder(table, "permutation_table").splitRandom({
+    const builder = permutationBuilder(table).splitRandom({
       ratios: [0.3, 0.7],
       seed: 42,
     });
@@ -84,7 +83,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation with count splits", async () => {
-    const builder = permutationBuilder(table, "permutation_table").splitRandom({
+    const builder = permutationBuilder(table).splitRandom({
       counts: [3, 7],
       seed: 42,
     });
@@ -102,7 +101,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation with hash splits", async () => {
-    const builder = permutationBuilder(table, "permutation_table").splitHash({
+    const builder = permutationBuilder(table).splitHash({
       columns: ["id"],
       splitWeights: [50, 50],
       discardWeight: 0,
@@ -122,10 +121,9 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation with sequential splits", async () => {
-    const builder = permutationBuilder(
-      table,
-      "permutation_table",
-    ).splitSequential({ ratios: [0.5, 0.5] });
+    const builder = permutationBuilder(table).splitSequential({
+      ratios: [0.5, 0.5],
+    });
 
     const permutationTable = await builder.execute();
     const rowCount = await permutationTable.countRows();
@@ -140,10 +138,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation with calculated splits", async () => {
-    const builder = permutationBuilder(
-      table,
-      "permutation_table",
-    ).splitCalculated("id % 2");
+    const builder = permutationBuilder(table).splitCalculated("id % 2");
 
     const permutationTable = await builder.execute();
     const rowCount = await permutationTable.countRows();
@@ -159,7 +154,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation with shuffle", async () => {
-    const builder = permutationBuilder(table, "permutation_table").shuffle({
+    const builder = permutationBuilder(table).shuffle({
       seed: 42,
     });
 
@@ -169,7 +164,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation with shuffle and clump size", async () => {
-    const builder = permutationBuilder(table, "permutation_table").shuffle({
+    const builder = permutationBuilder(table).shuffle({
       seed: 42,
       clumpSize: 2,
     });
@@ -180,9 +175,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should create permutation with filter", async () => {
-    const builder = permutationBuilder(table, "permutation_table").filter(
-      "value > 50",
-    );
+    const builder = permutationBuilder(table).filter("value > 50");
 
     const permutationTable = await builder.execute();
     const rowCount = await permutationTable.countRows();
@@ -190,7 +183,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should chain multiple operations", async () => {
-    const builder = permutationBuilder(table, "permutation_table")
+    const builder = permutationBuilder(table)
       .filter("value <= 80")
       .splitRandom({ ratios: [0.5, 0.5], seed: 42 })
       .shuffle({ seed: 123 });
@@ -209,7 +202,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should throw error for invalid split arguments", () => {
-    const builder = permutationBuilder(table, "permutation_table");
+    const builder = permutationBuilder(table);
 
     // Test no arguments provided
     expect(() => builder.splitRandom({})).toThrow(
@@ -223,7 +216,7 @@ describe("PermutationBuilder", () => {
   });
 
   test("should throw error when builder is consumed", async () => {
-    const builder = permutationBuilder(table, "permutation_table");
+    const builder = permutationBuilder(table);
 
     // Execute once
     await builder.execute();

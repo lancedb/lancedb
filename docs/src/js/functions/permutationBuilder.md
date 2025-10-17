@@ -7,7 +7,7 @@
 # Function: permutationBuilder()
 
 ```ts
-function permutationBuilder(table, destTableName): PermutationBuilder
+function permutationBuilder(table): PermutationBuilder
 ```
 
 Create a permutation builder for the given table.
@@ -16,9 +16,6 @@ Create a permutation builder for the given table.
 
 * **table**: [`Table`](../classes/Table.md)
     The source table to create a permutation from
-
-* **destTableName**: `string`
-    The name for the destination permutation table
 
 ## Returns
 
