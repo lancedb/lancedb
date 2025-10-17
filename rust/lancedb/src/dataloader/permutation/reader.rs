@@ -98,23 +98,20 @@ impl PermutationReader {
                 } else {
                     Ok(limit)
                 }
+            } else if offset > available_rows {
+                Err(Error::InvalidInput {
+                    message: "Offset is greater than the number of rows in the permutation table"
+                        .to_string(),
+                })
             } else {
-                if offset > available_rows {
-                    Err(Error::InvalidInput {
-                        message:
-                            "Offset is greater than the number of rows in the permutation table"
-                                .to_string(),
-                    })
-                } else {
-                    Ok(available_rows - offset)
-                }
+                Ok(available_rows - offset)
             }
         } else if let Some(limit) = limit {
             if limit > available_rows {
-                return Err(Error::InvalidInput {
+                Err(Error::InvalidInput {
                     message: "Limit is greater than the number of rows in the permutation table"
                         .to_string(),
-                });
+                })
             } else {
                 Ok(limit)
             }
@@ -327,14 +324,11 @@ impl PermutationReader {
                             .to_string(),
                     });
                 }
-            } else {
-                if offset > avail_rows {
-                    return Err(Error::InvalidInput {
-                        message:
-                            "Offset is greater than the number of rows in the permutation table"
-                                .to_string(),
-                    });
-                }
+            } else if offset > avail_rows {
+                return Err(Error::InvalidInput {
+                    message: "Offset is greater than the number of rows in the permutation table"
+                        .to_string(),
+                });
             }
         } else if let Some(limit) = self.limit {
             if limit > avail_rows {
