@@ -24,6 +24,14 @@ optional discardWeight: number;
 
 ***
 
+### splitNames?
+
+```ts
+optional splitNames: string[];
+```
+
+***
+
 ### splitWeights
 
 ```ts

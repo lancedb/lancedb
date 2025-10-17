@@ -29,3 +29,11 @@ optional fixed: number;
 ```ts
 optional ratios: number[];
 ```
+
+***
+
+### splitNames?
+
+```ts
+optional splitNames: string[];
+```
