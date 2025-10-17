@@ -2,10 +2,26 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import pyarrow as pa
+import math
 import pytest
 
 from lancedb import DBConnection, Table, connect
-from lancedb.permutation import Permutation, permutation_builder
+from lancedb.permutation import Permutation, Permutations, permutation_builder
+
+
+def test_permutation_persistence(tmp_path):
+    db = connect(tmp_path)
+    tbl = db.create_table("test_table", pa.table({"x": range(100), "y": range(100)}))
+
+    permutation_tbl = (
+        permutation_builder(tbl).shuffle().persist(db, "test_permutation").execute()
+    )
+    assert permutation_tbl.count_rows() == 100
+
+    re_open = db.open_table("test_permutation")
+    assert re_open.count_rows() == 100
+
+    assert permutation_tbl.to_arrow() == re_open.to_arrow()
 
 
 def test_split_random_ratios(mem_db):
@@ -472,26 +488,55 @@ def mem_db() -> DBConnection:
 def some_table(mem_db: DBConnection) -> Table:
     data = pa.table(
         {
-            "id": range(10000),
-            "value": range(10000),
+            "id": range(1000),
+            "value": range(1000),
         }
     )
     return mem_db.create_table("some_table", data)
 
 
 @pytest.fixture
-def some_permutation(some_table: Table) -> Permutation:
-    perm = (
+def some_perm_table(some_table: Table) -> Table:
+    return (
         permutation_builder(some_table)
-        .split_random(ratios=[0.95, 0.05], seed=42)
+        .split_random(ratios=[0.95, 0.05], seed=42, split_names=["train", "test"])
         .shuffle(seed=42)
         .execute()
     )
-    return Permutation.from_tables(some_table, perm)
+
+
+def test_nonexistent_split(some_table: Table, some_perm_table: Table):
+    # Reference by name and name does not exist
+    with pytest.raises(ValueError, match="split `nonexistent` is not defined"):
+        Permutation.from_tables(some_table, some_perm_table, "nonexistent")
+
+    # Reference by ordinal and there are no rows
+    with pytest.raises(ValueError, match="No rows found"):
+        Permutation.from_tables(some_table, some_perm_table, 5)
+
+
+def test_permutations(some_table: Table, some_perm_table: Table):
+    permutations = Permutations(some_table, some_perm_table)
+    assert permutations.split_names == ["train", "test"]
+    assert permutations.split_dict == {"train": 0, "test": 1}
+    assert permutations["train"].num_rows == 950
+    assert permutations[0].num_rows == 950
+    assert permutations["test"].num_rows == 50
+    assert permutations[1].num_rows == 50
+
+    with pytest.raises(ValueError, match="No split named `nonexistent` found"):
+        permutations["nonexistent"]
+    with pytest.raises(ValueError, match="No rows found"):
+        permutations[5]
+
+
+@pytest.fixture
+def some_permutation(some_table: Table, some_perm_table: Table) -> Permutation:
+    return Permutation.from_tables(some_table, some_perm_table)
 
 
 def test_num_rows(some_permutation: Permutation):
-    assert some_permutation.num_rows == 9500
+    assert some_permutation.num_rows == 950
 
 
 def test_num_columns(some_permutation: Permutation):
@@ -503,7 +548,7 @@ def test_column_names(some_permutation: Permutation):
 
 
 def test_shape(some_permutation: Permutation):
-    assert some_permutation.shape == (9500, 2)
+    assert some_permutation.shape == (950, 2)
 
 
 def test_schema(some_permutation: Permutation):
@@ -514,7 +559,7 @@ def test_schema(some_permutation: Permutation):
 
 def test_limit_offset(some_permutation: Permutation):
     assert some_permutation.with_take(100).num_rows == 100
-    assert some_permutation.with_skip(100).num_rows == 9400
+    assert some_permutation.with_skip(100).num_rows == 850
     assert some_permutation.with_take(100).with_skip(100).num_rows == 100
 
     with pytest.raises(Exception):
@@ -522,9 +567,9 @@ def test_limit_offset(some_permutation: Permutation):
     with pytest.raises(Exception):
         some_permutation.with_skip(1000000).num_rows
     with pytest.raises(Exception):
-        some_permutation.with_take(5000).with_skip(5000).num_rows
+        some_permutation.with_take(500).with_skip(500).num_rows
     with pytest.raises(Exception):
-        some_permutation.with_skip(5000).with_take(5000).num_rows
+        some_permutation.with_skip(500).with_take(500).num_rows
 
 
 def test_remove_columns(some_permutation: Permutation):
@@ -589,7 +634,7 @@ def test_iter_basic(some_permutation: Permutation):
     batches = list(some_permutation.iter(batch_size, skip_last_batch=False))
 
     # Check that we got the expected number of batches
-    expected_batches = (9500 + batch_size - 1) // batch_size  # ceiling division
+    expected_batches = (950 + batch_size - 1) // batch_size  # ceiling division
     assert len(batches) == expected_batches
 
     # Check that all batches are dicts (default python format)
@@ -620,14 +665,14 @@ def test_iter_skip_last_batch(some_permutation: Permutation):
     )
 
     # With skip_last_batch=True, we should have fewer batches if the last one is partial
-    num_full_batches = 9500 // batch_size
+    num_full_batches = 950 // batch_size
     assert len(batches_with_skip) == num_full_batches
 
     # Without skip_last_batch, we should have one more batch if there's a remainder
-    if 9500 % batch_size != 0:
+    if 950 % batch_size != 0:
         assert len(batches_without_skip) == num_full_batches + 1
         # Last batch should be smaller
-        assert len(batches_without_skip[-1]["id"]) == 9500 % batch_size
+        assert len(batches_without_skip[-1]["id"]) == 950 % batch_size
 
     # All batches with skip_last_batch should be full size
     for batch in batches_with_skip:
@@ -639,46 +684,42 @@ def test_iter_different_batch_sizes(some_permutation: Permutation):
 
     # Test with small batch size
     small_batches = list(some_permutation.iter(100, skip_last_batch=False))
-    assert len(small_batches) == 95  # 9500 / 100
+    assert len(small_batches) == 10  # ceiling(950 / 100)
 
     # Test with large batch size
-    large_batches = list(some_permutation.iter(1000, skip_last_batch=False))
-    assert len(large_batches) == 10  # ceiling(9500 / 1000)
+    large_batches = list(some_permutation.iter(400, skip_last_batch=False))
+    assert len(large_batches) == 3  # ceiling(950 / 400)
 
     # Test with batch size equal to total rows
-    single_batch = list(some_permutation.iter(9500, skip_last_batch=False))
+    single_batch = list(some_permutation.iter(950, skip_last_batch=False))
     assert len(single_batch) == 1
-    assert len(single_batch[0]["id"]) == 9500
-
-    # Note: Very large batch sizes (>= total rows) are currently not supported
-    # by the underlying Rust implementation due to how it batches data from
-    # the base table. This is an expected limitation.
+    assert len(single_batch[0]["id"]) == 950
 
     # Test with batch size larger than total rows
     oversized_batch = list(some_permutation.iter(10000, skip_last_batch=False))
     assert len(oversized_batch) == 1
-    assert len(oversized_batch[0]["id"]) == 9500
+    assert len(oversized_batch[0]["id"]) == 950
 
 
 def test_dunder_iter(some_permutation: Permutation):
     """Test the __iter__ method."""
-    # __iter__ should use DEFAULT_BATCH_SIZE (10) and skip_last_batch=True
+    # __iter__ should use DEFAULT_BATCH_SIZE (100) and skip_last_batch=True
     batches = list(some_permutation)
 
-    # With DEFAULT_BATCH_SIZE=100 and skip_last_batch=True, we should get 950 batches
-    assert len(batches) == 95  # 9500 / 100
+    # With DEFAULT_BATCH_SIZE=100 and skip_last_batch=True, we should get 9 batches
+    assert len(batches) == 9  # ceiling(950 / 100)
 
     # All batches should be full size
     for batch in batches:
         assert len(batch["id"]) == 100
         assert len(batch["value"]) == 100
 
-    some_permutation = some_permutation.with_batch_size(1000)
+    some_permutation = some_permutation.with_batch_size(400)
     batches = list(some_permutation)
-    assert len(batches) == 9  # floor(9500 / 1000) since skip_last_batch=True
+    assert len(batches) == 2  # floor(950 / 400) since skip_last_batch=True
     for batch in batches:
-        assert len(batch["id"]) == 1000
-        assert len(batch["value"]) == 1000
+        assert len(batch["id"]) == 400
+        assert len(batch["value"]) == 400
 
 
 def test_iter_with_different_formats(some_permutation: Permutation):
@@ -733,8 +774,8 @@ def test_iter_with_limit_offset(some_permutation: Permutation):
     # Test with offset
     offset_perm = some_permutation.with_skip(100)
     offset_batches = list(offset_perm.iter(100, skip_last_batch=False))
-    # Should have 9400 rows (9500 - 100)
-    expected_batches = (9400 + 100 - 1) // 100
+    # Should have 850 rows (950 - 100)
+    expected_batches = math.ceil(850 / 100)
     assert len(offset_batches) == expected_batches
 
     # Test with limit
@@ -743,11 +784,15 @@ def test_iter_with_limit_offset(some_permutation: Permutation):
     # Should have 5 batches (500 / 100)
     assert len(limit_batches) == 5
 
+    no_skip = some_permutation.iter(101, skip_last_batch=False)
+    row_100 = next(no_skip)["id"][100]
+
     # Test with both limit and offset
     limited_perm = some_permutation.with_skip(100).with_take(300)
     limited_batches = list(limited_perm.iter(100, skip_last_batch=False))
     # Should have 3 batches (300 / 100)
     assert len(limited_batches) == 3
+    assert limited_batches[0]["id"][0] == row_100
 
 
 def test_iter_empty_permutation(mem_db):
@@ -757,12 +802,8 @@ def test_iter_empty_permutation(mem_db):
         "test_table", pa.table({"id": range(10), "value": range(10)})
     )
     permutation_tbl = permutation_builder(tbl).filter("value > 100").execute()
-    perm = Permutation.from_tables(tbl, permutation_tbl)
-
-    # Currently, the Rust implementation raises an error for empty permutations
-    # rather than returning an empty iterator. This is expected behavior.
-    with pytest.raises(ValueError, match="Permutation was empty"):
-        list(perm.iter(10, skip_last_batch=False))
+    with pytest.raises(ValueError, match="No rows found"):
+        Permutation.from_tables(tbl, permutation_tbl)
 
 
 def test_iter_single_row(mem_db):

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_execution::{disk_manager::DiskManagerBuilder, runtime_env::RuntimeEnvBuilder};
@@ -25,6 +25,8 @@ use crate::{
 
 pub const SRC_ROW_ID_COL: &str = "row_id";
 
+pub const SPLIT_NAMES_CONFIG_KEY: &str = "split_names";
+
 /// Where to store the permutation table
 #[derive(Debug, Clone, Default)]
 enum PermutationDestination {
@@ -40,6 +42,8 @@ enum PermutationDestination {
 pub struct PermutationConfig {
     /// Splitting configuration
     split_strategy: SplitStrategy,
+    /// Optional names for the splits
+    split_names: Option<Vec<String>>,
     /// Shuffle strategy
     shuffle_strategy: ShuffleStrategy,
     /// Optional filter to apply to the base table
@@ -112,8 +116,16 @@ impl PermutationBuilder {
     /// multiple processes and multiple nodes.
     ///
     /// The default is a single split that contains all rows.
-    pub fn with_split_strategy(mut self, split_strategy: SplitStrategy) -> Self {
+    ///
+    /// An optional list of names can be provided for the splits.  This is for convenience and the names
+    /// will be stored in the permutation table's config metadata.
+    pub fn with_split_strategy(
+        mut self,
+        split_strategy: SplitStrategy,
+        split_names: Option<Vec<String>>,
+    ) -> Self {
         self.config.split_strategy = split_strategy;
+        self.config.split_names = split_names;
         self
     }
 
@@ -193,6 +205,30 @@ impl PermutationBuilder {
         Ok(Box::pin(SimpleRecordBatchStream { schema, stream }))
     }
 
+    fn add_split_names(
+        data: SendableRecordBatchStream,
+        split_names: &[String],
+    ) -> Result<SendableRecordBatchStream> {
+        let schema = data
+            .schema()
+            .as_ref()
+            .clone()
+            .with_metadata(HashMap::from([(
+                SPLIT_NAMES_CONFIG_KEY.to_string(),
+                serde_json::to_string(split_names).map_err(|e| Error::Other {
+                    message: format!("Failed to serialize split names: {}", e),
+                    source: Some(e.into()),
+                })?,
+            )]));
+        let schema = Arc::new(schema);
+        let schema_clone = schema.clone();
+        let stream = data.map_ok(move |batch| batch.with_schema(schema.clone()).unwrap());
+        Ok(Box::pin(SimpleRecordBatchStream {
+            schema: schema_clone,
+            stream,
+        }))
+    }
+
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(self) -> Result<Table> {
         // First pass, apply filter and load row ids
@@ -249,6 +285,12 @@ impl PermutationBuilder {
         // Rename _rowid to row_id
         let renamed = rename_column(sorted, ROW_ID, SRC_ROW_ID_COL)?;
 
+        let streaming_data = if let Some(split_names) = &self.config.split_names {
+            Self::add_split_names(renamed, split_names)?
+        } else {
+            renamed
+        };
+
         let (name, database) = match &self.config.destination {
             PermutationDestination::Permanent(database, table_name) => {
                 (table_name.as_str(), database.clone())
@@ -259,10 +301,13 @@ impl PermutationBuilder {
             }
         };
 
-        let create_table_request =
-            CreateTableRequest::new(name.to_string(), CreateTableData::StreamingData(renamed));
+        let create_table_request = CreateTableRequest::new(
+            name.to_string(),
+            CreateTableData::StreamingData(streaming_data),
+        );
 
         let table = database.create_table(create_table_request).await?;
+
         Ok(Table::new(table, database))
     }
 }
@@ -296,10 +341,13 @@ mod tests {
 
         let permutation_table = PermutationBuilder::new(data_table.clone())
             .with_filter("some_value > 57".to_string())
-            .with_split_strategy(SplitStrategy::Random {
-                seed: Some(42),
-                sizes: SplitSizes::Percentages(vec![0.05, 0.30]),
-            })
+            .with_split_strategy(
+                SplitStrategy::Random {
+                    seed: Some(42),
+                    sizes: SplitSizes::Percentages(vec![0.05, 0.30]),
+                },
+                None,
+            )
             .build()
             .await
             .unwrap();
