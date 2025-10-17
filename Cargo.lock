@@ -4623,11 +4623,19 @@ name = "lance-namespace-impls"
 version = "0.38.3-beta.5"
 source = "git+https://github.com/lancedb/lance.git?tag=v0.38.3-beta.5#ea6f6f5cd5587523a68f9a63855f2ee518f32d10"
 dependencies = [
+ "arrow",
+ "arrow-ipc",
+ "arrow-schema",
  "async-trait",
  "bytes",
+ "lance",
  "lance-core",
  "lance-namespace",
+ "opendal",
+ "reqwest",
+ "serde_json",
  "snafu",
+ "url",
 ]
 
 [[package]]
