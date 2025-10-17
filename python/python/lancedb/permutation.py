@@ -9,7 +9,7 @@ import json
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable
 from .background_loop import LOOP
-from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING
+from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
     from lancedb.dependencies import pandas as pd, numpy as np, torch, polars as pl
@@ -51,7 +51,7 @@ class PermutationBuilder:
         self._async = async_permutation_builder(table)
 
     def persist(
-        self, database: DBConnection | AsyncConnection, table_name: str
+        self, database: Union[DBConnection, AsyncConnection], table_name: str
     ) -> "PermutationBuilder":
         """
         Persist the permutation to the given database.
@@ -255,28 +255,48 @@ class Permutations:
 
     Examples
     --------
-    >>> permutations = Permutations(base_table, permutation_table)
+    >>> # Initial data
+    >>> import lancedb
+    >>> db = lancedb.connect("memory:///")
+    >>> tbl = db.create_table("tbl", data=[{"x": x} for x in range(1000)])
+    >>> # Create a permutation
+    >>> perm_tbl = (
+    ...    permutation_builder(tbl)
+    ...    .split_random(ratios=[0.95, 0.05], split_names=["train", "test"])
+    ...    .shuffle()
+    ...    .execute()
+    ... )
+    >>> # Read the permutations
+    >>> permutations = Permutations(tbl, perm_tbl)
     >>> permutations["train"]
-    <Permutation>
+    <lancedb.permutation.Permutation ...>
     >>> permutations[0]
-    <Permutation>
+    <lancedb.permutation.Permutation ...>
     >>> permutations.split_names
-    ["train", "test"]
+    ['train', 'test']
     >>> permutations.split_dict
-    {"train": 0, "test": 1}
+    {'train': 0, 'test': 1}
     """
 
     def __init__(self, base_table: LanceTable, permutation_table: LanceTable):
         self.base_table = base_table
         self.permutation_table = permutation_table
 
-        split_names = permutation_table.schema.metadata.get(
-            b"split_names", None
-        ).decode("utf-8")
-        if split_names is not None:
-            self.split_names = json.loads(split_names)
-            self.split_dict = {name: idx for idx, name in enumerate(self.split_names)}
+        if permutation_table.schema.metadata is not None:
+            split_names = permutation_table.schema.metadata.get(
+                b"split_names", None
+            ).decode("utf-8")
+            if split_names is not None:
+                self.split_names = json.loads(split_names)
+                self.split_dict = {
+                    name: idx for idx, name in enumerate(self.split_names)
+                }
+            else:
+                # No split names are defined in the permutation table
+                self.split_names = []
+                self.split_dict = {}
         else:
+            # No metadata is defined in the permutation table
             self.split_names = []
             self.split_dict = {}
 
@@ -297,7 +317,7 @@ class Permutations:
         """
         return Permutation.from_tables(self.base_table, self.permutation_table, index)
 
-    def __getitem__(self, name: str | int) -> "Permutation":
+    def __getitem__(self, name: Union[str, int]) -> "Permutation":
         if isinstance(name, str):
             return self.get_by_name(name)
         elif isinstance(name, int):
@@ -408,7 +428,7 @@ class Permutation:
         cls,
         base_table: LanceTable,
         permutation_table: LanceTable,
-        split: Optional[str | int] = None,
+        split: Optional[Union[str, int]] = None,
     ) -> "Permutation":
         """
         Creates a permutation from the given base table and permutation table.
@@ -420,6 +440,11 @@ class Permutation:
         assert permutation_table is not None, "permutation_table is required"
         if split is not None:
             if isinstance(split, str):
+                if permutation_table.schema.metadata is None:
+                    raise ValueError(
+                        f"Cannot create a permutation on split `{split}`"
+                        " because no split names are defined in the permutation table"
+                    )
                 split_names = permutation_table.schema.metadata.get(
                     b"split_names", None
                 ).decode("utf-8")

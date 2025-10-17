@@ -495,6 +495,17 @@ def some_table(mem_db: DBConnection) -> Table:
     return mem_db.create_table("some_table", data)
 
 
+def test_no_split_names(some_table: Table):
+    perm_tbl = (
+        permutation_builder(some_table).split_sequential(counts=[500, 500]).execute()
+    )
+    permutations = Permutations(some_table, perm_tbl)
+    assert permutations.split_names == []
+    assert permutations.split_dict == {}
+    assert permutations[0].num_rows == 500
+    assert permutations[1].num_rows == 500
+
+
 @pytest.fixture
 def some_perm_table(some_table: Table) -> Table:
     return (
