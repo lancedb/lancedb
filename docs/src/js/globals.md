@@ -77,6 +77,7 @@
 - [RemovalStats](interfaces/RemovalStats.md)
 - [RetryConfig](interfaces/RetryConfig.md)
 - [ShuffleOptions](interfaces/ShuffleOptions.md)
+- [SplitCalculatedOptions](interfaces/SplitCalculatedOptions.md)
 - [SplitHashOptions](interfaces/SplitHashOptions.md)
 - [SplitRandomOptions](interfaces/SplitRandomOptions.md)
 - [SplitSequentialOptions](interfaces/SplitSequentialOptions.md)
