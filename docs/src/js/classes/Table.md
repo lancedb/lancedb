@@ -827,6 +827,78 @@ based on the row being updated (e.g. "my_col + 1")
 
 ***
 
+### updateMetadata()
+
+```ts
+abstract updateMetadata(updates, replace?): Promise<Record<string, string>>
+```
+
+Update table metadata.
+
+#### Parameters
+
+* **updates**: `Map`&lt;`string`, `null` \| `string`&gt; \| `Record`&lt;`string`, `null` \| `string`&gt;
+    The metadata updates to apply. Keys are metadata keys,
+    values are the new values. Use `null` to remove a key.
+
+* **replace?**: `boolean`
+    If true, replace the entire metadata map. If false, merge
+    updates with existing metadata. Defaults to false.
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `string`&gt;&gt;
+
+A promise that resolves to the updated metadata map.
+
+#### Example
+
+```ts
+// Add metadata
+await table.updateMetadata({"description": "My test table", "version": "1.0"});
+
+// Update specific keys
+await table.updateMetadata({"version": "1.1", "author": "me"});
+
+// Remove a key
+await table.updateMetadata({"author": null});
+```
+
+***
+
+### updateSchemaMetadata()
+
+```ts
+abstract updateSchemaMetadata(updates, replace?): Promise<Record<string, string>>
+```
+
+Update schema metadata.
+
+#### Parameters
+
+* **updates**: `Map`&lt;`string`, `null` \| `string`&gt; \| `Record`&lt;`string`, `null` \| `string`&gt;
+    The schema metadata updates to apply. Keys are metadata keys,
+    values are the new values. Use `null` to remove a key.
+
+* **replace?**: `boolean`
+    If true, replace the entire schema metadata map. If false,
+    merge updates with existing metadata. Defaults to false.
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `string`&gt;&gt;
+
+A promise that resolves to the updated schema metadata map.
+
+#### Example
+
+```ts
+// Add schema metadata
+await table.updateSchemaMetadata({"format_version": "2.0"});
+```
+
+***
+
 ### vectorSearch()
 
 ```ts
