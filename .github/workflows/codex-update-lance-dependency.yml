@@ -1,0 +1,106 @@
+name: Codex Update Lance Dependency
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag name from Lance"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name from Lance"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show inputs
+        run: |
+          echo "tag = ${{ inputs.tag }}"
+
+      - name: Checkout Repo LanceDB
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev
+
+      - name: Install cargo-info
+        run: cargo install cargo-info
+
+      - name: Install Python dependencies
+        run: python3 -m pip install --upgrade pip packaging
+
+      - name: Configure git user
+        run: |
+          git config user.name "lancedb automation"
+          git config user.email "automation@lancedb.com"
+
+      - name: Configure Codex authentication
+        env:
+          CODEX_TOKEN_B64: ${{ secrets.CODEX_TOKEN }}
+        run: |
+          if [ -z "${CODEX_TOKEN_B64}" ]; then
+            echo "Repository secret CODEX_TOKEN is not defined; skipping Codex execution."
+            exit 1
+          fi
+          mkdir -p ~/.codex
+          echo "${CODEX_TOKEN_B64}" | base64 --decode > ~/.codex/auth.json
+
+      - name: Run Codex to update Lance dependency
+        env:
+          TAG: ${{ inputs.tag }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#refs/tags/}"
+          VERSION="${VERSION#v}"
+          BRANCH_NAME="codex/update-lance-${VERSION//[^a-zA-Z0-9]/-}"
+          cat <<EOF >/tmp/codex-prompt.txt
+          You are running inside the lancedb repository on a GitHub Actions runner. Update the Lance dependency to version ${VERSION} and prepare a pull request for maintainers to review.
+
+          Follow these steps exactly:
+          1. Use "python3 ci/set_lance_version.py ${VERSION}" to update Lance dependencies. The script already refreshes Cargo metadata, so allow it to finish even if it takes time.
+          2. Run "cargo clippy --workspace --tests --all-features -- -D warnings". If diagnostics appear, fix them yourself and rerun clippy until it exits cleanly. Do not skip any warnings.
+          3. After clippy succeeds, run "cargo fmt --all" to format the workspace.
+          4. Ensure the repository is clean except for intentional changes. Inspect "git status --short" and "git diff" to confirm the dependency update and any required fixes.
+          5. Create and switch to a new branch named "${BRANCH_NAME}" (replace any duplicated hyphens if necessary).
+          6. Stage all relevant files with "git add -A". Commit using the message "chore: update lance dependency to v${VERSION}".
+          7. Push the branch to origin. If the branch already exists, force-push your changes.
+          8. Create a pull request targeting "main" with title "chore: update lance dependency to v${VERSION}". In the body, summarize the dependency bump, clippy/fmt verification, and link the triggering tag (${TAG}). Use the GitHub CLI if helpful.
+          9. After creating the PR, display the PR URL, "git status --short", and a concise summary of the commands run and their results.
+
+          Constraints:
+          - Use bash commands; avoid modifying GitHub workflow files other than through the scripted task above.
+          - Do not merge the PR.
+          - If any command fails, diagnose and fix the issue instead of aborting.
+          EOF
+          codex exec --full-auto --sandbox danger-full-access "$(cat /tmp/codex-prompt.txt)"
