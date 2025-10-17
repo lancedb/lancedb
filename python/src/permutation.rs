@@ -3,7 +3,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::{arrow::RecordBatchStream, error::PythonErrorExt, table::Table};
+use crate::{
+    arrow::RecordBatchStream, connection::Connection, error::PythonErrorExt, table::Table,
+};
 use arrow::pyarrow::ToPyArrow;
 use lancedb::{
     dataloader::permutation::{
@@ -63,13 +65,32 @@ impl PyAsyncPermutationBuilder {
 
 #[pymethods]
 impl PyAsyncPermutationBuilder {
-    #[pyo3(signature = (*, ratios=None, counts=None, fixed=None, seed=None))]
+    #[pyo3(signature = (database, table_name))]
+    pub fn persist(
+        slf: PyRefMut<'_, Self>,
+        database: Bound<'_, PyAny>,
+        table_name: String,
+    ) -> PyResult<Self> {
+        let conn = if database.hasattr("_conn")? {
+            database
+                .getattr("_conn")?
+                .getattr("_inner")?
+                .downcast_into::<Connection>()?
+        } else {
+            database.getattr("_inner")?.downcast_into::<Connection>()?
+        };
+        let database = conn.borrow().database()?;
+        slf.modify(|builder| builder.persist(database, table_name))
+    }
+
+    #[pyo3(signature = (*, ratios=None, counts=None, fixed=None, seed=None, split_names=None))]
     pub fn split_random(
         slf: PyRefMut<'_, Self>,
         ratios: Option<Vec<f64>>,
         counts: Option<Vec<u64>>,
         fixed: Option<u64>,
         seed: Option<u64>,
+        split_names: Option<Vec<String>>,
     ) -> PyResult<Self> {
         // Check that exactly one split type is provided
         let split_args_count = [ratios.is_some(), counts.is_some(), fixed.is_some()]
@@ -93,31 +114,38 @@ impl PyAsyncPermutationBuilder {
             unreachable!("One of the split arguments must be provided");
         };
 
-        slf.modify(|builder| builder.with_split_strategy(SplitStrategy::Random { seed, sizes }))
+        slf.modify(|builder| {
+            builder.with_split_strategy(SplitStrategy::Random { seed, sizes }, split_names)
+        })
     }
 
-    #[pyo3(signature = (columns, split_weights, *, discard_weight=0))]
+    #[pyo3(signature = (columns, split_weights, *, discard_weight=0, split_names=None))]
     pub fn split_hash(
         slf: PyRefMut<'_, Self>,
         columns: Vec<String>,
         split_weights: Vec<u64>,
         discard_weight: u64,
+        split_names: Option<Vec<String>>,
     ) -> PyResult<Self> {
         slf.modify(|builder| {
-            builder.with_split_strategy(SplitStrategy::Hash {
-                columns,
-                split_weights,
-                discard_weight,
-            })
+            builder.with_split_strategy(
+                SplitStrategy::Hash {
+                    columns,
+                    split_weights,
+                    discard_weight,
+                },
+                split_names,
+            )
         })
     }
 
-    #[pyo3(signature = (*, ratios=None, counts=None, fixed=None))]
+    #[pyo3(signature = (*, ratios=None, counts=None, fixed=None, split_names=None))]
     pub fn split_sequential(
         slf: PyRefMut<'_, Self>,
         ratios: Option<Vec<f64>>,
         counts: Option<Vec<u64>>,
         fixed: Option<u64>,
+        split_names: Option<Vec<String>>,
     ) -> PyResult<Self> {
         // Check that exactly one split type is provided
         let split_args_count = [ratios.is_some(), counts.is_some(), fixed.is_some()]
@@ -141,11 +169,19 @@ impl PyAsyncPermutationBuilder {
             unreachable!("One of the split arguments must be provided");
         };
 
-        slf.modify(|builder| builder.with_split_strategy(SplitStrategy::Sequential { sizes }))
+        slf.modify(|builder| {
+            builder.with_split_strategy(SplitStrategy::Sequential { sizes }, split_names)
+        })
     }
 
-    pub fn split_calculated(slf: PyRefMut<'_, Self>, calculation: String) -> PyResult<Self> {
-        slf.modify(|builder| builder.with_split_strategy(SplitStrategy::Calculated { calculation }))
+    pub fn split_calculated(
+        slf: PyRefMut<'_, Self>,
+        calculation: String,
+        split_names: Option<Vec<String>>,
+    ) -> PyResult<Self> {
+        slf.modify(|builder| {
+            builder.with_split_strategy(SplitStrategy::Calculated { calculation }, split_names)
+        })
     }
 
     pub fn shuffle(
@@ -279,7 +315,10 @@ impl PyPermutationReader {
             use lancedb::query::QueryExecutionOptions;
             let mut execution_options = QueryExecutionOptions::default();
             execution_options.max_batch_length = batch_size;
-            let stream = reader.read(selection, execution_options).await.infer_error()?;
+            let stream = reader
+                .read(selection, execution_options)
+                .await
+                .infer_error()?;
             Ok(RecordBatchStream::new(stream))
         })
     }
