@@ -35,7 +35,7 @@ export class PermutationBuilder {
    * Configure the permutation to be persisted.
    *
    * @param connection - The connection to persist the permutation to
-   * @param table_name - The name of the table to create
+   * @param tableName - The name of the table to create
    * @returns A new PermutationBuilder instance
    * @example
    * ```ts
@@ -114,7 +114,7 @@ export class PermutationBuilder {
   /**
    * Configure calculated splits for the permutation.
    *
-   * @param calculation - SQL expression for calculating splits
+   * @param options - Configuration for calculated splitting
    * @returns A new PermutationBuilder instance
    * @example
    * ```ts
