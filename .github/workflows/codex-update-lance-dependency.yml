@@ -88,7 +88,7 @@ jobs:
           You are running inside the lancedb repository on a GitHub Actions runner. Update the Lance dependency to version ${VERSION} and prepare a pull request for maintainers to review.
 
           Follow these steps exactly:
-          1. Use "python3 ci/set_lance_version.py ${VERSION}" to update Lance dependencies. The script already refreshes Cargo metadata, so allow it to finish even if it takes time.
+          1. Use script `ci/set_lance_version.py` to update Lance dependencies. The script already refreshes Cargo metadata, so allow it to finish even if it takes time.
           2. Run "cargo clippy --workspace --tests --all-features -- -D warnings". If diagnostics appear, fix them yourself and rerun clippy until it exits cleanly. Do not skip any warnings.
           3. After clippy succeeds, run "cargo fmt --all" to format the workspace.
           4. Ensure the repository is clean except for intentional changes. Inspect "git status --short" and "git diff" to confirm the dependency update and any required fixes.
@@ -103,4 +103,4 @@ jobs:
           - Do not merge the PR.
           - If any command fails, diagnose and fix the issue instead of aborting.
           EOF
-          codex exec --full-auto --sandbox danger-full-access "$(cat /tmp/codex-prompt.txt)"
+          codex exec --dangerously-bypass-approvals-and-sandbox "$(cat /tmp/codex-prompt.txt)"
