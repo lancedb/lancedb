@@ -657,6 +657,106 @@ def test_colpali(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(
+    importlib.util.find_spec("colpali_engine") is None,
+    reason="colpali_engine not installed",
+)
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "vidore/colSmol-256M",
+        "vidore/colqwen2.5-v0.2",
+        "vidore/colpali-v1.3",
+        "vidore/colqwen2-v1.0",
+    ],
+)
+def test_colpali_models(tmp_path, model_name):
+    import requests
+    from lancedb.pydantic import LanceModel
+
+    db = lancedb.connect(tmp_path)
+    registry = get_registry()
+    func = registry.get("colpali").create(model_name=model_name)
+
+    class MediaItems(LanceModel):
+        text: str
+        image_uri: str = func.SourceField()
+        image_bytes: bytes = func.SourceField()
+        image_vectors: MultiVector(func.ndims()) = func.VectorField()
+
+    table = db.create_table(f"media_{model_name.replace('/', '_')}", schema=MediaItems)
+
+    texts = [
+        "a cute cat playing with yarn",
+    ]
+
+    uris = [
+        "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
+    ]
+
+    image_bytes = [requests.get(uri).content for uri in uris]
+
+    table.add(
+        pd.DataFrame({"text": texts, "image_uri": uris, "image_bytes": image_bytes})
+    )
+
+    image_results = (
+        table.search("fluffy companion", vector_column_name="image_vectors")
+        .limit(1)
+        .to_pydantic(MediaItems)[0]
+    )
+    assert "cat" in image_results.text.lower() or "puppy" in image_results.text.lower()
+
+    first_row = table.to_arrow().to_pylist()[0]
+    assert len(first_row["image_vectors"]) > 1, "Should have multiple image vectors"
+    assert len(first_row["image_vectors"][0]) == func.ndims(), (
+        "Vector dimension mismatch"
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    importlib.util.find_spec("colpali_engine") is None,
+    reason="colpali_engine not installed",
+)
+def test_colpali_pooling(tmp_path):
+    registry = get_registry()
+    model_name = "vidore/colSmol-256M"
+    test_sentence = "a test sentence for pooling"
+
+    # 1. Get embeddings with no pooling
+    func_no_pool = registry.get("colpali").create(
+        model_name=model_name, pooling_strategy=None
+    )
+    unpooled_embeddings = func_no_pool.generate_text_embeddings([test_sentence])[0]
+    original_length = len(unpooled_embeddings)
+    assert original_length > 1
+
+    # 2. Test hierarchical pooling
+    func_hierarchical = registry.get("colpali").create(
+        model_name=model_name, pooling_strategy="hierarchical", pool_factor=2
+    )
+    hierarchical_embeddings = func_hierarchical.generate_text_embeddings(
+        [test_sentence]
+    )[0]
+    expected_hierarchical_length = (original_length + 1) // 2
+    assert len(hierarchical_embeddings) == expected_hierarchical_length
+
+    # 3. Test lambda pooling
+    def simple_pool_func(tensor):
+        return tensor[::2]
+
+    func_lambda = registry.get("colpali").create(
+        model_name=model_name,
+        pooling_strategy="lambda",
+        pooling_func=simple_pool_func,
+    )
+    lambda_embeddings = func_lambda.generate_text_embeddings([test_sentence])[0]
+    expected_lambda_length = (original_length + 1) // 2
+    assert len(lambda_embeddings) == expected_lambda_length
+
+
+@pytest.mark.slow
 def test_siglip(tmp_path, test_images, query_image_bytes):
     from PIL import Image
 
