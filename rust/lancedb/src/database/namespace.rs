@@ -14,9 +14,7 @@ use lance_namespace::{
     },
     LanceNamespace,
 };
-use lance_namespace_impls::connect::{
-    connect as connect_namespace,
-};
+use lance_namespace_impls::connect::connect as connect_namespace;
 
 use crate::database::listing::ListingDatabase;
 use crate::error::{Error, Result};
