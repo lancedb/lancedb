@@ -186,7 +186,7 @@ def set_preview_version(version: str):
         base_version = version.split("-")[0]  # Get the base version without beta suffix
 
         # Build config in desired order: version, default-features, features, tag, git
-        config = {"version": f"={base_version}"}
+        config = {"version": f"={version}"}
 
         if extract_default_features(line):
             config["default-features"] = False
