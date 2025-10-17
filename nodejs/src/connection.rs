@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lancedb::database::CreateTableMode;
+use lancedb::database::{CreateTableMode, Database};
 use napi::bindgen_prelude::*;
 use napi_derive::*;
 
@@ -40,6 +40,10 @@ impl Connection {
             "exist_ok" => Ok(CreateTableMode::exist_ok(|builder| builder)),
             _ => Err(napi::Error::from_reason(format!("Invalid mode {}", mode))),
         }
+    }
+
+    pub fn database(&self) -> napi::Result<Arc<dyn Database>> {
+        Ok(self.get_inner()?.database().clone())
     }
 }
 

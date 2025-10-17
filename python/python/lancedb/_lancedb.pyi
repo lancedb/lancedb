@@ -339,3 +339,6 @@ class AsyncPermutationBuilder:
 def async_permutation_builder(
     table: Table, dest_table_name: str
 ) -> AsyncPermutationBuilder: ...
+
+class PermutationReader:
+    def __init__(self, base_table: Table, permutation_table: Table): ...

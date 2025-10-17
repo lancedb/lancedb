@@ -618,7 +618,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
 #[derive(Clone, Debug)]
 pub struct Table {
     inner: Arc<dyn BaseTable>,
-    database: Arc<dyn Database>,
+    database: Option<Arc<dyn Database>>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
 
@@ -642,7 +642,7 @@ mod test_utils {
             let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
                 inner,
-                database,
+                database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
             }
@@ -664,7 +664,7 @@ mod test_utils {
             let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
                 inner,
-                database,
+                database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
             }
@@ -678,11 +678,21 @@ impl std::fmt::Display for Table {
     }
 }
 
+impl From<Arc<dyn BaseTable>> for Table {
+    fn from(inner: Arc<dyn BaseTable>) -> Self {
+        Self {
+            inner,
+            database: None,
+            embedding_registry: Arc::new(MemoryRegistry::new()),
+        }
+    }
+}
+
 impl Table {
     pub fn new(inner: Arc<dyn BaseTable>, database: Arc<dyn Database>) -> Self {
         Self {
             inner,
-            database,
+            database: Some(database),
             embedding_registry: Arc::new(MemoryRegistry::new()),
         }
     }
@@ -692,7 +702,7 @@ impl Table {
     }
 
     pub fn database(&self) -> &Arc<dyn Database> {
-        &self.database
+        self.database.as_ref().unwrap()
     }
 
     pub fn embedding_registry(&self) -> &Arc<dyn EmbeddingRegistry> {
@@ -706,7 +716,7 @@ impl Table {
     ) -> Self {
         Self {
             inner,
-            database,
+            database: Some(database),
             embedding_registry,
         }
     }

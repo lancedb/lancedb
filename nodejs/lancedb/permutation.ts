@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import { Connection, LocalConnection } from "./connection.js";
 import {
   PermutationBuilder as NativePermutationBuilder,
   Table as NativeTable,
   ShuffleOptions,
+  SplitCalculatedOptions,
   SplitHashOptions,
   SplitRandomOptions,
   SplitSequentialOptions,
@@ -27,6 +29,23 @@ export class PermutationBuilder {
    */
   constructor(inner: NativePermutationBuilder) {
     this.inner = inner;
+  }
+
+  /**
+   * Configure the permutation to be persisted.
+   *
+   * @param connection - The connection to persist the permutation to
+   * @param tableName - The name of the table to create
+   * @returns A new PermutationBuilder instance
+   * @example
+   * ```ts
+   * builder.persist(connection, "permutation_table");
+   * ```
+   */
+  persist(connection: Connection, tableName: string): PermutationBuilder {
+    const localConnection = connection as LocalConnection;
+    const newInner = this.inner.persist(localConnection.inner, tableName);
+    return new PermutationBuilder(newInner);
   }
 
   /**
@@ -95,15 +114,15 @@ export class PermutationBuilder {
   /**
    * Configure calculated splits for the permutation.
    *
-   * @param calculation - SQL expression for calculating splits
+   * @param options - Configuration for calculated splitting
    * @returns A new PermutationBuilder instance
    * @example
    * ```ts
    * builder.splitCalculated("user_id % 3");
    * ```
    */
-  splitCalculated(calculation: string): PermutationBuilder {
-    const newInner = this.inner.splitCalculated(calculation);
+  splitCalculated(options: SplitCalculatedOptions): PermutationBuilder {
+    const newInner = this.inner.splitCalculated(options);
     return new PermutationBuilder(newInner);
   }
 
