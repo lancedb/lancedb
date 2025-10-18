@@ -3991,14 +3991,12 @@ mod tests {
         ];
 
         for interval in intervals {
-            let data = some_sample_data();
-
             let tmp_dir = tempdir().unwrap();
             let uri = tmp_dir.path().to_str().unwrap();
 
             let conn1 = ConnectBuilder::new(uri).execute().await.unwrap();
             let table1 = conn1
-                .create_empty_table("my_table", data.schema())
+                .create_table("my_table", some_sample_data())
                 .execute()
                 .await
                 .unwrap();
@@ -4008,27 +4006,28 @@ mod tests {
                 conn2 = conn2.read_consistency_interval(std::time::Duration::from_millis(interval));
             }
             let conn2 = conn2.execute().await.unwrap();
+
             let table2 = conn2.open_table("my_table").execute().await.unwrap();
 
-            assert_eq!(table1.count_rows(None).await.unwrap(), 0);
-            assert_eq!(table2.count_rows(None).await.unwrap(), 0);
-
-            table1.add(data).execute().await.unwrap();
             assert_eq!(table1.count_rows(None).await.unwrap(), 1);
+            assert_eq!(table2.count_rows(None).await.unwrap(), 1);
+
+            table1.add(some_sample_data()).execute().await.unwrap();
+            assert_eq!(table1.count_rows(None).await.unwrap(), 2);
 
             match interval {
                 None => {
-                    assert_eq!(table2.count_rows(None).await.unwrap(), 0);
-                    table2.checkout_latest().await.unwrap();
                     assert_eq!(table2.count_rows(None).await.unwrap(), 1);
+                    table2.checkout_latest().await.unwrap();
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 2);
                 }
                 Some(0) => {
-                    assert_eq!(table2.count_rows(None).await.unwrap(), 1);
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 2);
                 }
                 Some(100) => {
-                    assert_eq!(table2.count_rows(None).await.unwrap(), 0);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
                     assert_eq!(table2.count_rows(None).await.unwrap(), 1);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 2);
                 }
                 _ => unreachable!(),
             }

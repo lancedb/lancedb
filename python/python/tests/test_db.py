@@ -89,7 +89,7 @@ def test_ingest_pd(tmp_path):
     assert db.open_table("test").name == db["test"].name
 
 
-def test_ingest_iterator(mem_db: lancedb.DBConnection):
+def test_ingest_iterator(tmp_path):
     class PydanticSchema(LanceModel):
         vector: Vector(2)
         item: str
@@ -146,8 +146,8 @@ def test_ingest_iterator(mem_db: lancedb.DBConnection):
                 # name constraints
             ]
 
-    def run_tests(schema):
-        tbl = mem_db.create_table("table2", make_batches(), schema=schema)
+    def run_tests(db, schema):
+        tbl = db.create_table("table2", make_batches(), schema=schema)
         tbl.to_pandas()
         assert tbl.search([3.1, 4.1]).limit(1).to_pandas()["_distance"][0] == 0.0
         assert tbl.search([5.9, 26.5]).limit(1).to_pandas()["_distance"][0] == 0.0
@@ -156,10 +156,11 @@ def test_ingest_iterator(mem_db: lancedb.DBConnection):
         assert tbl_len == 50
         assert len(tbl) == tbl_len * 2
         assert len(tbl.list_versions()) == 2
-        mem_db.drop_database()
+        db.drop_all_tables()
 
-    run_tests(arrow_schema)
-    run_tests(PydanticSchema)
+    db = lancedb.connect(tmp_path)
+    run_tests(db, arrow_schema)
+    run_tests(db, PydanticSchema)
 
 
 def test_table_names(tmp_db: lancedb.DBConnection):
@@ -564,21 +565,21 @@ def test_drop_database(tmp_db: lancedb.DBConnection):
     assert tmp_db.table_names() == ["test"]
 
     tmp_db.create_table("new_test", data=new_data)
-    tmp_db.drop_database()
+    tmp_db.drop_all_tables()
     assert tmp_db.table_names() == []
 
     # it should pass when no tables are present
     tmp_db.create_table("test", data=new_data)
     tmp_db.drop_table("test")
     assert tmp_db.table_names() == []
-    tmp_db.drop_database()
+    tmp_db.drop_all_tables()
     assert tmp_db.table_names() == []
 
     # creating an empty database with schema
     schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=2))])
     tmp_db.create_table("empty_table", schema=schema)
     # dropping a empty database should pass
-    tmp_db.drop_database()
+    tmp_db.drop_all_tables()
     assert tmp_db.table_names() == []
 
 
@@ -742,95 +743,84 @@ def test_bypass_vector_index_sync(tmp_db: lancedb.DBConnection):
     assert "KNN" in plan_without_index
 
 
-def test_local_namespace_operations(tmp_path):
-    """Test that local mode namespace operations behave as expected."""
-    # Create a local database connection
+def test_namespace_create_and_list(tmp_path):
+    """Test creating and listing namespaces with manifest enabled."""
     db = lancedb.connect(tmp_path)
 
-    # Test list_namespaces returns empty list for root namespace
+    # Initially no namespaces
     namespaces = list(db.list_namespaces())
     assert namespaces == []
 
-    # Test list_namespaces with non-empty namespace raises NotImplementedError
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace operations are not supported for listing database",
-    ):
-        list(db.list_namespaces(namespace=["test"]))
+    # Create a namespace
+    db.create_namespace(["ns1"])
+    namespaces = list(db.list_namespaces())
+    assert namespaces == ["ns1"]
+
+    # Create nested namespace
+    db.create_namespace(["ns1", "nested"])
+    namespaces = list(db.list_namespaces(namespace=["ns1"]))
+    assert namespaces == ["nested"]
 
 
-def test_local_create_namespace_not_supported(tmp_path):
-    """Test that create_namespace is not supported in local mode."""
+def test_namespace_table_operations(tmp_path):
+    """Test table operations with namespaces."""
     db = lancedb.connect(tmp_path)
-
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace operations are not supported for listing database",
-    ):
-        db.create_namespace(["test_namespace"])
-
-
-def test_local_drop_namespace_not_supported(tmp_path):
-    """Test that drop_namespace is not supported in local mode."""
-    db = lancedb.connect(tmp_path)
-
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace operations are not supported for listing database",
-    ):
-        db.drop_namespace(["test_namespace"])
-
-
-def test_local_table_operations_with_namespace_raise_error(tmp_path):
-    """
-    Test that table operations with namespace parameter
-    raise ValueError in local mode.
-    """
-    db = lancedb.connect(tmp_path)
-
-    # Create some test data
     data = [{"vector": [1.0, 2.0], "item": "test"}]
     schema = pa.schema(
         [pa.field("vector", pa.list_(pa.float32(), 2)), pa.field("item", pa.string())]
     )
 
-    # Test create_table with namespace - should raise ValueError
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace parameter is not supported for listing database",
-    ):
-        db.create_table(
-            "test_table_with_ns", data=data, schema=schema, namespace=["test_ns"]
-        )
+    # Create namespace
+    db.create_namespace(["test_ns"])
 
-    # Create table normally for other tests
-    db.create_table("test_table", data=data, schema=schema)
-    assert "test_table" in db.table_names()
+    # Create table in namespace
+    table = db.create_table(
+        "test_table", data=data, schema=schema, namespace=["test_ns"]
+    )
+    assert table.name == "test_table"
 
-    # Test open_table with namespace - should raise ValueError
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace parameter is not supported for listing database",
-    ):
-        db.open_table("test_table", namespace=["test_ns"])
+    # List tables in namespace
+    tables = list(db.table_names(namespace=["test_ns"]))
+    assert "test_table" in tables
 
-    # Test table_names with namespace - should raise ValueError
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace parameter is not supported for listing database",
-    ):
-        list(db.table_names(namespace=["test_ns"]))
+    # List tables in root namespace (should be empty)
+    root_tables = list(db.table_names())
+    assert "test_table" not in root_tables
 
-    # Test drop_table with namespace - should raise ValueError
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace parameter is not supported for listing database",
-    ):
-        db.drop_table("test_table", namespace=["test_ns"])
+    # Open table from namespace
+    opened_table = db.open_table("test_table", namespace=["test_ns"])
+    assert opened_table.count_rows() == 1
 
-    # Test table_names without namespace - should work normally
-    tables_root = list(db.table_names())
-    assert "test_table" in tables_root
+    # Drop table from namespace
+    db.drop_table("test_table", namespace=["test_ns"])
+    tables_after_drop = list(db.table_names(namespace=["test_ns"]))
+    assert "test_table" not in tables_after_drop
+
+
+def test_namespace_drop(tmp_path):
+    """Test dropping namespaces with manifest enabled."""
+    db = lancedb.connect(tmp_path)
+
+    # Create some namespaces
+    db.create_namespace(["ns1"])
+    db.create_namespace(["ns2"])
+    db.create_namespace(["ns1", "nested"])
+
+    # Verify they exist
+    namespaces = list(db.list_namespaces())
+    assert set(namespaces) == {"ns1", "ns2"}
+    nested_namespaces = list(db.list_namespaces(namespace=["ns1"]))
+    assert nested_namespaces == ["nested"]
+
+    # Drop nested namespace
+    db.drop_namespace(["ns1", "nested"])
+    nested_namespaces = list(db.list_namespaces(namespace=["ns1"]))
+    assert nested_namespaces == []
+
+    # Drop root namespace
+    db.drop_namespace(["ns2"])
+    namespaces = list(db.list_namespaces())
+    assert namespaces == ["ns1"]
 
 
 def test_clone_table_latest_version(tmp_path):
