@@ -8,13 +8,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lance_namespace::{
-    connect as connect_namespace,
     models::{
         CreateEmptyTableRequest, CreateNamespaceRequest, DescribeTableRequest,
         DropNamespaceRequest, DropTableRequest, ListNamespacesRequest, ListTablesRequest,
     },
     LanceNamespace,
 };
+use lance_namespace_impls::connect::connect as connect_namespace;
 
 use crate::database::listing::ListingDatabase;
 use crate::error::{Error, Result};

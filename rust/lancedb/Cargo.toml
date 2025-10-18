@@ -43,6 +43,7 @@ lance-linalg = { workspace = true }
 lance-testing = { workspace = true }
 lance-encoding = { workspace = true }
 lance-namespace = { workspace = true }
+lance-namespace-impls = { workspace = true, features = ["dir", "rest"] }
 moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }

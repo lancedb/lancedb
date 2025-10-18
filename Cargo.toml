@@ -22,11 +22,12 @@ lance-file = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "
 lance-io = { "version" = "=0.38.3-beta.5", default-features = false, "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
 lance-index = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
 lance-linalg = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
+lance-namespace = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
+lance-namespace-impls = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
 lance-table = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
 lance-testing = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
 lance-datafusion = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
 lance-encoding = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
-lance-namespace = "0.0.18"
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "56.2", optional = false }
@@ -64,15 +65,3 @@ crunchy = "0.2.4"
 chrono = "0.4"
 # Workaround for: https://github.com/Lokathor/bytemuck/issues/306
 bytemuck_derive = ">=1.8.1, <1.9.0"
-
-# This is only needed when we reference preview releases of lance
-# Force to use the same lance version as the rest of the project to avoid duplicate dependencies
-[patch.crates-io]
-lance = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
-lance-io = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
-lance-index = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
-lance-linalg = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
-lance-table = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
-lance-testing = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
-lance-datafusion = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
-lance-encoding = { "version" = "=0.38.3-beta.5", "tag" = "v0.38.3-beta.5", "git" = "https://github.com/lancedb/lance.git" }
