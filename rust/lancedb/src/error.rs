@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::PoisonError;
+use std::sync::{Arc, PoisonError};
 
 use arrow_schema::ArrowError;
 use snafu::Snafu;
@@ -26,6 +26,12 @@ pub enum Error {
 
     #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },
+    #[snafu(display("Namespace '{name}' was not found"))]
+    NamespaceNotFound { name: String },
+    #[snafu(display("Namespace '{name}' is not empty and cannot be dropped"))]
+    NamespaceNotEmpty { name: String },
+    #[snafu(display("Invalid object ID '{id}': {reason}"))]
+    InvalidObjectId { id: String, reason: String },
     #[snafu(display("Unable to created lance dataset at {path}: {source}"))]
     CreateDir {
         path: String,
@@ -83,6 +89,12 @@ pub enum Error {
         message: String,
         #[snafu(source(from(Box<dyn std::error::Error + Send + Sync>, Some)))]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+    #[snafu(display("Manifest database error: {message}"))]
+    Manifest {
+        // used for passing initialized table to the caller
+        table: Option<Arc<dyn crate::table::BaseTable>>,
+        message: String,
     },
 }
 

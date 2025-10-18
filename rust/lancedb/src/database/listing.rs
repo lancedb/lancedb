@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Provides the `ListingDatabase`, a simple database where tables are folders in a directory
-
-use std::fs::create_dir_all;
-use std::path::Path;
-use std::{collections::HashMap, sync::Arc};
+//! Provides the `ListingDatabase`, a simple storage-only database
+pub mod manifest;
 
 use lance::dataset::refs::Ref;
 use lance::dataset::{builder::DatasetBuilder, ReadParams, WriteMode};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
+use lance::session::Session;
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
+use std::collections::HashSet;
+use std::fs::create_dir_all;
+use std::path::Path;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
@@ -34,6 +36,10 @@ pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 pub const OPT_NEW_TABLE_STORAGE_VERSION: &str = "new_table_data_storage_version";
 pub const OPT_NEW_TABLE_V2_MANIFEST_PATHS: &str = "new_table_enable_v2_manifest_paths";
+pub const OPT_MANIFEST_INLINE_OPTIMIZATION_ENABLED: &str = "manifest_inline_optimization_enabled";
+pub const OPT_MANIFEST_READ_CONSISTENCY_INTERVAL: &str = "manifest_read_consistency_interval";
+pub const OPT_MANIFEST_ENABLED: &str = "manifest_enabled";
+pub const OPT_DIR_LISTING_ENABLED: &str = "dir_listing_enabled";
 
 /// Controls how new tables should be created
 #[derive(Clone, Debug, Default)]
@@ -50,7 +56,7 @@ pub struct NewTableConfig {
 }
 
 /// Options specific to the listing database
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct ListingDatabaseOptions {
     /// Controls what kind of Lance tables will be created by this database
     pub new_table_config: NewTableConfig,
@@ -61,6 +67,44 @@ pub struct ListingDatabaseOptions {
     ///
     /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
     pub storage_options: HashMap<String, String>,
+    /// Manifest table configuration
+    ///
+    /// Controls how the manifest table (which stores metadata about tables and namespaces)
+    /// behaves, including:
+    /// - read_consistency_interval: How often to check for updates
+    /// - inline_optimization_enabled: Whether to auto-optimize after updates
+    pub manifest_config: manifest::ManifestDatabaseConfig,
+    /// Whether to enable manifest-based listing (default: true)
+    ///
+    /// When enabled, the database uses the manifest table for listing tables and namespaces,
+    /// with fallback to directory listing for unmigrated tables. This allows gradual migration
+    /// from directory-based to manifest-based databases.
+    ///
+    /// When disabled, the database relies solely on directory listing.
+    pub manifest_enabled: bool,
+    /// Whether to enable directory-based listing fallback (default: true)
+    ///
+    /// When enabled, the database will fallback to directory listing for operations
+    /// like table_names and open_table when manifest_enabled=true but a table is not
+    /// found in the manifest. This allows gradual migration to manifest-based listing.
+    ///
+    /// When disabled, only the manifest table is consulted (no directory fallback).
+    /// This should be set to false after running migration to improve performance.
+    ///
+    /// Note: manifest_enabled and dir_listing_enabled cannot both be false.
+    pub dir_listing_enabled: bool,
+}
+
+impl Default for ListingDatabaseOptions {
+    fn default() -> Self {
+        Self {
+            new_table_config: Default::default(),
+            storage_options: Default::default(),
+            manifest_config: Default::default(),
+            manifest_enabled: true,
+            dir_listing_enabled: true,
+        }
+    }
 }
 
 impl ListingDatabaseOptions {
@@ -87,18 +131,86 @@ impl ListingDatabaseOptions {
                 })
                 .transpose()?,
         };
-        // We just assume that any options that are not new table config options are storage options
+
+        let manifest_inline_optimization = map
+            .get(OPT_MANIFEST_INLINE_OPTIMIZATION_ENABLED)
+            .map(|s| {
+                s.parse::<bool>().map_err(|_| Error::InvalidInput {
+                    message: format!(
+                        "manifest_inline_optimization must be a boolean, received {}",
+                        s
+                    ),
+                })
+            })
+            .transpose()?
+            .unwrap_or(true); // Default to true
+
+        let manifest_read_consistency_interval = map
+            .get(OPT_MANIFEST_READ_CONSISTENCY_INTERVAL)
+            .map(|s| {
+                s.parse::<u64>().map_err(|_| Error::InvalidInput {
+                    message: format!(
+                        "manifest_read_consistency_interval must be a number (milliseconds), received {}",
+                        s
+                    ),
+                }).map(std::time::Duration::from_millis)
+            })
+            .transpose()?;
+
+        let manifest_enabled = map
+            .get(OPT_MANIFEST_ENABLED)
+            .map(|s| {
+                s.parse::<bool>().map_err(|_| Error::InvalidInput {
+                    message: format!("manifest_enabled must be a boolean, received {}", s),
+                })
+            })
+            .transpose()?
+            .unwrap_or(true); // Default to true
+
+        let dir_listing_enabled = map
+            .get(OPT_DIR_LISTING_ENABLED)
+            .map(|s| {
+                s.parse::<bool>().map_err(|_| Error::InvalidInput {
+                    message: format!("dir_listing_enabled must be a boolean, received {}", s),
+                })
+            })
+            .transpose()?
+            .unwrap_or(true); // Default to true
+
+        let manifest_config = manifest::ManifestDatabaseConfig {
+            read_consistency_interval: manifest_read_consistency_interval,
+            inline_optimization_enabled: manifest_inline_optimization,
+            parent_dir_listing_enabled: dir_listing_enabled,
+        };
+
+        // Validate that at least one of manifest_enabled or dir_listing_enabled is true
+        if !manifest_enabled && !dir_listing_enabled {
+            return Err(Error::InvalidInput {
+                message: "At least one of manifest_enabled or dir_listing_enabled must be true"
+                    .to_string(),
+            });
+        }
+
+        // We just assume that any options that are not new table config options
+        // or manifest config options are storage options
         let storage_options = map
             .iter()
             .filter(|(key, _)| {
                 key.as_str() != OPT_NEW_TABLE_STORAGE_VERSION
                     && key.as_str() != OPT_NEW_TABLE_V2_MANIFEST_PATHS
+                    && key.as_str() != OPT_MANIFEST_INLINE_OPTIMIZATION_ENABLED
+                    && key.as_str() != OPT_MANIFEST_READ_CONSISTENCY_INTERVAL
+                    && key.as_str() != OPT_MANIFEST_ENABLED
+                    && key.as_str() != OPT_DIR_LISTING_ENABLED
             })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         Ok(Self {
             new_table_config,
             storage_options,
+            manifest_config,
+            manifest_enabled,
+            dir_listing_enabled,
         })
     }
 }
@@ -117,6 +229,24 @@ impl DatabaseOptions for ListingDatabaseOptions {
                 enable_v2_manifest_paths.to_string(),
             );
         }
+        map.insert(
+            OPT_MANIFEST_INLINE_OPTIMIZATION_ENABLED.to_string(),
+            self.manifest_config.inline_optimization_enabled.to_string(),
+        );
+        if let Some(interval) = self.manifest_config.read_consistency_interval {
+            map.insert(
+                OPT_MANIFEST_READ_CONSISTENCY_INTERVAL.to_string(),
+                interval.as_millis().to_string(),
+            );
+        }
+        map.insert(
+            OPT_MANIFEST_ENABLED.to_string(),
+            self.manifest_enabled.to_string(),
+        );
+        map.insert(
+            OPT_DIR_LISTING_ENABLED.to_string(),
+            self.dir_listing_enabled.to_string(),
+        );
     }
 }
 
@@ -179,29 +309,277 @@ impl ListingDatabaseOptionsBuilder {
         self
     }
 
+    /// Enable or disable inline optimization of the manifest
+    ///
+    /// When enabled (default: true), the manifest will be automatically optimized
+    /// after each update operation. This includes running compact_files and optimizing indexes.
+    ///
+    /// # Arguments
+    ///
+    /// * `enable` - Whether to enable inline optimization
+    pub fn manifest_inline_optimization_enabled(mut self, enable: bool) -> Self {
+        self.options.manifest_config.inline_optimization_enabled = enable;
+        self
+    }
+
+    /// Set the read consistency interval for the manifest
+    ///
+    /// This controls how often the manifest checks for updates.
+    ///
+    /// # Arguments
+    ///
+    /// * `interval` - The read consistency interval
+    pub fn manifest_read_consistency_interval(mut self, interval: std::time::Duration) -> Self {
+        self.options.manifest_config.read_consistency_interval = Some(interval);
+        self
+    }
+
+    /// Enable or disable manifest-based listing
+    ///
+    /// When enabled (default: true), the database uses the manifest table for listing
+    /// tables/namespaces, with optional fallback to directory listing during migration.
+    /// When disabled, the database relies solely on directory listing.
+    ///
+    /// # Arguments
+    ///
+    /// * `enable` - Whether to enable manifest migration mode
+    pub fn manifest_enabled(mut self, enable: bool) -> Self {
+        self.options.manifest_enabled = enable;
+        self
+    }
+
+    /// Enable or disable directory listing fallback
+    ///
+    /// When enabled (default: true), the database will fallback to directory listing
+    /// for operations like table_names and open_table when manifest_enabled=true but
+    /// a table is not found in the manifest.
+    ///
+    /// When disabled, only the manifest table is consulted (no directory fallback).
+    /// This should be set to false after running migration to improve performance.
+    ///
+    /// Note: manifest_enabled and dir_listing_enabled cannot both be false.
+    ///
+    /// # Arguments
+    ///
+    /// * `enable` - Whether to enable directory listing fallback
+    pub fn dir_listing_enabled(mut self, enable: bool) -> Self {
+        self.options.dir_listing_enabled = enable;
+        self
+    }
+
     /// Build the options
     pub fn build(self) -> ListingDatabaseOptions {
         self.options
     }
 }
 
-/// A database that stores tables in a flat directory structure
+/// A database that stores tables in a directory.
 ///
-/// Tables are stored as directories in the base path of the object store.
+/// # Manifest-based Listing and Compatibility
 ///
-/// It is called a "listing database" because we use a "list directory" operation
-/// to discover what tables are available.  Table names are determined from the directory
-/// names.
+/// The `ListingDatabase` supports two modes of operation:
 ///
-/// For example, given the following directory structure:
+/// ## 1. Directory-based Listing (Legacy)
 ///
-/// ```text
-/// /data
-///  /table1.lance
-///  /table2.lance
+/// Tables are discovered by listing directories with `.lance` extension in the object store.
+/// This is the original behavior and provides basic table management without namespace support.
+///
+/// **Limitations:**
+/// - No namespace support (only a flat list of tables)
+/// - No table renaming
+/// - Requires scanning directories for each list operation
+/// - Limited ability to offer more advanced database level features
+/// - Layout not optimized for object store
+///
+/// ## 2. Manifest-based Listing (Recommended)
+///
+/// Tables and namespaces are tracked in a special Lance table called `__manifest` (without .lance extension).
+/// This enables advanced features and better performance.
+///
+/// **Features:**
+/// - Full namespace support with hierarchical organization
+/// - Table renaming capability
+/// - Efficient indexed queries for listing operations
+/// - Stores additional metadata (location, base objects, etc.)
+/// - Layout optimized for object store
+///
+/// ## Backwards Compatibility
+///
+/// ### Reading Old Databases
+///
+/// When `manifest_enabled=true` and `dir_listing_enabled=true` (migration mode), the database
+/// provides backwards compatibility with existing directory-based databases:
+///
+/// - **List operations** merge results from both manifest and directory listing
+/// - **Open table** falls back to directory listing if table not found in manifest
+/// - **Drop table** falls back to directory listing if table not found in manifest
+/// - New tables are created in the manifest automatically
+///
+/// This allows gradual migration: old tables remain accessible while new tables use the manifest.
+///
+/// ### Writing with Old Clients
+///
+/// **WARNING:** Old clients (without manifest support) can still write to the database, but:
+///
+/// - Tables created by old clients will NOT be registered in the manifest
+/// - Migration mode (`dir_listing_enabled=true`) will discover these tables via directory listing
+/// - Use the `migrate()` method to register these tables into the manifest
+///
+/// **Impact of mixing old and new clients:**
+/// - Tables may appear inconsistently depending on which client created them
+/// - Namespace operations will not see tables created by old clients
+/// - After running `migrate()`, all tables will be consistent
+///
+/// ## Forwards Compatibility
+///
+/// ### Reading New Databases with Old Clients
+///
+/// Old clients (without manifest support) have limited visibility when reading databases created
+/// by new clients:
+///
+/// **What old clients CAN see:**
+/// - Tables in the root namespace with `.lance` extension in their location (via directory listing)
+///
+/// **What old clients CANNOT see:**
+/// - Tables with hash-based locations (not discoverable via directory listing)
+/// - Tables in nested namespaces (old clients only scan root namespace)
+/// - Tables that have been renamed (location may no longer match discoverable name)
+/// - The `__manifest` table itself (but it won't interfere with other operations)
+///
+/// **Recommendation:** If you need old client compatibility, ensure `parent_dir_listing_enabled=true`
+/// when creating the manifest database. This ensures new tables use `.lance` extension and remain
+/// discoverable via directory listing. Avoid using namespaces and rename operations if old clients
+/// need access.
+///
+/// ## Migration Path
+///
+/// ### Phase 1: Enable Manifest (Migration Mode)
+///
+/// **This happens automatically when upgrading to the latest LanceDB version.**
+///
+/// The default configuration enables both manifest and directory listing. After upgrading,
+/// simply connect to your existing database:
+///
+/// ```rust,no_run
+/// # use lancedb::database::Database;
+/// # use lancedb::connection::ConnectRequest;
+/// # use lancedb::database::listing::ListingDatabase;
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # let request = ConnectRequest {
+/// #     uri: "/tmp/db".to_string(),
+/// #     #[cfg(feature = "remote")]
+/// #     client_config: Default::default(),
+/// #     options: Default::default(),
+/// #     read_consistency_interval: None,
+/// #     session: None,
+/// # };
+/// // Connect to existing database - migration mode is enabled by default
+/// let db = ListingDatabase::connect_with_options(&request).await?;
+///
+/// // Both old and new tables are accessible
+/// let tables = db.table_names(Default::default()).await?;
+/// # Ok(())
+/// # }
 /// ```
 ///
-/// We will have two tables named `table1` and `table2`.
+/// **What happens:**
+/// - Both old (directory-based) and new (manifest-based) tables are accessible
+/// - New tables are automatically registered in manifest
+/// - Old tables remain in directory-only mode until explicitly migrated
+/// - No data is moved or modified
+///
+/// ### Phase 2: Run Migration
+///
+/// Once you've verified that Phase 1 is working (both old and new tables are accessible),
+/// run the migration to register all existing tables in the manifest:
+///
+/// ```rust,no_run
+/// # use lancedb::database::Database;
+/// # use lancedb::connection::ConnectRequest;
+/// # use lancedb::database::listing::ListingDatabase;
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # let request = ConnectRequest {
+/// #     uri: "/tmp/db".to_string(),
+/// #     #[cfg(feature = "remote")]
+/// #     client_config: Default::default(),
+/// #     options: Default::default(),
+/// #     read_consistency_interval: None,
+/// #     session: None,
+/// # };
+/// // Connect to the database
+/// let db = ListingDatabase::connect_with_options(&request).await?;
+///
+/// // Run migration to register all existing tables in the manifest
+/// let migrated_count = db.migrate().await?;
+/// println!("Migrated {} tables to manifest", migrated_count);
+/// # Ok(())
+/// # }
+/// ```
+///
+/// **What happens:**
+/// - Scans directory for unmigrated tables
+/// - Registers each table in the manifest with its current location
+/// - Safe to run multiple times (skips already-migrated tables)
+/// - Tables remain in their original locations with `.lance` extension
+/// - No data is moved or modified
+///
+/// ### Phase 3: Disable Directory Fallback (Optional)
+///
+/// After confirming all tables are migrated and no old clients need directory fallback,
+/// you can improve performance by disabling directory listing:
+///
+/// ```rust,no_run
+/// # use lancedb::database::Database;
+/// # use lancedb::connection::ConnectRequest;
+/// # use lancedb::database::listing::ListingDatabase;
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// use std::collections::HashMap;
+/// use lancedb::database::listing::OPT_DIR_LISTING_ENABLED;
+///
+/// let mut options = HashMap::new();
+/// options.insert(OPT_DIR_LISTING_ENABLED.to_string(), "false".to_string());
+///
+/// let request = ConnectRequest {
+///     uri: "/tmp/db".to_string(),
+///     #[cfg(feature = "remote")]
+///     client_config: Default::default(),
+///     options,
+///     read_consistency_interval: None,
+///     session: None,
+/// };
+///
+/// // Connect with directory listing disabled
+/// let db = ListingDatabase::connect_with_options(&request).await?;
+///
+/// // Now only the manifest is consulted for all operations
+/// let tables = db.table_names(Default::default()).await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// **What happens:**
+/// - Only manifest is consulted for all operations (no directory scanning)
+/// - Better performance for listing operations
+/// - Old clients can still read existing tables but cannot discover them via listing
+/// - Tables created by old clients (without manifest) will not be visible
+///
+/// ## Configuration Options
+///
+/// - `manifest_enabled`: Enable manifest-based listing (default: true)
+/// - `dir_listing_enabled`: Enable directory listing fallback (default: true)
+/// - `manifest_inline_optimization_enabled`: Auto-optimize manifest after updates (default: true)
+/// - `manifest_read_consistency_interval`: How often to refresh manifest (default: None)
+/// - `parent_dir_listing_enabled`: Whether new tables use `.lance` extension (default: true for compatibility)
+///
+/// ## Best Practices
+///
+/// 1. **New databases:** Use defaults (`manifest_enabled=true`, `dir_listing_enabled=true`)
+/// 2. **Migrating existing databases:**
+///    - Phase 1: Enable manifest with fallback
+///    - Phase 2: Run `migrate()`
+///    - Phase 3: Disable fallback after confirming migration
+/// 3. **Mixed client environments:** Keep `dir_listing_enabled=true` and `parent_dir_listing_enabled=true`
+/// 4. **Pure manifest environments:** Set `dir_listing_enabled=false` for best performance
 #[derive(Debug)]
 pub struct ListingDatabase {
     object_store: Arc<ObjectStore>,
@@ -223,6 +601,82 @@ pub struct ListingDatabase {
 
     // Session for object stores and caching
     session: Arc<lance::session::Session>,
+
+    // Manifest-based database (None if initialization failed)
+    manifest_db: Option<manifest::ManifestDatabase>,
+
+    // Whether manifest-based listing is enabled
+    manifest_enabled: bool,
+
+    // Whether directory-based listing fallback is enabled
+    dir_listing_enabled: bool,
+}
+
+/// Apply sorting and pagination to a list of names
+///
+/// This helper function sorts the names alphabetically and applies pagination
+/// by skipping names up to and including `start_after`, then limiting the result size.
+///
+/// # Arguments
+///
+/// * `names` - Mutable vector of names to sort and paginate
+/// * `start_after` - Optional name to start after (exclusive). Names are filtered to only
+///   include those that come lexicographically after this value.
+/// * `limit` - Optional maximum number of names to return
+///
+/// # Example
+///
+/// ```ignore
+/// let mut names = vec!["table3".to_string(), "table1".to_string(), "table2".to_string()];
+/// apply_pagination(&mut names, Some("table1".to_string()), Some(1));
+/// assert_eq!(names, vec!["table2".to_string()]); // Sorted, skipped "table1", limited to 1
+/// ```
+pub(crate) fn apply_pagination(
+    names: &mut Vec<String>,
+    start_after: Option<String>,
+    limit: Option<u32>,
+) {
+    apply_pagination_with_key(names, start_after.as_deref(), limit, |s| s.as_str());
+}
+
+/// Generic pagination utility that works on any type T
+///
+/// # Arguments
+/// * `items` - The vector to paginate
+/// * `start_after` - Skip items until finding one with a key greater than this value
+/// * `limit` - Maximum number of items to keep
+/// * `key_fn` - Function to extract the sortable/comparable key from each item (as &str)
+///
+/// # Example
+/// ```ignore
+/// struct TableInfo { name: String }
+/// let mut items = vec![
+///     TableInfo { name: "table3".to_string() },
+///     TableInfo { name: "table1".to_string() },
+/// ];
+/// apply_pagination_with_key(&mut items, Some("table1"), Some(1), |t| t.name.as_str());
+/// assert_eq!(items.len(), 1);
+/// assert_eq!(items[0].name, "table3");
+/// ```
+pub(crate) fn apply_pagination_with_key<T, F>(
+    items: &mut Vec<T>,
+    start_after: Option<&str>,
+    limit: Option<u32>,
+    key_fn: F,
+) where
+    F: Fn(&T) -> &str,
+{
+    items.sort_by(|a, b| key_fn(a).cmp(key_fn(b)));
+    if let Some(start_after) = start_after {
+        if let Some(index) = items.iter().position(|item| key_fn(item) > start_after) {
+            items.drain(0..index);
+        } else {
+            items.clear();
+        }
+    }
+    if let Some(limit) = limit {
+        items.truncate(limit as usize);
+    }
 }
 
 impl std::fmt::Display for ListingDatabase {
@@ -269,6 +723,9 @@ impl ListingDatabase {
                     request.read_consistency_interval,
                     options.new_table_config,
                     request.session.clone(),
+                    options.manifest_config,
+                    options.manifest_enabled,
+                    options.dir_listing_enabled,
                 )
                 .await
             }
@@ -347,6 +804,29 @@ impl ListingDatabase {
                     None => None,
                 };
 
+                let (manifest_db, manifest_enabled) = match manifest::ManifestDatabase::new(
+                    table_base_uri.clone(),
+                    query_string.clone(),
+                    session.clone(),
+                    options.manifest_config.clone(),
+                    object_store.clone(),
+                    options.storage_options.clone(),
+                    options.new_table_config.clone(),
+                    write_store_wrapper.clone(),
+                    request.read_consistency_interval,
+                )
+                .await
+                {
+                    Ok(db) => (Some(db), options.manifest_enabled),
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to initialize manifest database: {}. Falling back to directory listing only.",
+                            e
+                        );
+                        (None, false)
+                    }
+                };
+
                 Ok(Self {
                     uri: table_base_uri,
                     query_string,
@@ -354,9 +834,12 @@ impl ListingDatabase {
                     object_store,
                     store_wrapper: write_store_wrapper,
                     read_consistency_interval: request.read_consistency_interval,
-                    storage_options: options.storage_options,
-                    new_table_config: options.new_table_config,
+                    storage_options: options.storage_options.clone(),
+                    new_table_config: options.new_table_config.clone(),
                     session,
+                    manifest_db,
+                    manifest_enabled,
+                    dir_listing_enabled: options.dir_listing_enabled,
                 })
             }
             Err(_) => {
@@ -365,6 +848,9 @@ impl ListingDatabase {
                     request.read_consistency_interval,
                     options.new_table_config,
                     request.session.clone(),
+                    options.manifest_config,
+                    options.manifest_enabled,
+                    options.dir_listing_enabled,
                 )
                 .await
             }
@@ -376,6 +862,9 @@ impl ListingDatabase {
         read_consistency_interval: Option<std::time::Duration>,
         new_table_config: NewTableConfig,
         session: Option<Arc<lance::session::Session>>,
+        manifest_config: manifest::ManifestDatabaseConfig,
+        manifest_enabled: bool,
+        dir_listing_enabled: bool,
     ) -> Result<Self> {
         let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
         let (object_store, base_path) = ObjectStore::from_uri_and_params(
@@ -388,6 +877,29 @@ impl ListingDatabase {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
 
+        let (manifest_db, manifest_enabled) = match manifest::ManifestDatabase::new(
+            path.to_string(),
+            None, // query string
+            session.clone(),
+            manifest_config,
+            object_store.clone(),
+            HashMap::new(), // storage options
+            new_table_config.clone(),
+            None, // store wrapper
+            read_consistency_interval,
+        )
+        .await
+        {
+            Ok(db) => (Some(db), manifest_enabled),
+            Err(e) => {
+                log::warn!(
+                    "Failed to initialize manifest database: {}. Falling back to directory listing only.",
+                    e
+                );
+                (None, false)
+            }
+        };
+
         Ok(Self {
             uri: path.to_string(),
             query_string: None,
@@ -398,6 +910,9 @@ impl ListingDatabase {
             storage_options: HashMap::new(),
             new_table_config,
             session,
+            manifest_db,
+            manifest_enabled,
+            dir_listing_enabled,
         })
     }
 
@@ -462,18 +977,20 @@ impl ListingDatabase {
         Ok(())
     }
 
-    /// Inherit storage options from the connection into the target map
-    fn inherit_storage_options(&self, target: &mut HashMap<String, String>) {
-        for (key, value) in self.storage_options.iter() {
-            if !target.contains_key(key) {
-                target.insert(key.clone(), value.clone());
-            }
+    /// Inherit storage options from source into target map.
+    /// Target options take precedence (not overwritten).
+    pub(super) fn inherit_storage_options(
+        source: &HashMap<String, String>,
+        target: &mut HashMap<String, String>,
+    ) {
+        for (key, value) in source.iter() {
+            // Only insert if the key doesn't already exist (target options take precedence)
+            target.entry(key.clone()).or_insert_with(|| value.clone());
         }
     }
 
     /// Extract storage option overrides from the request
-    fn extract_storage_overrides(
-        &self,
+    pub(super) fn extract_storage_overrides(
         request: &CreateTableRequest,
     ) -> Result<(Option<LanceFileVersion>, Option<bool>)> {
         let storage_options = request
@@ -500,11 +1017,13 @@ impl ListingDatabase {
     }
 
     /// Prepare write parameters for table creation
-    fn prepare_write_params(
-        &self,
+    pub(super) fn prepare_write_params(
         request: &CreateTableRequest,
         storage_version_override: Option<LanceFileVersion>,
         v2_manifest_override: Option<bool>,
+        storage_options_to_inherit: &HashMap<String, String>,
+        new_table_config: &NewTableConfig,
+        session: Arc<Session>,
     ) -> lance::dataset::WriteParams {
         let mut write_params = request
             .write_options
@@ -519,22 +1038,25 @@ impl ListingDatabase {
         // will cause a new connection to be created, and that connection will
         // be dropped from the cache when python GCs the table object, which
         // confounds reuse across tables.
-        if !self.storage_options.is_empty() {
+        if !storage_options_to_inherit.is_empty() {
             let storage_options = write_params
                 .store_params
                 .get_or_insert_with(Default::default)
                 .storage_options
                 .get_or_insert_with(Default::default);
-            self.inherit_storage_options(storage_options);
+            for (key, value) in storage_options_to_inherit {
+                // Only insert if the key doesn't already exist (table-level options should override)
+                storage_options
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
         }
 
-        write_params.data_storage_version = self
-            .new_table_config
+        write_params.data_storage_version = new_table_config
             .data_storage_version
             .or(storage_version_override);
 
-        if let Some(enable_v2_manifest_paths) = self
-            .new_table_config
+        if let Some(enable_v2_manifest_paths) = new_table_config
             .enable_v2_manifest_paths
             .or(v2_manifest_override)
         {
@@ -545,14 +1067,16 @@ impl ListingDatabase {
             write_params.mode = WriteMode::Overwrite;
         }
 
-        write_params.session = Some(self.session.clone());
+        write_params.session = Some(session);
 
         write_params
     }
 
     /// Handle the case where table already exists based on the create mode
-    async fn handle_table_exists(
-        &self,
+    ///
+    /// This is a static helper that can be reused by both ListingDatabase and ManifestDatabase.
+    pub(super) async fn handle_table_exists<D: Database>(
+        db: &D,
         table_name: &str,
         namespace: Vec<String>,
         mode: CreateTableMode,
@@ -570,7 +1094,7 @@ impl ListingDatabase {
                     lance_read_params: None,
                 };
                 let req = (callback)(req);
-                let table = self.open_table(req).await?;
+                let table = db.open_table(req).await?;
 
                 let table_schema = table.schema().await?;
 
@@ -585,20 +1109,67 @@ impl ListingDatabase {
             CreateTableMode::Overwrite => unreachable!(),
         }
     }
+
+    /// Migrate all directory-based tables to the manifest
+    ///
+    /// This performs a one-time migration of all tables found in the directory
+    /// to the manifest table.
+    /// This migration can be run multiple times.
+    pub async fn migrate(&self) -> Result<usize> {
+        // We only care about tables in the root namespace.
+        let Some(ref manifest_db) = self.manifest_db else {
+            return Ok(0); // No manifest, nothing to migrate
+        };
+        let manifest_tables = manifest_db
+            .list_tables(TableNamesRequest::default())
+            .await?;
+        // Collect directory names from manifest
+        let manifest_locations: HashSet<String> = manifest_tables
+            .iter()
+            .map(|table_info| table_info.location.clone())
+            .collect();
+        let dir_tables = self.list_directory_tables().await?;
+
+        // Register each directory table that doesn't have overlapping location
+        // If a directory name already exists in the manifest,
+        // that means the table must have already been migrated or created
+        // in the manifest, so we can skip it.
+        let mut migrated_count = 0;
+        for table_name in dir_tables {
+            // For root namespace tables, the directory name is "table_name.lance"
+            let dir_name = format!("{}.{}", table_name, LANCE_FILE_EXTENSION);
+            if !manifest_locations.contains(&dir_name) {
+                manifest_db
+                    .register_table(&table_name, &[], dir_name)
+                    .await?;
+                migrated_count += 1;
+            }
+        }
+
+        Ok(migrated_count)
+    }
+
+    async fn list_directory_tables(&self) -> Result<Vec<String>> {
+        Ok(self
+            .object_store
+            .read_dir(self.base_path.clone())
+            .await?
+            .iter()
+            .map(Path::new)
+            .filter(|path| {
+                let is_lance = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e == LANCE_EXTENSION);
+                is_lance.unwrap_or(false)
+            })
+            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
+            .collect::<Vec<String>>())
+    }
 }
 
 #[async_trait::async_trait]
 impl Database for ListingDatabase {
-    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>> {
-        if !request.namespace.is_empty() {
-            return Err(Error::NotSupported {
-                message: "Namespace operations are not supported for listing database".into(),
-            });
-        }
-
-        Ok(Vec::new())
-    }
-
     fn uri(&self) -> &str {
         &self.uri
     }
@@ -615,66 +1186,150 @@ impl Database for ListingDatabase {
         }
     }
 
-    async fn create_namespace(&self, _request: CreateNamespaceRequest) -> Result<()> {
+    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>> {
+        if self.manifest_enabled {
+            if let Some(ref manifest_db) = self.manifest_db {
+                return manifest_db.list_namespaces(request).await;
+            }
+        }
+
+        if !request.namespace.is_empty() {
+            return Err(Error::NotSupported {
+                message: "Namespace operations are not supported for listing database unless manifest_enabled is true".into(),
+            });
+        }
+
+        Ok(Vec::new())
+    }
+
+    async fn create_namespace(&self, request: CreateNamespaceRequest) -> Result<()> {
+        if self.manifest_enabled {
+            if let Some(ref manifest_db) = self.manifest_db {
+                return manifest_db.create_namespace(request).await;
+            }
+        }
+
         Err(Error::NotSupported {
-            message: "Namespace operations are not supported for listing database".into(),
+            message: "Namespace operations are not supported for listing database unless manifest_enabled is true".into(),
         })
     }
 
-    async fn drop_namespace(&self, _request: DropNamespaceRequest) -> Result<()> {
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<()> {
+        if self.manifest_enabled {
+            if let Some(ref manifest_db) = self.manifest_db {
+                return manifest_db.drop_namespace(request).await;
+            }
+        }
+
         Err(Error::NotSupported {
-            message: "Namespace operations are not supported for listing database".into(),
+            message: "Namespace operations are not supported for listing database unless manifest_enabled is true".into(),
         })
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         if !request.namespace.is_empty() {
+            if self.manifest_enabled {
+                if let Some(ref manifest_db) = self.manifest_db {
+                    return manifest_db.table_names(request.clone()).await;
+                }
+            }
             return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+                message: "Namespace parameter is not supported for listing database unless manifest_enabled is true".into(),
             });
         }
-        let mut f = self
-            .object_store
-            .read_dir(self.base_path.clone())
-            .await?
-            .iter()
-            .map(Path::new)
-            .filter(|path| {
-                let is_lance = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e == LANCE_EXTENSION);
-                is_lance.unwrap_or(false)
-            })
-            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
-            .collect::<Vec<String>>();
-        f.sort();
-        if let Some(start_after) = request.start_after {
-            let index = f
+
+        // When only manifest is enabled, we can directly return manifest results
+        // with native pagination support
+        if self.manifest_enabled && !self.dir_listing_enabled {
+            if let Some(ref manifest_db) = self.manifest_db {
+                return manifest_db.table_names(request).await;
+            }
+        }
+
+        // When both manifest and directory listing are enabled, we need to deduplicate
+        // by location to avoid listing the same table twice
+        let mut f = if self.manifest_enabled && self.dir_listing_enabled {
+            let mut manifest_request = request.clone();
+            manifest_request.limit = None;
+            manifest_request.start_after = None;
+            let manifest_tables = if let Some(ref manifest_db) = self.manifest_db {
+                manifest_db.list_tables(manifest_request).await?
+            } else {
+                vec![]
+            };
+
+            // Collect directory names from manifest
+            let manifest_locations: HashSet<String> = manifest_tables
                 .iter()
-                .position(|name| name.as_str() > start_after.as_str())
-                .unwrap_or(f.len());
-            f.drain(0..index);
-        }
-        if let Some(limit) = request.limit {
-            f.truncate(limit as usize);
-        }
+                .map(|table_info| table_info.location.clone())
+                .collect();
+
+            // Get table names from manifest
+            let mut table_names: Vec<String> = manifest_tables
+                .iter()
+                .map(|table_info| table_info.name.clone())
+                .collect();
+
+            // Add directory tables that aren't already in the manifest
+            let dir_tables = self.list_directory_tables().await?;
+            for table_name in dir_tables {
+                let dir_name = format!("{}.{}", table_name, LANCE_FILE_EXTENSION);
+                if !manifest_locations.contains(&dir_name) {
+                    table_names.push(table_name);
+                }
+            }
+
+            table_names
+        } else {
+            self.list_directory_tables().await?
+        };
+
+        apply_pagination(&mut f, request.start_after, request.limit);
         Ok(f)
     }
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if self.manifest_enabled {
+            if let Some(ref manifest_db) = self.manifest_db {
+                return match manifest_db.create_table(request).await {
+                    Ok(table) => Ok(table),
+                    Err(Error::Manifest { table, message }) if self.dir_listing_enabled => {
+                        // To the ManifestDatabase, this table creation has failed.
+                        // But to this caller ListingDatabase, the table has been successfully created
+                        // in the right storage location, which means it has technically succeeded.
+                        return if let Some(table) = table {
+                            log::warn!("Failure in manifest operation: {message}");
+                            Ok(table)
+                        } else {
+                            Err(Error::Manifest {
+                                table: None,
+                                message,
+                            })
+                        };
+                    }
+                    Err(e) => return Err(e),
+                };
+            }
+        }
+
         if !request.namespace.is_empty() {
             return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+                message: "Namespace parameter is not supported in listing database unless manifest_enabled is true".into(),
             });
         }
         let table_uri = self.table_uri(&request.name)?;
 
         let (storage_version_override, v2_manifest_override) =
-            self.extract_storage_overrides(&request)?;
+            Self::extract_storage_overrides(&request)?;
 
-        let write_params =
-            self.prepare_write_params(&request, storage_version_override, v2_manifest_override);
+        let write_params = Self::prepare_write_params(
+            &request,
+            storage_version_override,
+            v2_manifest_override,
+            &self.storage_options,
+            &self.new_table_config,
+            self.session.clone(),
+        );
 
         let data_schema = request.data.arrow_schema();
 
@@ -690,7 +1345,8 @@ impl Database for ListingDatabase {
         {
             Ok(table) => Ok(Arc::new(table)),
             Err(Error::TableAlreadyExists { .. }) => {
-                self.handle_table_exists(
+                Self::handle_table_exists(
+                    self,
                     &request.name,
                     request.namespace.clone(),
                     request.mode,
@@ -703,9 +1359,32 @@ impl Database for ListingDatabase {
     }
 
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if self.manifest_enabled {
+            if let Some(ref manifest_db) = self.manifest_db {
+                return match manifest_db.clone_table(request).await {
+                    Ok(table) => Ok(table),
+                    Err(Error::Manifest { table, message }) if self.dir_listing_enabled => {
+                        // To the ManifestDatabase, this table cloning has failed.
+                        // But to this caller ListingDatabase, the table has been successfully created
+                        // in the right storage location, which means it has technically succeeded.
+                        return if let Some(table) = table {
+                            log::warn!("Failure in manifest operation: {message}");
+                            Ok(table)
+                        } else {
+                            Err(Error::Manifest {
+                                table: None,
+                                message,
+                            })
+                        };
+                    }
+                    Err(e) => return Err(e),
+                };
+            }
+        }
+
         if !request.target_namespace.is_empty() {
             return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+                message: "Namespace parameter is not supported for listing database unless manifest_enabled is true".into(),
             });
         }
 
@@ -762,9 +1441,26 @@ impl Database for ListingDatabase {
     }
 
     async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if self.manifest_enabled {
+            if let Some(ref manifest_db) = self.manifest_db {
+                match manifest_db.open_table(request.clone()).await {
+                    Ok(table) => return Ok(table),
+                    Err(Error::TableNotFound { .. }) | Err(Error::NotSupported { .. }) => {
+                        if !self.dir_listing_enabled {
+                            return Err(Error::TableNotFound {
+                                name: request.name.clone(),
+                            });
+                        }
+                        // Continue to directory-based logic below
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+
         if !request.namespace.is_empty() {
             return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+                message: "Namespace parameter is not supported for listing database unless manifest_enabled is true".into(),
             });
         }
         let table_uri = self.table_uri(&request.name)?;
@@ -784,7 +1480,7 @@ impl Database for ListingDatabase {
                 .get_or_insert_with(Default::default)
                 .storage_options
                 .get_or_insert_with(Default::default);
-            self.inherit_storage_options(storage_options);
+            Self::inherit_storage_options(&self.storage_options, storage_options);
         }
 
         // Some ReadParams are exposed in the OpenTableBuilder, but we also
@@ -818,11 +1514,19 @@ impl Database for ListingDatabase {
 
     async fn rename_table(
         &self,
-        _cur_name: &str,
-        _new_name: &str,
+        cur_name: &str,
+        new_name: &str,
         cur_namespace: &[String],
         new_namespace: &[String],
     ) -> Result<()> {
+        if self.manifest_enabled {
+            if let Some(ref manifest_db) = self.manifest_db {
+                return manifest_db
+                    .rename_table(cur_name, new_name, cur_namespace, new_namespace)
+                    .await;
+            }
+        }
+
         if !cur_namespace.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database.".into(),
@@ -834,11 +1538,29 @@ impl Database for ListingDatabase {
             });
         }
         Err(Error::NotSupported {
-            message: "rename_table is not supported in LanceDB OSS".into(),
+            message: "rename_table is not supported in LanceDB OSS without manifest_enabled=true"
+                .into(),
         })
     }
 
     async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()> {
+        if self.manifest_enabled {
+            if let Some(ref manifest_db) = self.manifest_db {
+                match manifest_db.drop_table(name, namespace).await {
+                    Ok(()) => return Ok(()),
+                    Err(Error::TableNotFound { .. }) => {
+                        if !self.dir_listing_enabled {
+                            return Err(Error::TableNotFound {
+                                name: name.to_string(),
+                            });
+                        }
+                        // Continue to directory-based logic below
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+
         if !namespace.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database.".into(),
@@ -848,12 +1570,23 @@ impl Database for ListingDatabase {
     }
 
     async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
-        // Check if namespace parameter is provided
         if !namespace.is_empty() {
+            if self.manifest_enabled {
+                if let Some(ref manifest_db) = self.manifest_db {
+                    return manifest_db.drop_all_tables(namespace).await;
+                }
+            }
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database.".into(),
             });
         }
+
+        if self.manifest_enabled {
+            if let Some(ref manifest_db) = self.manifest_db {
+                manifest_db.drop_all_tables(namespace).await?;
+            }
+        }
+
         let tables = self.table_names(TableNamesRequest::default()).await?;
         self.drop_tables(tables).await
     }
@@ -871,17 +1604,25 @@ mod tests {
     use crate::table::{Table, TableDefinition};
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
+    use rstest::rstest;
     use tempfile::tempdir;
 
-    async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
+    async fn setup_database(manifest_enabled: bool) -> (tempfile::TempDir, ListingDatabase) {
         let tempdir = tempdir().unwrap();
         let uri = tempdir.path().to_str().unwrap();
+
+        // Configure database with manifest enabled/disabled
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_MANIFEST_ENABLED.to_string(),
+            manifest_enabled.to_string(),
+        );
 
         let request = ConnectRequest {
             uri: uri.to_string(),
             #[cfg(feature = "remote")]
             client_config: Default::default(),
-            options: Default::default(),
+            options,
             read_consistency_interval: None,
             session: None,
         };
@@ -894,8 +1635,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_table_basic() {
-        let (_tempdir, db) = setup_database().await;
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_clone_table_basic(#[case] manifest_enabled: bool) {
+        let (_tempdir, db) = setup_database(manifest_enabled).await;
 
         // Create a source table with schema
         let schema = Arc::new(Schema::new(vec![
@@ -943,8 +1687,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_table_with_data() {
-        let (_tempdir, db) = setup_database().await;
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_clone_table_with_data(#[case] manifest_enabled: bool) {
+        let (_tempdir, db) = setup_database(manifest_enabled).await;
 
         // Create a source table with actual data
         let schema = Arc::new(Schema::new(vec![
@@ -1000,13 +1747,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_table_with_storage_options() {
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_clone_table_with_storage_options(#[case] manifest_enabled: bool) {
         let tempdir = tempdir().unwrap();
         let uri = tempdir.path().to_str().unwrap();
 
         // Create database with storage options
         let mut options = HashMap::new();
         options.insert("test_option".to_string(), "test_value".to_string());
+        options.insert(
+            OPT_MANIFEST_ENABLED.to_string(),
+            manifest_enabled.to_string(),
+        );
 
         let request = ConnectRequest {
             uri: uri.to_string(),
@@ -1052,8 +1806,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_table_deep_not_supported() {
-        let (_tempdir, db) = setup_database().await;
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_clone_table_deep_not_supported(#[case] manifest_enabled: bool) {
+        let (_tempdir, db) = setup_database(manifest_enabled).await;
 
         // Create a source table
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -1090,8 +1847,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_table_with_namespace_not_supported() {
-        let (_tempdir, db) = setup_database().await;
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_clone_table_namespace_not_found(#[case] manifest_enabled: bool) {
+        let (_tempdir, db) = setup_database(manifest_enabled).await;
 
         // Create a source table
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -1108,11 +1868,11 @@ mod tests {
 
         let source_uri = db.table_uri("source").unwrap();
 
-        // Try clone with namespace (should fail for listing database)
+        // Try clone to non-existent namespace
         let result = db
             .clone_table(CloneTableRequest {
                 target_table_name: "cloned".to_string(),
-                target_namespace: vec!["namespace".to_string()], // Non-empty namespace
+                target_namespace: vec!["nonexistent".to_string()],
                 source_uri,
                 source_version: None,
                 source_tag: None,
@@ -1121,15 +1881,30 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::NotSupported { message } if message.contains("Namespace parameter is not supported")
-        ));
+        let error = result.unwrap_err();
+        if manifest_enabled {
+            // With manifest enabled, should fail with NamespaceNotFound
+            assert!(
+                matches!(error, Error::NamespaceNotFound { .. }),
+                "Expected NamespaceNotFound, got: {:?}",
+                error
+            );
+        } else {
+            // Without manifest, should fail with NotSupported (namespaces not supported)
+            assert!(
+                matches!(error, Error::NotSupported { .. }),
+                "Expected NotSupported, got: {:?}",
+                error
+            );
+        }
     }
 
     #[tokio::test]
-    async fn test_clone_table_invalid_target_name() {
-        let (_tempdir, db) = setup_database().await;
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_clone_table_invalid_target_name(#[case] manifest_enabled: bool) {
+        let (_tempdir, db) = setup_database(manifest_enabled).await;
 
         // Create a source table
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -1162,8 +1937,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_table_source_not_found() {
-        let (_tempdir, db) = setup_database().await;
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_clone_table_source_not_found(#[case] manifest_enabled: bool) {
+        let (_tempdir, db) = setup_database(manifest_enabled).await;
 
         // Try to clone from non-existent source
         let result = db
@@ -1181,8 +1959,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_table_with_version_and_tag_error() {
-        let (_tempdir, db) = setup_database().await;
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_clone_table_with_version_and_tag_error(#[case] manifest_enabled: bool) {
+        let (_tempdir, db) = setup_database(manifest_enabled).await;
 
         // Create a source table
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -1219,8 +2000,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_table_with_specific_version() {
-        let (_tempdir, db) = setup_database().await;
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_clone_table_with_specific_version(#[case] manifest_enabled: bool) {
+        let (_tempdir, db) = setup_database(manifest_enabled).await;
 
         // Create a source table with initial data
         let schema = Arc::new(Schema::new(vec![
@@ -1303,8 +2087,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_table_with_tag() {
-        let (_tempdir, db) = setup_database().await;
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_clone_table_with_tag(#[case] manifest_enabled: bool) {
+        let (_tempdir, db) = setup_database(manifest_enabled).await;
 
         // Create a source table with initial data
         let schema = Arc::new(Schema::new(vec![
@@ -1388,8 +2175,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cloned_tables_evolve_independently() {
-        let (_tempdir, db) = setup_database().await;
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_cloned_tables_evolve_independently(#[case] manifest_enabled: bool) {
+        let (_tempdir, db) = setup_database(manifest_enabled).await;
 
         // Create a source table with initial data
         let schema = Arc::new(Schema::new(vec![
@@ -1488,8 +2278,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clone_latest_version() {
-        let (_tempdir, db) = setup_database().await;
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    async fn test_clone_latest_version(#[case] manifest_enabled: bool) {
+        let (_tempdir, db) = setup_database(manifest_enabled).await;
 
         // Create a source table with initial data
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -1555,5 +2348,537 @@ mod tests {
 
         // Cloned table should have all 8 rows from the latest version
         assert_eq!(cloned_table.count_rows(None).await.unwrap(), 8);
+    }
+
+    #[tokio::test]
+    async fn test_backward_compatibility_create_with_manifest_read_without() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create a database with manifest enabled (v2)
+        let mut options_v2 = HashMap::new();
+        options_v2.insert(OPT_MANIFEST_ENABLED.to_string(), "true".to_string());
+
+        let request_v2 = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_v2,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_v2 = ListingDatabase::connect_with_options(&request_v2)
+            .await
+            .unwrap();
+
+        // Create a table with manifest enabled in root namespace
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        db_v2
+            .create_table(CreateTableRequest {
+                name: "test_table".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Create a database with manifest disabled (v1)
+        let mut options_v1 = HashMap::new();
+        options_v1.insert(OPT_MANIFEST_ENABLED.to_string(), "false".to_string());
+
+        let request_v1 = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_v1,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_v1 = ListingDatabase::connect_with_options(&request_v1)
+            .await
+            .unwrap();
+
+        // Old client should be able to list the table
+        let table_names = db_v1
+            .table_names(TableNamesRequest::default())
+            .await
+            .unwrap();
+        assert!(table_names.contains(&"test_table".to_string()));
+
+        // Old client should be able to open the table
+        let table = db_v1
+            .open_table(OpenTableRequest {
+                name: "test_table".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify the data is accessible
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_forward_compatibility_create_without_manifest_read_with() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create a database with manifest disabled (v1)
+        let mut options_v1 = HashMap::new();
+        options_v1.insert(OPT_MANIFEST_ENABLED.to_string(), "false".to_string());
+
+        let request_v1 = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_v1,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_v1 = ListingDatabase::connect_with_options(&request_v1)
+            .await
+            .unwrap();
+
+        // Create a table with manifest disabled
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![10, 20, 30])),
+                Arc::new(StringArray::from(vec!["x", "y", "z"])),
+            ],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        db_v1
+            .create_table(CreateTableRequest {
+                name: "old_table".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Create a database with manifest enabled (v2)
+        let mut options_v2 = HashMap::new();
+        options_v2.insert(OPT_MANIFEST_ENABLED.to_string(), "true".to_string());
+
+        let request_v2 = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_v2,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_v2 = ListingDatabase::connect_with_options(&request_v2)
+            .await
+            .unwrap();
+
+        // New client should be able to list the table (migration mode)
+        let table_names = db_v2
+            .table_names(TableNamesRequest::default())
+            .await
+            .unwrap();
+        assert!(table_names.contains(&"old_table".to_string()));
+
+        // New client should be able to open the table
+        let table = db_v2
+            .open_table(OpenTableRequest {
+                name: "old_table".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify the data is accessible
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_old_clients_cannot_see_namespaced_tables() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create a database with manifest enabled (v2)
+        let mut options_v2 = HashMap::new();
+        options_v2.insert(OPT_MANIFEST_ENABLED.to_string(), "true".to_string());
+
+        let request_v2 = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_v2,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_v2 = ListingDatabase::connect_with_options(&request_v2)
+            .await
+            .unwrap();
+
+        // Create a namespace
+        db_v2
+            .create_namespace(CreateNamespaceRequest {
+                namespace: vec!["myspace".to_string()],
+            })
+            .await
+            .unwrap();
+
+        // Create a table in the namespace
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1, 2]))])
+                .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        db_v2
+            .create_table(CreateTableRequest {
+                name: "namespaced_table".to_string(),
+                namespace: vec!["myspace".to_string()],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Create a database with manifest disabled (v1)
+        let mut options_v1 = HashMap::new();
+        options_v1.insert(OPT_MANIFEST_ENABLED.to_string(), "false".to_string());
+
+        let request_v1 = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_v1,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_v1 = ListingDatabase::connect_with_options(&request_v1)
+            .await
+            .unwrap();
+
+        // Old client should NOT be able to list the namespaced table in root
+        let table_names = db_v1
+            .table_names(TableNamesRequest::default())
+            .await
+            .unwrap();
+        assert!(!table_names.contains(&"namespaced_table".to_string()));
+
+        // Old client cannot query namespaces
+        let result = db_v1
+            .table_names(TableNamesRequest {
+                namespace: vec!["myspace".to_string()],
+                start_after: None,
+                limit: None,
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::NotSupported { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_old_clients_cannot_see_renamed_tables() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create a database with manifest enabled (v2)
+        let mut options_v2 = HashMap::new();
+        options_v2.insert(OPT_MANIFEST_ENABLED.to_string(), "true".to_string());
+
+        let request_v2 = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_v2,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_v2 = ListingDatabase::connect_with_options(&request_v2)
+            .await
+            .unwrap();
+
+        // Create a table with original name
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![5, 6, 7]))],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        db_v2
+            .create_table(CreateTableRequest {
+                name: "original_name".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Rename the table using v2 database
+        db_v2
+            .rename_table("original_name", "new_name", &[], &[])
+            .await
+            .unwrap();
+
+        // Create a database with manifest disabled (v1)
+        let mut options_v1 = HashMap::new();
+        options_v1.insert(OPT_MANIFEST_ENABLED.to_string(), "false".to_string());
+
+        let request_v1 = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_v1,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_v1 = ListingDatabase::connect_with_options(&request_v1)
+            .await
+            .unwrap();
+
+        // Old client should NOT see the renamed table because it's now stored without .lance extension
+        // (hidden from directory-based listing)
+        let table_names = db_v1
+            .table_names(TableNamesRequest::default())
+            .await
+            .unwrap();
+        assert!(!table_names.contains(&"original_name".to_string()));
+        assert!(!table_names.contains(&"new_name".to_string()));
+
+        // Old client cannot open table with the original name
+        let result = db_v1
+            .open_table(OpenTableRequest {
+                name: "original_name".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await;
+        assert!(result.is_err());
+
+        // Old client cannot open with the new name
+        let result = db_v1
+            .open_table(OpenTableRequest {
+                name: "new_name".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validation_both_manifest_and_dir_listing_flags_false() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Try to create database with both flags false
+        let mut options = HashMap::new();
+        options.insert(OPT_MANIFEST_ENABLED.to_string(), "false".to_string());
+        options.insert(OPT_DIR_LISTING_ENABLED.to_string(), "false".to_string());
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let result = ListingDatabase::connect_with_options(&request).await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidInput { message } if message.contains("At least one of manifest_enabled or dir_listing_enabled must be true")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_dir_listing_disabled_prevents_fallback() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create a table with manifest disabled (directory-based mode)
+        let mut options_v1 = HashMap::new();
+        options_v1.insert(OPT_MANIFEST_ENABLED.to_string(), "false".to_string());
+
+        let request_v1 = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_v1,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_v1 = ListingDatabase::connect_with_options(&request_v1)
+            .await
+            .unwrap();
+
+        // Create a table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        db_v1
+            .create_table(CreateTableRequest {
+                name: "unmigrated_table".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Create a new database connection with manifest enabled but dir_listing disabled
+        let mut options_v2 = HashMap::new();
+        options_v2.insert(OPT_MANIFEST_ENABLED.to_string(), "true".to_string());
+        options_v2.insert(OPT_DIR_LISTING_ENABLED.to_string(), "false".to_string());
+
+        let request_v2 = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_v2,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_v2 = ListingDatabase::connect_with_options(&request_v2)
+            .await
+            .unwrap();
+
+        // Trigger manifest table creation by calling a read operation
+        // (Don't actually migrate the table - we want to test the no-fallback behavior)
+        // Should NOT be able to list the unmigrated table (no fallback to directory)
+        let table_names = db_v2
+            .table_names(TableNamesRequest::default())
+            .await
+            .unwrap();
+        assert!(!table_names.contains(&"unmigrated_table".to_string()),
+            "Table list should not contain unmigrated table when dir_listing is disabled. Found: {:?}", table_names);
+
+        // Should NOT be able to open the unmigrated table (no fallback to directory)
+        let result = db_v2
+            .open_table(OpenTableRequest {
+                name: "unmigrated_table".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::TableNotFound { .. }));
+
+        // Should NOT be able to drop the unmigrated table (no fallback to directory)
+        let result = db_v2.drop_table("unmigrated_table", &[]).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::TableNotFound { .. }));
+
+        // But with dir_listing enabled (default), it should work
+        let mut options_v2_with_dir = HashMap::new();
+        options_v2_with_dir.insert(OPT_MANIFEST_ENABLED.to_string(), "true".to_string());
+        options_v2_with_dir.insert(OPT_DIR_LISTING_ENABLED.to_string(), "true".to_string());
+
+        let request_v2_with_dir = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options_v2_with_dir,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db_v2_with_dir = ListingDatabase::connect_with_options(&request_v2_with_dir)
+            .await
+            .unwrap();
+
+        // Should be able to list the unmigrated table (with fallback)
+        let table_names = db_v2_with_dir
+            .table_names(TableNamesRequest::default())
+            .await
+            .unwrap();
+        assert!(table_names.contains(&"unmigrated_table".to_string()));
+
+        // Should be able to open the unmigrated table (with fallback)
+        let table = db_v2_with_dir
+            .open_table(OpenTableRequest {
+                name: "unmigrated_table".to_string(),
+                namespace: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
     }
 }
