@@ -95,8 +95,9 @@ jobs:
           5. Create and switch to a new branch named "${BRANCH_NAME}" (replace any duplicated hyphens if necessary).
           6. Stage all relevant files with "git add -A". Commit using the message "chore: update lance dependency to v${VERSION}".
           7. Push the branch to origin. If the branch already exists, force-push your changes.
-          8. Create a pull request targeting "main" with title "chore: update lance dependency to v${VERSION}". In the body, summarize the dependency bump, clippy/fmt verification, and link the triggering tag (${TAG}). Use the GitHub CLI if helpful.
-          9. After creating the PR, display the PR URL, "git status --short", and a concise summary of the commands run and their results.
+          8. env `GH_TOKEN` is available, use `gh` tools for github related operations like creating pull request.
+          9. Create a pull request targeting "main" with title "chore: update lance dependency to v${VERSION}". In the body, summarize the dependency bump, clippy/fmt verification, and link the triggering tag (${TAG}).
+          10. After creating the PR, display the PR URL, "git status --short", and a concise summary of the commands run and their results.
 
           Constraints:
           - Use bash commands; avoid modifying GitHub workflow files other than through the scripted task above.
