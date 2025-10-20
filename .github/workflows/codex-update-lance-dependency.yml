@@ -61,7 +61,7 @@ jobs:
       - name: Configure git user
         run: |
           git config user.name "lancedb automation"
-          git config user.email "automation@lancedb.com"
+          git config user.email "robot@lancedb.com"
 
       - name: Configure Codex authentication
         env:
@@ -77,8 +77,8 @@ jobs:
       - name: Run Codex to update Lance dependency
         env:
           TAG: ${{ inputs.tag }}
-          GITHUB_TOKEN: ${{ github.token }}
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
         run: |
           set -euo pipefail
           VERSION="${TAG#refs/tags/}"
