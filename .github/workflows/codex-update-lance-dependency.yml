@@ -104,4 +104,4 @@ jobs:
           - Do not merge the PR.
           - If any command fails, diagnose and fix the issue instead of aborting.
           EOF
-          codex exec --dangerously-bypass-approvals-and-sandbox "$(cat /tmp/codex-prompt.txt)"
+          codex --config shell_environment_policy.ignore_default_excludes=true exec --dangerously-bypass-approvals-and-sandbox "$(cat /tmp/codex-prompt.txt)"
