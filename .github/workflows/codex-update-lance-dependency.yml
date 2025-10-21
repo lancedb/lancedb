@@ -88,14 +88,14 @@ jobs:
           You are running inside the lancedb repository on a GitHub Actions runner. Update the Lance dependency to version ${VERSION} and prepare a pull request for maintainers to review.
 
           Follow these steps exactly:
-          1. Use script `ci/set_lance_version.py` to update Lance dependencies. The script already refreshes Cargo metadata, so allow it to finish even if it takes time.
+          1. Use script "ci/set_lance_version.py" to update Lance dependencies. The script already refreshes Cargo metadata, so allow it to finish even if it takes time.
           2. Run "cargo clippy --workspace --tests --all-features -- -D warnings". If diagnostics appear, fix them yourself and rerun clippy until it exits cleanly. Do not skip any warnings.
           3. After clippy succeeds, run "cargo fmt --all" to format the workspace.
           4. Ensure the repository is clean except for intentional changes. Inspect "git status --short" and "git diff" to confirm the dependency update and any required fixes.
           5. Create and switch to a new branch named "${BRANCH_NAME}" (replace any duplicated hyphens if necessary).
           6. Stage all relevant files with "git add -A". Commit using the message "chore: update lance dependency to v${VERSION}".
           7. Push the branch to origin. If the branch already exists, force-push your changes.
-          8. env `GH_TOKEN` is available, use `gh` tools for github related operations like creating pull request.
+          8. env "GH_TOKEN" is available, use "gh" tools for github related operations like creating pull request.
           9. Create a pull request targeting "main" with title "chore: update lance dependency to v${VERSION}". In the body, summarize the dependency bump, clippy/fmt verification, and link the triggering tag (${TAG}).
           10. After creating the PR, display the PR URL, "git status --short", and a concise summary of the commands run and their results.
 
