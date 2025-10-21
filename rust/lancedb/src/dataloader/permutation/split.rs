@@ -13,7 +13,7 @@ use arrow_array::{Array, BooleanArray, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 use datafusion_common::hash_utils::create_hashes;
 use futures::{StreamExt, TryStreamExt};
-use lance::arrow::SchemaExt;
+use lance_arrow::SchemaExt;
 
 use crate::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},

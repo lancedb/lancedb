@@ -10,7 +10,7 @@ pub mod sentence_transformers;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
 
-use lance::arrow::RecordBatchExt;
+use lance_arrow::RecordBatchExt;
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
