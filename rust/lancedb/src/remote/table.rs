@@ -1427,6 +1427,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         "NOT_SUPPORTED"
     }
 
+    async fn storage_options(&self) -> Option<HashMap<String, String>> {
+        None
+    }
+
     async fn stats(&self) -> Result<TableStatistics> {
         let request = self
             .client

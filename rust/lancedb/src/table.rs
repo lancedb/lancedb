@@ -601,6 +601,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn table_definition(&self) -> Result<TableDefinition>;
     /// Get the table URI
     fn dataset_uri(&self) -> &str;
+    /// Get the storage options used when opening this table, if any.
+    async fn storage_options(&self) -> Option<HashMap<String, String>>;
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
     /// are not fully indexed within the timeout.
     async fn wait_for_index(
@@ -1291,6 +1293,13 @@ impl Table {
     /// Warning: This is an internal API and the return value is subject to change.
     pub fn dataset_uri(&self) -> &str {
         self.inner.dataset_uri()
+    }
+
+    /// Get the storage options used when opening this table, if any.
+    ///
+    /// Warning: This is an internal API and the return value is subject to change.
+    pub async fn storage_options(&self) -> Option<HashMap<String, String>> {
+        self.inner.storage_options().await
     }
 
     /// Get statistics about an index.
@@ -2617,6 +2626,14 @@ impl BaseTable for NativeTable {
         self.uri.as_str()
     }
 
+    async fn storage_options(&self) -> Option<HashMap<String, String>> {
+        self.dataset
+            .get()
+            .await
+            .ok()
+            .and_then(|dataset| dataset.storage_options().cloned())
+    }
+
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
         let stats = match self
             .dataset
@@ -2626,7 +2643,7 @@ impl BaseTable for NativeTable {
             .await
         {
             Ok(stats) => stats,
-            Err(lance::error::Error::IndexNotFound { .. }) => return Ok(None),
+            Err(lance_core::Error::IndexNotFound { .. }) => return Ok(None),
             Err(e) => return Err(Error::from(e)),
         };
 
