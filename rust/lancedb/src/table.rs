@@ -2383,6 +2383,10 @@ impl BaseTable for NativeTable {
             scanner.full_text_search(fts.clone())?;
         }
 
+        if query.base.disable_scoring_autoprojection {
+            scanner.disable_scoring_autoprojection();
+        }
+
         if let Some(refine_factor) = query.refine_factor {
             scanner.refine(refine_factor);
         }
