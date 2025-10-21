@@ -11,10 +11,8 @@ use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{stream, try_join, FutureExt, TryFutureExt, TryStreamExt};
 use half::f16;
-use lance::{
-    arrow::RecordBatchExt,
-    dataset::{scanner::DatasetRecordBatchStream, ROW_ID},
-};
+use lance::dataset::{scanner::DatasetRecordBatchStream, ROW_ID};
+use lance_arrow::RecordBatchExt;
 use lance_datafusion::exec::execute_plan;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::scalar::FullTextSearchQuery;

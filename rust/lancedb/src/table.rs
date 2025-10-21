@@ -2643,7 +2643,7 @@ impl BaseTable for NativeTable {
             .await
         {
             Ok(stats) => stats,
-            Err(lance::error::Error::IndexNotFound { .. }) => return Ok(None),
+            Err(lance_core::Error::IndexNotFound { .. }) => return Ok(None),
             Err(e) => return Err(Error::from(e)),
         };
 

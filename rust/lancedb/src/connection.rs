@@ -1188,7 +1188,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
     use futures::{stream, TryStreamExt};
-    use lance::error::{ArrowResult, DataFusionResult};
+    use lance_core::error::{ArrowResult, DataFusionResult};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
     use tempfile::tempdir;
 
