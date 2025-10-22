@@ -312,6 +312,22 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(res.getChild("id")?.toJSON()).toEqual([2, 3]);
     });
 
+    // https://github.com/lancedb/lancedb/issues/2722
+    it.skip("takeRowIds should accept bigint[] from withRowId() results", async () => {
+      await table.add([{ id: 1 }]);
+
+      // Get row ID using withRowId() - it returns bigint
+      const results = await table.query().withRowId().toArray();
+      const rowIds = results.map((row) => row._rowid);
+
+      expect(typeof rowIds[0]).toBe("bigint");
+
+      // takeRowIds should accept bigint[] directly
+      const takeResults = await table.takeRowIds(rowIds).toArray();
+      expect(takeResults.length).toBe(1);
+      expect(takeResults[0]._rowid).toBe(rowIds[0]);
+    });
+
     it("should return the table as an instance of an arrow table", async () => {
       const arrowTbl = await table.toArrow();
       expect(arrowTbl).toBeInstanceOf(ArrowTable);
