@@ -325,7 +325,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       // takeRowIds should accept bigint[] directly
       const takeResults = await table.takeRowIds(rowIds).withRowId().toArray();
       expect(takeResults.length).toBe(1);
-      expect(takeResults[0]._rowid).toBe(rowIds[0]);
+      expect(takeResults[0]._rowid).toEqual(rowIds[0]);
     });
 
     it("should return the table as an instance of an arrow table", async () => {
