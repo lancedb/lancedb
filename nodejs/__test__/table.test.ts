@@ -313,7 +313,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     });
 
     // https://github.com/lancedb/lancedb/issues/2722
-    it.skip("takeRowIds should accept bigint[] from withRowId() results", async () => {
+    it("takeRowIds should accept bigint[] from withRowId() results", async () => {
       await table.add([{ id: 1 }]);
 
       // Get row ID using withRowId() - it returns bigint
@@ -323,7 +323,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(typeof rowIds[0]).toBe("bigint");
 
       // takeRowIds should accept bigint[] directly
-      const takeResults = await table.takeRowIds(rowIds).toArray();
+      const takeResults = await table.takeRowIds(rowIds).withRowId().toArray();
       expect(takeResults.length).toBe(1);
       expect(takeResults[0]._rowid).toBe(rowIds[0]);
     });
