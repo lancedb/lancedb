@@ -349,7 +349,7 @@ export abstract class Table {
    * @param rowIds The row ids of the rows to return.
    * @returns A builder that can be used to parameterize the query.
    */
-  abstract takeRowIds(rowIds: number[]): TakeQuery;
+  abstract takeRowIds(rowIds: bigint[]): TakeQuery;
 
   /**
    * Create a search query to find the nearest neighbors
@@ -686,7 +686,7 @@ export class LocalTable extends Table {
     return new TakeQuery(this.inner.takeOffsets(offsets));
   }
 
-  takeRowIds(rowIds: number[]): TakeQuery {
+  takeRowIds(rowIds: bigint[]): TakeQuery {
     return new TakeQuery(this.inner.takeRowIds(rowIds));
   }
 
