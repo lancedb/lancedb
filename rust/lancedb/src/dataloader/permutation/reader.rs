@@ -24,6 +24,7 @@ use arrow_schema::SchemaRef;
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::io::RecordBatchStream;
+use lance_arrow::RecordBatchExt;
 use lance_core::error::LanceOptionExt;
 use lance_core::ROW_ID;
 use std::collections::HashMap;
