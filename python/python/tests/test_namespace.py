@@ -59,6 +59,14 @@ class TempNamespace(LanceNamespace):
             root
         ]  # Reference to shared namespaces
 
+    def namespace_id(self) -> str:
+        """Return a human-readable unique identifier for this namespace instance.
+
+        Returns:
+            A unique identifier string based on the root directory
+        """
+        return f"TempNamespace {{ root: '{self.config.root}' }}"
+
     def list_tables(self, request: ListTablesRequest) -> ListTablesResponse:
         """List all tables in the namespace."""
         if not request.id:
