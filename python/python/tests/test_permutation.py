@@ -831,3 +831,24 @@ def test_iter_single_row(mem_db):
     # With skip_last_batch=True, should skip the single row (since it's < batch_size)
     batches_skip = list(perm.iter(10, skip_last_batch=True))
     assert len(batches_skip) == 0
+
+
+def test_identity_permutation(mem_db):
+    tbl = mem_db.create_table(
+        "test_table", pa.table({"id": range(10), "value": range(10)})
+    )
+    permutation = Permutation.identity(tbl)
+
+    assert permutation.num_rows == 10
+    assert permutation.num_columns == 2
+
+    batches = list(permutation.iter(10, skip_last_batch=False))
+    assert len(batches) == 1
+    assert len(batches[0]["id"]) == 10
+    assert len(batches[0]["value"]) == 10
+
+    permutation = permutation.remove_columns(["value"])
+    assert permutation.num_columns == 1
+    assert permutation.schema == pa.schema([("id", pa.int64())])
+    assert permutation.column_names == ["id"]
+    assert permutation.shape == (10, 1)

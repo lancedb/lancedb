@@ -424,21 +424,40 @@ class Permutation:
         return Permutation(self.reader, self.selection, batch_size, self.transform_fn)
 
     @classmethod
+    def identity(cls, table: LanceTable) -> "Permutation":
+        """
+        Creates an identity permutation for the given table.
+        """
+        return Permutation.from_tables(table, None, None)
+
+    @classmethod
     def from_tables(
         cls,
         base_table: LanceTable,
-        permutation_table: LanceTable,
+        permutation_table: Optional[LanceTable] = None,
         split: Optional[Union[str, int]] = None,
     ) -> "Permutation":
         """
         Creates a permutation from the given base table and permutation table.
 
+        A permutation table identifies which rows, and in what order, the data should
+        be read from the base table.  For more details see the [PermutationBuilder]
+        class.
+
+        If no permutation table is provided, then the identity permutation will be
+        created.  An identity permutation is a permutation that reads all rows in the
+        base table in the order they are stored.
+
         The split parameter identifies which split to use.  If no split is provided
         then the first split will be used.
         """
         assert base_table is not None, "base_table is required"
-        assert permutation_table is not None, "permutation_table is required"
         if split is not None:
+            if permutation_table is None:
+                raise ValueError(
+                    "Cannot create a permutation on split `{split}`"
+                    " because no permutation table is provided"
+                )
             if isinstance(split, str):
                 if permutation_table.schema.metadata is None:
                     raise ValueError(

@@ -247,21 +247,27 @@ impl PyPermutationReader {
     pub fn from_tables<'py>(
         cls: &Bound<'py, PyType>,
         base_table: Bound<'py, PyAny>,
-        permutation_table: Bound<'py, PyAny>,
+        permutation_table: Option<Bound<'py, PyAny>>,
         split: u64,
     ) -> PyResult<Bound<'py, PyAny>> {
         let base_table = base_table.getattr("_inner")?.downcast_into::<Table>()?;
         let permutation_table = permutation_table
-            .getattr("_inner")?
-            .downcast_into::<Table>()?;
+            .map(|p| PyResult::Ok(p.getattr("_inner")?.downcast_into::<Table>()?))
+            .transpose()?;
 
         let base_table = base_table.borrow().inner_ref()?.base_table().clone();
-        let permutation_table = permutation_table.borrow().inner_ref()?.base_table().clone();
+        let permutation_table = permutation_table
+            .map(|p| PyResult::Ok(p.borrow().inner_ref()?.base_table().clone()))
+            .transpose()?;
 
         future_into_py(cls.py(), async move {
-            let reader = PermutationReader::try_new(base_table, permutation_table, split)
-                .await
-                .infer_error()?;
+            let reader = if let Some(permutation_table) = permutation_table {
+                PermutationReader::try_from_tables(base_table, permutation_table, split)
+                    .await
+                    .infer_error()?
+            } else {
+                PermutationReader::identity(base_table).await
+            };
             Ok(Self::from_reader(reader))
         })
     }

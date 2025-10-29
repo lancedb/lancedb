@@ -34,7 +34,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct PermutationReader {
     base_table: Arc<dyn BaseTable>,
-    permutation_table: Arc<dyn BaseTable>,
+    permutation_table: Option<Arc<dyn BaseTable>>,
     offset: Option<u64>,
     limit: Option<u64>,
     available_rows: u64,
@@ -47,7 +47,10 @@ impl std::fmt::Debug for PermutationReader {
             f,
             "PermutationReader(base={}, permutation={}, split={}, offset={:?}, limit={:?})",
             self.base_table.name(),
-            self.permutation_table.name(),
+            self.permutation_table
+                .as_ref()
+                .map(|t| t.name())
+                .unwrap_or("--"),
             self.split,
             self.offset,
             self.limit,
@@ -57,9 +60,9 @@ impl std::fmt::Debug for PermutationReader {
 
 impl PermutationReader {
     /// Create a new PermutationReader
-    pub async fn try_new(
+    pub async fn inner_new(
         base_table: Arc<dyn BaseTable>,
-        permutation_table: Arc<dyn BaseTable>,
+        permutation_table: Option<Arc<dyn BaseTable>>,
         split: u64,
     ) -> Result<Self> {
         let mut slf = Self {
@@ -81,14 +84,29 @@ impl PermutationReader {
         Ok(slf)
     }
 
+    pub async fn try_from_tables(
+        base_table: Arc<dyn BaseTable>,
+        permutation_table: Arc<dyn BaseTable>,
+        split: u64,
+    ) -> Result<Self> {
+        Self::inner_new(base_table, Some(permutation_table), split).await
+    }
+
+    pub async fn identity(base_table: Arc<dyn BaseTable>) -> Self {
+        Self::inner_new(base_table, None, 0).await.unwrap()
+    }
+
     async fn verify_limit_offset(&self, limit: Option<u64>, offset: Option<u64>) -> Result<u64> {
-        let available_rows = self
-            .permutation_table
-            .count_rows(Some(Filter::Sql(format!(
-                "{} = {}",
-                SPLIT_ID_COLUMN, self.split
-            ))))
-            .await? as u64;
+        let available_rows = if let Some(permutation_table) = &self.permutation_table {
+            permutation_table
+                .count_rows(Some(Filter::Sql(format!(
+                    "{} = {}",
+                    SPLIT_ID_COLUMN, self.split
+                ))))
+                .await? as u64
+        } else {
+            self.base_table.count_rows(None).await? as u64
+        };
         if let Some(offset) = offset {
             if let Some(limit) = limit {
                 if offset + limit > available_rows {
@@ -305,18 +323,24 @@ impl PermutationReader {
     }
 
     async fn validate(&self) -> Result<()> {
-        let schema = self.permutation_table.schema().await?;
-        if schema.column_with_name(SRC_ROW_ID_COL).is_none() {
-            return Err(Error::InvalidInput {
-                message: "Permutation table must contain a column named row_id".to_string(),
-            });
+        if let Some(permutation_table) = &self.permutation_table {
+            let schema = permutation_table.schema().await?;
+            if schema.column_with_name(SRC_ROW_ID_COL).is_none() {
+                return Err(Error::InvalidInput {
+                    message: "Permutation table must contain a column named row_id".to_string(),
+                });
+            }
+            if schema.column_with_name(SPLIT_ID_COLUMN).is_none() {
+                return Err(Error::InvalidInput {
+                    message: "Permutation table must contain a column named split_id".to_string(),
+                });
+            }
         }
-        if schema.column_with_name(SPLIT_ID_COLUMN).is_none() {
-            return Err(Error::InvalidInput {
-                message: "Permutation table must contain a column named split_id".to_string(),
-            });
-        }
-        let avail_rows = self.permutation_table.count_rows(None).await? as u64;
+        let avail_rows = if let Some(permutation_table) = &self.permutation_table {
+            permutation_table.count_rows(None).await? as u64
+        } else {
+            self.base_table.count_rows(None).await? as u64
+        };
         if let Some(offset) = self.offset {
             if let Some(limit) = self.limit {
                 if offset + limit > avail_rows {
@@ -347,23 +371,36 @@ impl PermutationReader {
         selection: Select,
         execution_options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
-        let row_ids = self
-            .permutation_table
-            .query(
-                &AnyQuery::Query(QueryRequest {
-                    select: Select::Columns(vec![SRC_ROW_ID_COL.to_string()]),
-                    filter: Some(QueryFilter::Sql(format!(
-                        "{} = {}",
-                        SPLIT_ID_COLUMN, self.split
-                    ))),
-                    offset: self.offset.map(|o| o as usize),
-                    limit: self.limit.map(|l| l as usize),
-                    ..Default::default()
-                }),
-                execution_options,
-            )
-            .await?;
-
+        // Note: this relies on the row ids query here being returned in consistent order
+        let row_ids = if let Some(permutation_table) = &self.permutation_table {
+            permutation_table
+                .query(
+                    &AnyQuery::Query(QueryRequest {
+                        select: Select::Columns(vec![SRC_ROW_ID_COL.to_string()]),
+                        filter: Some(QueryFilter::Sql(format!(
+                            "{} = {}",
+                            SPLIT_ID_COLUMN, self.split
+                        ))),
+                        offset: self.offset.map(|o| o as usize),
+                        limit: self.limit.map(|l| l as usize),
+                        ..Default::default()
+                    }),
+                    execution_options,
+                )
+                .await?
+        } else {
+            self.base_table
+                .query(
+                    &AnyQuery::Query(QueryRequest {
+                        select: Select::Columns(vec![ROW_ID.to_string()]),
+                        offset: self.offset.map(|o| o as usize),
+                        limit: self.limit.map(|l| l as usize),
+                        ..Default::default()
+                    }),
+                    execution_options,
+                )
+                .await?
+        };
         Self::row_ids_to_batches(self.base_table.clone(), row_ids, selection).await
     }
 
@@ -446,7 +483,7 @@ mod tests {
         .unwrap();
         let row_ids_table = virtual_table("row_ids", &permutation_batch).await;
 
-        let reader = PermutationReader::try_new(
+        let reader = PermutationReader::try_from_tables(
             base_table.base_table().clone(),
             row_ids_table.base_table().clone(),
             0,
@@ -491,7 +528,7 @@ mod tests {
         assert!(stream.try_next().await.unwrap().is_none());
 
         // Read split 1
-        let reader = PermutationReader::try_new(
+        let reader = PermutationReader::try_from_tables(
             base_table.base_table().clone(),
             row_ids_table.base_table().clone(),
             1,
