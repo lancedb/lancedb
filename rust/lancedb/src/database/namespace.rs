@@ -14,7 +14,7 @@ use lance_namespace::{
     },
     LanceNamespace,
 };
-use lance_namespace_impls::connect::connect as connect_namespace;
+use lance_namespace_impls::ConnectBuilder;
 
 use crate::database::listing::ListingDatabase;
 use crate::error::{Error, Result};
@@ -48,11 +48,16 @@ impl LanceNamespaceDatabase {
         read_consistency_interval: Option<std::time::Duration>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
-        let namespace = connect_namespace(ns_impl, ns_properties.clone())
-            .await
-            .map_err(|e| Error::InvalidInput {
-                message: format!("Failed to connect to namespace: {:?}", e),
-            })?;
+        let mut builder = ConnectBuilder::new(ns_impl);
+        for (key, value) in ns_properties.clone() {
+            builder = builder.property(key, value);
+        }
+        if let Some(ref sess) = session {
+            builder = builder.session(sess.clone());
+        }
+        let namespace = builder.connect().await.map_err(|e| Error::InvalidInput {
+            message: format!("Failed to connect to namespace: {:?}", e),
+        })?;
 
         Ok(Self {
             namespace,

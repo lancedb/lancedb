@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.22.3-beta.1"
+version = "0.22.3-beta.3"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -44,7 +44,7 @@ lance-testing = { workspace = true }
 lance-encoding = { workspace = true }
 lance-arrow = { workspace = true }
 lance-namespace = { workspace = true }
-lance-namespace-impls = { workspace = true, features = ["dir", "rest"] }
+lance-namespace-impls = { workspace = true }
 moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
