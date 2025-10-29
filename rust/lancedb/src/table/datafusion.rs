@@ -21,6 +21,8 @@ use crate::{
     query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
     Result,
 };
+use arrow_schema::{DataType, Field};
+use lance_index::scalar::FullTextSearchQuery;
 
 /// Datafusion attempts to maintain batch metadata
 ///
@@ -135,19 +137,38 @@ impl ExecutionPlan for MetadataEraserExec {
 pub struct BaseTableAdapter {
     table: Arc<dyn BaseTable>,
     schema: Arc<ArrowSchema>,
+    fts_query: Option<FullTextSearchQuery>,
 }
 
 impl BaseTableAdapter {
     pub async fn try_new(table: Arc<dyn BaseTable>) -> Result<Self> {
-        let schema = Arc::new(
-            table
-                .schema()
-                .await?
-                .as_ref()
-                .clone()
-                .with_metadata(HashMap::default()),
-        );
-        Ok(Self { table, schema })
+        let schema = table
+            .schema()
+            .await?
+            .as_ref()
+            .clone()
+            .with_metadata(HashMap::default());
+
+        Ok(Self {
+            table,
+            schema: Arc::new(schema),
+            fts_query: None,
+        })
+    }
+
+    /// Create a new adapter with an FTS query applied.
+    pub fn with_fts_query(&self, fts_query: FullTextSearchQuery) -> Self {
+        // Add _score column to the schema
+        let score_field = Field::new("_score", DataType::Float32, true);
+        let mut fields = self.schema.fields().to_vec();
+        fields.push(Arc::new(score_field));
+        let schema = Arc::new(ArrowSchema::new(fields));
+
+        Self {
+            table: self.table.clone(),
+            schema,
+            fts_query: Some(fts_query),
+        }
     }
 }
 
@@ -172,7 +193,15 @@ impl TableProvider for BaseTableAdapter {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let mut query = QueryRequest::default();
+        // For FTS queries, disable auto-projection of _score to match DataFusion expectations
+        let disable_scoring = self.fts_query.is_some() && projection.is_some();
+
+        let mut query = QueryRequest {
+            full_text_search: self.fts_query.clone(),
+            disable_scoring_autoprojection: disable_scoring,
+            ..Default::default()
+        };
+
         if let Some(projection) = projection {
             let field_names = projection
                 .iter()

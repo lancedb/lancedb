@@ -209,6 +209,7 @@ pub mod rerankers;
 pub mod table;
 #[cfg(test)]
 pub mod test_utils;
+pub mod udtf;
 pub mod utils;
 
 use std::fmt::Display;
