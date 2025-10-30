@@ -2,6 +2,9 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
+
+pub mod udtf;
+
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_array::RecordBatch;
