@@ -156,6 +156,7 @@ class FullTextQuery(ABC):
         '{"match": {"column": "text", "terms": "puppy", "fuzziness": 2}}'
         """
         import json
+
         return json.dumps(self.to_dict())
 
     def __and__(self, other: "FullTextQuery") -> "FullTextQuery":
@@ -374,7 +375,11 @@ class MultiMatchQuery(FullTextQuery):
                 match_dict["operator"] = self.operator.value
 
             # Add boost if provided and not default
-            if self.boosts is not None and i < len(self.boosts) and self.boosts[i] != 1.0:
+            if (
+                self.boosts is not None
+                and i < len(self.boosts)
+                and self.boosts[i] != 1.0
+            ):
                 match_dict["boost"] = self.boosts[i]
 
             match_queries.append(match_dict)

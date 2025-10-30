@@ -886,7 +886,10 @@ mod tests {
 
         // Should group by category - puppy appears in multiple rows but aggregation may combine them
         // The actual behavior depends on whether DataFusion aggregates across all matches
-        assert!(result[0].num_rows() >= 1, "Should have at least 1 category with puppy");
+        assert!(
+            result[0].num_rows() >= 1,
+            "Should have at least 1 category with puppy"
+        );
         assert_eq!(result[0].num_columns(), 2);
     }
 
