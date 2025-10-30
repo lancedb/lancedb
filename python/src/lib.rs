@@ -55,6 +55,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
+    m.add_function(wrap_pyfunction!(query::fts_query_to_json, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

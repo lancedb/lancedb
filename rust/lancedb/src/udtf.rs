@@ -11,7 +11,6 @@ use datafusion::catalog::TableFunctionImpl;
 use datafusion_catalog::TableProvider;
 use datafusion_common::{plan_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion_expr::Expr;
-use lance_index::scalar::inverted::parser::from_json;
 use lance_index::scalar::FullTextSearchQuery;
 
 /// Trait for resolving table names to TableProvider instances.
@@ -72,6 +71,24 @@ fn parse_fts_query(json: &str) -> DataFusionResult<FullTextSearchQuery> {
     })?;
     Ok(FullTextSearchQuery::new_query(query))
 }
+
+/// Serialize an FTS query to JSON string.
+pub fn to_json(query: &lance_index::scalar::inverted::query::FtsQuery) -> crate::Result<String> {
+    serde_json::to_string(query).map_err(|e| crate::Error::InvalidInput {
+        message: format!("Failed to serialize FTS query to JSON: {}", e),
+    })
+}
+
+/// Deserialize an FTS query from JSON string.
+pub fn from_json(json: &str) -> crate::Result<lance_index::scalar::inverted::query::FtsQuery> {
+    serde_json::from_str(json).map_err(|e| crate::Error::InvalidInput {
+        message: format!(
+            "Failed to deserialize FTS query from JSON: {}. Input was: {}",
+            e, json
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,15 +203,13 @@ mod tests {
         ctx.register_udtf("fts", Arc::new(fts_udtf));
 
         // Execute FTS query
-        let fts_query = r#"
-            {
-                "match": {
-                    "column": "text",
-                    "terms": "catch fish",
-                    "operator": "And"
-                }
-            }
-            "#;
+        use lance_index::scalar::inverted::query::*;
+        let fts_query_struct = FtsQuery::Match(
+            MatchQuery::new("catch fish".to_string())
+                .with_column(Some("text".to_string()))
+                .with_operator(Operator::And),
+        );
+        let fts_query = to_json(&fts_query_struct).unwrap();
 
         let query = format!("SELECT * FROM fts('foo', '{}') WHERE number > 1", fts_query);
 
@@ -259,8 +274,15 @@ mod tests {
 
         // Test GROUP BY query
         println!("\n\n=== Testing GROUP BY query ===");
+        let group_query = FtsQuery::Match(
+            MatchQuery::new("catch".to_string()).with_column(Some("text".to_string())),
+        );
+        let group_query_json = to_json(&group_query).unwrap();
         let group_result = ctx
-            .sql("SELECT number, COUNT(*) as cnt FROM fts('foo', '{\"match\": {\"column\": \"text\", \"terms\": \"catch\"}}') GROUP BY number")
+            .sql(&format!(
+                "SELECT number, COUNT(*) as cnt FROM fts('foo', '{}') GROUP BY number",
+                group_query_json
+            ))
             .await;
 
         match group_result {
@@ -315,8 +337,15 @@ mod tests {
         // Register metadata table with DataFusion
         ctx.register_batch("metadata", metadata_batch).unwrap();
 
+        let join_query = FtsQuery::Match(
+            MatchQuery::new("catch".to_string()).with_column(Some("text".to_string())),
+        );
+        let join_query_json = to_json(&join_query).unwrap();
         let join_result = ctx
-            .sql("SELECT f.text, f.number, m.extra FROM fts('foo', '{\"match\": {\"column\": \"text\", \"terms\": \"catch\"}}') f JOIN metadata m ON f.number = m.id")
+            .sql(&format!(
+                "SELECT f.text, f.number, m.extra FROM fts('foo', '{}') f JOIN metadata m ON f.number = m.id",
+                join_query_json
+            ))
             .await;
 
         match join_result {
@@ -445,6 +474,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_and_operator() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_and_op")
             .execute()
             .await
@@ -452,10 +482,17 @@ mod tests {
         let table = setup_diverse_fts_table(&db, "docs").await;
         let ctx = setup_context_with_udtf(table, "docs").await;
 
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy runs".to_string())
+                .with_column(Some("text".to_string()))
+                .with_operator(Operator::And),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = execute_fts_query(
             &ctx,
-            r#"SELECT id, text FROM fts('docs', '{"match": {"column": "text", "terms": "puppy runs", "operator": "And"}}')"#,
-        ).await;
+            &format!(r#"SELECT id, text FROM fts('docs', '{}')"#, query_json),
+        )
+        .await;
 
         // Should match only row 1: "the puppy runs merrily" (has both "puppy" AND "runs")
         assert_result_shape(&result, 1, 2);
@@ -463,6 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_or_operator() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_or_op")
             .execute()
             .await
@@ -470,10 +508,17 @@ mod tests {
         let table = setup_diverse_fts_table(&db, "docs").await;
         let ctx = setup_context_with_udtf(table, "docs").await;
 
+        let query = FtsQuery::Match(
+            MatchQuery::new("cat dog".to_string())
+                .with_column(Some("text".to_string()))
+                .with_operator(Operator::Or),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = execute_fts_query(
             &ctx,
-            r#"SELECT id, text FROM fts('docs', '{"match": {"column": "text", "terms": "cat dog", "operator": "Or"}}')"#,
-        ).await;
+            &format!(r#"SELECT id, text FROM fts('docs', '{}')"#, query_json),
+        )
+        .await;
 
         // Should match rows 2, 4, 6 ("cat" OR "dog")
         assert_result_shape(&result, 3, 2);
@@ -481,6 +526,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_phrase_query() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_phrase")
             .execute()
             .await
@@ -528,8 +574,15 @@ mod tests {
         ctx.register_udtf("fts", Arc::new(FtsTableFunction::new(Arc::new(resolver))));
 
         // Test phrase query: exact phrase "quick brown"
+        let query = FtsQuery::Phrase(
+            PhraseQuery::new("quick brown".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, text FROM fts('docs', '{"phrase": {"column": "text", "terms": "quick brown"}}')"#)
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -542,6 +595,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_fuzzy_search() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_fuzzy")
             .execute()
             .await
@@ -550,8 +604,17 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test fuzzy search with fuzziness=2
+        let query = FtsQuery::Match(
+            MatchQuery::new("craziou".to_string())
+                .with_column(Some("text".to_string()))
+                .with_fuzziness(Some(2)),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, text FROM fts('docs', '{"match": {"column": "text", "terms": "craziou", "fuzziness": 2}}')"#)
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -564,6 +627,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_with_ordered() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_ordered")
             .execute()
             .await
@@ -572,8 +636,15 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test ordered results (order by _score explicitly)
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, text, _score FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}') ORDER BY _score DESC"#)
+            .sql(&format!(
+                r#"SELECT id, text, _score FROM fts('docs', '{}') ORDER BY _score DESC"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -593,6 +664,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_multi_column_setup() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_multi_col")
             .execute()
             .await
@@ -649,8 +721,15 @@ mod tests {
         ctx.register_udtf("fts", Arc::new(FtsTableFunction::new(Arc::new(resolver))));
 
         // Test searching title column
+        let query = FtsQuery::Match(
+            MatchQuery::new("Important".to_string()).with_column(Some("title".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, title FROM fts('multi_col', '{"match": {"column": "title", "terms": "Important"}}')"#)
+            .sql(&format!(
+                r#"SELECT id, title FROM fts('multi_col', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -660,8 +739,15 @@ mod tests {
         assert_eq!(result[0].num_rows(), 1);
 
         // Test searching content column
+        let query = FtsQuery::Match(
+            MatchQuery::new("important".to_string()).with_column(Some("content".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, content FROM fts('multi_col', '{"match": {"column": "content", "terms": "important"}}')"#)
+            .sql(&format!(
+                r#"SELECT id, content FROM fts('multi_col', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -673,6 +759,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_projection() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_projection")
             .execute()
             .await
@@ -681,8 +768,15 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test selecting only specific columns
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT text FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}')"#)
+            .sql(&format!(
+                r#"SELECT text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -697,6 +791,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_limit() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_limit")
             .execute()
             .await
@@ -705,8 +800,15 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test LIMIT clause
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, text FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}') LIMIT 2"#)
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}') LIMIT 2"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -718,6 +820,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_order_by() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_order_by")
             .execute()
             .await
@@ -726,8 +829,15 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test ORDER BY clause (ordering by id instead of _score since _score is not in schema)
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, text FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}') ORDER BY id LIMIT 3"#)
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}') ORDER BY id LIMIT 3"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -739,6 +849,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_complex_boolean() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_complex")
             .execute()
             .await
@@ -747,8 +858,15 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Complex query: search for texts containing "runs" or "jumps"
+        let query = FtsQuery::Match(
+            MatchQuery::new("runs jumps".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, text FROM fts('docs', '{"match": {"column": "text", "terms": "runs jumps"}}')"#)
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -761,6 +879,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_empty_result() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_empty")
             .execute()
             .await
@@ -769,8 +888,16 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test query with no matches
+        let query = FtsQuery::Match(
+            MatchQuery::new("nonexistent_word_xyz".to_string())
+                .with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, text FROM fts('docs', '{"match": {"column": "text", "terms": "nonexistent_word_xyz"}}')"#)
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -783,6 +910,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_count_aggregation() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_count")
             .execute()
             .await
@@ -791,8 +919,15 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test COUNT aggregation (using COUNT(id) instead of COUNT(*))
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT COUNT(id) as cnt FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}')"#)
+            .sql(&format!(
+                r#"SELECT COUNT(id) as cnt FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -811,6 +946,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_with_join() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_join")
             .execute()
             .await
@@ -849,12 +985,17 @@ mod tests {
         // Register metadata table with DataFusion for JOIN
         ctx.register_batch("metadata", metadata_batch).unwrap();
 
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
+            .sql(&format!(
                 r#"SELECT d.id, d.text, m.extra_info
-                   FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}') d
+                   FROM fts('docs', '{}') d
                    JOIN metadata m ON d.id = m.id"#,
-            )
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -868,16 +1009,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_aggregation() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_agg").execute().await.unwrap();
         let table = setup_diverse_fts_table(&db, "docs").await;
         let ctx = setup_context_with_udtf(table, "docs").await;
 
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
+            .sql(&format!(
                 r#"SELECT category, COUNT(*) as cnt
-                   FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}')
+                   FROM fts('docs', '{}')
                    GROUP BY category"#,
-            )
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -895,6 +1042,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_score_with_select_star() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_score_star")
             .execute()
             .await
@@ -903,8 +1051,12 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test SELECT * - should include _score
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT * FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}')"#)
+            .sql(&format!(r#"SELECT * FROM fts('docs', '{}')"#, query_json))
             .await
             .unwrap()
             .collect()
@@ -921,6 +1073,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_score_explicit_projection() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_score_explicit")
             .execute()
             .await
@@ -929,10 +1082,15 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test explicit _score in projection
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text, _score FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}')"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text, _score FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -950,6 +1108,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_score_not_in_projection() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_score_no_proj")
             .execute()
             .await
@@ -958,10 +1117,15 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test without _score in projection
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}')"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -979,6 +1143,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_score_order_by() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_score_order")
             .execute()
             .await
@@ -987,10 +1152,15 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test ORDER BY _score
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text, _score FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}') ORDER BY _score DESC"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text, _score FROM fts('docs', '{}') ORDER BY _score DESC"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1021,6 +1191,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_score_with_normal_columns() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_score_mixed")
             .execute()
             .await
@@ -1029,10 +1200,15 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test mixing _score with normal columns and expressions
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text, _score, category, id + 100 as id_plus_100 FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}')"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text, _score, category, id + 100 as id_plus_100 FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1049,6 +1225,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_boolean_must_query() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_bool_must")
             .execute()
             .await
@@ -1057,10 +1234,22 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test Boolean query with "must" clause - all terms must match
+        let must1 = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let must2 = FtsQuery::Match(
+            MatchQuery::new("runs".to_string()).with_column(Some("text".to_string())),
+        );
+        let query = FtsQuery::Boolean(BooleanQuery::new(vec![
+            (Occur::Must, must1),
+            (Occur::Must, must2),
+        ]));
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text FROM fts('docs', '{"boolean": {"must": [{"match": {"column": "text", "terms": "puppy"}}, {"match": {"column": "text", "terms": "runs"}}]}}')"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1074,6 +1263,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_boolean_should_query() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_bool_should")
             .execute()
             .await
@@ -1082,10 +1272,22 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test Boolean query with "should" clause
+        let should1 = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let should2 = FtsQuery::Match(
+            MatchQuery::new("cat".to_string()).with_column(Some("text".to_string())),
+        );
+        let query = FtsQuery::Boolean(BooleanQuery::new(vec![
+            (Occur::Should, should1),
+            (Occur::Should, should2),
+        ]));
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text FROM fts('docs', '{"boolean": {"should": [{"match": {"column": "text", "terms": "puppy"}}, {"match": {"column": "text", "terms": "cat"}}]}}')"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1098,6 +1300,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_boolean_must_not_query() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_bool_must_not")
             .execute()
             .await
@@ -1106,10 +1309,22 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test Boolean query with must and must_not
+        let must = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let must_not = FtsQuery::Match(
+            MatchQuery::new("training".to_string()).with_column(Some("text".to_string())),
+        );
+        let query = FtsQuery::Boolean(BooleanQuery::new(vec![
+            (Occur::Must, must),
+            (Occur::MustNot, must_not),
+        ]));
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text FROM fts('docs', '{"boolean": {"must": [{"match": {"column": "text", "terms": "puppy"}}], "must_not": [{"match": {"column": "text", "terms": "training"}}]}}')"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1122,6 +1337,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_phrase_with_slop() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_phrase_slop")
             .execute()
             .await
@@ -1170,10 +1386,17 @@ mod tests {
         ctx.register_udtf("fts", Arc::new(FtsTableFunction::new(Arc::new(resolver))));
 
         // Test phrase with slop=1
+        let query = FtsQuery::Phrase(
+            PhraseQuery::new("quick brown".to_string())
+                .with_column(Some("text".to_string()))
+                .with_slop(1),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text FROM fts('docs', '{"phrase": {"column": "text", "terms": "quick brown", "slop": 1}}')"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1186,6 +1409,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_match_with_boost() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_match_boost")
             .execute()
             .await
@@ -1194,10 +1418,17 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test Match query with boost parameter
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string())
+                .with_column(Some("text".to_string()))
+                .with_boost(2.0),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text, _score FROM fts('docs', '{"match": {"column": "text", "terms": "puppy", "boost": 2.0}}') ORDER BY _score DESC"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text, _score FROM fts('docs', '{}') ORDER BY _score DESC"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1214,6 +1445,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_boost_query() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_boost_query")
             .execute()
             .await
@@ -1222,10 +1454,19 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test Boost query
+        let positive = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let negative = FtsQuery::Match(
+            MatchQuery::new("training".to_string()).with_column(Some("text".to_string())),
+        );
+        let query = FtsQuery::Boost(BoostQuery::new(positive, negative, Some(0.3)));
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text, _score FROM fts('docs', '{"boost": {"positive": {"match": {"column": "text", "terms": "puppy"}}, "negative": {"match": {"column": "text", "terms": "training"}}, "negative_boost": 0.3}}') ORDER BY _score DESC"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text, _score FROM fts('docs', '{}') ORDER BY _score DESC"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1242,6 +1483,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_multi_match_query() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_multi_match")
             .execute()
             .await
@@ -1298,10 +1540,18 @@ mod tests {
         ctx.register_udtf("fts", Arc::new(FtsTableFunction::new(Arc::new(resolver))));
 
         // Test MultiMatch query
+        let query = FtsQuery::MultiMatch(MultiMatchQuery {
+            match_queries: vec![
+                MatchQuery::new("Document".to_string()).with_column(Some("title".to_string())),
+                MatchQuery::new("data".to_string()).with_column(Some("content".to_string())),
+            ],
+        });
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, title, content FROM fts('docs', '{"multi_match": {"match_queries": [{"column": "title", "terms": "Document"}, {"column": "content", "terms": "data"}]}}')"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, title, content FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1314,6 +1564,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_multi_match_with_boost() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_multi_match_boost")
             .execute()
             .await
@@ -1370,10 +1621,22 @@ mod tests {
         ctx.register_udtf("fts", Arc::new(FtsTableFunction::new(Arc::new(resolver))));
 
         // Test MultiMatch with boosts
+        let query = FtsQuery::MultiMatch(MultiMatchQuery {
+            match_queries: vec![
+                MatchQuery::new("important".to_string())
+                    .with_column(Some("title".to_string()))
+                    .with_boost(2.0),
+                MatchQuery::new("data".to_string())
+                    .with_column(Some("content".to_string()))
+                    .with_boost(1.0),
+            ],
+        });
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, title, content, _score FROM fts('docs', '{"multi_match": {"match_queries": [{"column": "title", "terms": "important", "boost": 2.0}, {"column": "content", "terms": "data", "boost": 1.0}]}}') ORDER BY _score DESC"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, title, content, _score FROM fts('docs', '{}') ORDER BY _score DESC"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1390,6 +1653,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_fuzzy_with_prefix_length() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_fuzzy_prefix")
             .execute()
             .await
@@ -1399,8 +1663,18 @@ mod tests {
 
         // Test fuzzy search with prefix_length parameter
         // prefix_length=3 means first 3 chars must match exactly
+        let query = FtsQuery::Match(
+            MatchQuery::new("crazily".to_string())
+                .with_column(Some("text".to_string()))
+                .with_fuzziness(Some(2))
+                .with_prefix_length(3),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, text FROM fts('docs', '{"match": {"column": "text", "terms": "crazily", "fuzziness": 2, "prefix_length": 3}}')"#)
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1414,6 +1688,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_with_where_clause() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_where")
             .execute()
             .await
@@ -1422,8 +1697,15 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test FTS with WHERE clause filtering
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, text FROM fts('docs', '{"match": {"column": "text", "terms": "puppy"}}') WHERE id > 2"#)
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}') WHERE id > 2"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1491,8 +1773,16 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test substring search with 3+ characters (default min_ngram_length=3)
+        use lance_index::scalar::inverted::query::*;
+        let query = FtsQuery::Match(
+            MatchQuery::new("lan".to_string()).with_column(Some("text".to_string())),
+        );
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(r#"SELECT id, text FROM fts('docs', '{"match": {"column": "text", "terms": "lan"}}')"#)
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1505,6 +1795,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_boolean_query_and_combination() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_bool_and")
             .execute()
             .await
@@ -1513,10 +1804,22 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Boolean query with multiple MUST clauses
+        let must1 = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let must2 = FtsQuery::Match(
+            MatchQuery::new("merrily".to_string()).with_column(Some("text".to_string())),
+        );
+        let query = FtsQuery::Boolean(BooleanQuery::new(vec![
+            (Occur::Must, must1),
+            (Occur::Must, must2),
+        ]));
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text FROM fts('docs', '{"boolean": {"must": [{"match": {"column": "text", "terms": "puppy"}}, {"match": {"column": "text", "terms": "merrily"}}]}}')"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1529,6 +1832,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_boolean_query_or_combination() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_bool_or")
             .execute()
             .await
@@ -1537,10 +1841,22 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Boolean query with SHOULD clauses (OR)
+        let should1 = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string()).with_column(Some("text".to_string())),
+        );
+        let should2 = FtsQuery::Match(
+            MatchQuery::new("merrily".to_string()).with_column(Some("text".to_string())),
+        );
+        let query = FtsQuery::Boolean(BooleanQuery::new(vec![
+            (Occur::Should, should1),
+            (Occur::Should, should2),
+        ]));
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, text FROM fts('docs', '{"boolean": {"should": [{"match": {"column": "text", "terms": "puppy"}}, {"match": {"column": "text", "terms": "merrily"}}]}}')"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, text FROM fts('docs', '{}')"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1553,6 +1869,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fts_udtf_multi_match_with_field_boosts() {
+        use lance_index::scalar::inverted::query::*;
         let db = crate::connect("memory://test_mm_boost")
             .execute()
             .await
@@ -1612,10 +1929,22 @@ mod tests {
         let ctx = setup_context_with_udtf(table, "docs").await;
 
         // Test MultiMatch with field boosts - title boosted 2x
+        let query = FtsQuery::MultiMatch(MultiMatchQuery {
+            match_queries: vec![
+                MatchQuery::new("important".to_string())
+                    .with_column(Some("title".to_string()))
+                    .with_boost(2.0),
+                MatchQuery::new("important".to_string())
+                    .with_column(Some("content".to_string()))
+                    .with_boost(1.0),
+            ],
+        });
+        let query_json = to_json(&query).unwrap();
         let result = ctx
-            .sql(
-                r#"SELECT id, title, content, _score FROM fts('docs', '{"multi_match": {"match_queries": [{"column": "title", "terms": "important", "boost": 2.0}, {"column": "content", "terms": "important", "boost": 1.0}]}}') ORDER BY _score DESC"#,
-            )
+            .sql(&format!(
+                r#"SELECT id, title, content, _score FROM fts('docs', '{}') ORDER BY _score DESC"#,
+                query_json
+            ))
             .await
             .unwrap()
             .collect()
@@ -1627,309 +1956,73 @@ mod tests {
         assert!(result[0].schema().column_with_name("_score").is_some());
     }
 
-    #[tokio::test]
-    async fn test_python_json_e2e_basic_match() {
-        let db = crate::connect("memory://test_python_e2e_basic")
-            .execute()
-            .await
-            .unwrap();
+    #[test]
+    fn test_to_json_round_trip_match() {
+        use lance_index::scalar::inverted::query::*;
 
-        let data = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                Arc::new(ArrowSchema::new(vec![
-                    Field::new("id", DataType::Int32, false),
-                    Field::new("text", DataType::Utf8, false),
-                ])),
-                vec![
-                    Arc::new(Int32Array::from(vec![1, 2, 3])),
-                    Arc::new(StringArray::from(vec![
-                        "hello world",
-                        "hello there",
-                        "goodbye friend",
-                    ])),
-                ],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
-            Arc::new(ArrowSchema::new(vec![
-                Field::new("id", DataType::Int32, false),
-                Field::new("text", DataType::Utf8, false),
-            ])),
+        let query = FtsQuery::Match(
+            MatchQuery::new("hello world".to_string())
+                .with_column(Some("text".to_string()))
+                .with_boost(2.0)
+                .with_fuzziness(Some(2)),
         );
 
-        let table = Arc::new(
-            db.create_table("docs", Box::new(data))
-                .execute()
-                .await
-                .unwrap(),
-        );
-        table
-            .create_index(&["text"], Index::FTS(Default::default()))
-            .execute()
-            .await
-            .unwrap();
-
-        let ctx = setup_context_with_udtf(table, "docs").await;
-
-        // Test 1: Basic match query from Python (with all default fields included)
-        const JSON: &str = r#"{"match": {"column": "text", "terms": "hello world"}}"#;
-        let result = ctx
-            .sql(&format!(r#"SELECT id, text FROM fts('docs', '{}')"#, JSON))
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-
-        // Should match exactly 2 rows: "hello world" and "hello there" (both contain "hello" or "world")
-        assert_eq!(result[0].num_rows(), 2);
+        let json = to_json(&query).unwrap();
+        let parsed = from_json(&json).unwrap();
+        assert_eq!(query, parsed);
     }
 
-    #[tokio::test]
-    async fn test_python_json_e2e_match_and_operator() {
-        let db = crate::connect("memory://test_python_e2e_and")
-            .execute()
-            .await
-            .unwrap();
+    #[test]
+    fn test_to_json_round_trip_phrase() {
+        use lance_index::scalar::inverted::query::*;
 
-        let data = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                Arc::new(ArrowSchema::new(vec![
-                    Field::new("id", DataType::Int32, false),
-                    Field::new("content", DataType::Utf8, false),
-                ])),
-                vec![
-                    Arc::new(Int32Array::from(vec![1, 2, 3])),
-                    Arc::new(StringArray::from(vec![
-                        "fuzzy search algorithms",
-                        "fuzzy logic",
-                        "search engine",
-                    ])),
-                ],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
-            Arc::new(ArrowSchema::new(vec![
-                Field::new("id", DataType::Int32, false),
-                Field::new("content", DataType::Utf8, false),
-            ])),
+        let query = FtsQuery::Phrase(
+            PhraseQuery::new("exact phrase".to_string())
+                .with_column(Some("text".to_string()))
+                .with_slop(2),
         );
 
-        let table = Arc::new(
-            db.create_table("docs", Box::new(data))
-                .execute()
-                .await
-                .unwrap(),
-        );
-        table
-            .create_index(&["content"], Index::FTS(Default::default()))
-            .execute()
-            .await
-            .unwrap();
-
-        let ctx = setup_context_with_udtf(table, "docs").await;
-
-        // Test 2: Match with AND operator from Python
-        const JSON: &str = r#"{"match": {"column": "content", "terms": "fuzzy search", "boost": 1.5, "fuzziness": 2, "max_expansions": 100, "operator": "AND", "prefix_length": 3}}"#;
-        let result = ctx
-            .sql(&format!(
-                r#"SELECT id, content FROM fts('docs', '{}')"#,
-                JSON
-            ))
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-
-        // Should match row 1 only (contains both "fuzzy" and "search")
-        assert_eq!(result[0].num_rows(), 1);
+        let json = to_json(&query).unwrap();
+        let parsed = from_json(&json).unwrap();
+        assert_eq!(query, parsed);
     }
 
-    #[tokio::test]
-    async fn test_python_json_e2e_phrase_query() {
-        let db = crate::connect("memory://test_python_e2e_phrase")
-            .execute()
-            .await
-            .unwrap();
+    #[test]
+    fn test_to_json_round_trip_boolean() {
+        use lance_index::scalar::inverted::query::*;
 
-        let data = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                Arc::new(ArrowSchema::new(vec![
-                    Field::new("id", DataType::Int32, false),
-                    Field::new("title", DataType::Utf8, false),
-                ])),
-                vec![
-                    Arc::new(Int32Array::from(vec![1, 2, 3])),
-                    Arc::new(StringArray::from(vec![
-                        "exact phrase match here",
-                        "exact and phrase",
-                        "unrelated text",
-                    ])),
-                ],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
-            Arc::new(ArrowSchema::new(vec![
-                Field::new("id", DataType::Int32, false),
-                Field::new("title", DataType::Utf8, false),
-            ])),
+        let must = FtsQuery::Match(
+            MatchQuery::new("required".to_string()).with_column(Some("status".to_string())),
+        );
+        let should = FtsQuery::Phrase(
+            PhraseQuery::new("optional phrase".to_string())
+                .with_column(Some("description".to_string())),
         );
 
-        let table = Arc::new(
-            db.create_table("docs", Box::new(data))
-                .execute()
-                .await
-                .unwrap(),
-        );
-        table
-            .create_index(
-                &["title"],
-                Index::FTS(FtsIndexBuilder::default().with_position(true)),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let query = FtsQuery::Boolean(BooleanQuery::new(vec![
+            (Occur::Must, must),
+            (Occur::Should, should),
+        ]));
 
-        let ctx = setup_context_with_udtf(table, "docs").await;
-
-        // Test 4: Phrase query with slop from Python
-        const JSON: &str =
-            r#"{"phrase": {"column": "title", "terms": "exact phrase match", "slop": 2}}"#;
-        let result = ctx
-            .sql(&format!(r#"SELECT id, title FROM fts('docs', '{}')"#, JSON))
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-
-        // Should match row 1 (phrase appears with allowed slop)
-        assert_eq!(result[0].num_rows(), 1);
+        let json = to_json(&query).unwrap();
+        let parsed = from_json(&json).unwrap();
+        assert_eq!(query, parsed);
     }
 
-    #[tokio::test]
-    async fn test_python_json_e2e_boolean_query() {
-        let db = crate::connect("memory://test_python_e2e_boolean")
-            .execute()
-            .await
-            .unwrap();
+    #[test]
+    fn test_to_json_format() {
+        use lance_index::scalar::inverted::query::*;
 
-        let data = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                Arc::new(ArrowSchema::new(vec![
-                    Field::new("id", DataType::Int32, false),
-                    Field::new("text", DataType::Utf8, false),
-                ])),
-                vec![
-                    Arc::new(Int32Array::from(vec![1, 2, 3])),
-                    Arc::new(StringArray::from(vec![
-                        "puppy runs fast",
-                        "puppy walks slow",
-                        "dog runs fast",
-                    ])),
-                ],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
-            Arc::new(ArrowSchema::new(vec![
-                Field::new("id", DataType::Int32, false),
-                Field::new("text", DataType::Utf8, false),
-            ])),
+        let query = FtsQuery::Match(
+            MatchQuery::new("puppy".to_string())
+                .with_column(Some("text".to_string()))
+                .with_fuzziness(Some(2)),
         );
 
-        let table = Arc::new(
-            db.create_table("docs", Box::new(data))
-                .execute()
-                .await
-                .unwrap(),
-        );
-        table
-            .create_index(&["text"], Index::FTS(Default::default()))
-            .execute()
-            .await
-            .unwrap();
+        let json = to_json(&query).unwrap();
 
-        let ctx = setup_context_with_udtf(table, "docs").await;
-
-        // Test 8: Boolean MUST query from Python
-        const JSON: &str = r#"{"boolean": {"must": [{"match": {"column": "text", "terms": "puppy"}}, {"match": {"column": "text", "terms": "runs"}}]}}"#;
-        let result = ctx
-            .sql(&format!(r#"SELECT id, text FROM fts('docs', '{}')"#, JSON))
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-
-        // Should match row 1 only (contains both "puppy" AND "runs")
-        assert_eq!(result[0].num_rows(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_python_json_e2e_complex_nested() {
-        let db = crate::connect("memory://test_python_e2e_nested")
-            .execute()
-            .await
-            .unwrap();
-
-        let data = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                Arc::new(ArrowSchema::new(vec![
-                    Field::new("id", DataType::Int32, false),
-                    Field::new("tags", DataType::Utf8, false),
-                    Field::new("title", DataType::Utf8, false),
-                ])),
-                vec![
-                    Arc::new(Int32Array::from(vec![1, 2, 3])),
-                    Arc::new(StringArray::from(vec!["python", "rust", "java"])),
-                    Arc::new(StringArray::from(vec!["tutorial", "guide", "manual"])),
-                ],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
-            Arc::new(ArrowSchema::new(vec![
-                Field::new("id", DataType::Int32, false),
-                Field::new("tags", DataType::Utf8, false),
-                Field::new("title", DataType::Utf8, false),
-            ])),
-        );
-
-        let table = Arc::new(
-            db.create_table("docs", Box::new(data))
-                .execute()
-                .await
-                .unwrap(),
-        );
-        table
-            .create_index(&["tags"], Index::FTS(Default::default()))
-            .execute()
-            .await
-            .unwrap();
-        table
-            .create_index(&["title"], Index::FTS(Default::default()))
-            .execute()
-            .await
-            .unwrap();
-
-        let ctx = setup_context_with_udtf(table, "docs").await;
-
-        // Test 11: Complex nested boolean from Python
-        const JSON: &str = r#"{"boolean": {"should": [{"boolean": {"must": [{"match": {"column": "tags", "terms": "python"}}, {"match": {"column": "title", "terms": "tutorial"}}]}}, {"boolean": {"must": [{"match": {"column": "tags", "terms": "rust"}}, {"match": {"column": "title", "terms": "guide"}}]}}]}}"#;
-        let result = ctx
-            .sql(&format!(r#"SELECT id FROM fts('docs', '{}')"#, JSON))
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-
-        // Should match rows 1 and 2 ((python AND tutorial) OR (rust AND guide))
-        assert_eq!(result[0].num_rows(), 2);
+        // Verify it parses correctly with our from_json
+        let parsed = from_json(&json).unwrap();
+        assert_eq!(query, parsed);
     }
 }

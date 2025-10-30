@@ -37,7 +37,7 @@ from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .util import flatten_columns
-
+from lancedb._lancedb import fts_query_to_json
 from typing_extensions import Annotated
 
 if TYPE_CHECKING:
@@ -124,24 +124,9 @@ class FullTextQuery(ABC):
         """
         pass
 
-    @abstractmethod
-    def to_dict(self) -> Dict[str, Any]:
-        """
-        Convert the query to a dictionary representation.
-
-        Returns
-        -------
-        Dict[str, Any]
-            A dictionary representation of the query.
-        """
-        pass
-
     def to_json(self) -> str:
         """
-        Convert the query to a JSON string for use in SQL queries.
-
-        This method serializes the query into the JSON format expected by
-        the FTS UDTF (User-Defined Table Function) in SQL queries.
+        Convert the query to a JSON string.
 
         Returns
         -------
@@ -153,11 +138,9 @@ class FullTextQuery(ABC):
         >>> from lancedb.query import MatchQuery
         >>> query = MatchQuery("puppy", "text", fuzziness=2)
         >>> query.to_json()
-        '{"match": {"column": "text", "terms": "puppy", "fuzziness": 2}}'
+        '{"match":{"column":"text","terms":"puppy","fuzziness":2}}'
         """
-        import json
-
-        return json.dumps(self.to_dict())
+        return fts_query_to_json(self)
 
     def __and__(self, other: "FullTextQuery") -> "FullTextQuery":
         """
@@ -237,27 +220,6 @@ class MatchQuery(FullTextQuery):
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert the match query to a dictionary."""
-        match_dict: Dict[str, Any] = {
-            "column": self.column,
-            "terms": self.query,
-        }
-
-        # Only include non-default values to keep JSON compact
-        if self.boost != 1.0:
-            match_dict["boost"] = self.boost
-        if self.fuzziness != 0:
-            match_dict["fuzziness"] = self.fuzziness
-        if self.max_expansions != 50:
-            match_dict["max_expansions"] = self.max_expansions
-        if self.operator != FullTextOperator.OR:
-            match_dict["operator"] = self.operator.value
-        if self.prefix_length != 0:
-            match_dict["prefix_length"] = self.prefix_length
-
-        return {"match": match_dict}
-
 
 @pydantic.dataclasses.dataclass
 class PhraseQuery(FullTextQuery):
@@ -278,19 +240,6 @@ class PhraseQuery(FullTextQuery):
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MATCH_PHRASE
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert the phrase query to a dictionary."""
-        phrase_dict: Dict[str, Any] = {
-            "column": self.column,
-            "terms": self.query,
-        }
-
-        # Only include slop if non-zero
-        if self.slop != 0:
-            phrase_dict["slop"] = self.slop
-
-        return {"phrase": phrase_dict}
 
 
 @pydantic.dataclasses.dataclass
@@ -314,19 +263,6 @@ class BoostQuery(FullTextQuery):
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.BOOST
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert the boost query to a dictionary."""
-        boost_dict: Dict[str, Any] = {
-            "positive": self.positive.to_dict(),
-            "negative": self.negative.to_dict(),
-        }
-
-        # Only include negative_boost if not default (0.5)
-        if self.negative_boost != 0.5:
-            boost_dict["negative_boost"] = self.negative_boost
-
-        return {"boost": boost_dict}
 
 
 @pydantic.dataclasses.dataclass
@@ -360,32 +296,6 @@ class MultiMatchQuery(FullTextQuery):
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MULTI_MATCH
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert the multi-match query to a dictionary."""
-        # Create individual match queries for each column
-        match_queries = []
-        for i, column in enumerate(self.columns):
-            match_dict: Dict[str, Any] = {
-                "column": column,
-                "terms": self.query,
-            }
-
-            # Only include non-default values
-            if self.operator != FullTextOperator.OR:
-                match_dict["operator"] = self.operator.value
-
-            # Add boost if provided and not default
-            if (
-                self.boosts is not None
-                and i < len(self.boosts)
-                and self.boosts[i] != 1.0
-            ):
-                match_dict["boost"] = self.boosts[i]
-
-            match_queries.append(match_dict)
-
-        return {"multi_match": {"match_queries": match_queries}}
-
 
 @pydantic.dataclasses.dataclass
 class BooleanQuery(FullTextQuery):
@@ -404,34 +314,6 @@ class BooleanQuery(FullTextQuery):
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.BOOLEAN
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert the boolean query to a dictionary."""
-        # Group queries by their occurrence type
-        must_queries = []
-        should_queries = []
-        must_not_queries = []
-
-        for occur, query in self.queries:
-            query_dict = query.to_dict()
-            if occur == Occur.MUST:
-                must_queries.append(query_dict)
-            elif occur == Occur.SHOULD:
-                should_queries.append(query_dict)
-            elif occur == Occur.MUST_NOT:
-                must_not_queries.append(query_dict)
-
-        boolean_dict: Dict[str, Any] = {}
-
-        # Only include non-empty lists
-        if must_queries:
-            boolean_dict["must"] = must_queries
-        if should_queries:
-            boolean_dict["should"] = should_queries
-        if must_not_queries:
-            boolean_dict["must_not"] = must_not_queries
-
-        return {"boolean": boolean_dict}
 
 
 class FullTextSearchQuery(pydantic.BaseModel):

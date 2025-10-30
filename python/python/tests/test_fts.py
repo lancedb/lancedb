@@ -13,7 +13,6 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-import json
 import os
 import random
 from unittest import mock
@@ -737,183 +736,144 @@ def test_fts_ngram(mem_db: DBConnection):
     assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
 
 
-def test_fts_query_json_string_format_for_rust_parser():
-    """
-    Test that Python generates valid JSON strings that can be parsed by Rust.
+def test_fts_query_to_json():
+    """Test that FTS query to_json() produces valid JSON strings with exact format."""
 
-    Cross-reference: Rust tests that parse these JSON strings are located at:
-    /Users/lu/Projects/Github/Work/sophon/src/rust/sophon-sql/src/udtf.rs
-    """
-    # Test 1: Basic match query (only required fields, defaults excluded)
-    q = MatchQuery("hello world", "text")
-    json_str = q.to_json()
-    expected = '{"match": {"column": "text", "terms": "hello world"}}'
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)  # Validates it's valid JSON
-
-    # Test 2: Match with all custom parameters
-    q = MatchQuery(
-        "fuzzy search",
-        "content",
-        fuzziness=2,
-        prefix_length=3,
-        boost=1.5,
-        max_expansions=100,
-        operator="AND",
-    )
-    json_str = q.to_json()
+    # Test MatchQuery - basic
+    match_query = MatchQuery("hello world", "text")
+    json_str = match_query.to_json()
     expected = (
-        '{"match": {"column": "content", "terms": "fuzzy search", '
-        '"boost": 1.5, "fuzziness": 2, "max_expansions": 100, '
-        '"operator": "AND", "prefix_length": 3}}'
+        '{"match":{"column":"text","terms":"hello world","boost":1.0,'
+        '"fuzziness":0,"max_expansions":50,"operator":"Or","prefix_length":0}}'
     )
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)
+    assert json_str == expected
 
-    # Test 3: Basic phrase query (default slop excluded)
-    q = PhraseQuery("puppy runs", "text")
-    json_str = q.to_json()
-    expected = '{"phrase": {"column": "text", "terms": "puppy runs"}}'
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)
-
-    # Test 4: Phrase query with custom slop
-    q = PhraseQuery("exact phrase match", "title", slop=2)
-    json_str = q.to_json()
+    # Test MatchQuery with options
+    match_query = MatchQuery("puppy", "text", fuzziness=2, boost=1.5, prefix_length=3)
+    json_str = match_query.to_json()
     expected = (
-        '{"phrase": {"column": "title", "terms": "exact phrase match", "slop": 2}}'
+        '{"match":{"column":"text","terms":"puppy","boost":1.5,"fuzziness":2,'
+        '"max_expansions":50,"operator":"Or","prefix_length":3}}'
     )
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)
+    assert json_str == expected
 
-    # Test 5: Boost query with default negative_boost (excluded)
-    q = BoostQuery(MatchQuery("puppy", "text"), MatchQuery("car", "text"))
-    json_str = q.to_json()
-    expected = (
-        '{"boost": {"positive": {"match": {"column": "text", "terms": "puppy"}}, '
-        '"negative": {"match": {"column": "text", "terms": "car"}}}}'
-    )
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)
+    # Test PhraseQuery
+    phrase_query = PhraseQuery("quick brown fox", "title")
+    json_str = phrase_query.to_json()
+    expected = '{"phrase":{"column":"title","terms":"quick brown fox","slop":0}}'
+    assert json_str == expected
 
-    # Test 6: Boost query with custom negative_boost
-    q = BoostQuery(
-        MatchQuery("important", "priority"),
-        MatchQuery("spam", "category"),
-        negative_boost=0.3,
-    )
-    json_str = q.to_json()
-    expected = (
-        '{"boost": {"positive": {"match": {"column": "priority", '
-        '"terms": "important"}}, "negative": {"match": {"column": "category", '
-        '"terms": "spam"}}, "negative_boost": 0.3}}'
-    )
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)
+    # Test PhraseQuery with slop
+    phrase_query = PhraseQuery("quick brown", "title", slop=2)
+    json_str = phrase_query.to_json()
+    expected = '{"phrase":{"column":"title","terms":"quick brown","slop":2}}'
+    assert json_str == expected
 
-    # Test 7: Multi-match with boosts (only non-1.0 boosts included)
-    q = MultiMatchQuery(
-        "search term", ["title", "body", "tags"], boosts=[3.0, 1.0, 2.0]
-    )
-    json_str = q.to_json()
-    expected = (
-        '{"multi_match": {"match_queries": [{"column": "title", '
-        '"terms": "search term", "boost": 3.0}, {"column": "body", '
-        '"terms": "search term"}, {"column": "tags", "terms": "search term", '
-        '"boost": 2.0}]}}'
-    )
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)
-
-    # Test 8: Boolean query with MUST clauses only
-    q = BooleanQuery(
+    # Test BooleanQuery with MUST
+    must_query = BooleanQuery(
         [
             (Occur.MUST, MatchQuery("puppy", "text")),
             (Occur.MUST, MatchQuery("runs", "text")),
         ]
     )
-    json_str = q.to_json()
+    json_str = must_query.to_json()
     expected = (
-        '{"boolean": {"must": [{"match": {"column": "text", "terms": "puppy"}}, '
-        '{"match": {"column": "text", "terms": "runs"}}]}}'
+        '{"boolean":{"should":[],"must":[{"match":{"column":"text","terms":"puppy",'
+        '"boost":1.0,"fuzziness":0,"max_expansions":50,"operator":"Or",'
+        '"prefix_length":0}},{"match":{"column":"text","terms":"runs","boost":1.0,'
+        '"fuzziness":0,"max_expansions":50,"operator":"Or","prefix_length":0}}],'
+        '"must_not":[]}}'
     )
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)
+    assert json_str == expected
 
-    # Test 9: Boolean query with SHOULD clauses only
-    q = BooleanQuery(
+    # Test BooleanQuery with SHOULD
+    should_query = BooleanQuery(
         [
-            (Occur.SHOULD, MatchQuery("puppy", "text")),
-            (Occur.SHOULD, MatchQuery("runs", "text")),
+            (Occur.SHOULD, MatchQuery("cat", "text")),
+            (Occur.SHOULD, MatchQuery("dog", "text")),
         ]
     )
-    json_str = q.to_json()
+    json_str = should_query.to_json()
     expected = (
-        '{"boolean": {"should": [{"match": {"column": "text", "terms": "puppy"}}, '
-        '{"match": {"column": "text", "terms": "runs"}}]}}'
+        '{"boolean":{"should":[{"match":{"column":"text","terms":"cat","boost":1.0,'
+        '"fuzziness":0,"max_expansions":50,"operator":"Or","prefix_length":0}},'
+        '{"match":{"column":"text","terms":"dog","boost":1.0,"fuzziness":0,'
+        '"max_expansions":50,"operator":"Or","prefix_length":0}}],"must":[],'
+        '"must_not":[]}}'
     )
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)
+    assert json_str == expected
 
-    # Test 10: Boolean query with all clause types
-    q = BooleanQuery(
+    # Test BooleanQuery with MUST_NOT
+    must_not_query = BooleanQuery(
         [
-            (Occur.MUST, MatchQuery("required", "status")),
-            (Occur.SHOULD, PhraseQuery("optional phrase", "description")),
-            (Occur.MUST_NOT, MatchQuery("excluded", "category")),
+            (Occur.MUST, MatchQuery("puppy", "text")),
+            (Occur.MUST_NOT, MatchQuery("training", "text")),
         ]
     )
-    json_str = q.to_json()
+    json_str = must_not_query.to_json()
     expected = (
-        '{"boolean": {"must": [{"match": {"column": "status", "terms": "required"}}], '
-        '"should": [{"phrase": {"column": "description", '
-        '"terms": "optional phrase"}}], "must_not": [{"match": '
-        '{"column": "category", "terms": "excluded"}}]}}'
+        '{"boolean":{"should":[],"must":[{"match":{"column":"text","terms":"puppy",'
+        '"boost":1.0,"fuzziness":0,"max_expansions":50,"operator":"Or",'
+        '"prefix_length":0}}],"must_not":[{"match":{"column":"text",'
+        '"terms":"training","boost":1.0,"fuzziness":0,"max_expansions":50,'
+        '"operator":"Or","prefix_length":0}}]}}'
     )
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)
+    assert json_str == expected
 
-    # Test 11: Complex nested query using operators
-    q = (MatchQuery("python", "tags") & MatchQuery("tutorial", "title")) | (
-        MatchQuery("rust", "tags") & MatchQuery("guide", "title")
-    )
-    json_str = q.to_json()
+    # Test BoostQuery
+    positive = MatchQuery("puppy", "text")
+    negative = MatchQuery("training", "text")
+    boost_query = BoostQuery(positive, negative, negative_boost=0.3)
+    json_str = boost_query.to_json()
     expected = (
-        '{"boolean": {"should": [{"boolean": {"must": [{"match": '
-        '{"column": "tags", "terms": "python"}}, {"match": {"column": "title", '
-        '"terms": "tutorial"}}]}}, {"boolean": {"must": [{"match": '
-        '{"column": "tags", "terms": "rust"}}, {"match": {"column": "title", '
-        '"terms": "guide"}}]}}]}}'
+        '{"boost":{"positive":{"match":{"column":"text","terms":"puppy",'
+        '"boost":1.0,"fuzziness":0,"max_expansions":50,"operator":"Or",'
+        '"prefix_length":0}},"negative":{"match":{"column":"text",'
+        '"terms":"training","boost":1.0,"fuzziness":0,"max_expansions":50,'
+        '"operator":"Or","prefix_length":0}},"negative_boost":0.3}}'
     )
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)
+    assert json_str == expected
 
-    # Test 12: Multi-match with AND operator
-    q = MultiMatchQuery("all terms must match", ["field1", "field2"], operator="AND")
-    json_str = q.to_json()
+    # Test MultiMatchQuery
+    multi_match = MultiMatchQuery("python", ["tags", "title"])
+    json_str = multi_match.to_json()
     expected = (
-        '{"multi_match": {"match_queries": [{"column": "field1", '
-        '"terms": "all terms must match", "operator": "AND"}, '
-        '{"column": "field2", "terms": "all terms must match", "operator": "AND"}]}}'
+        '{"multi_match":{"query":"python","columns":["tags","title"],'
+        '"boost":[1.0,1.0]}}'
     )
-    assert json_str == expected, f"Expected: {expected}\nGot: {json_str}"
-    assert json.loads(json_str)
+    assert json_str == expected
 
-
-def test_nested_boolean_query_to_json():
-    """Test deeply nested boolean queries."""
-    q1 = MatchQuery("puppy", "text")
-    q2 = MatchQuery("runs", "text")
-    q3 = MatchQuery("car", "text")
-    q4 = PhraseQuery("merrily drives", "text")
-
-    # Create (q1 AND q2) OR (q3 AND q4)
-    left = q1 & q2
-    right = q3 & q4
-    query = left | right
-
-    result = json.loads(query.to_json())
-    assert "boolean" in result
-    assert "should" in result["boolean"]
-    # Should have two boolean queries in the SHOULD clause
-    assert len(result["boolean"]["should"]) == 2
+    # Test complex nested BooleanQuery
+    inner1 = BooleanQuery(
+        [
+            (Occur.MUST, MatchQuery("python", "tags")),
+            (Occur.MUST, MatchQuery("tutorial", "title")),
+        ]
+    )
+    inner2 = BooleanQuery(
+        [
+            (Occur.MUST, MatchQuery("rust", "tags")),
+            (Occur.MUST, MatchQuery("guide", "title")),
+        ]
+    )
+    complex_query = BooleanQuery(
+        [
+            (Occur.SHOULD, inner1),
+            (Occur.SHOULD, inner2),
+        ]
+    )
+    json_str = complex_query.to_json()
+    expected = (
+        '{"boolean":{"should":[{"boolean":{"should":[],"must":[{"match":'
+        '{"column":"tags","terms":"python","boost":1.0,"fuzziness":0,'
+        '"max_expansions":50,"operator":"Or","prefix_length":0}},{"match":'
+        '{"column":"title","terms":"tutorial","boost":1.0,"fuzziness":0,'
+        '"max_expansions":50,"operator":"Or","prefix_length":0}}],"must_not":[]}}'
+        ',{"boolean":{"should":[],"must":[{"match":{"column":"tags",'
+        '"terms":"rust","boost":1.0,"fuzziness":0,"max_expansions":50,'
+        '"operator":"Or","prefix_length":0}},{"match":{"column":"title",'
+        '"terms":"guide","boost":1.0,"fuzziness":0,"max_expansions":50,'
+        '"operator":"Or","prefix_length":0}}],"must_not":[]}}],"must":[],'
+        '"must_not":[]}}'
+    )
+    assert json_str == expected
