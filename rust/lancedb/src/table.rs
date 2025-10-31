@@ -2391,6 +2391,10 @@ impl BaseTable for NativeTable {
             scanner.distance_metric(distance_type.into());
         }
 
+        if query.base.disable_scoring_autoprojection {
+            scanner.disable_scoring_autoprojection();
+        }
+
         Ok(scanner.create_plan().await?)
     }
 
