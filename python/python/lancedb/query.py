@@ -138,7 +138,7 @@ class FullTextQuery(ABC):
         >>> from lancedb.query import MatchQuery
         >>> query = MatchQuery("puppy", "text", fuzziness=2)
         >>> query.to_json()
-        '{"match":{"column":"text","terms":"puppy","fuzziness":2}}'
+        '{"match":{"column":"text","terms":"puppy","boost":1.0,"fuzziness":2,"max_expansions":50,"operator":"Or","prefix_length":0}}'
         """
         return fts_query_to_json(self)
 
