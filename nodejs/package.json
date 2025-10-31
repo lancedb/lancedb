@@ -11,7 +11,7 @@
     "ann"
   ],
   "private": false,
-  "version": "0.22.3-beta.3",
+  "version": "0.22.3-beta.4",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
