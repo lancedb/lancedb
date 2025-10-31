@@ -988,7 +988,7 @@ impl HybridQuery {
 #[pyfunction]
 pub fn fts_query_to_json(query_obj: &Bound<'_, PyAny>) -> PyResult<String> {
     let wrapped: PyLanceDB<FtsQuery> = query_obj.extract()?;
-    lancedb::udtf::to_json(&wrapped.0).map_err(|e| {
+    lancedb::table::datafusion::udtf::to_json(&wrapped.0).map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "Failed to serialize FTS query to JSON: {}",
             e
