@@ -372,6 +372,9 @@ impl<S: HttpSend> RemoteTable<S> {
         params: &QueryRequest,
     ) -> Result<()> {
         body["prefilter"] = params.prefilter.into();
+        if params.disable_scoring_autoprojection {
+            body["disable_scoring_autoprojection"] = serde_json::Value::Bool(true);
+        }
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
         }
