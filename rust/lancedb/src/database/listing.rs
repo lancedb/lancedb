@@ -455,6 +455,7 @@ impl ListingDatabase {
                     // `remove_dir_all` may be used to remove something not be a dataset
                     lance::Error::NotFound { .. } => Error::TableNotFound {
                         name: name.to_owned(),
+                        source: Box::new(err),
                     },
                     _ => Error::from(err),
                 })?;

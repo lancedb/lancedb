@@ -515,11 +515,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 .client
                 .post(&format!("/v1/table/{}/describe/", identifier));
             let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
-            if rsp.status() == StatusCode::NOT_FOUND {
-                return Err(crate::Error::TableNotFound {
-                    name: identifier.clone(),
-                });
-            }
+            let rsp =
+                RemoteTable::<S>::handle_table_not_found(&request.name, rsp, &request_id).await?;
             let rsp = self.client.check_response(&request_id, rsp).await?;
             let version = parse_server_version(&request_id, &rsp)?;
             let table_identifier = build_table_identifier(

@@ -1534,6 +1534,7 @@ impl NativeTable {
             .map_err(|e| match e {
                 lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
                     name: name.to_string(),
+                    source: Box::new(e),
                 },
                 source => Error::Lance { source },
             })?;
@@ -1554,6 +1555,7 @@ impl NativeTable {
             .file_stem()
             .ok_or(Error::TableNotFound {
                 name: uri.to_string(),
+                source: format!("Could not extract table name from URI: '{}'", uri).into(),
             })?
             .to_str()
             .ok_or(Error::InvalidTableName {
