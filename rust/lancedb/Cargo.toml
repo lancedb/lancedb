@@ -86,10 +86,6 @@ candle-nn = { version = "0.9.1", optional = true }
 tokenizers = { version = "0.19.1", optional = true }
 semver = { workspace = true }
 
-# For a workaround, see workspace Cargo.toml
-crunchy.workspace = true
-bytemuck_derive.workspace = true
-
 [dev-dependencies]
 anyhow = "1"
 tempfile = "3.5.0"
