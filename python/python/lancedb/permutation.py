@@ -9,10 +9,11 @@ import json
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable
 from .background_loop import LOOP
+from .util import batch_to_tensor
 from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
-    from lancedb.dependencies import pandas as pd, numpy as np, torch, polars as pl
+    from lancedb.dependencies import pandas as pd, numpy as np, polars as pl
 
 
 class PermutationBuilder:
@@ -340,7 +341,7 @@ class Transforms:
         return batch
 
     @staticmethod
-    def arrow2numpy(batch: pa.RecordBatch) -> dict[str, "np.ndarray"]:
+    def arrow2numpy(batch: pa.RecordBatch) -> "np.ndarray":
         return batch.to_pandas().to_numpy()
 
     @staticmethod
@@ -348,16 +349,7 @@ class Transforms:
         return batch.to_pandas()
 
     @staticmethod
-    def arrow2torch() -> Callable[pa.RecordBatch, "torch.Tensor"]:
-        import torch
-
-        def impl(batch: pa.RecordBatch) -> torch.Tensor:
-            return torch.from_dlpack(batch.to_dlpack())
-
-        return impl
-
-    @staticmethod
-    def arrow2polars(batch: pa.RecordBatch) -> "pl.DataFrame":
+    def arrow2polars() -> "pl.DataFrame":
         import polars as pl
 
         def impl(batch: pa.RecordBatch) -> pl.DataFrame:
@@ -678,23 +670,21 @@ class Permutation:
         multiple of batch_size.
         """
 
-        async def do_iter():
-            async_iter = await self.reader.read(self.selection, batch_size=batch_size)
-            batches = []
-            try:
-                while True:
-                    batch = await async_iter.__anext__()
-                    if batch.num_rows == batch_size or not skip_last_batch:
-                        batches.append(batch)
-                    # else skip the partial last batch
-            except StopAsyncIteration:
-                # Reached the end of the stream
-                pass
-            return batches
+        async def get_iter():
+            return await self.reader.read(self.selection, batch_size=batch_size)
 
-        batches = LOOP.run(do_iter())
-        for batch in batches:
-            yield self.transform_fn(batch)
+        async_iter = LOOP.run(get_iter())
+
+        async def get_next():
+            return await async_iter.__anext__()
+
+        try:
+            while True:
+                batch = LOOP.run(get_next())
+                if batch.num_rows == batch_size or not skip_last_batch:
+                    yield self.transform_fn(batch)
+        except StopAsyncIteration:
+            return
 
     def with_format(
         self, format: Literal["numpy", "python", "pandas", "arrow", "torch", "polars"]
@@ -735,7 +725,7 @@ class Permutation:
         elif format == "arrow":
             return self.with_transform(Transforms.arrow2arrow)
         elif format == "torch":
-            return self.with_transform(Transforms.arrow2torch())
+            return self.with_transform(batch_to_tensor)
         elif format == "polars":
             return self.with_transform(Transforms.arrow2polars())
         else:

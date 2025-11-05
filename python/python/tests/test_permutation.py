@@ -212,21 +212,33 @@ def test_split_error_cases(mem_db):
     tbl = mem_db.create_table("test_table", pa.table({"x": range(10), "y": range(10)}))
 
     # Test split_random with no parameters
-    with pytest.raises(Exception):
+    with pytest.raises(
+        ValueError,
+        match="Exactly one of 'ratios', 'counts', or 'fixed' must be provided",
+    ):
         permutation_builder(tbl).split_random().execute()
 
     # Test split_random with multiple parameters
-    with pytest.raises(Exception):
+    with pytest.raises(
+        ValueError,
+        match="Exactly one of 'ratios', 'counts', or 'fixed' must be provided",
+    ):
         permutation_builder(tbl).split_random(
             ratios=[0.5, 0.5], counts=[5, 5]
         ).execute()
 
     # Test split_sequential with no parameters
-    with pytest.raises(Exception):
+    with pytest.raises(
+        ValueError,
+        match="Exactly one of 'ratios', 'counts', or 'fixed' must be provided",
+    ):
         permutation_builder(tbl).split_sequential().execute()
 
     # Test split_sequential with multiple parameters
-    with pytest.raises(Exception):
+    with pytest.raises(
+        ValueError,
+        match="Exactly one of 'ratios', 'counts', or 'fixed' must be provided",
+    ):
         permutation_builder(tbl).split_sequential(ratios=[0.5, 0.5], fixed=2).execute()
 
 
@@ -852,3 +864,80 @@ def test_identity_permutation(mem_db):
     assert permutation.schema == pa.schema([("id", pa.int64())])
     assert permutation.column_names == ["id"]
     assert permutation.shape == (10, 1)
+
+
+def test_transform_fn(mem_db):
+    import numpy as np
+    import pandas as pd
+    import polars as pl
+
+    tbl = mem_db.create_table(
+        "test_table", pa.table({"id": range(10), "value": range(10)})
+    )
+    permutation = Permutation.identity(tbl)
+
+    np_result = list(permutation.with_format("numpy").iter(10, skip_last_batch=False))[
+        0
+    ]
+    assert np_result.shape == (10, 2)
+    assert np_result.dtype == np.int64
+    assert isinstance(np_result, np.ndarray)
+
+    pd_result = list(permutation.with_format("pandas").iter(10, skip_last_batch=False))[
+        0
+    ]
+    assert pd_result.shape == (10, 2)
+    assert pd_result.dtypes.tolist() == [np.int64, np.int64]
+    assert isinstance(pd_result, pd.DataFrame)
+
+    pl_result = list(permutation.with_format("polars").iter(10, skip_last_batch=False))[
+        0
+    ]
+    assert pl_result.shape == (10, 2)
+    assert pl_result.dtypes == [pl.Int64, pl.Int64]
+    assert isinstance(pl_result, pl.DataFrame)
+
+    py_result = list(permutation.with_format("python").iter(10, skip_last_batch=False))[
+        0
+    ]
+    assert len(py_result) == 2
+    assert len(py_result["id"]) == 10
+    assert len(py_result["value"]) == 10
+    assert isinstance(py_result, dict)
+
+    try:
+        import torch
+
+        torch_result = list(
+            permutation.with_format("torch").iter(10, skip_last_batch=False)
+        )[0]
+        assert torch_result.shape == (2, 10)
+        assert torch_result.dtype == torch.int64
+        assert isinstance(torch_result, torch.Tensor)
+    except ImportError:
+        # Skip check if torch is not installed
+        pass
+
+    arrow_result = list(
+        permutation.with_format("arrow").iter(10, skip_last_batch=False)
+    )[0]
+    assert arrow_result.shape == (10, 2)
+    assert arrow_result.schema == pa.schema([("id", pa.int64()), ("value", pa.int64())])
+    assert isinstance(arrow_result, pa.RecordBatch)
+
+
+def test_custom_transform(mem_db):
+    tbl = mem_db.create_table(
+        "test_table", pa.table({"id": range(10), "value": range(10)})
+    )
+    permutation = Permutation.identity(tbl)
+
+    def transform(batch: pa.RecordBatch) -> pa.RecordBatch:
+        return batch.select(["id"])
+
+    transformed = permutation.with_transform(transform)
+    batches = list(transformed.iter(10, skip_last_batch=False))
+    assert len(batches) == 1
+    batch = batches[0]
+
+    assert batch == pa.record_batch([range(10)], ["id"])
