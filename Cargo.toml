@@ -62,7 +62,4 @@ num-traits = "0.2"
 regex = "1.10"
 lazy_static = "1"
 semver = "1.0.25"
-crunchy = "0.2.4"
 chrono = "0.4"
-# Workaround for: https://github.com/Lokathor/bytemuck/issues/306
-bytemuck_derive = ">=1.8.1, <1.9.0"
