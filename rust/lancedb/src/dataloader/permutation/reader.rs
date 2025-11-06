@@ -96,6 +96,49 @@ impl PermutationReader {
         Self::inner_new(base_table, None, 0).await.unwrap()
     }
 
+    /// Validates the limit and offset and returns the number of rows that will be read
+    fn validate_limit_offset(
+        limit: Option<u64>,
+        offset: Option<u64>,
+        available_rows: u64,
+    ) -> Result<u64> {
+        match (limit, offset) {
+            (Some(limit), Some(offset)) => {
+                if offset + limit > available_rows {
+                    Err(Error::InvalidInput {
+                        message: "Offset + limit is greater than the number of rows in the permutation table"
+                            .to_string(),
+                    })
+                } else {
+                    Ok(limit)
+                }
+            }
+            (None, Some(offset)) => {
+                if offset > available_rows {
+                    Err(Error::InvalidInput {
+                        message:
+                            "Offset is greater than the number of rows in the permutation table"
+                                .to_string(),
+                    })
+                } else {
+                    Ok(available_rows - offset)
+                }
+            }
+            (Some(limit), None) => {
+                if limit > available_rows {
+                    Err(Error::InvalidInput {
+                        message:
+                            "Limit is greater than the number of rows in the permutation table"
+                                .to_string(),
+                    })
+                } else {
+                    Ok(limit)
+                }
+            }
+            (None, None) => Ok(available_rows),
+        }
+    }
+
     async fn verify_limit_offset(&self, limit: Option<u64>, offset: Option<u64>) -> Result<u64> {
         let available_rows = if let Some(permutation_table) = &self.permutation_table {
             permutation_table
@@ -107,36 +150,7 @@ impl PermutationReader {
         } else {
             self.base_table.count_rows(None).await? as u64
         };
-        if let Some(offset) = offset {
-            if let Some(limit) = limit {
-                if offset + limit > available_rows {
-                    Err(Error::InvalidInput {
-                        message: "Offset + limit is greater than the number of rows in the permutation table"
-                            .to_string(),
-                    })
-                } else {
-                    Ok(limit)
-                }
-            } else if offset > available_rows {
-                Err(Error::InvalidInput {
-                    message: "Offset is greater than the number of rows in the permutation table"
-                        .to_string(),
-                })
-            } else {
-                Ok(available_rows - offset)
-            }
-        } else if let Some(limit) = limit {
-            if limit > available_rows {
-                Err(Error::InvalidInput {
-                    message: "Limit is greater than the number of rows in the permutation table"
-                        .to_string(),
-                })
-            } else {
-                Ok(limit)
-            }
-        } else {
-            Ok(available_rows)
-        }
+        Self::validate_limit_offset(limit, offset, available_rows)
     }
 
     pub async fn with_offset(mut self, offset: u64) -> Result<Self> {
@@ -341,28 +355,7 @@ impl PermutationReader {
         } else {
             self.base_table.count_rows(None).await? as u64
         };
-        if let Some(offset) = self.offset {
-            if let Some(limit) = self.limit {
-                if offset + limit > avail_rows {
-                    return Err(Error::InvalidInput {
-                        message: "Offset + limit is greater than the number of rows in the permutation table"
-                            .to_string(),
-                    });
-                }
-            } else if offset > avail_rows {
-                return Err(Error::InvalidInput {
-                    message: "Offset is greater than the number of rows in the permutation table"
-                        .to_string(),
-                });
-            }
-        } else if let Some(limit) = self.limit {
-            if limit > avail_rows {
-                return Err(Error::InvalidInput {
-                    message: "Limit is greater than the number of rows in the permutation table"
-                        .to_string(),
-                });
-            }
-        }
+        Self::validate_limit_offset(self.limit, self.offset, avail_rows)?;
         Ok(())
     }
 
