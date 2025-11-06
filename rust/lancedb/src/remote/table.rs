@@ -336,16 +336,33 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(res)
     }
 
+    pub(super) async fn handle_table_not_found(
+        table_name: &str,
+        response: reqwest::Response,
+        request_id: &str,
+    ) -> Result<reqwest::Response> {
+        let status = response.status();
+        if status == StatusCode::NOT_FOUND {
+            let body = response.text().await.ok().unwrap_or_default();
+            let request_error = Error::Http {
+                source: body.into(),
+                request_id: request_id.into(),
+                status_code: Some(status),
+            };
+            return Err(Error::TableNotFound {
+                name: table_name.to_string(),
+                source: Box::new(request_error),
+            });
+        }
+        Ok(response)
+    }
+
     async fn check_table_response(
         &self,
         request_id: &str,
         response: reqwest::Response,
     ) -> Result<reqwest::Response> {
-        if response.status() == StatusCode::NOT_FOUND {
-            return Err(Error::TableNotFound {
-                name: self.identifier.clone(),
-            });
-        }
+        let response = Self::handle_table_not_found(&self.name, response, request_id).await?;
 
         self.client.check_response(request_id, response).await
     }
@@ -681,8 +698,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .map_err(|e| match e {
                 // try to map the error to a more user-friendly error telling them
                 // specifically that the version does not exist
-                Error::TableNotFound { name } => Error::TableNotFound {
+                Error::TableNotFound { name, source } => Error::TableNotFound {
                     name: format!("{} (version: {})", name, version),
+                    source,
                 },
                 e => e,
             })?;
@@ -1575,7 +1593,11 @@ mod tests {
         for result in results {
             let result = result.await;
             assert!(result.is_err());
-            assert!(matches!(result, Err(Error::TableNotFound { name }) if name == "my_table"));
+            assert!(
+                matches!(&result, &Err(Error::TableNotFound { ref name, .. }) if name == "my_table")
+            );
+            let full_error_report = snafu::Report::from_error(result.unwrap_err()).to_string();
+            assert!(full_error_report.contains("table my_table not found"));
         }
     }
 
@@ -2884,7 +2906,7 @@ mod tests {
         let res = table.checkout(43).await;
         println!("{:?}", res);
         assert!(
-            matches!(res, Err(Error::TableNotFound { name }) if name == "my_table (version: 43)")
+            matches!(res, Err(Error::TableNotFound { name, .. }) if name == "my_table (version: 43)")
         );
     }
 

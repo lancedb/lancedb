@@ -6,6 +6,8 @@ use std::sync::PoisonError;
 use arrow_schema::ArrowError;
 use snafu::Snafu;
 
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
@@ -14,7 +16,7 @@ pub enum Error {
     #[snafu(display("Invalid input, {message}"))]
     InvalidInput { message: String },
     #[snafu(display("Table '{name}' was not found"))]
-    TableNotFound { name: String },
+    TableNotFound { name: String, source: BoxError },
     #[snafu(display("Database '{name}' was not found"))]
     DatabaseNotFound { name: String },
     #[snafu(display("Database '{name}' already exists."))]

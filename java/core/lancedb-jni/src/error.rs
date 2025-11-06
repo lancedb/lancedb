@@ -51,8 +51,11 @@ pub enum Error {
     DatasetAlreadyExists { uri: String, location: Location },
     #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },
-    #[snafu(display("Table '{name}' was not found"))]
-    TableNotFound { name: String },
+    #[snafu(display("Table '{name}' was not found: {source}"))]
+    TableNotFound {
+        name: String,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[snafu(display("Invalid table name '{name}': {reason}"))]
     InvalidTableName { name: String, reason: String },
     #[snafu(display("Embedding function '{name}' was not found: {reason}, {location}"))]
@@ -191,7 +194,7 @@ impl From<lancedb::Error> for Error {
                 message,
                 location: std::panic::Location::caller().to_snafu_location(),
             },
-            lancedb::Error::TableNotFound { name } => Self::TableNotFound { name },
+            lancedb::Error::TableNotFound { name, source } => Self::TableNotFound { name, source },
             lancedb::Error::TableAlreadyExists { name } => Self::TableAlreadyExists { name },
             lancedb::Error::EmbeddingFunctionNotFound { name, reason } => {
                 Self::EmbeddingFunctionNotFound {

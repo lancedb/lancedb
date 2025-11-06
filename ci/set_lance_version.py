@@ -55,7 +55,7 @@ def extract_features(line: str) -> list:
     match = re.search(r'"features"\s*=\s*\[\s*(.*?)\s*\]', line, re.DOTALL)
     if match:
         features_str = match.group(1)
-        return [f.strip('"') for f in features_str.split(",") if len(f) > 0]
+        return [f.strip().strip('"') for f in features_str.split(",") if f.strip()]
     return []
 
 

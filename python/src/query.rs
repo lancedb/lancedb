@@ -23,6 +23,7 @@ use lancedb::query::{
 };
 use lancedb::table::AnyQuery;
 use pyo3::prelude::{PyAnyMethods, PyDictMethods};
+use pyo3::pyfunction;
 use pyo3::pymethods;
 use pyo3::types::PyList;
 use pyo3::types::{PyDict, PyString};
@@ -981,4 +982,16 @@ impl HybridQuery {
         req.upper_bound = vec_req.upper_bound;
         req
     }
+}
+
+/// Convert a Python FTS query to JSON string
+#[pyfunction]
+pub fn fts_query_to_json(query_obj: &Bound<'_, PyAny>) -> PyResult<String> {
+    let wrapped: PyLanceDB<FtsQuery> = query_obj.extract()?;
+    lancedb::table::datafusion::udtf::fts::to_json(&wrapped.0).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Failed to serialize FTS query to JSON: {}",
+            e
+        ))
+    })
 }

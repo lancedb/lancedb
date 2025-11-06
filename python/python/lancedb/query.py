@@ -37,7 +37,7 @@ from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .util import flatten_columns
-
+from lancedb._lancedb import fts_query_to_json
 from typing_extensions import Annotated
 
 if TYPE_CHECKING:
@@ -123,6 +123,24 @@ class FullTextQuery(ABC):
             The type of the query.
         """
         pass
+
+    def to_json(self) -> str:
+        """
+        Convert the query to a JSON string.
+
+        Returns
+        -------
+        str
+            A JSON string representation of the query.
+
+        Examples
+        --------
+        >>> from lancedb.query import MatchQuery
+        >>> query = MatchQuery("puppy", "text", fuzziness=2)
+        >>> query.to_json()
+        '{"match":{"column":"text","terms":"puppy","boost":1.0,"fuzziness":2,"max_expansions":50,"operator":"Or","prefix_length":0}}'
+        """
+        return fts_query_to_json(self)
 
     def __and__(self, other: "FullTextQuery") -> "FullTextQuery":
         """
@@ -288,6 +306,8 @@ class BooleanQuery(FullTextQuery):
     ----------
     queries : list[tuple(Occur, FullTextQuery)]
         The list of queries with their occurrence requirements.
+        Each tuple contains an Occur value (MUST, SHOULD, or MUST_NOT)
+        and a FullTextQuery to apply.
     """
 
     queries: list[tuple[Occur, FullTextQuery]]
