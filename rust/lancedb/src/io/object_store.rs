@@ -172,8 +172,8 @@ impl MirroringObjectStoreWrapper {
 impl WrappingObjectStore for MirroringObjectStoreWrapper {
     fn wrap(
         &self,
+        _store_prefix: &str,
         primary: Arc<dyn ObjectStore>,
-        _storage_options: Option<&std::collections::HashMap<String, String>>,
     ) -> Arc<dyn ObjectStore> {
         Arc::new(MirroringObjectStore {
             primary,
