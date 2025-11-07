@@ -170,11 +170,7 @@ impl MirroringObjectStoreWrapper {
 }
 
 impl WrappingObjectStore for MirroringObjectStoreWrapper {
-    fn wrap(
-        &self,
-        _store_prefix: &str,
-        primary: Arc<dyn ObjectStore>,
-    ) -> Arc<dyn ObjectStore> {
+    fn wrap(&self, _store_prefix: &str, primary: Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore> {
         Arc::new(MirroringObjectStore {
             primary,
             secondary: self.secondary.clone(),

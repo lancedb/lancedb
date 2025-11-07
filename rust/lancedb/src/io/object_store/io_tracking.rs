@@ -50,11 +50,7 @@ impl IoStatsHolder {
 }
 
 impl WrappingObjectStore for IoStatsHolder {
-    fn wrap(
-        &self,
-        _store_prefix: &str,
-        target: Arc<dyn ObjectStore>,
-    ) -> Arc<dyn ObjectStore> {
+    fn wrap(&self, _store_prefix: &str, target: Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore> {
         Arc::new(IoTrackingStore {
             target,
             stats: self.0.clone(),
