@@ -37,3 +37,11 @@ optional ratios: number[];
 ```ts
 optional seed: number;
 ```
+
+***
+
+### splitNames?
+
+```ts
+optional splitNames: string[];
+```

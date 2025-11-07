@@ -34,7 +34,7 @@ pub(crate) const DEFAULT_TOP_K: usize = 10;
 /// Which columns should be retrieved from the database
 #[derive(Debug, Clone)]
 pub enum Select {
-    /// Select all columns
+    /// Select all non-system columns
     ///
     /// Warning: This will always be slower than selecting only the columns you need.
     All,

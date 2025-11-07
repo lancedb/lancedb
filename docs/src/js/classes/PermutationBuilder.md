@@ -64,6 +64,36 @@ builder.filter("age > 18 AND status = 'active'");
 
 ***
 
+### persist()
+
+```ts
+persist(connection, tableName): PermutationBuilder
+```
+
+Configure the permutation to be persisted.
+
+#### Parameters
+
+* **connection**: [`Connection`](Connection.md)
+    The connection to persist the permutation to
+
+* **tableName**: `string`
+    The name of the table to create
+
+#### Returns
+
+[`PermutationBuilder`](PermutationBuilder.md)
+
+A new PermutationBuilder instance
+
+#### Example
+
+```ts
+builder.persist(connection, "permutation_table");
+```
+
+***
+
 ### shuffle()
 
 ```ts
@@ -98,15 +128,15 @@ builder.shuffle({ seed: 42, clumpSize: 10 });
 ### splitCalculated()
 
 ```ts
-splitCalculated(calculation): PermutationBuilder
+splitCalculated(options): PermutationBuilder
 ```
 
 Configure calculated splits for the permutation.
 
 #### Parameters
 
-* **calculation**: `string`
-    SQL expression for calculating splits
+* **options**: [`SplitCalculatedOptions`](../interfaces/SplitCalculatedOptions.md)
+    Configuration for calculated splitting
 
 #### Returns
 
