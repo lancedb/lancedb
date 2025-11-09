@@ -3142,7 +3142,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
           Take: columns="_rowid, _score, (vector), (text)"
             CoalesceBatchesExec: target_batch_size=1024
               GlobalLimitExec: skip=0, fetch=10
-                MatchQuery: query=hello
+                MatchQuery: column=text, query=hello
         <BLANKLINE>
 
         Parameters
