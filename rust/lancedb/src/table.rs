@@ -3371,8 +3371,8 @@ mod tests {
     impl WrappingObjectStore for NoOpCacheWrapper {
         fn wrap(
             &self,
+            _store_prefix: &str,
             original: Arc<dyn object_store::ObjectStore>,
-            _storage_options: Option<&std::collections::HashMap<String, String>>,
         ) -> Arc<dyn object_store::ObjectStore> {
             self.called.store(true, Ordering::Relaxed);
             original
