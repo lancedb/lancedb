@@ -1,7 +1,6 @@
 # Python API Reference
 
-This section contains the API reference for the Python API. There is a
-synchronous and an asynchronous API client.
+This section contains the API reference for the Python API of [LanceDB](https://github.com/lancedb/lancedb). Both synchronous and asynchronous APIs are available.
 
 The general flow of using the API is:
 

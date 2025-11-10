@@ -35,7 +35,7 @@ def connect(
     session: Optional[Session] = None,
     **kwargs: Any,
 ) -> DBConnection:
-    """Connect to a LanceDB database.
+    """Connect to a LanceDB database. YAY!
 
     Parameters
     ----------
