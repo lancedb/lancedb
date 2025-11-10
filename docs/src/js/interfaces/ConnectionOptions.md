@@ -89,4 +89,4 @@ optional storageOptions: Record<string, string>;
 
 (For LanceDB OSS only): configuration for object storage.
 
-The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+The available options are described at https://lancedb.com/docs/storage/integrations/
