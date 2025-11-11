@@ -33,6 +33,7 @@ use lance::io::WrappingObjectStore;
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
+use lance_index::vector::bq::RQBuildParams;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
@@ -53,12 +54,9 @@ use crate::connection::NoData;
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
-use crate::index::vector::{suggested_num_partitions_for_hnsw, VectorIndex};
+use crate::index::vector::VectorIndex;
 use crate::index::IndexStatistics;
-use crate::index::{
-    vector::{suggested_num_partitions, suggested_num_sub_vectors},
-    Index, IndexBuilder,
-};
+use crate::index::{vector::suggested_num_sub_vectors, Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{
     IntoQueryVector, Query, QueryExecutionOptions, QueryFilter, QueryRequest, Select, TakeQuery,
@@ -1757,28 +1755,23 @@ impl NativeTable {
         Ok(())
     }
 
-    // Helper to get num_partitions with default calculation
-    async fn get_num_partitions(
-        &self,
-        provided: Option<u32>,
-        for_hnsw: bool,
-        dim: Option<u32>,
-    ) -> Result<u32> {
-        if let Some(n) = provided {
-            Ok(n)
-        } else {
-            let row_count = self.count_rows(None).await?;
-            if for_hnsw {
-                Ok(suggested_num_partitions_for_hnsw(
-                    row_count,
-                    dim.ok_or_else(|| Error::InvalidInput {
-                        message: "Vector dimension required for HNSW partitioning".to_string(),
-                    })?,
-                ))
-            } else {
-                Ok(suggested_num_partitions(row_count))
+    // Helper to build IVF params honoring table options.
+    fn build_ivf_params(
+        num_partitions: Option<u32>,
+        target_partition_size: Option<u32>,
+        sample_rate: u32,
+        max_iterations: u32,
+    ) -> IvfBuildParams {
+        let mut ivf_params = match (num_partitions, target_partition_size) {
+            (Some(num_partitions), _) => IvfBuildParams::new(num_partitions as usize),
+            (None, Some(target_partition_size)) => {
+                IvfBuildParams::with_target_partition_size(target_partition_size as usize)
             }
-        }
+            (None, None) => IvfBuildParams::default(),
+        };
+        ivf_params.sample_rate = sample_rate as usize;
+        ivf_params.max_iters = max_iterations as usize;
+        ivf_params
     }
 
     // Helper to get num_sub_vectors with default calculation
@@ -1805,15 +1798,16 @@ impl NativeTable {
                 if supported_vector_data_type(field.data_type()) {
                     // Use IvfPq as the default for auto vector indices
                     let dim = Self::get_vector_dimension(field)?;
-                    let num_partitions = self.get_num_partitions(None, false, None).await?;
+                    let ivf_params = lance_index::vector::ivf::IvfBuildParams::default();
                     let num_sub_vectors = Self::get_num_sub_vectors(None, dim);
-                    let lance_idx_params = lance::index::vector::VectorIndexParams::ivf_pq(
-                        num_partitions as usize,
-                        /*num_bits=*/ 8,
-                        num_sub_vectors as usize,
-                        lance_linalg::distance::MetricType::L2,
-                        /*max_iterations=*/ 50,
-                    );
+                    let pq_params =
+                        lance_index::vector::pq::PQBuildParams::new(num_sub_vectors as usize, 8);
+                    let lance_idx_params =
+                        lance::index::vector::VectorIndexParams::with_ivf_pq_params(
+                            lance_linalg::distance::MetricType::L2,
+                            ivf_params,
+                            pq_params,
+                        );
                     Ok(Box::new(lance_idx_params))
                 } else if supported_btree_data_type(field.data_type()) {
                     Ok(Box::new(ScalarIndexParams::for_builtin(
@@ -1853,60 +1847,69 @@ impl NativeTable {
             }
             Index::IvfFlat(index) => {
                 Self::validate_index_type(field, "IVF Flat", supported_vector_data_type)?;
-                let num_partitions = self
-                    .get_num_partitions(index.num_partitions, false, None)
-                    .await?;
-                let lance_idx_params = VectorIndexParams::ivf_flat(
-                    num_partitions as usize,
-                    index.distance_type.into(),
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
                 );
+                let lance_idx_params =
+                    VectorIndexParams::with_ivf_flat_params(index.distance_type.into(), ivf_params);
                 Ok(Box::new(lance_idx_params))
             }
             Index::IvfPq(index) => {
                 Self::validate_index_type(field, "IVF PQ", supported_vector_data_type)?;
                 let dim = Self::get_vector_dimension(field)?;
-                let num_partitions = self
-                    .get_num_partitions(index.num_partitions, false, None)
-                    .await?;
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
                 let num_sub_vectors = Self::get_num_sub_vectors(index.num_sub_vectors, dim);
-                let lance_idx_params = VectorIndexParams::ivf_pq(
-                    num_partitions as usize,
-                    /*num_bits=*/ 8,
-                    num_sub_vectors as usize,
+                let num_bits = index.num_bits.unwrap_or(8) as usize;
+                let mut pq_params = PQBuildParams::new(num_sub_vectors as usize, num_bits);
+                pq_params.max_iters = index.max_iterations as usize;
+                let lance_idx_params = VectorIndexParams::with_ivf_pq_params(
                     index.distance_type.into(),
-                    index.max_iterations as usize,
+                    ivf_params,
+                    pq_params,
                 );
                 Ok(Box::new(lance_idx_params))
             }
             Index::IvfRq(index) => {
                 Self::validate_index_type(field, "IVF RQ", supported_vector_data_type)?;
-                let num_partitions = self
-                    .get_num_partitions(index.num_partitions, false, None)
-                    .await?;
-                let lance_idx_params = VectorIndexParams::ivf_rq(
-                    num_partitions as usize,
-                    index.num_bits.unwrap_or(1) as u8,
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
+                let rq_params = RQBuildParams::new(index.num_bits.unwrap_or(1) as u8);
+                let lance_idx_params = VectorIndexParams::with_ivf_rq_params(
                     index.distance_type.into(),
+                    ivf_params,
+                    rq_params,
                 );
                 Ok(Box::new(lance_idx_params))
             }
             Index::IvfHnswPq(index) => {
                 Self::validate_index_type(field, "IVF HNSW PQ", supported_vector_data_type)?;
                 let dim = Self::get_vector_dimension(field)?;
-                let num_partitions = self
-                    .get_num_partitions(index.num_partitions, true, Some(dim))
-                    .await?;
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
                 let num_sub_vectors = Self::get_num_sub_vectors(index.num_sub_vectors, dim);
-                let mut ivf_params = IvfBuildParams::new(num_partitions as usize);
-                ivf_params.sample_rate = index.sample_rate as usize;
-                ivf_params.max_iters = index.max_iterations as usize;
                 let hnsw_params = HnswBuildParams::default()
                     .num_edges(index.m as usize)
                     .ef_construction(index.ef_construction as usize);
-                let pq_params = PQBuildParams {
-                    num_sub_vectors: num_sub_vectors as usize,
-                    ..Default::default()
-                };
+                let pq_params = PQBuildParams::new(
+                    num_sub_vectors as usize,
+                    index.num_bits.unwrap_or(8) as usize,
+                );
                 let lance_idx_params = VectorIndexParams::with_ivf_hnsw_pq_params(
                     index.distance_type.into(),
                     ivf_params,
@@ -1917,13 +1920,12 @@ impl NativeTable {
             }
             Index::IvfHnswSq(index) => {
                 Self::validate_index_type(field, "IVF HNSW SQ", supported_vector_data_type)?;
-                let dim = Self::get_vector_dimension(field)?;
-                let num_partitions = self
-                    .get_num_partitions(index.num_partitions, true, Some(dim))
-                    .await?;
-                let mut ivf_params = IvfBuildParams::new(num_partitions as usize);
-                ivf_params.sample_rate = index.sample_rate as usize;
-                ivf_params.max_iters = index.max_iterations as usize;
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
                 let hnsw_params = HnswBuildParams::default()
                     .num_edges(index.m as usize)
                     .ef_construction(index.ef_construction as usize);
@@ -3564,6 +3566,81 @@ mod tests {
 
         table.drop_index(index_name).await.unwrap();
         assert_eq!(table.list_indices().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_ivf_pq_builder_options_propagate_to_params() {
+        use arrow_array::{Float32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+        use lance::index::vector::StageParams;
+
+        use crate::index::vector::IvfPqIndexBuilder;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        let dimension = 8;
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "embeddings",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                dimension,
+            ),
+            false,
+        )]));
+
+        let values = (0..(dimension * 8) as usize)
+            .map(|v| v as f32)
+            .collect::<Vec<f32>>();
+        let float_arr = Float32Array::from(values);
+
+        let vectors = Arc::new(create_fixed_size_list(float_arr, dimension).unwrap());
+        let batches = RecordBatchIterator::new(
+            vec![RecordBatch::try_new(schema.clone(), vec![vectors]).unwrap()]
+                .into_iter()
+                .map(Ok),
+            schema,
+        );
+
+        let table = conn.create_table("test", batches).execute().await.unwrap();
+        let native = table.as_native().unwrap();
+        let schema = native.schema().await.unwrap();
+        let field = schema.field_with_name("embeddings").unwrap();
+
+        let builder = IvfPqIndexBuilder::default()
+            .target_partition_size(2048)
+            .sample_rate(512)
+            .max_iterations(33)
+            .num_sub_vectors(4)
+            .num_bits(6);
+
+        let params = native
+            .make_index_params(field, Index::IvfPq(builder))
+            .await
+            .unwrap();
+        let vector_params = params
+            .as_any()
+            .downcast_ref::<VectorIndexParams>()
+            .expect("expected vector index params");
+
+        assert_eq!(vector_params.stages.len(), 2);
+        match &vector_params.stages[0] {
+            StageParams::Ivf(ivf) => {
+                assert_eq!(ivf.target_partition_size, Some(2048));
+                assert_eq!(ivf.sample_rate, 512);
+                assert_eq!(ivf.max_iters, 33);
+            }
+            other => panic!("expected IVF stage params, got {:?}", other),
+        }
+        match &vector_params.stages[1] {
+            StageParams::PQ(pq) => {
+                assert_eq!(pq.num_sub_vectors, 4);
+                assert_eq!(pq.num_bits, 6);
+                assert_eq!(pq.max_iters, 33);
+            }
+            other => panic!("expected PQ stage params, got {:?}", other),
+        }
     }
 
     #[tokio::test]

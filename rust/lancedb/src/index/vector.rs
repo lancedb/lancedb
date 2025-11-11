@@ -6,8 +6,6 @@
 //!
 //! Vector indices are only supported on fixed-size-list (tensor) columns of floating point
 //! values
-use std::cmp::max;
-
 use lance::table::format::{IndexMetadata, Manifest};
 
 use crate::DistanceType;
@@ -264,16 +262,6 @@ impl IvfPqIndexBuilder {
     impl_distance_type_setter!();
     impl_ivf_params_setter!();
     impl_pq_params_setter!();
-}
-
-pub(crate) fn suggested_num_partitions(rows: usize) -> u32 {
-    let num_partitions = (rows as f64).sqrt() as u32;
-    max(1, num_partitions)
-}
-
-pub(crate) fn suggested_num_partitions_for_hnsw(rows: usize, dim: u32) -> u32 {
-    let num_partitions = (((rows as u64) * (dim as u64)) / (256 * 5_000_000)) as u32;
-    max(1, num_partitions)
 }
 
 pub(crate) fn suggested_num_sub_vectors(dim: u32) -> u32 {
