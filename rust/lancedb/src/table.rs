@@ -3569,10 +3569,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ivf_pq_builder_options_propagate_to_params() {
+    async fn test_ivf_pq_uses_default_partition_size_for_num_partitions() {
         use arrow_array::{Float32Array, RecordBatch};
         use arrow_schema::{DataType, Field, Schema as ArrowSchema};
-        use lance::index::vector::StageParams;
 
         use crate::index::vector::IvfPqIndexBuilder;
 
@@ -3580,22 +3579,21 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
         let conn = connect(uri).execute().await.unwrap();
 
-        let dimension = 8;
+        const PARTITION_SIZE: usize = 8192;
+        let num_rows = PARTITION_SIZE * 2;
+        let dimension = 8usize;
         let schema = Arc::new(ArrowSchema::new(vec![Field::new(
             "embeddings",
             DataType::FixedSizeList(
                 Arc::new(Field::new("item", DataType::Float32, true)),
-                dimension,
+                dimension as i32,
             ),
             false,
         )]));
 
-        let values = (0..(dimension * 8) as usize)
-            .map(|v| v as f32)
-            .collect::<Vec<f32>>();
-        let float_arr = Float32Array::from(values);
-
-        let vectors = Arc::new(create_fixed_size_list(float_arr, dimension).unwrap());
+        let float_arr =
+            Float32Array::from_iter_values((0..(num_rows * dimension)).map(|v| v as f32));
+        let vectors = Arc::new(create_fixed_size_list(float_arr, dimension as i32).unwrap());
         let batches = RecordBatchIterator::new(
             vec![RecordBatch::try_new(schema.clone(), vec![vectors]).unwrap()]
                 .into_iter()
@@ -3604,43 +3602,42 @@ mod tests {
         );
 
         let table = conn.create_table("test", batches).execute().await.unwrap();
-        let native = table.as_native().unwrap();
-        let schema = native.schema().await.unwrap();
-        let field = schema.field_with_name("embeddings").unwrap();
-
-        let builder = IvfPqIndexBuilder::default()
-            .target_partition_size(2048)
-            .sample_rate(512)
-            .max_iterations(33)
-            .num_sub_vectors(4)
-            .num_bits(6);
-
-        let params = native
-            .make_index_params(field, Index::IvfPq(builder))
+        let native_table = table.as_native().unwrap();
+        let builder = IvfPqIndexBuilder::default();
+        table
+            .create_index(&["embeddings"], Index::IvfPq(builder))
+            .execute()
             .await
             .unwrap();
-        let vector_params = params
-            .as_any()
-            .downcast_ref::<VectorIndexParams>()
-            .expect("expected vector index params");
+        table
+            .wait_for_index(&["embeddings_idx"], std::time::Duration::from_secs(30))
+            .await
+            .unwrap();
 
-        assert_eq!(vector_params.stages.len(), 2);
-        match &vector_params.stages[0] {
-            StageParams::Ivf(ivf) => {
-                assert_eq!(ivf.target_partition_size, Some(2048));
-                assert_eq!(ivf.sample_rate, 512);
-                assert_eq!(ivf.max_iters, 33);
-            }
-            other => panic!("expected IVF stage params, got {:?}", other),
-        }
-        match &vector_params.stages[1] {
-            StageParams::PQ(pq) => {
-                assert_eq!(pq.num_sub_vectors, 4);
-                assert_eq!(pq.num_bits, 6);
-                assert_eq!(pq.max_iters, 33);
-            }
-            other => panic!("expected PQ stage params, got {:?}", other),
-        }
+        use lance::index::vector::ivf::v2::IvfPq as LanceIvfPq;
+        use lance::index::DatasetIndexInternalExt;
+        use lance_index::metrics::NoOpMetricsCollector;
+        use lance_index::vector::VectorIndex as LanceVectorIndex;
+
+        let indices = native_table.load_indices().await.unwrap();
+        let index_uuid = indices[0].index_uuid.clone();
+
+        let dataset_guard = native_table.dataset.get().await.unwrap();
+        let dataset = (*dataset_guard).clone();
+        drop(dataset_guard);
+
+        let lance_index = dataset
+            .open_vector_index("embeddings", &index_uuid, &NoOpMetricsCollector)
+            .await
+            .unwrap();
+        let ivf_index = lance_index
+            .as_any()
+            .downcast_ref::<LanceIvfPq>()
+            .expect("expected IvfPq index");
+        let partition_count = ivf_index.ivf_model().num_partitions();
+
+        let expected_partitions = num_rows / PARTITION_SIZE;
+        assert_eq!(partition_count, expected_partitions);
     }
 
     #[tokio::test]
