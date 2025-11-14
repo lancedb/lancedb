@@ -5,6 +5,7 @@
 import os
 from datetime import date, datetime, timedelta
 from time import sleep
+from turtle import position
 from typing import List
 from unittest.mock import patch
 
@@ -1487,7 +1488,7 @@ def setup_hybrid_search_table(db: DBConnection, embedding_func):
     table.add([{"text": p} for p in phrases])
 
     # Create a fts index
-    table.create_fts_index("text")
+    table.create_fts_index("text", with_position=True)
 
     return table, MyTable, emb
 

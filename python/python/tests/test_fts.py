@@ -324,11 +324,22 @@ def test_search_fts_phrase_query(table):
         pass
     table.create_fts_index("text", use_tantivy=False, with_position=True, replace=True)
     results = table.search("puppy").limit(100).to_list()
-    phrase_results = table.search('"puppy runs"').limit(100).to_list()
-    assert len(results) > len(phrase_results)
+
+    # Test with quotation marks
+    phrase_results = table.search("puppy runs").phrase_query().limit(100).to_list()
+    assert len(results) > len(phrase_results), (
+        "expected non phrase_query > pharse_query results"
+    )
     assert len(phrase_results) > 0
 
-    # Test with a query
+    # Test with .phrase_query()
+    phrase_results = table.search("puppy runs").phrase_query().limit(100).to_list()
+    assert len(results) > len(phrase_results), (
+        "expected non phrase_query > pharse_query results"
+    )
+    assert len(phrase_results) > 0
+
+    # Test with PhraseQuery()
     phrase_results = (
         table.search(PhraseQuery("puppy runs", "text")).limit(100).to_list()
     )
