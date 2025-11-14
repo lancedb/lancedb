@@ -19,9 +19,8 @@ use crate::error::{Error, Result};
 use datafusion_physical_plan::SendableRecordBatchStream;
 
 lazy_static! {
-    static ref TABLE_NAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap();
-    static ref NAMESPACE_NAME_REGEX: regex::Regex =
-        regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap();
+    // Shared regex for both table and namespace names
+    static ref NAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap();
 }
 
 pub trait PatchStoreParam {
@@ -82,6 +81,12 @@ impl PatchReadParam for ReadParams {
 }
 
 /// Validate table name.
+///
+/// Table names must:
+/// - Not be empty
+/// - Only contain alphanumeric characters, underscores, hyphens, and periods
+///
+/// This uses the same validation rules as namespace names.
 pub fn validate_table_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(Error::InvalidTableName {
@@ -89,7 +94,7 @@ pub fn validate_table_name(name: &str) -> Result<()> {
             reason: "Table names cannot be empty strings".to_string(),
         });
     }
-    if !TABLE_NAME_REGEX.is_match(name) {
+    if !NAME_REGEX.is_match(name) {
         return Err(Error::InvalidTableName {
             name: name.to_string(),
             reason:
@@ -106,6 +111,8 @@ pub fn validate_table_name(name: &str) -> Result<()> {
 /// - Not be empty
 /// - Only contain alphanumeric characters, underscores, hyphens, and periods
 ///
+/// This uses the same validation rules as table names.
+///
 /// # Arguments
 /// * `name` - A single namespace component (not the full path)
 ///
@@ -118,7 +125,7 @@ pub fn validate_namespace_name(name: &str) -> Result<()> {
             message: "Namespace names cannot be empty strings".to_string(),
         });
     }
-    if !NAMESPACE_NAME_REGEX.is_match(name) {
+    if !NAME_REGEX.is_match(name) {
         return Err(Error::InvalidInput {
             message: format!(
                 "Invalid namespace name '{}': Namespace names can only contain alphanumeric characters, underscores, hyphens, and periods",
