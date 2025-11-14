@@ -189,7 +189,7 @@ class DBConnection(EnforceOverrides):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.github.io/lancedb/guides/storage/>
+            <https://lancedb.com/docs/storage/integrations/>
         data_storage_version: optional, str, default "stable"
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_data_storage_version` in the options.
@@ -336,7 +336,7 @@ class DBConnection(EnforceOverrides):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.github.io/lancedb/guides/storage/>
+            <https://lancedb.com/docs/storage/integrations/>
 
         Returns
         -------
@@ -1024,7 +1024,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.github.io/lancedb/guides/storage/>
+            <https://lancedb.com/docs/storage/integrations/>
 
         Returns
         -------
@@ -1204,7 +1204,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            <https://lancedb.github.io/lancedb/guides/storage/>
+            <https://lancedb.com/docs/storage/integrations/>
         index_cache_size: int, default 256
             **Deprecated**: Use session-level cache configuration instead.
             Create a Session with custom cache sizes and pass it to lancedb.connect().

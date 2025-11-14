@@ -66,7 +66,7 @@ def connect(
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
-        <https://lancedb.github.io/lancedb/guides/storage/>
+        <https://lancedb.com/docs/storage/integrations/>
     session: Session, optional
         (For LanceDB OSS only)
         A session to use for this connection. Sessions allow you to configure
@@ -168,7 +168,7 @@ async def connect_async(
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
-        <https://lancedb.github.io/lancedb/guides/storage/>
+        <https://lancedb.com/docs/storage/integrations/>
     session: Session, optional
         (For LanceDB OSS only)
         A session to use for this connection. Sessions allow you to configure

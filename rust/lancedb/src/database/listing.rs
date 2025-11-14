@@ -59,7 +59,7 @@ pub struct ListingDatabaseOptions {
     /// These are used to create/list tables and they are inherited by all tables
     /// opened by this database.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://lancedb.com/docs/storage/integrations/>
     pub storage_options: HashMap<String, String>,
 }
 
@@ -156,7 +156,7 @@ impl ListingDatabaseOptionsBuilder {
 
     /// Set an option for the storage layer.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://lancedb.com/docs/storage/integrations/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.options
             .storage_options
@@ -166,7 +166,7 @@ impl ListingDatabaseOptionsBuilder {
 
     /// Set multiple options for the storage layer.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://lancedb.com/docs/storage/integrations/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,

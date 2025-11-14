@@ -90,7 +90,7 @@ pub struct RemoteDatabaseOptions {
     pub host_override: Option<String>,
     /// Storage options configure the storage layer (e.g. S3, GCS, Azure, etc.)
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://lancedb.com/docs/storage/integrations/>
     ///
     /// These options are only used for LanceDB Enterprise and only a subset of options
     /// are supported.
