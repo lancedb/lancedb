@@ -5,7 +5,6 @@
 import os
 from datetime import date, datetime, timedelta
 from time import sleep
-from turtle import position
 from typing import List
 from unittest.mock import patch
 
