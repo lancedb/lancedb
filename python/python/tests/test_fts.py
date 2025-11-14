@@ -327,16 +327,12 @@ def test_search_fts_phrase_query(table):
 
     # Test with quotation marks
     phrase_results = table.search("puppy runs").phrase_query().limit(100).to_list()
-    assert len(results) > len(phrase_results), (
-        "expected non phrase_query > pharse_query results"
-    )
+    assert len(results) > len(phrase_results)
     assert len(phrase_results) > 0
 
     # Test with .phrase_query()
     phrase_results = table.search("puppy runs").phrase_query().limit(100).to_list()
-    assert len(results) > len(phrase_results), (
-        "expected non phrase_query > pharse_query results"
-    )
+    assert len(results) > len(phrase_results)
     assert len(phrase_results) > 0
 
     # Test with PhraseQuery()
