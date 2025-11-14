@@ -100,7 +100,7 @@ class LinearCombinationReranker(Reranker):
         combined_list = []
         for row_id, result in results.items():
             vector_score = self._invert_score(result.get("_distance", fill))
-            fts_score = result.get("_score", fill)
+            fts_score = result.get("_score", 0.0)
             result["_relevance_score"] = self._combine_score(vector_score, fts_score)
             combined_list.append(result)
 
@@ -120,8 +120,8 @@ class LinearCombinationReranker(Reranker):
         return tbl
 
     def _combine_score(self, vector_score, fts_score):
-        # these scores represent distance
-        return 1 - (self.weight * vector_score + (1 - self.weight) * fts_score)
+        # these scores represent score
+        return self.weight * vector_score + (1 - self.weight) * fts_score
 
     def _invert_score(self, dist: float):
         # Invert the score between relevance and distance
