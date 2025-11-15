@@ -97,11 +97,9 @@ jobs:
           sudo apt update
           sudo apt install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: python
       - name: Install
         run: |
-          pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
+          maturin develop --profile ci --extra-index-url https://pypi.fury.io/lancedb/ --extras dev,tests,embeddings
           pip install tantivy
           pip install mlx
       - name: Doctest
@@ -131,9 +129,9 @@ jobs:
         with:
           python-version: 3.${{ matrix.python-minor-version }}
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: python
       - uses: ./.github/workflows/build_linux_wheel
+        with:
+          args: --profile ci
       - uses: ./.github/workflows/run_tests
         with:
           integration: true
@@ -169,9 +167,9 @@ jobs:
         with:
           python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: python
       - uses: ./.github/workflows/build_mac_wheel
+        with:
+          args: --profile ci
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
@@ -199,9 +197,9 @@ jobs:
         with:
           python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: python
       - uses: ./.github/workflows/build_windows_wheel
+        with:
+          args: --profile ci
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
