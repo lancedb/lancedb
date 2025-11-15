@@ -9,7 +9,7 @@ use futures::{StreamExt, TryStreamExt};
 use lance::io::ObjectStore;
 use lance_core::{cache::LanceCache, utils::futures::FinallyStreamExt};
 use lance_encoding::decoder::DecoderPlugins;
-use lance_file::v2::{
+use lance_file::{
     reader::{FileReader, FileReaderOptions},
     writer::{FileWriter, FileWriterOptions},
 };

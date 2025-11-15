@@ -101,6 +101,28 @@ impl Connection {
         future_into_py(self_.py(), async move { op.execute().await.infer_error() })
     }
 
+    #[pyo3(signature = (namespace=vec![], page_token=None, limit=None))]
+    pub fn list_tables(
+        self_: PyRef<'_, Self>,
+        namespace: Vec<String>,
+        page_token: Option<String>,
+        limit: Option<u32>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let py = self_.py();
+        future_into_py(py, async move {
+            use lancedb::database::ListTablesRequest;
+            let request = ListTablesRequest {
+                id: Some(namespace),
+                page_token,
+                limit: limit.map(|l| l as i32),
+            };
+            let response = inner.database().list_tables(request).await.infer_error()?;
+            // Return a tuple with (tables, page_token)
+            Ok((response.tables, response.page_token))
+        })
+    }
+
     #[pyo3(signature = (name, mode, data, namespace=vec![], storage_options=None))]
     pub fn create_table<'a>(
         self_: PyRef<'a, Self>,
@@ -263,9 +285,9 @@ impl Connection {
         future_into_py(self_.py(), async move {
             use lancedb::database::ListNamespacesRequest;
             let request = ListNamespacesRequest {
-                namespace,
+                id: Some(namespace),
                 page_token,
-                limit,
+                limit: limit.map(|l| l as i32),
             };
             inner.list_namespaces(request).await.infer_error()
         })
@@ -279,7 +301,11 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             use lancedb::database::CreateNamespaceRequest;
-            let request = CreateNamespaceRequest { namespace };
+            let request = CreateNamespaceRequest {
+                id: Some(namespace),
+                mode: None,
+                properties: None,
+            };
             inner.create_namespace(request).await.infer_error()
         })
     }
@@ -292,7 +318,11 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             use lancedb::database::DropNamespaceRequest;
-            let request = DropNamespaceRequest { namespace };
+            let request = DropNamespaceRequest {
+                id: Some(namespace),
+                mode: None,
+                behavior: None,
+            };
             inner.drop_namespace(request).await.infer_error()
         })
     }
@@ -338,6 +368,38 @@ pub fn connect(
             builder = builder.session(session.inner.clone());
         }
         Ok(Connection::new(builder.execute().await.infer_error()?))
+    })
+}
+
+#[pyfunction]
+#[pyo3(signature = (ns_impl, properties, read_consistency_interval=None, storage_options=None, session=None))]
+pub fn connect_with_namespace(
+    py: Python<'_>,
+    ns_impl: String,
+    properties: HashMap<String, String>,
+    read_consistency_interval: Option<f64>,
+    storage_options: Option<HashMap<String, String>>,
+    session: Option<crate::session::Session>,
+) -> PyResult<Bound<'_, PyAny>> {
+    future_into_py(py, async move {
+        // Use the lancedb connect_namespace API which handles everything properly
+        let mut builder = lancedb::connect_namespace(&ns_impl, properties);
+
+        if let Some(interval) = read_consistency_interval {
+            builder = builder.read_consistency_interval(Duration::from_secs_f64(interval));
+        }
+
+        if let Some(opts) = storage_options {
+            builder = builder.storage_options(opts);
+        }
+
+        if let Some(sess) = session {
+            builder = builder.session(sess.inner.clone());
+        }
+
+        let conn = builder.execute().await.infer_error()?;
+
+        Ok(Connection::new(conn))
     })
 }
 

@@ -283,7 +283,7 @@ pub struct AddDataBuilder<T: IntoArrow> {
     pub(crate) data: T,
     pub(crate) mode: AddDataMode,
     pub(crate) write_options: WriteOptions,
-    embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
 }
 
 impl<T: IntoArrow> std::fmt::Debug for AddDataBuilder<T> {
@@ -732,6 +732,11 @@ impl Table {
     /// Get the name of the table.
     pub fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    /// Get the namespace of the table.
+    pub fn namespace(&self) -> &[String] {
+        self.inner.namespace()
     }
 
     /// Get the dataset of the table if it is a native table
@@ -2078,7 +2083,6 @@ impl BaseTable for NativeTable {
     }
 
     fn namespace(&self) -> &[String] {
-        // Native tables don't support namespaces yet, return empty slice for root namespace
         &[]
     }
 

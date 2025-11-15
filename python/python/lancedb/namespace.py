@@ -25,7 +25,7 @@ from lancedb.util import validate_table_name
 from lancedb.common import validate_schema
 from lancedb.table import sanitize_create_table
 
-from lance_namespace import LanceNamespace, connect as namespace_connect
+from lance_namespace import LanceNamespace
 from lance_namespace_urllib3_client.models import (
     ListTablesRequest,
     DescribeTableRequest,
@@ -146,8 +146,10 @@ class LanceNamespaceDBConnection(DBConnection):
         page_token: Optional[str] = None,
         limit: int = 10,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
     ) -> Iterable[str]:
+        if namespace is None:
+            namespace = []
         request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
         response = self._ns.list_tables(request)
         return response.tables if response.tables else []
@@ -164,20 +166,16 @@ class LanceNamespaceDBConnection(DBConnection):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
+        if namespace is None:
+            namespace = []
         if mode.lower() not in ["create", "overwrite"]:
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
-
-        # TODO: support passing data
-        if data is not None:
-            raise ValueError(
-                "create_table currently only supports creating empty tables (data=None)"
-            )
 
         # Prepare schema
         metadata = None
@@ -199,16 +197,27 @@ class LanceNamespaceDBConnection(DBConnection):
         table_id = namespace + [name]
         request = CreateTableRequest(id=table_id, var_schema=json_schema)
 
-        # Create empty Arrow IPC stream bytes
+        # Create Arrow IPC stream bytes with data
         import pyarrow.ipc as ipc
         import io
 
-        empty_table = pa.Table.from_arrays(
-            [pa.array([], type=field.type) for field in schema], schema=schema
-        )
         buffer = io.BytesIO()
         with ipc.new_stream(buffer, schema) as writer:
-            writer.write_table(empty_table)
+            # If data is None, write an empty table
+            if data is None:
+                empty_table = pa.Table.from_arrays(
+                    [pa.array([], type=field.type) for field in schema], schema=schema
+                )
+                writer.write_table(empty_table)
+            # If data is a RecordBatchReader, write each batch
+            elif isinstance(data, pa.RecordBatchReader):
+                for batch in data:
+                    writer.write_batch(batch)
+            # If data is a Table, write it directly
+            elif isinstance(data, pa.Table):
+                writer.write_table(data)
+            else:
+                raise ValueError(f"Unsupported data type: {type(data)}")
         request_data = buffer.getvalue()
 
         self._ns.create_table(request, request_data)
@@ -221,10 +230,12 @@ class LanceNamespaceDBConnection(DBConnection):
         self,
         name: str,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
+        if namespace is None:
+            namespace = []
         table_id = namespace + [name]
         request = DescribeTableRequest(id=table_id)
         response = self._ns.describe_table(request)
@@ -242,7 +253,9 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
     @override
-    def drop_table(self, name: str, namespace: List[str] = []):
+    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
+        if namespace is None:
+            namespace = []
         # Use namespace drop_table directly
         table_id = namespace + [name]
         request = DropTableRequest(id=table_id)
@@ -253,9 +266,13 @@ class LanceNamespaceDBConnection(DBConnection):
         self,
         cur_name: str,
         new_name: str,
-        cur_namespace: List[str] = [],
-        new_namespace: List[str] = [],
+        cur_namespace: Optional[List[str]] = None,
+        new_namespace: Optional[List[str]] = None,
     ):
+        if cur_namespace is None:
+            cur_namespace = []
+        if new_namespace is None:
+            new_namespace = []
         raise NotImplementedError(
             "rename_table is not supported for namespace connections"
         )
@@ -267,14 +284,16 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
     @override
-    def drop_all_tables(self, namespace: List[str] = []):
+    def drop_all_tables(self, namespace: Optional[List[str]] = None):
+        if namespace is None:
+            namespace = []
         for table_name in self.table_names(namespace=namespace):
             self.drop_table(table_name, namespace=namespace)
 
     @override
     def list_namespaces(
         self,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: int = 10,
     ) -> Iterable[str]:
@@ -296,6 +315,8 @@ class LanceNamespaceDBConnection(DBConnection):
         Iterable[str]
             Names of child namespaces.
         """
+        if namespace is None:
+            namespace = []
         request = ListNamespacesRequest(
             id=namespace, page_token=page_token, limit=limit
         )
@@ -335,28 +356,50 @@ class LanceNamespaceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> LanceTable:
-        # Extract the base path and table name from the URI
-        if table_uri.endswith(".lance"):
-            base_path = os.path.dirname(table_uri)
-            table_name = os.path.basename(table_uri)[:-6]  # Remove .lance
-        else:
-            raise ValueError(f"Invalid table URI: {table_uri}")
+        # The table_uri is the full path to the table directory from DirectoryNamespace
+        # For DirectoryNamespace, the URI directly points to the lance dataset path
+        # We can open it directly using lance.LanceDataset
+        import lance
+        from lancedb.table import AsyncTable
 
+        merged_storage_options = {**self.storage_options, **(storage_options or {})}
+
+        # Open the dataset directly
+        dataset = lance.LanceDataset(
+            table_uri,
+            storage_options=merged_storage_options,
+            index_cache_size=index_cache_size,
+        )
+
+        # Extract table name from URI for display
+        table_path = table_uri.replace("file://", "")
+        if table_path.endswith(".lance"):
+            table_name = os.path.basename(table_path)[:-6]
+        else:
+            # Child namespace: prefix_namespace$table_name
+            table_name = os.path.basename(table_path).split("$")[-1]
+
+        # Wrap in AsyncTable
+        async_table = AsyncTable(dataset)
+
+        # Create a minimal connection object for the LanceTable wrapper
         from lancedb.db import LanceDBConnection
 
+        base_path = os.path.dirname(table_path)
         temp_conn = LanceDBConnection(
             base_path,
             read_consistency_interval=self.read_consistency_interval,
-            storage_options={**self.storage_options, **(storage_options or {})},
+            storage_options=merged_storage_options,
             session=self.session,
         )
 
-        # Open the table using the temporary connection
-        return LanceTable.open(
+        # Create LanceTable with the pre-loaded dataset
+        return LanceTable(
             temp_conn,
             table_name,
             storage_options=storage_options,
             index_cache_size=index_cache_size,
+            _async=async_table,
         )
 
 
@@ -367,7 +410,7 @@ def connect_namespace(
     read_consistency_interval: Optional[timedelta] = None,
     storage_options: Optional[Dict[str, str]] = None,
     session: Optional[Session] = None,
-) -> LanceNamespaceDBConnection:
+):
     """
     Connect to a LanceDB database through a namespace.
 
@@ -392,15 +435,31 @@ def connect_namespace(
 
     Returns
     -------
-    LanceNamespaceDBConnection
-        A namespace-based connection to LanceDB
+    LanceDBConnection
+        A connection to the namespace-based database
     """
-    namespace = namespace_connect(impl, properties)
+    from . import _lancedb
+    from .db import LanceDBConnection, AsyncConnection
+    from .background_loop import LOOP
 
-    # Return the namespace-based connection
-    return LanceNamespaceDBConnection(
-        namespace,
-        read_consistency_interval=read_consistency_interval,
-        storage_options=storage_options,
-        session=session,
-    )
+    # Convert read_consistency_interval to seconds if provided
+    interval_secs = None
+    if read_consistency_interval is not None:
+        interval_secs = read_consistency_interval.total_seconds()
+
+    # Create a Rust LanceConnection with a LanceNamespaceDatabase
+    # Pass impl and properties directly to Rust
+    async def do_connect():
+        return await _lancedb.connect_with_namespace(
+            impl,
+            properties,
+            read_consistency_interval=interval_secs,
+            storage_options=storage_options,
+            session=session,
+        )
+
+    conn = LOOP.run(do_connect())
+
+    # Wrap in LanceDBConnection using the _inner parameter
+    # We pass a dummy URI since it's not used when _inner is provided
+    return LanceDBConnection("namespace://", _inner=AsyncConnection(conn))
