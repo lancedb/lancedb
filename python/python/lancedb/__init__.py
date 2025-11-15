@@ -23,7 +23,7 @@ from .namespace import connect_namespace, LanceNamespaceDBConnection
 
 
 def connect(
-    uri: URI,
+    uri: URI = None,
     *,
     api_key: Optional[str] = None,
     region: str = "us-east-1",
@@ -33,14 +33,16 @@ def connect(
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
     storage_options: Optional[Dict[str, str]] = None,
     session: Optional[Session] = None,
+    namespace_impl: Optional[str] = None,
+    namespace_properties: Optional[Dict[str, str]] = None,
     **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database. YAY!
 
     Parameters
     ----------
-    uri: str or Path
-        The uri of the database.
+    uri: str or Path, optional
+        The uri of the database. Required unless using namespace_impl.
     api_key: str, optional
         If presented, connect to LanceDB cloud.
         Otherwise, connect to a database on file system or cloud storage.
@@ -73,6 +75,14 @@ def connect(
         cache sizes for index and metadata caches, which can significantly
         impact memory use and performance. They can also be re-used across
         multiple connections to share the same cache state.
+    namespace_impl: str, optional
+        The namespace implementation to use (e.g., "dir", "rest"). When provided,
+        connects to a namespace-based database instead of a traditional database.
+        Requires namespace_properties to be set.
+    namespace_properties: dict, optional
+        Configuration properties for the namespace implementation. Required when
+        namespace_impl is set. For example, use {"root": "/path/to/directory"}
+        for DirectoryNamespace.
 
     Examples
     --------
@@ -92,11 +102,35 @@ def connect(
     >>> db = lancedb.connect("db://my_database", api_key="ldb_...",
     ...                      client_config={"retry_config": {"retries": 5}})
 
+    Connect using a namespace:
+
+    >>> db = lancedb.connect(namespace_impl="dir",
+    ...                      namespace_properties={"root": "/path/to/data"})
+
     Returns
     -------
     conn : DBConnection
         A connection to a LanceDB database.
     """
+    # If namespace_impl is provided, delegate to connect_namespace
+    if namespace_impl is not None:
+        if uri is not None:
+            raise ValueError(
+                "uri cannot be provided when using namespace_impl. "
+                "Use namespace_properties to configure the namespace instead."
+            )
+        return connect_namespace(
+            namespace_impl,
+            namespace_properties,
+            read_consistency_interval=read_consistency_interval,
+            storage_options=storage_options,
+            session=session,
+        )
+
+    # Validate that uri is provided for non-namespace connections
+    if uri is None:
+        raise ValueError("uri is required when not using namespace_impl")
+
     if isinstance(uri, str) and uri.startswith("db://"):
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")
@@ -137,7 +171,7 @@ async def connect_async(
     storage_options: Optional[Dict[str, str]] = None,
     session: Optional[Session] = None,
 ) -> AsyncConnection:
-    """Connect to a LanceDB database.
+    """Connect to a LanceDB database. YAY!
 
     Parameters
     ----------

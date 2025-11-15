@@ -24,9 +24,12 @@ use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
 use super::{
-    BaseTable, CloneTableRequest, CreateNamespaceRequest, CreateTableMode, CreateTableRequest,
-    Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
-    TableNamesRequest,
+    BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
+    OpenTableRequest, TableNamesRequest,
+};
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse,
+    ListNamespacesRequest, ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
 };
 
 /// File extension to indicate a lance table
@@ -590,14 +593,22 @@ impl ListingDatabase {
 
 #[async_trait::async_trait]
 impl Database for ListingDatabase {
-    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>> {
-        if !request.namespace.is_empty() {
-            return Err(Error::NotSupported {
-                message: "Namespace operations are not supported for listing database".into(),
-            });
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
+        if let Some(ref id) = request.id {
+            if !id.is_empty() {
+                return Err(Error::NotSupported {
+                    message: "Namespace operations are not supported for listing database".into(),
+                });
+            }
         }
 
-        Ok(Vec::new())
+        Ok(ListNamespacesResponse {
+            namespaces: vec![],
+            page_token: None,
+        })
     }
 
     fn uri(&self) -> &str {
@@ -616,13 +627,19 @@ impl Database for ListingDatabase {
         }
     }
 
-    async fn create_namespace(&self, _request: CreateNamespaceRequest) -> Result<()> {
+    async fn create_namespace(
+        &self,
+        _request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
         Err(Error::NotSupported {
             message: "Namespace operations are not supported for listing database".into(),
         })
     }
 
-    async fn drop_namespace(&self, _request: DropNamespaceRequest) -> Result<()> {
+    async fn drop_namespace(
+        &self,
+        _request: DropNamespaceRequest,
+    ) -> Result<DropNamespaceResponse> {
         Err(Error::NotSupported {
             message: "Namespace operations are not supported for listing database".into(),
         })
@@ -661,6 +678,63 @@ impl Database for ListingDatabase {
             f.truncate(limit as usize);
         }
         Ok(f)
+    }
+
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        // For listing database, namespace is not supported (only root namespace)
+        if let Some(ref id) = request.id {
+            if !id.is_empty() {
+                return Err(Error::NotSupported {
+                    message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+                });
+            }
+        }
+
+        // Get all table names
+        let mut tables = self
+            .object_store
+            .read_dir(self.base_path.clone())
+            .await?
+            .iter()
+            .map(Path::new)
+            .filter(|path| {
+                let is_lance = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e == LANCE_EXTENSION);
+                is_lance.unwrap_or(false)
+            })
+            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
+            .collect::<Vec<String>>();
+        tables.sort();
+
+        // Apply pagination using page_token
+        if let Some(ref page_token) = request.page_token {
+            let index = tables
+                .iter()
+                .position(|name| name.as_str() > page_token.as_str())
+                .unwrap_or(tables.len());
+            tables.drain(0..index);
+        }
+
+        // Apply limit and determine next page_token
+        let next_page_token = if let Some(limit) = request.limit {
+            let limit = limit as usize;
+            if tables.len() > limit {
+                let next_token = tables[limit].clone();
+                tables.truncate(limit);
+                Some(next_token)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Ok(ListTablesResponse {
+            tables,
+            page_token: next_page_token,
+        })
     }
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {

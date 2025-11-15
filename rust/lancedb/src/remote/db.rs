@@ -10,17 +10,19 @@ use http::StatusCode;
 use lance_io::object_store::StorageOptions;
 use moka::future::Cache;
 use reqwest::header::CONTENT_TYPE;
-use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
 use crate::database::{
-    CloneTableRequest, CreateNamespaceRequest, CreateTableData, CreateTableMode,
-    CreateTableRequest, Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest,
-    OpenTableRequest, ReadConsistency, TableNamesRequest,
+    CloneTableRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
+    DatabaseOptions, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::table::BaseTable;
 use crate::Error;
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse,
+    ListNamespacesRequest, ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+};
 
 use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender};
 use super::table::RemoteTable;
@@ -178,11 +180,6 @@ impl RemoteDatabaseOptionsBuilder {
         self.options.host_override = Some(host_override);
         self
     }
-}
-
-#[derive(Deserialize)]
-struct ListTablesResponse {
-    tables: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -369,6 +366,47 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             self.table_cache.insert(cache_key, remote_table).await;
         }
         Ok(tables)
+    }
+
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        // Always use the namespace list_tables REST endpoint
+        let namespace = request.id.as_ref().map(|v| v.as_slice()).unwrap_or(&[]);
+        let namespace_id = build_namespace_identifier(namespace, &self.client.id_delimiter);
+        let mut req = self
+            .client
+            .get(&format!("/v1/namespace/{}/table/list", namespace_id));
+
+        if let Some(limit) = request.limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(ref page_token) = request.page_token {
+            req = req.query(&[("page_token", page_token)]);
+        }
+
+        let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let version = parse_server_version(&request_id, &rsp)?;
+        let response = rsp
+            .json::<ListTablesResponse>()
+            .await
+            .err_to_http(request_id)?;
+
+        // Cache the tables
+        for table in &response.tables {
+            let table_identifier =
+                build_table_identifier(table, namespace, &self.client.id_delimiter);
+            let cache_key = build_cache_key(table, namespace);
+            let remote_table = Arc::new(RemoteTable::new(
+                self.client.clone(),
+                table.clone(),
+                namespace.to_vec(),
+                table_identifier.clone(),
+                version.clone(),
+            ));
+            self.table_cache.insert(cache_key, remote_table).await;
+        }
+
+        Ok(response)
     }
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -589,9 +627,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         })
     }
 
-    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>> {
-        let namespace_id =
-            build_namespace_identifier(request.namespace.as_slice(), &self.client.id_delimiter);
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
+        let namespace_slice = request.id.as_ref().map(|v| v.as_slice()).unwrap_or(&[]);
+        let namespace_id = build_namespace_identifier(namespace_slice, &self.client.id_delimiter);
         let mut req = self
             .client
             .get(&format!("/v1/namespace/{}/list", namespace_id));
@@ -605,37 +646,43 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
-        #[derive(Deserialize)]
-        struct ListNamespacesResponse {
-            namespaces: Vec<String>,
-        }
-
-        let parsed: ListNamespacesResponse = resp.json().await.map_err(|e| Error::Runtime {
+        let response: ListNamespacesResponse = resp.json().await.map_err(|e| Error::Runtime {
             message: format!("Failed to parse namespace response: {}", e),
         })?;
-        Ok(parsed.namespaces)
+        Ok(response)
     }
 
-    async fn create_namespace(&self, request: CreateNamespaceRequest) -> Result<()> {
-        let namespace_id =
-            build_namespace_identifier(request.namespace.as_slice(), &self.client.id_delimiter);
+    async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
+        let namespace_slice = request.id.as_ref().map(|v| v.as_slice()).unwrap_or(&[]);
+        let namespace_id = build_namespace_identifier(namespace_slice, &self.client.id_delimiter);
         let req = self
             .client
             .post(&format!("/v1/namespace/{}/create", namespace_id));
         let (request_id, resp) = self.client.send(req).await?;
-        self.client.check_response(&request_id, resp).await?;
-        Ok(())
+        let resp = self.client.check_response(&request_id, resp).await?;
+
+        let response: CreateNamespaceResponse = resp.json().await.map_err(|e| Error::Runtime {
+            message: format!("Failed to parse create namespace response: {}", e),
+        })?;
+        Ok(response)
     }
 
-    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<()> {
-        let namespace_id =
-            build_namespace_identifier(request.namespace.as_slice(), &self.client.id_delimiter);
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
+        let namespace_slice = request.id.as_ref().map(|v| v.as_slice()).unwrap_or(&[]);
+        let namespace_id = build_namespace_identifier(namespace_slice, &self.client.id_delimiter);
         let req = self
             .client
             .post(&format!("/v1/namespace/{}/drop", namespace_id));
         let (request_id, resp) = self.client.send(req).await?;
-        self.client.check_response(&request_id, resp).await?;
-        Ok(())
+        let resp = self.client.check_response(&request_id, resp).await?;
+
+        let response: DropNamespaceResponse = resp.json().await.map_err(|e| Error::Runtime {
+            message: format!("Failed to parse drop namespace response: {}", e),
+        })?;
+        Ok(response)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

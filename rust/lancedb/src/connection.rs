@@ -17,9 +17,8 @@ use crate::database::listing::{
     ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
 use crate::database::{
-    CloneTableRequest, CreateNamespaceRequest, CreateTableData, CreateTableMode,
-    CreateTableRequest, Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest,
-    OpenTableRequest, ReadConsistency, TableNamesRequest,
+    CloneTableRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
+    DatabaseOptions, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::embeddings::{
     EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
@@ -35,6 +34,10 @@ use crate::Table;
 pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse,
+    ListNamespacesRequest, ListNamespacesResponse,
+};
 
 /// A builder for configuring a [`Connection::table_names`] operation
 pub struct TableNamesBuilder {
@@ -718,17 +721,26 @@ impl Connection {
     }
 
     /// List immediate child namespace names in the given namespace
-    pub async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>> {
+    pub async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
         self.internal.list_namespaces(request).await
     }
 
     /// Create a new namespace
-    pub async fn create_namespace(&self, request: CreateNamespaceRequest) -> Result<()> {
+    pub async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
         self.internal.create_namespace(request).await
     }
 
     /// Drop a namespace
-    pub async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<()> {
+    pub async fn drop_namespace(
+        &self,
+        request: DropNamespaceRequest,
+    ) -> Result<DropNamespaceResponse> {
         self.internal.drop_namespace(request).await
     }
 
