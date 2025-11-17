@@ -89,7 +89,8 @@ jobs:
     - name: Build
       run: |
         npm ci
-        npm run build
+        npm run build:debug -- --profile ci
+        npm run tsc
     - name: Setup localstack
       working-directory: .
       run: docker compose up --detach --wait
@@ -146,7 +147,8 @@ jobs:
     - name: Build
       run: |
         npm ci
-        npm run build
+        npm run build:debug -- --profile ci
+        npm run tsc
     - name: Test
       run: |
         npm run test
