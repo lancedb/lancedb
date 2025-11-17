@@ -84,6 +84,9 @@ pub struct OpenTableRequest {
     pub namespace: Vec<String>,
     pub index_cache_size: Option<u32>,
     pub lance_read_params: Option<ReadParams>,
+    /// Optional custom location for the table. If not provided, the database will
+    /// derive a location based on its URI and the table name.
+    pub location: Option<String>,
 }
 
 pub type TableBuilderCallback = Box<dyn FnOnce(OpenTableRequest) -> OpenTableRequest + Send>;
@@ -164,6 +167,9 @@ pub struct CreateTableRequest {
     pub mode: CreateTableMode,
     /// Options to use when writing data (only used if `data` is not None)
     pub write_options: WriteOptions,
+    /// Optional custom location for the table. If not provided, the database will
+    /// derive a location based on its URI and the table name.
+    pub location: Option<String>,
 }
 
 impl CreateTableRequest {
@@ -174,6 +180,7 @@ impl CreateTableRequest {
             data,
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
+            location: None,
         }
     }
 }
