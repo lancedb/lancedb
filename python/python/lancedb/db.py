@@ -457,6 +457,7 @@ class LanceDBConnection(DBConnection):
         session: Optional[Session] = None,
         _inner: Optional[LanceDbConnection] = None,
     ):
+        print(uri)
         if _inner is not None:
             self._conn = _inner
             return
