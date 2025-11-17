@@ -1810,8 +1810,17 @@ impl NativeTable {
     }
 
     // Helper to get num_sub_vectors with default calculation
-    fn get_num_sub_vectors(provided: Option<u32>, dim: u32) -> u32 {
-        provided.unwrap_or_else(|| suggested_num_sub_vectors(dim))
+    fn get_num_sub_vectors(provided: Option<u32>, dim: u32, num_bits: Option<u32>) -> u32 {
+        if let Some(provided) = provided {
+            return provided;
+        }
+        let suggested = suggested_num_sub_vectors(dim);
+        if num_bits.is_some_and(|num_bits| num_bits == 4) && suggested % 2 != 0 {
+            // num_sub_vectors must be even when 4 bits are used
+            suggested + 1
+        } else {
+            suggested
+        }
     }
 
     // Helper to extract vector dimension from field
@@ -1834,7 +1843,7 @@ impl NativeTable {
                     // Use IvfPq as the default for auto vector indices
                     let dim = Self::get_vector_dimension(field)?;
                     let ivf_params = lance_index::vector::ivf::IvfBuildParams::default();
-                    let num_sub_vectors = Self::get_num_sub_vectors(None, dim);
+                    let num_sub_vectors = Self::get_num_sub_vectors(None, dim, None);
                     let pq_params =
                         lance_index::vector::pq::PQBuildParams::new(num_sub_vectors as usize, 8);
                     let lance_idx_params =
@@ -1901,7 +1910,8 @@ impl NativeTable {
                     index.sample_rate,
                     index.max_iterations,
                 );
-                let num_sub_vectors = Self::get_num_sub_vectors(index.num_sub_vectors, dim);
+                let num_sub_vectors =
+                    Self::get_num_sub_vectors(index.num_sub_vectors, dim, index.num_bits);
                 let num_bits = index.num_bits.unwrap_or(8) as usize;
                 let mut pq_params = PQBuildParams::new(num_sub_vectors as usize, num_bits);
                 pq_params.max_iters = index.max_iterations as usize;
@@ -1937,7 +1947,8 @@ impl NativeTable {
                     index.sample_rate,
                     index.max_iterations,
                 );
-                let num_sub_vectors = Self::get_num_sub_vectors(index.num_sub_vectors, dim);
+                let num_sub_vectors =
+                    Self::get_num_sub_vectors(index.num_sub_vectors, dim, index.num_bits);
                 let hnsw_params = HnswBuildParams::default()
                     .num_edges(index.m as usize)
                     .ef_construction(index.ef_construction as usize);
