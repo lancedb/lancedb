@@ -163,12 +163,13 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v4
+      - name: Set target
+        run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Install Protoc v21.12
         run: choco install --no-progress protoc
       - name: Build
         run: |
-          rustup target add ${{ matrix.target }}
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cargo build --profile ci --features remote --tests --locked --target ${{ matrix.target }}
       - name: Run tests

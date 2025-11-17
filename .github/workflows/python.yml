@@ -19,6 +19,7 @@ env:
   PYTEST_ADDOPTS: "--color=yes"
   FORCE_COLOR: "1"
   PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lancedb/"
+  RUST_BACKTRACE: "1"
 
 jobs:
   lint:
@@ -98,11 +99,9 @@ jobs:
           sudo apt update
           sudo apt install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
-      - name: Install
-        run: |
-          maturin develop --profile ci --extra-index-url https://pypi.fury.io/lancedb/ --extras dev,tests,embeddings
-          pip install tantivy
-          pip install mlx
+      - uses: ./.github/workflows/build_linux_wheel
+        with:
+          args: --profile ci --extras dev,tests,embeddings
       - name: Doctest
         run: pytest --doctest-modules python/lancedb
   linux:

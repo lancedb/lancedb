@@ -32,6 +32,7 @@ import numpy as np
 import pyarrow as pa
 import pandas as pd
 import pytest
+import pytest_asyncio
 from utils import exception_output
 
 pytest.importorskip("lancedb.fts")
@@ -90,7 +91,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
     return table
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def async_table(tmp_path) -> ldb.table.AsyncTable:
     # Use local random state to avoid affecting other tests
     rng = np.random.RandomState(42)
