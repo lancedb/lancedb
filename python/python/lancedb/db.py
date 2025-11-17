@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
+    from .io import StorageOptionsProvider
     from ._lancedb import Session
 
 
@@ -143,6 +144,7 @@ class DBConnection(EnforceOverrides):
         *,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
@@ -308,6 +310,7 @@ class DBConnection(EnforceOverrides):
         *,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
         """Open a Lance Table in the database.
@@ -463,6 +466,12 @@ class LanceDBConnection(DBConnection):
         is_local = isinstance(uri, Path) or scheme == "file"
         if is_local:
             if isinstance(uri, str):
+                # Strip file:// or file:/ scheme if present
+                # file:///path becomes file:/path after URL normalization
+                if uri.startswith("file://"):
+                    uri = uri[7:]  # Remove "file://"
+                elif uri.startswith("file:/"):
+                    uri = uri[5:]  # Remove "file:"
                 uri = Path(uri)
             uri = uri.expanduser().absolute()
             Path(uri).mkdir(parents=True, exist_ok=True)
@@ -625,6 +634,7 @@ class LanceDBConnection(DBConnection):
         *,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ) -> LanceTable:
@@ -655,6 +665,7 @@ class LanceDBConnection(DBConnection):
             embedding_functions=embedding_functions,
             namespace=namespace,
             storage_options=storage_options,
+            storage_options_provider=storage_options_provider,
         )
         return tbl
 
@@ -665,6 +676,7 @@ class LanceDBConnection(DBConnection):
         *,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
     ) -> LanceTable:
         """Open a table in the database.
@@ -696,6 +708,7 @@ class LanceDBConnection(DBConnection):
             name,
             namespace=namespace,
             storage_options=storage_options,
+            storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
         )
 
@@ -977,9 +990,11 @@ class AsyncConnection(object):
         on_bad_vectors: Optional[str] = None,
         fill_value: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         *,
         namespace: List[str] = [],
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
+        location: Optional[str] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -1170,6 +1185,8 @@ class AsyncConnection(object):
                 schema,
                 namespace=namespace,
                 storage_options=storage_options,
+                storage_options_provider=storage_options_provider,
+                location=location,
             )
         else:
             data = data_to_reader(data, schema)
@@ -1179,6 +1196,8 @@ class AsyncConnection(object):
                 data,
                 namespace=namespace,
                 storage_options=storage_options,
+                storage_options_provider=storage_options_provider,
+                location=location,
             )
 
         return AsyncTable(new_table)
@@ -1189,7 +1208,9 @@ class AsyncConnection(object):
         *,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
     ) -> AsyncTable:
         """Open a Lance Table in the database.
 
@@ -1218,6 +1239,10 @@ class AsyncConnection(object):
             This cache applies to the entire opened table, across all indices.
             Setting this value higher will increase performance on larger datasets
             at the expense of more RAM
+        location: str, optional
+            The explicit location (URI) of the table. If provided, the table will be
+            opened from this location instead of deriving it from the database URI
+            and table name.
 
         Returns
         -------
@@ -1227,7 +1252,9 @@ class AsyncConnection(object):
             name,
             namespace=namespace,
             storage_options=storage_options,
+            storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
+            location=location,
         )
         return AsyncTable(table)
 

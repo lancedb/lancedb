@@ -10,6 +10,9 @@ on:
       - .github/workflows/pypi-publish.yml
       - Cargo.toml # Change in dependency frequently breaks builds
 
+env:
+  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lancedb/"
+
 jobs:
   linux:
     name: Python ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}

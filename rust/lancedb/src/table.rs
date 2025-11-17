@@ -511,7 +511,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Get the id of the table
     ///
     /// This is the namespace of the table concatenated with the name
-    /// separated by a dot (".")
+    /// separated by $
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
@@ -732,6 +732,16 @@ impl Table {
     /// Get the name of the table.
     pub fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    /// Get the namespace of the table.
+    pub fn namespace(&self) -> &[String] {
+        self.inner.namespace()
+    }
+
+    /// Get the ID of the table (namespace + name joined by '$').
+    pub fn id(&self) -> &str {
+        self.inner.id()
     }
 
     /// Get the dataset of the table if it is a native table
@@ -1468,6 +1478,8 @@ impl NativeTableExt for Arc<dyn BaseTable> {
 #[derive(Debug, Clone)]
 pub struct NativeTable {
     name: String,
+    namespace: Vec<String>,
+    id: String,
     uri: String,
     pub(crate) dataset: dataset::DatasetConsistencyWrapper,
     // This comes from the connection options. We store here so we can pass down
@@ -1507,7 +1519,7 @@ impl NativeTable {
     /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, None, None, None).await
+        Self::open_with_params(uri, &name, vec![], None, None, None).await
     }
 
     /// Opens an existing Table
@@ -1524,6 +1536,7 @@ impl NativeTable {
     pub async fn open_with_params(
         uri: &str,
         name: &str,
+        namespace: Vec<String>,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<ReadParams>,
         read_consistency_interval: Option<std::time::Duration>,
@@ -1548,9 +1561,12 @@ impl NativeTable {
             })?;
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
+        let id = Self::build_id(&namespace, name);
 
         Ok(Self {
             name: name.to_string(),
+            namespace,
+            id,
             uri: uri.to_string(),
             dataset,
             read_consistency_interval,
@@ -1573,12 +1589,24 @@ impl NativeTable {
         Ok(name.to_string())
     }
 
+    fn build_id(namespace: &[String], name: &str) -> String {
+        if namespace.is_empty() {
+            name.to_string()
+        } else {
+            let mut parts = namespace.to_vec();
+            parts.push(name.to_string());
+            parts.join("$")
+        }
+    }
+
     /// Creates a new Table
     ///
     /// # Arguments
     ///
-    /// * `uri` - The URI to the table.
+    /// * `uri` - The URI to the table. When namespace is not empty, the caller must
+    ///   provide an explicit URI (location) rather than deriving it from the table name.
     /// * `name` The Table name
+    /// * `namespace` - The namespace path. When non-empty, an explicit URI must be provided.
     /// * `batches` RecordBatch to be saved in the database.
     /// * `params` - Write parameters.
     ///
@@ -1588,6 +1616,7 @@ impl NativeTable {
     pub async fn create(
         uri: &str,
         name: &str,
+        namespace: Vec<String>,
         batches: impl StreamingWriteSource,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
@@ -1614,8 +1643,12 @@ impl NativeTable {
                 source => Error::Lance { source },
             })?;
 
+        let id = Self::build_id(&namespace, name);
+
         Ok(Self {
             name: name.to_string(),
+            namespace,
+            id,
             uri: uri.to_string(),
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             read_consistency_interval,
@@ -1625,6 +1658,7 @@ impl NativeTable {
     pub async fn create_empty(
         uri: &str,
         name: &str,
+        namespace: Vec<String>,
         schema: SchemaRef,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
@@ -1634,6 +1668,7 @@ impl NativeTable {
         Self::create(
             uri,
             name,
+            namespace,
             batches,
             write_store_wrapper,
             params,
@@ -2078,13 +2113,11 @@ impl BaseTable for NativeTable {
     }
 
     fn namespace(&self) -> &[String] {
-        // Native tables don't support namespaces yet, return empty slice for root namespace
-        &[]
+        &self.namespace
     }
 
     fn id(&self) -> &str {
-        // For native tables, id is same as name since no namespace support
-        self.name.as_str()
+        &self.id
     }
 
     async fn version(&self) -> Result<u64> {
@@ -2884,7 +2917,7 @@ mod tests {
 
         let batches = make_test_batches();
         let batches = Box::new(batches) as Box<dyn RecordBatchReader + Send>;
-        let table = NativeTable::create(uri, "test", batches, None, None, None)
+        let table = NativeTable::create(uri, "test", vec![], batches, None, None, None)
             .await
             .unwrap();
 

@@ -75,6 +75,7 @@ from .index import lang_mapping
 
 if TYPE_CHECKING:
     from .db import LanceDBConnection
+    from .io import StorageOptionsProvider
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -1709,7 +1710,9 @@ class LanceTable(Table):
         *,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
         _async: AsyncTable = None,
     ):
         self._conn = connection
@@ -1722,13 +1725,27 @@ class LanceTable(Table):
                     name,
                     namespace=namespace,
                     storage_options=storage_options,
+                    storage_options_provider=storage_options_provider,
                     index_cache_size=index_cache_size,
+                    location=location,
                 )
             )
 
     @property
     def name(self) -> str:
         return self._table.name
+
+    @property
+    def namespace(self) -> List[str]:
+        """Return the namespace path of the table."""
+        return self._namespace
+
+    @property
+    def id(self) -> str:
+        """Return the full identifier of the table (namespace$name)."""
+        if self._namespace:
+            return "$".join(self._namespace + [self.name])
+        return self.name
 
     @classmethod
     def from_inner(cls, tbl: LanceDBTable):
@@ -1743,8 +1760,26 @@ class LanceTable(Table):
         )
 
     @classmethod
-    def open(cls, db, name, *, namespace: List[str] = [], **kwargs):
-        tbl = cls(db, name, namespace=namespace, **kwargs)
+    def open(
+        cls,
+        db,
+        name,
+        *,
+        namespace: List[str] = [],
+        storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
+        index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
+    ):
+        tbl = cls(
+            db,
+            name,
+            namespace=namespace,
+            storage_options=storage_options,
+            storage_options_provider=storage_options_provider,
+            index_cache_size=index_cache_size,
+            location=location,
+        )
 
         # check the dataset exists
         try:
@@ -2585,8 +2620,10 @@ class LanceTable(Table):
         *,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str | bool]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        location: Optional[str] = None,
     ):
         """
         Create a new table.
@@ -2678,6 +2715,8 @@ class LanceTable(Table):
                 embedding_functions=embedding_functions,
                 namespace=namespace,
                 storage_options=storage_options,
+                storage_options_provider=storage_options_provider,
+                location=location,
             )
         )
         return self

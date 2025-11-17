@@ -24,6 +24,7 @@ env:
   # according to: https://matklad.github.io/2021/09/04/fast-rust-builds.html
   # CI builds are faster with incremental disabled.
   CARGO_INCREMENTAL: "0"
+  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lancedb/"
 
 jobs:
   # Single deploy job since we're just deploying

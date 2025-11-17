@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
 import pyarrow as pa
 
 from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from .io import StorageOptionsProvider
 from .remote import ClientConfig
 
 class Session:
@@ -44,6 +45,8 @@ class Connection(object):
         data: pa.RecordBatchReader,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
+        location: Optional[str] = None,
     ) -> Table: ...
     async def create_empty_table(
         self,
@@ -52,13 +55,17 @@ class Connection(object):
         schema: pa.Schema,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
+        location: Optional[str] = None,
     ) -> Table: ...
     async def open_table(
         self,
         name: str,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
     ) -> Table: ...
     async def clone_table(
         self,
