@@ -18,10 +18,6 @@ inputs:
     description: "The manylinux version to build for"
     required: false
     default: "2_17"
-  cache:
-    description: "Whether to use sccache"
-    required: false
-    default: "false"
 runs:
   using: "composite"
   steps:
@@ -39,7 +35,6 @@ runs:
         target: x86_64-unknown-linux-gnu
         manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
-        sccache: ${{ inputs.cache }}
         before-script-linux: |
           set -e
           curl -L https://github.com/protocolbuffers/protobuf/releases/download/v24.4/protoc-24.4-linux-$(uname -m).zip > /tmp/protoc.zip \

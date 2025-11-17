@@ -101,7 +101,6 @@ jobs:
       - uses: ./.github/workflows/build_linux_wheel
         with:
           args: --profile ci
-          cache: true
       - name: Install Dependencies
         run: pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
       - name: Doctest
@@ -133,7 +132,6 @@ jobs:
       - uses: ./.github/workflows/build_linux_wheel
         with:
           args: --profile ci
-          cache: true
       - uses: ./.github/workflows/run_tests
         with:
           integration: true
@@ -171,7 +169,6 @@ jobs:
       - uses: ./.github/workflows/build_mac_wheel
         with:
           args: --profile ci
-          cache: true
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
@@ -201,7 +198,6 @@ jobs:
       - uses: ./.github/workflows/build_windows_wheel
         with:
           args: --profile ci
-          cache: true
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
