@@ -98,11 +98,7 @@ jobs:
           lfs: true
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
-        run: |
-          # This shaves 2 minutes off this step in CI. This doesn't seem to be
-          # necessary in standard runners, but it is in the 4x runners.
-          sudo rm /var/lib/man-db/auto-update
-          sudo apt install -y protobuf-compiler libssl-dev
+        run: sudo apt install -y protobuf-compiler libssl-dev
       - uses: rui314/setup-mold@v1
       - name: Make Swap
         run: |
