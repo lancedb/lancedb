@@ -102,7 +102,9 @@ def _convert_pyarrow_schema_to_json(schema: pa.Schema) -> JsonArrowSchema:
     # decode binary metadata to strings for JSON
     meta = None
     if schema.metadata:
-        meta = {k.decode("utf-8"): v.decode("utf-8") for k, v in schema.metadata.items()}
+        meta = {
+            k.decode("utf-8"): v.decode("utf-8") for k, v in schema.metadata.items()
+        }
 
     return JsonArrowSchema(fields=fields, metadata=meta)
 
