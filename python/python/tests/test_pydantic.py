@@ -412,3 +412,28 @@ def test_multi_vector_in_lance_model():
 
     t = TestModel(id=1)
     assert t.vectors == [[0.0] * 16]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason="StrEnum where only introduced in python 3.11",
+)
+def test_str_enum():
+    from enum import StrEnum
+
+    class Status(StrEnum):
+        Pending = "pending"
+        Running = "running"
+        Finished = "finished"
+
+    class TestModel(pydantic.BaseModel):
+        status: Status
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("status", pa.dictionary(pa.int16(), pa.string()), False),
+        ]
+    )
+    assert schema == expect_schema

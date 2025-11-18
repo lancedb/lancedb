@@ -28,6 +28,12 @@ import pyarrow as pa
 import pydantic
 from packaging.version import Version
 
+# StrEnum was introduced in 3.11
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    StrEnum = None  # type: ignore
+
 PYDANTIC_VERSION = Version(pydantic.__version__)
 try:
     from pydantic_core import CoreSchema, core_schema
@@ -262,8 +268,8 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
         return pa.int64()
     elif py_type is float:
         return pa.float64()
-    elif py_type is str:
-        return pa.utf8()
+    elif py_type is str or (StrEnum is not None and issubclass(py_type, StrEnum)):
+        return pa.dictionary(pa.int16(), pa.string())
     elif py_type is bool:
         return pa.bool_()
     elif py_type is bytes:
