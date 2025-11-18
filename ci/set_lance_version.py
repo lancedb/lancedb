@@ -29,7 +29,7 @@ def get_latest_stable_version() -> str:
 
 def get_latest_preview_version() -> str:
     lance_tags = run_command(
-        "git ls-remote --tags https://github.com/lancedb/lance.git | grep 'refs/tags/v[0-9beta.-]\\+$'"
+        "git ls-remote --tags https://github.com/lance-format/lance.git | grep 'refs/tags/v[0-9beta.-]\\+$'"
     ).splitlines()
     lance_tags = (
         tag.split("refs/tags/")[1]
@@ -176,8 +176,8 @@ def set_stable_version(version: str):
 def set_preview_version(version: str):
     """
     Sets lines to
-    lance = { "version" = "=0.29.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-    lance-io = { "version" = "=0.29.0", default-features = false, "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
+    lance = { "version" = "=0.29.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
+    lance-io = { "version" = "=0.29.0", default-features = false, "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
     ...
     """
 
@@ -194,7 +194,7 @@ def set_preview_version(version: str):
             config["features"] = features
 
         config["tag"] = f"v{version}"
-        config["git"] = "https://github.com/lancedb/lance.git"
+        config["git"] = "https://github.com/lance-format/lance.git"
 
         return dict_to_toml_line(package_name, config)
 
