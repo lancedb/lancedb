@@ -472,6 +472,12 @@ class LanceDBConnection(DBConnection):
                     uri = uri[7:]  # Remove "file://"
                 elif uri.startswith("file:/"):
                     uri = uri[5:]  # Remove "file:"
+
+                if sys.platform == "win32":
+                    # On Windows, a path like /C:/path should become C:/path
+                    if len(uri) >= 3 and uri[0] == "/" and uri[2] == ":":
+                        uri = uri[1:]
+
                 uri = Path(uri)
             uri = uri.expanduser().absolute()
             Path(uri).mkdir(parents=True, exist_ok=True)
