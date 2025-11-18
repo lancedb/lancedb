@@ -98,11 +98,11 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler
-      - uses: ./.github/workflows/build_linux_wheel
-        with:
-          args: --profile ci
-      - name: Install Dependencies
-        run: pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
+      - name: Install
+        run: |
+          pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
+          pip install tantivy
+          pip install mlx
       - name: Doctest
         run: pytest --doctest-modules python/lancedb
   linux:
