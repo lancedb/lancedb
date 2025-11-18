@@ -485,7 +485,7 @@ class LanceNamespaceDBConnection(DBConnection):
         # Open a table directly from a URI using the location parameter
         # Note: storage_options should already be merged by the caller
         temp_conn = LanceDBConnection(
-            db_uri,  # Use the table location as the connection URI
+            db_uri,
             read_consistency_interval=self.read_consistency_interval,
             storage_options=storage_options if storage_options is not None else {},
             session=self.session,
