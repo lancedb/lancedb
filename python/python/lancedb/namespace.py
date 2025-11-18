@@ -476,10 +476,16 @@ class LanceNamespaceDBConnection(DBConnection):
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
     ) -> LanceTable:
+        # parse the DB location from the table URI
+        if table_uri.endswith(f"/{name}.lance"):
+            db_uri = table_uri[: -len(f"/{name}.lance")]
+        else:
+            db_uri = table_uri
+
         # Open a table directly from a URI using the location parameter
         # Note: storage_options should already be merged by the caller
         temp_conn = LanceDBConnection(
-            table_uri,  # Use the table location as the connection URI
+            db_uri,  # Use the table location as the connection URI
             read_consistency_interval=self.read_consistency_interval,
             storage_options=storage_options if storage_options is not None else {},
             session=self.session,
@@ -495,7 +501,6 @@ class LanceNamespaceDBConnection(DBConnection):
             index_cache_size=index_cache_size,
             location=table_uri,
         )
-
 
 def connect_namespace(
     impl: str,
