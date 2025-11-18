@@ -810,7 +810,7 @@ async def test_explain_plan_fts(table_async: AsyncTable):
     query = await table_async.search("dog", query_type="fts", fts_columns="text")
     plan = await query.explain_plan()
     # Should show FTS details (issue #2465 is now fixed)
-    assert "MatchQuery: query=dog" in plan
+    assert "MatchQuery: column=text, query=dog" in plan
     assert "GlobalLimitExec" in plan  # Default limit
 
     # Test FTS query with limit
@@ -818,7 +818,7 @@ async def test_explain_plan_fts(table_async: AsyncTable):
         "dog", query_type="fts", fts_columns="text"
     )
     plan_with_limit = await query_with_limit.limit(1).explain_plan()
-    assert "MatchQuery: query=dog" in plan_with_limit
+    assert "MatchQuery: column=text, query=dog" in plan_with_limit
     assert "GlobalLimitExec: skip=0, fetch=1" in plan_with_limit
 
     # Test FTS query with offset and limit
@@ -826,7 +826,7 @@ async def test_explain_plan_fts(table_async: AsyncTable):
         "dog", query_type="fts", fts_columns="text"
     )
     plan_with_offset = await query_with_offset.offset(1).limit(1).explain_plan()
-    assert "MatchQuery: query=dog" in plan_with_offset
+    assert "MatchQuery: column=text, query=dog" in plan_with_offset
     assert "GlobalLimitExec: skip=1, fetch=1" in plan_with_offset
 
 
@@ -870,7 +870,7 @@ async def test_explain_plan_with_filters(table_async: AsyncTable):
         "dog", query_type="fts", fts_columns="text"
     )
     plan_fts_filter = await query_fts_filter.where("id = 1").explain_plan()
-    assert "MatchQuery: query=dog" in plan_fts_filter
+    assert "MatchQuery: column=text, query=dog" in plan_fts_filter
     assert "LanceRead" in plan_fts_filter
     assert "full_filter=id = Int64(1)" in plan_fts_filter  # Should show filter details
 

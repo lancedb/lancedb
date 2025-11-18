@@ -26,6 +26,7 @@ pub mod index;
 pub mod permutation;
 pub mod query;
 pub mod session;
+pub mod storage_options;
 pub mod table;
 pub mod util;
 

@@ -14,6 +14,7 @@ __version__ = importlib.metadata.version("lancedb")
 from ._lancedb import connect as lancedb_connect
 from .common import URI, sanitize_uri
 from .db import AsyncConnection, DBConnection, LanceDBConnection
+from .io import StorageOptionsProvider
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .schema import vector
@@ -233,6 +234,7 @@ __all__ = [
     "LanceNamespaceDBConnection",
     "RemoteDBConnection",
     "Session",
+    "StorageOptionsProvider",
     "Table",
     "__version__",
 ]

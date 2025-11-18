@@ -18,6 +18,7 @@ env:
   # Color output for pytest is off by default.
   PYTEST_ADDOPTS: "--color=yes"
   FORCE_COLOR: "1"
+  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lancedb/"
 
 jobs:
   lint:

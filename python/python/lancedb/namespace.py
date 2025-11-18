@@ -10,41 +10,39 @@ through a namespace abstraction.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Union
-import os
 import sys
+from typing import Dict, Iterable, List, Optional, Union
 
 if sys.version_info >= (3, 12):
     from typing import override
 else:
     from overrides import override
 
-from lancedb.db import DBConnection
+from datetime import timedelta
+import pyarrow as pa
+
+from lancedb.db import DBConnection, LanceDBConnection
+from lancedb.io import StorageOptionsProvider
 from lancedb.table import LanceTable, Table
 from lancedb.util import validate_table_name
-from lancedb.common import validate_schema
-from lancedb.table import sanitize_create_table
+from lancedb.common import DATA
+from lancedb.pydantic import LanceModel
+from lancedb.embeddings import EmbeddingFunctionConfig
+from ._lancedb import Session
 
 from lance_namespace import LanceNamespace, connect as namespace_connect
 from lance_namespace_urllib3_client.models import (
     ListTablesRequest,
     DescribeTableRequest,
-    CreateTableRequest,
     DropTableRequest,
     ListNamespacesRequest,
     CreateNamespaceRequest,
     DropNamespaceRequest,
+    CreateEmptyTableRequest,
     JsonArrowSchema,
     JsonArrowField,
     JsonArrowDataType,
 )
-
-import pyarrow as pa
-from datetime import timedelta
-from lancedb.pydantic import LanceModel
-from lancedb.common import DATA
-from lancedb.embeddings import EmbeddingFunctionConfig
-from ._lancedb import Session
 
 
 def _convert_pyarrow_type_to_json(arrow_type: pa.DataType) -> JsonArrowDataType:
@@ -101,7 +99,97 @@ def _convert_pyarrow_schema_to_json(schema: pa.Schema) -> JsonArrowSchema:
         )
         fields.append(json_field)
 
-    return JsonArrowSchema(fields=fields, metadata=schema.metadata)
+    # decode binary metadata to strings for JSON
+    meta = None
+    if schema.metadata:
+        meta = {
+            k.decode("utf-8"): v.decode("utf-8") for k, v in schema.metadata.items()
+        }
+
+    return JsonArrowSchema(fields=fields, metadata=meta)
+
+
+class LanceNamespaceStorageOptionsProvider(StorageOptionsProvider):
+    """Storage options provider that fetches storage options from a LanceNamespace.
+
+    This provider automatically fetches fresh storage options by calling the
+    namespace's describe_table() method, which returns both the table location
+    and time-limited storage options. This enables automatic credential refresh
+    for tables accessed through namespace connections.
+
+    Parameters
+    ----------
+    namespace : LanceNamespace
+        The namespace instance with a describe_table() method
+    table_id : List[str]
+        The table identifier (namespace path + table name)
+
+    Examples
+    --------
+    >>> from lance_namespace import connect as namespace_connect
+    >>> namespace = namespace_connect("rest", {"url": "https://..."})
+    >>> provider = LanceNamespaceStorageOptionsProvider(
+    ...     namespace=namespace,
+    ...     table_id=["my_namespace", "my_table"]
+    ... )
+    >>> options = provider.fetch_storage_options()
+    """
+
+    def __init__(self, namespace: LanceNamespace, table_id: List[str]):
+        """Initialize with namespace and table ID.
+
+        Parameters
+        ----------
+        namespace : LanceNamespace
+            The namespace instance with a describe_table() method
+        table_id : List[str]
+            The table identifier
+        """
+        self._namespace = namespace
+        self._table_id = table_id
+
+    def fetch_storage_options(self) -> Dict[str, str]:
+        """Fetch storage options from the namespace.
+
+        This calls namespace.describe_table() to get the latest storage options
+        and their expiration time.
+
+        Returns
+        -------
+        Dict[str, str]
+            Flat dictionary of string key-value pairs containing storage options.
+            May include "expires_at_millis" key for automatic refresh.
+
+        Raises
+        ------
+        RuntimeError
+            If namespace does not return storage_options
+        """
+        request = DescribeTableRequest(id=self._table_id, version=None)
+        response = self._namespace.describe_table(request)
+        storage_options = response.storage_options
+        if storage_options is None:
+            raise RuntimeError(
+                "Namespace did not return storage_options. "
+                "Ensure the namespace supports storage options providing."
+            )
+
+        # Return the storage_options directly - it's already a flat Map<String, String>
+        return storage_options
+
+    def provider_id(self) -> str:
+        """Return a human-readable unique identifier for this provider instance."""
+        # Try to call namespace_id() if available (lance-namespace >= 0.0.20)
+        if hasattr(self._namespace, "namespace_id"):
+            namespace_id = self._namespace.namespace_id()
+        else:
+            # Fallback for older namespace versions
+            namespace_id = str(self._namespace)
+
+        return (
+            f"LanceNamespaceStorageOptionsProvider {{ "
+            f"namespace: {namespace_id}, table_id: {self._table_id!r} }}"
+        )
 
 
 class LanceNamespaceDBConnection(DBConnection):
@@ -166,6 +254,7 @@ class LanceNamespaceDBConnection(DBConnection):
         *,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
@@ -173,48 +262,84 @@ class LanceNamespaceDBConnection(DBConnection):
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
 
-        # TODO: support passing data
-        if data is not None:
-            raise ValueError(
-                "create_table currently only supports creating empty tables (data=None)"
+        # Get location from namespace
+        table_id = namespace + [name]
+
+        # Step 1: Get the table location and storage options from namespace
+        # In overwrite mode, if table exists, use describe_table to get
+        # existing location. Otherwise, call create_empty_table to reserve
+        # a new location
+        location = None
+        namespace_storage_options = None
+        if mode.lower() == "overwrite":
+            # Try to describe the table first to see if it exists
+            try:
+                describe_request = DescribeTableRequest(id=table_id)
+                describe_response = self._ns.describe_table(describe_request)
+                location = describe_response.location
+                namespace_storage_options = describe_response.storage_options
+            except Exception:
+                # Table doesn't exist, will create a new one below
+                pass
+
+        if location is None:
+            # Table doesn't exist or mode is "create", reserve a new location
+            create_empty_request = CreateEmptyTableRequest(
+                id=table_id,
+                location=None,
+                properties=self.storage_options if self.storage_options else None,
+            )
+            create_empty_response = self._ns.create_empty_table(create_empty_request)
+
+            if not create_empty_response.location:
+                raise ValueError(
+                    "Table location is missing from create_empty_table response"
+                )
+
+            location = create_empty_response.location
+            namespace_storage_options = create_empty_response.storage_options
+
+        # Merge storage options: self.storage_options < user options < namespace options
+        merged_storage_options = dict(self.storage_options)
+        if storage_options:
+            merged_storage_options.update(storage_options)
+        if namespace_storage_options:
+            merged_storage_options.update(namespace_storage_options)
+
+        # Step 2: Create table using LanceTable.create with the location
+        # We need a temporary connection for the LanceTable.create method
+        temp_conn = LanceDBConnection(
+            location,  # Use the actual location as the connection URI
+            read_consistency_interval=self.read_consistency_interval,
+            storage_options=merged_storage_options,
+            session=self.session,
+        )
+
+        # Create a storage options provider if not provided by user
+        # Only create if namespace returned storage_options (not None)
+        if storage_options_provider is None and namespace_storage_options is not None:
+            storage_options_provider = LanceNamespaceStorageOptionsProvider(
+                namespace=self._ns,
+                table_id=table_id,
             )
 
-        # Prepare schema
-        metadata = None
-        if embedding_functions is not None:
-            from lancedb.embeddings.registry import EmbeddingFunctionRegistry
-
-            registry = EmbeddingFunctionRegistry.get_instance()
-            metadata = registry.get_table_metadata(embedding_functions)
-
-        data, schema = sanitize_create_table(
-            data, schema, metadata, on_bad_vectors, fill_value
+        tbl = LanceTable.create(
+            temp_conn,
+            name,
+            data,
+            schema,
+            mode=mode,
+            exist_ok=exist_ok,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+            embedding_functions=embedding_functions,
+            namespace=namespace,
+            storage_options=merged_storage_options,
+            storage_options_provider=storage_options_provider,
+            location=location,
         )
-        validate_schema(schema)
 
-        # Convert PyArrow schema to JsonArrowSchema
-        json_schema = _convert_pyarrow_schema_to_json(schema)
-
-        # Create table request with namespace
-        table_id = namespace + [name]
-        request = CreateTableRequest(id=table_id, var_schema=json_schema)
-
-        # Create empty Arrow IPC stream bytes
-        import pyarrow.ipc as ipc
-        import io
-
-        empty_table = pa.Table.from_arrays(
-            [pa.array([], type=field.type) for field in schema], schema=schema
-        )
-        buffer = io.BytesIO()
-        with ipc.new_stream(buffer, schema) as writer:
-            writer.write_table(empty_table)
-        request_data = buffer.getvalue()
-
-        self._ns.create_table(request, request_data)
-        return self.open_table(
-            name, namespace=namespace, storage_options=storage_options
-        )
+        return tbl
 
     @override
     def open_table(
@@ -223,21 +348,34 @@ class LanceNamespaceDBConnection(DBConnection):
         *,
         namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
         table_id = namespace + [name]
         request = DescribeTableRequest(id=table_id)
         response = self._ns.describe_table(request)
 
-        merged_storage_options = dict()
+        # Merge storage options: self.storage_options < user options < namespace options
+        merged_storage_options = dict(self.storage_options)
         if storage_options:
             merged_storage_options.update(storage_options)
         if response.storage_options:
             merged_storage_options.update(response.storage_options)
 
+        # Create a storage options provider if not provided by user
+        # Only create if namespace returned storage_options (not None)
+        if storage_options_provider is None and response.storage_options is not None:
+            storage_options_provider = LanceNamespaceStorageOptionsProvider(
+                namespace=self._ns,
+                table_id=table_id,
+            )
+
         return self._lance_table_from_uri(
+            name,
             response.location,
+            namespace=namespace,
             storage_options=merged_storage_options,
+            storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
         )
 
@@ -330,33 +468,32 @@ class LanceNamespaceDBConnection(DBConnection):
 
     def _lance_table_from_uri(
         self,
+        name: str,
         table_uri: str,
         *,
+        namespace: List[str] = [],
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
     ) -> LanceTable:
-        # Extract the base path and table name from the URI
-        if table_uri.endswith(".lance"):
-            base_path = os.path.dirname(table_uri)
-            table_name = os.path.basename(table_uri)[:-6]  # Remove .lance
-        else:
-            raise ValueError(f"Invalid table URI: {table_uri}")
-
-        from lancedb.db import LanceDBConnection
-
+        # Open a table directly from a URI using the location parameter
+        # Note: storage_options should already be merged by the caller
         temp_conn = LanceDBConnection(
-            base_path,
+            table_uri,  # Use the table location as the connection URI
             read_consistency_interval=self.read_consistency_interval,
-            storage_options={**self.storage_options, **(storage_options or {})},
+            storage_options=storage_options if storage_options is not None else {},
             session=self.session,
         )
 
-        # Open the table using the temporary connection
+        # Open the table using the temporary connection with the location parameter
         return LanceTable.open(
             temp_conn,
-            table_name,
+            name,
+            namespace=namespace,
             storage_options=storage_options,
+            storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
+            location=table_uri,
         )
 
 

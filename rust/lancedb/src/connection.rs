@@ -35,6 +35,7 @@ use crate::Table;
 pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
+use lance_io::object_store::StorageOptionsProvider;
 
 /// A builder for configuring a [`Connection::table_names`] operation
 pub struct TableNamesBuilder {
@@ -360,6 +361,30 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
         self.request.namespace = namespace;
         self
     }
+
+    /// Set a custom location for the table.
+    ///
+    /// If not set, the database will derive a location from its URI and the table name.
+    /// This is useful when integrating with namespace systems that manage table locations.
+    pub fn location(mut self, location: impl Into<String>) -> Self {
+        self.request.location = Some(location.into());
+        self
+    }
+
+    /// Set a storage options provider for automatic credential refresh.
+    ///
+    /// This allows tables to automatically refresh cloud storage credentials
+    /// when they expire, enabling long-running operations on remote storage.
+    pub fn storage_options_provider(mut self, provider: Arc<dyn StorageOptionsProvider>) -> Self {
+        self.request
+            .write_options
+            .lance_write_params
+            .get_or_insert(Default::default())
+            .store_params
+            .get_or_insert(Default::default())
+            .storage_options_provider = Some(provider);
+        self
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -382,6 +407,7 @@ impl OpenTableBuilder {
                 namespace: vec![],
                 index_cache_size: None,
                 lance_read_params: None,
+                location: None,
             },
             embedding_registry,
         }
@@ -458,6 +484,29 @@ impl OpenTableBuilder {
     /// Set the namespace for the table
     pub fn namespace(mut self, namespace: Vec<String>) -> Self {
         self.request.namespace = namespace;
+        self
+    }
+
+    /// Set a custom location for the table.
+    ///
+    /// If not set, the database will derive a location from its URI and the table name.
+    /// This is useful when integrating with namespace systems that manage table locations.
+    pub fn location(mut self, location: impl Into<String>) -> Self {
+        self.request.location = Some(location.into());
+        self
+    }
+
+    /// Set a storage options provider for automatic credential refresh.
+    ///
+    /// This allows tables to automatically refresh cloud storage credentials
+    /// when they expire, enabling long-running operations on remote storage.
+    pub fn storage_options_provider(mut self, provider: Arc<dyn StorageOptionsProvider>) -> Self {
+        self.request
+            .lance_read_params
+            .get_or_insert(Default::default())
+            .store_options
+            .get_or_insert(Default::default())
+            .storage_options_provider = Some(provider);
         self
     }
 

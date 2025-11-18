@@ -1,4 +1,5 @@
 .idea
+*.swp
 **/*.whl
 *.egg-info
 **/__pycache__

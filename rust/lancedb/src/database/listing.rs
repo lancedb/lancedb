@@ -12,6 +12,7 @@ use lance::dataset::{builder::DatasetBuilder, ReadParams, WriteMode};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
+use lance_io::object_store::StorageOptionsProvider;
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
@@ -218,6 +219,9 @@ pub struct ListingDatabase {
     // Storage options to be inherited by tables created from this connection
     storage_options: HashMap<String, String>,
 
+    // Dynamic storage options provider for automatic credential refresh
+    pub(crate) storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
+
     // Options for tables created by this connection
     new_table_config: NewTableConfig,
 
@@ -335,7 +339,9 @@ impl ListingDatabase {
                 )
                 .await?;
                 if object_store.is_local() {
-                    Self::try_create_dir(&plain_uri).context(CreateDirSnafu { path: plain_uri })?;
+                    Self::try_create_dir(&plain_uri).context(CreateDirSnafu {
+                        path: plain_uri.clone(),
+                    })?;
                 }
 
                 let write_store_wrapper = match mirrored_store {
@@ -355,6 +361,7 @@ impl ListingDatabase {
                     store_wrapper: write_store_wrapper,
                     read_consistency_interval: request.read_consistency_interval,
                     storage_options: options.storage_options,
+                    storage_options_provider: None,
                     new_table_config: options.new_table_config,
                     session,
                 })
@@ -396,6 +403,7 @@ impl ListingDatabase {
             store_wrapper: None,
             read_consistency_interval,
             storage_options: HashMap::new(),
+            storage_options_provider: None,
             new_table_config,
             session,
         })
@@ -403,7 +411,20 @@ impl ListingDatabase {
 
     /// Try to create a local directory to store the lancedb dataset
     fn try_create_dir(path: &str) -> core::result::Result<(), std::io::Error> {
-        let path = Path::new(path);
+        // Strip file:// or file:/ scheme if present to get the actual filesystem path
+        // Note: file:///path becomes file:/path after url.to_string(), so we need to handle both
+        let fs_path = if let Some(stripped) = path.strip_prefix("file://") {
+            // file:///path or file://host/path format
+            stripped
+        } else if let Some(stripped) = path.strip_prefix("file:") {
+            // file:/path format (from url.to_string() on file:///path)
+            // The path after "file:" should already start with "/" for absolute paths
+            stripped
+        } else {
+            path
+        };
+
+        let path = Path::new(fs_path);
         if !path.try_exists()? {
             create_dir_all(path)?;
         }
@@ -529,6 +550,14 @@ impl ListingDatabase {
             self.inherit_storage_options(storage_options);
         }
 
+        // Set storage options provider if available
+        if self.storage_options_provider.is_some() {
+            write_params
+                .store_params
+                .get_or_insert_with(Default::default)
+                .storage_options_provider = self.storage_options_provider.clone();
+        }
+
         write_params.data_storage_version = self
             .new_table_config
             .data_storage_version
@@ -569,6 +598,7 @@ impl ListingDatabase {
                     namespace: namespace.clone(),
                     index_cache_size: None,
                     lance_read_params: None,
+                    location: None,
                 };
                 let req = (callback)(req);
                 let table = self.open_table(req).await?;
@@ -664,12 +694,17 @@ impl Database for ListingDatabase {
     }
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
-        if !request.namespace.is_empty() {
-            return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+        // When namespace is not empty, location must be provided
+        if !request.namespace.is_empty() && request.location.is_none() {
+            return Err(Error::InvalidInput {
+                message: "Location must be provided when namespace is not empty".into(),
             });
         }
-        let table_uri = self.table_uri(&request.name)?;
+        // Use provided location if available, otherwise derive from table name
+        let table_uri = request
+            .location
+            .clone()
+            .unwrap_or_else(|| self.table_uri(&request.name).unwrap());
 
         let (storage_version_override, v2_manifest_override) =
             self.extract_storage_overrides(&request)?;
@@ -682,6 +717,7 @@ impl Database for ListingDatabase {
         match NativeTable::create(
             &table_uri,
             &request.name,
+            request.namespace.clone(),
             request.data,
             self.store_wrapper.clone(),
             Some(write_params),
@@ -753,6 +789,7 @@ impl Database for ListingDatabase {
         let cloned_table = NativeTable::open_with_params(
             &target_uri,
             &request.target_table_name,
+            request.target_namespace,
             self.store_wrapper.clone(),
             None,
             self.read_consistency_interval,
@@ -763,12 +800,17 @@ impl Database for ListingDatabase {
     }
 
     async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
-        if !request.namespace.is_empty() {
-            return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+        // When namespace is not empty, location must be provided
+        if !request.namespace.is_empty() && request.location.is_none() {
+            return Err(Error::InvalidInput {
+                message: "Location must be provided when namespace is not empty".into(),
             });
         }
-        let table_uri = self.table_uri(&request.name)?;
+        // Use provided location if available, otherwise derive from table name
+        let table_uri = request
+            .location
+            .clone()
+            .unwrap_or_else(|| self.table_uri(&request.name).unwrap());
 
         // Only modify the storage options if we actually have something to
         // inherit. There is a difference between storage_options=None and
@@ -786,6 +828,16 @@ impl Database for ListingDatabase {
                 .storage_options
                 .get_or_insert_with(Default::default);
             self.inherit_storage_options(storage_options);
+        }
+
+        // Set storage options provider if available
+        if self.storage_options_provider.is_some() {
+            request
+                .lance_read_params
+                .get_or_insert_with(Default::default)
+                .store_options
+                .get_or_insert_with(Default::default)
+                .storage_options_provider = self.storage_options_provider.clone();
         }
 
         // Some ReadParams are exposed in the OpenTableBuilder, but we also
@@ -808,6 +860,7 @@ impl Database for ListingDatabase {
             NativeTable::open_with_params(
                 &table_uri,
                 &request.name,
+                request.namespace,
                 self.store_wrapper.clone(),
                 Some(read_params),
                 self.read_consistency_interval,
@@ -911,6 +964,7 @@ mod tests {
                 data: CreateTableData::Empty(TableDefinition::new_from_schema(schema.clone())),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
+                location: None,
             })
             .await
             .unwrap();
@@ -974,6 +1028,7 @@ mod tests {
                 data: CreateTableData::Data(reader),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
+                location: None,
             })
             .await
             .unwrap();
@@ -1031,6 +1086,7 @@ mod tests {
             data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
             mode: CreateTableMode::Create,
             write_options: Default::default(),
+            location: None,
         })
         .await
         .unwrap();
@@ -1065,6 +1121,7 @@ mod tests {
             data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
             mode: CreateTableMode::Create,
             write_options: Default::default(),
+            location: None,
         })
         .await
         .unwrap();
@@ -1103,6 +1160,7 @@ mod tests {
             data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
             mode: CreateTableMode::Create,
             write_options: Default::default(),
+            location: None,
         })
         .await
         .unwrap();
@@ -1141,6 +1199,7 @@ mod tests {
             data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
             mode: CreateTableMode::Create,
             write_options: Default::default(),
+            location: None,
         })
         .await
         .unwrap();
@@ -1194,6 +1253,7 @@ mod tests {
             data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
             mode: CreateTableMode::Create,
             write_options: Default::default(),
+            location: None,
         })
         .await
         .unwrap();
@@ -1250,6 +1310,7 @@ mod tests {
                 data: CreateTableData::Data(reader),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
+                location: None,
             })
             .await
             .unwrap();
@@ -1334,6 +1395,7 @@ mod tests {
                 data: CreateTableData::Data(reader),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
+                location: None,
             })
             .await
             .unwrap();
@@ -1419,6 +1481,7 @@ mod tests {
                 data: CreateTableData::Data(reader),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
+                location: None,
             })
             .await
             .unwrap();
@@ -1511,6 +1574,7 @@ mod tests {
                 data: CreateTableData::Data(reader),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
+                location: None,
             })
             .await
             .unwrap();
