@@ -4133,6 +4133,8 @@ mod tests {
         table.prewarm_index("text_idx").await.unwrap();
     }
 
+    // Windows does not support precise sleep durations due to timer resolution limitations.
+    #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn test_read_consistency_interval() {
         let intervals = vec![
