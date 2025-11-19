@@ -178,8 +178,8 @@ def set_stable_version(version: str):
 def set_preview_version(version: str):
     """
     Sets lines to
-    lance = { "version" = "=0.29.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
-    lance-io = { "version" = "=0.29.0", default-features = false, "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lance-format/lance.git" }
+    lance = { "version" = "=0.29.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.29.0-beta.2", "git" = LANCE_GIT_URL }
+    lance-io = { "version" = "=0.29.0", default-features = false, "tag" = "v0.29.0-beta.2", "git" = LANCE_GIT_URL }
     ...
     """
 
