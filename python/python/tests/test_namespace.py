@@ -439,7 +439,6 @@ class TestAsyncNamespaceConnection:
 
     async def test_connect_namespace_async(self):
         """Test connecting to LanceDB through DirectoryNamespace asynchronously."""
-        # Connect using DirectoryNamespace async (function is sync but returns async connection)
         db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
 
         # Should be an AsyncLanceNamespaceDBConnection
