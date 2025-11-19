@@ -14,6 +14,8 @@
 numAttempts: number;
 ```
 
+***
+
 ### numDeletedRows
 
 ```ts
