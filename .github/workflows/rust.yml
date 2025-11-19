@@ -18,11 +18,7 @@ env:
   # This env var is used by Swatinem/rust-cache@v2 for the cache
   # key, so we set it to make sure it is always consistent.
   CARGO_TERM_COLOR: always
-  # Disable full debug symbol generation to speed up CI build and keep memory down
-  # "1" means line tables only, which is useful for panic tracebacks.
-  RUSTFLAGS: "-C debuginfo=1"
   RUST_BACKTRACE: "1"
-  CARGO_INCREMENTAL: 0
 
 jobs:
   lint:
@@ -44,8 +40,6 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
       - name: Install dependencies
         run: |
           sudo apt update
@@ -53,7 +47,7 @@ jobs:
       - name: Run format
         run: cargo fmt --all -- --check
       - name: Run clippy
-        run: cargo clippy --workspace --tests --all-features -- -D warnings
+        run: cargo clippy --profile ci --workspace --tests --all-features -- -D warnings
 
   build-no-lock:
     runs-on: ubuntu-24.04
@@ -80,7 +74,7 @@ jobs:
           sudo apt install -y protobuf-compiler libssl-dev
       - name: Build all
         run: |
-          cargo build --benches --all-features --tests
+          cargo build --profile ci --benches --all-features --tests
 
   linux:
     timeout-minutes: 30
@@ -103,14 +97,8 @@ jobs:
           fetch-depth: 0
           lfs: true
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
       - name: Install dependencies
-        run: |
-          # This shaves 2 minutes off this step in CI. This doesn't seem to be
-          # necessary in standard runners, but it is in the 4x runners.
-          sudo rm /var/lib/man-db/auto-update
-          sudo apt install -y protobuf-compiler libssl-dev
+        run: sudo apt install -y protobuf-compiler libssl-dev
       - uses: rui314/setup-mold@v1
       - name: Make Swap
         run: |
@@ -119,16 +107,16 @@ jobs:
           sudo mkswap /swapfile
           sudo swapon /swapfile
       - name: Build
-        run: cargo build --all-features --tests --locked --examples
+        run: cargo build --profile ci --all-features --tests --locked --examples
       - name: Run feature tests
-        run: make -C ./lancedb feature-tests
+        run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
-        run: cargo run --example simple --locked
+        run: cargo run  --profile ci --example simple --locked
       - name: Run remote tests
         # Running this requires access to secrets, so skip if this is
         # a PR from a fork.
         if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
-        run: make -C ./lancedb remote-tests
+        run: CARGO_ARGS="--profile ci" make -C ./lancedb remote-tests
 
   macos:
     timeout-minutes: 30
@@ -148,8 +136,6 @@ jobs:
       - name: CPU features
         run: sysctl -a | grep cpu
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
       - name: Install dependencies
         run: brew install protobuf
       - name: Run tests
@@ -159,7 +145,7 @@ jobs:
           ALL_FEATURES=`cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | .features | keys | .[]' \
             | grep -v s3-test | sort | uniq | paste -s -d "," -`
-          cargo test --features $ALL_FEATURES --locked
+          cargo test --profile ci --features $ALL_FEATURES --locked
 
   windows:
     runs-on: windows-2022
@@ -173,22 +159,21 @@ jobs:
         working-directory: rust/lancedb
     steps:
       - uses: actions/checkout@v4
+      - name: Set target
+        run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
       - name: Install Protoc v21.12
         run: choco install --no-progress protoc
       - name: Build
         run: |
-          rustup target add ${{ matrix.target }}
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo build --features remote --tests --locked --target ${{ matrix.target }}
+          cargo build --profile ci --features remote --tests --locked --target ${{ matrix.target }}
       - name: Run tests
         # Can only run tests when target matches host
         if: ${{ matrix.target == 'x86_64-pc-windows-msvc' }}
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo test --features remote --locked
+          cargo test --profile ci --features remote --locked
 
   msrv:
     # Check the minimum supported Rust version
@@ -213,6 +198,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.msrv }}
+      - uses: Swatinem/rust-cache@v2
       - name: Downgrade  dependencies
         # These packages have newer requirements for MSRV
         run: |
@@ -226,4 +212,4 @@ jobs:
           cargo update -p aws-sdk-sts --precise 1.51.0
           cargo update -p home --precise 0.5.9
       - name: cargo +${{ matrix.msrv }} check
-        run: cargo check --workspace --tests --benches --all-features
+        run: cargo check --profile ci --workspace --tests --benches --all-features

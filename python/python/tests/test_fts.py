@@ -32,6 +32,7 @@ import numpy as np
 import pyarrow as pa
 import pandas as pd
 import pytest
+import pytest_asyncio
 from utils import exception_output
 
 pytest.importorskip("lancedb.fts")
@@ -90,7 +91,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
     return table
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def async_table(tmp_path) -> ldb.table.AsyncTable:
     # Use local random state to avoid affecting other tests
     rng = np.random.RandomState(42)
@@ -253,7 +254,7 @@ def test_search_fts(table, use_tantivy):
 
 @pytest.mark.asyncio
 async def test_fts_select_async(async_table):
-    tbl = await async_table
+    tbl = async_table
     await tbl.create_index("text", config=FTS())
     await tbl.create_index("text2", config=FTS())
     results = (
@@ -338,7 +339,6 @@ def test_search_fts_phrase_query(table):
 
 @pytest.mark.asyncio
 async def test_search_fts_phrase_query_async(async_table):
-    async_table = await async_table
     await async_table.create_index("text", config=FTS(with_position=False))
     try:
         phrase_results = (
@@ -393,7 +393,6 @@ def test_search_fts_specify_column(table):
 
 @pytest.mark.asyncio
 async def test_search_fts_async(async_table):
-    async_table = await async_table
     await async_table.create_index("text", config=FTS())
     results = await async_table.query().nearest_to_text("puppy").limit(5).to_list()
     assert len(results) == 5
@@ -424,7 +423,6 @@ async def test_search_fts_async(async_table):
 
 @pytest.mark.asyncio
 async def test_search_fts_specify_column_async(async_table):
-    async_table = await async_table
     await async_table.create_index("text", config=FTS())
     await async_table.create_index("text2", config=FTS())
 
