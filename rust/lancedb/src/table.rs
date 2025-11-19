@@ -467,6 +467,11 @@ pub struct MergeResult {
     /// However those rows are not shared with the user.
     #[serde(default)]
     pub num_deleted_rows: u64,
+    /// Number of attempts performed during the merge operation.
+    /// This includes the initial attempt plus any retries due to transaction conflicts.
+    /// A value of 1 means the operation succeeded on the first try.
+    #[serde(default)]
+    pub num_attempts: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -2531,6 +2536,7 @@ impl BaseTable for NativeTable {
             num_updated_rows: stats.num_updated_rows,
             num_inserted_rows: stats.num_inserted_rows,
             num_deleted_rows: stats.num_deleted_rows,
+            num_attempts: stats.num_attempts,
         })
     }
 
@@ -2990,9 +2996,13 @@ mod tests {
         // Perform a "insert if not exists"
         let mut merge_insert_builder = table.merge_insert(&["i"]);
         merge_insert_builder.when_not_matched_insert_all();
-        merge_insert_builder.execute(new_batches).await.unwrap();
+        let result = merge_insert_builder.execute(new_batches).await.unwrap();
         // Only 5 rows should actually be inserted
         assert_eq!(table.count_rows(None).await.unwrap(), 15);
+        assert_eq!(result.num_inserted_rows, 5);
+        assert_eq!(result.num_updated_rows, 0);
+        assert_eq!(result.num_deleted_rows, 0);
+        assert_eq!(result.num_attempts, 1);
 
         // Create new data with i=15..25 (no id matches)
         let new_batches = Box::new(merge_insert_test_batches(15, 2));
