@@ -423,3 +423,218 @@ class TestNamespaceConnection:
         db.drop_table("same_name_table", namespace=["namespace_b"])
         db.drop_namespace(["namespace_a"])
         db.drop_namespace(["namespace_b"])
+
+
+@pytest.mark.asyncio
+class TestAsyncNamespaceConnection:
+    """Test async namespace-based LanceDB connection using DirectoryNamespace."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.temp_dir = tempfile.mkdtemp()
+
+    def teardown_method(self):
+        """Clean up test fixtures."""
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    async def test_connect_namespace_async(self):
+        """Test connecting to LanceDB through DirectoryNamespace asynchronously."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Should be an AsyncLanceNamespaceDBConnection
+        assert isinstance(db, lancedb.AsyncLanceNamespaceDBConnection)
+
+        # Initially no tables in root
+        table_names = await db.table_names()
+        assert len(list(table_names)) == 0
+
+    async def test_create_table_async(self):
+        """Test creating a table asynchronously through namespace."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Create a child namespace first
+        await db.create_namespace(["test_ns"])
+
+        # Define schema for empty table
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+                pa.field("text", pa.string()),
+            ]
+        )
+
+        # Create empty table in child namespace
+        table = await db.create_table(
+            "test_table", schema=schema, namespace=["test_ns"]
+        )
+        assert table is not None
+        assert isinstance(table, lancedb.AsyncTable)
+
+        # Table should appear in child namespace
+        table_names = await db.table_names(namespace=["test_ns"])
+        assert "test_table" in list(table_names)
+
+    async def test_open_table_async(self):
+        """Test opening an existing table asynchronously through namespace."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Create a child namespace first
+        await db.create_namespace(["test_ns"])
+
+        # Create a table with schema in child namespace
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+            ]
+        )
+        await db.create_table("test_table", schema=schema, namespace=["test_ns"])
+
+        # Open the table
+        table = await db.open_table("test_table", namespace=["test_ns"])
+        assert table is not None
+        assert isinstance(table, lancedb.AsyncTable)
+
+        # Test write operation - add data to the table
+        test_data = [
+            {"id": 1, "vector": [1.0, 2.0]},
+            {"id": 2, "vector": [3.0, 4.0]},
+            {"id": 3, "vector": [5.0, 6.0]},
+        ]
+        await table.add(test_data)
+
+        # Test read operation - query the table
+        result = await table.to_arrow()
+        assert len(result) == 3
+        assert result.schema.field("id").type == pa.int64()
+        assert result.schema.field("vector").type == pa.list_(pa.float32(), 2)
+
+        # Verify data content
+        result_df = result.to_pandas()
+        assert result_df["id"].tolist() == [1, 2, 3]
+        assert [v.tolist() for v in result_df["vector"]] == [
+            [1.0, 2.0],
+            [3.0, 4.0],
+            [5.0, 6.0],
+        ]
+
+        # Test update operation
+        await table.update({"id": 20}, where="id = 2")
+        result = await table.to_arrow()
+        result_df = result.to_pandas().sort_values("id").reset_index(drop=True)
+        assert result_df["id"].tolist() == [1, 3, 20]
+
+        # Test delete operation
+        await table.delete("id = 1")
+        result = await table.to_arrow()
+        assert len(result) == 2
+        result_df = result.to_pandas().sort_values("id").reset_index(drop=True)
+        assert result_df["id"].tolist() == [3, 20]
+
+    async def test_drop_table_async(self):
+        """Test dropping a table asynchronously through namespace."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Create a child namespace first
+        await db.create_namespace(["test_ns"])
+
+        # Create tables in child namespace
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+            ]
+        )
+        await db.create_table("table1", schema=schema, namespace=["test_ns"])
+        await db.create_table("table2", schema=schema, namespace=["test_ns"])
+
+        # Verify both tables exist in child namespace
+        table_names = list(await db.table_names(namespace=["test_ns"]))
+        assert "table1" in table_names
+        assert "table2" in table_names
+        assert len(table_names) == 2
+
+        # Drop one table
+        await db.drop_table("table1", namespace=["test_ns"])
+
+        # Verify only table2 remains
+        table_names = list(await db.table_names(namespace=["test_ns"]))
+        assert "table1" not in table_names
+        assert "table2" in table_names
+        assert len(table_names) == 1
+
+    async def test_namespace_operations_async(self):
+        """Test namespace management operations asynchronously."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Initially no namespaces
+        namespaces = await db.list_namespaces()
+        assert len(list(namespaces)) == 0
+
+        # Create a namespace
+        await db.create_namespace(["test_namespace"])
+
+        # Verify namespace exists
+        namespaces = list(await db.list_namespaces())
+        assert "test_namespace" in namespaces
+        assert len(namespaces) == 1
+
+        # Create table in namespace
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+            ]
+        )
+        table = await db.create_table(
+            "test_table", schema=schema, namespace=["test_namespace"]
+        )
+        assert table is not None
+
+        # Verify table exists in namespace
+        tables_in_namespace = list(await db.table_names(namespace=["test_namespace"]))
+        assert "test_table" in tables_in_namespace
+        assert len(tables_in_namespace) == 1
+
+        # Drop table from namespace
+        await db.drop_table("test_table", namespace=["test_namespace"])
+
+        # Verify table no longer exists in namespace
+        tables_in_namespace = list(await db.table_names(namespace=["test_namespace"]))
+        assert len(tables_in_namespace) == 0
+
+        # Drop namespace
+        await db.drop_namespace(["test_namespace"])
+
+        # Verify namespace no longer exists
+        namespaces = list(await db.list_namespaces())
+        assert len(namespaces) == 0
+
+    async def test_drop_all_tables_async(self):
+        """Test dropping all tables asynchronously through namespace."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Create a child namespace first
+        await db.create_namespace(["test_ns"])
+
+        # Create multiple tables in child namespace
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+            ]
+        )
+        for i in range(3):
+            await db.create_table(f"table{i}", schema=schema, namespace=["test_ns"])
+
+        # Verify tables exist in child namespace
+        table_names = await db.table_names(namespace=["test_ns"])
+        assert len(list(table_names)) == 3
+
+        # Drop all tables in child namespace
+        await db.drop_all_tables(namespace=["test_ns"])
+
+        # Verify all tables are gone from child namespace
+        table_names = await db.table_names(namespace=["test_ns"])
+        assert len(list(table_names)) == 0

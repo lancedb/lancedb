@@ -15,20 +15,20 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=1.0.0-beta.2", default-features = false, "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-core = { "version" = "=1.0.0-beta.2", "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-datagen = { "version" = "=1.0.0-beta.2", "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-file = { "version" = "=1.0.0-beta.2", "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-io = { "version" = "=1.0.0-beta.2", default-features = false, "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-index = { "version" = "=1.0.0-beta.2", "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-linalg = { "version" = "=1.0.0-beta.2", "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-namespace = { "version" = "=1.0.0-beta.2", "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-namespace-impls = { "version" = "=1.0.0-beta.2", "features" = ["dir-aws", "dir-gcp", "dir-azure", "dir-oss", "rest"], "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-table = { "version" = "=1.0.0-beta.2", "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-testing = { "version" = "=1.0.0-beta.2", "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-datafusion = { "version" = "=1.0.0-beta.2", "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-encoding = { "version" = "=1.0.0-beta.2", "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-lance-arrow = { "version" = "=1.0.0-beta.2", "tag" = "v1.0.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
+lance = { "version" = "=1.0.0-beta.3", default-features = false, "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=1.0.0-beta.3", "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=1.0.0-beta.3", "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=1.0.0-beta.3", "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=1.0.0-beta.3", default-features = false, "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=1.0.0-beta.3", "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=1.0.0-beta.3", "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=1.0.0-beta.3", "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=1.0.0-beta.3", "features" = ["dir-aws", "dir-gcp", "dir-azure", "dir-oss", "rest"], "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=1.0.0-beta.3", "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=1.0.0-beta.3", "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=1.0.0-beta.3", "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=1.0.0-beta.3", "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=1.0.0-beta.3", "tag" = "v1.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "56.2", optional = false }
@@ -63,3 +63,17 @@ regex = "1.10"
 lazy_static = "1"
 semver = "1.0.25"
 chrono = "0.4"
+
+[profile.ci]
+debug = "line-tables-only"
+inherits = "dev"
+incremental = false
+
+# This rule applies to every package except workspace members (dependencies
+# such as `arrow` and `tokio`). It disables debug info and related features on
+# dependencies so their binaries stay smaller, improving cache reuse.
+[profile.ci.package."*"]
+debug = false
+debug-assertions = false
+strip = "debuginfo"
+incremental = false

@@ -8,6 +8,14 @@
 
 ## Properties
 
+### numAttempts
+
+```ts
+numAttempts: number;
+```
+
+***
+
 ### numDeletedRows
 
 ```ts

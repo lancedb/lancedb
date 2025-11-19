@@ -20,7 +20,12 @@ from .remote.db import RemoteDBConnection
 from .schema import vector
 from .table import AsyncTable, Table
 from ._lancedb import Session
-from .namespace import connect_namespace, LanceNamespaceDBConnection
+from .namespace import (
+    connect_namespace,
+    connect_namespace_async,
+    LanceNamespaceDBConnection,
+    AsyncLanceNamespaceDBConnection,
+)
 
 
 def connect(
@@ -36,7 +41,7 @@ def connect(
     session: Optional[Session] = None,
     **kwargs: Any,
 ) -> DBConnection:
-    """Connect to a LanceDB database. YAY!
+    """Connect to a LanceDB database.
 
     Parameters
     ----------
@@ -224,7 +229,9 @@ __all__ = [
     "connect",
     "connect_async",
     "connect_namespace",
+    "connect_namespace_async",
     "AsyncConnection",
+    "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
     "URI",
     "sanitize_uri",

@@ -652,6 +652,17 @@ class RemoteTable(Table):
             "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
         )
 
+    def head(self, n=5) -> pa.Table:
+        """
+        Return the first `n` rows of the table.
+
+        Parameters
+        ----------
+        n: int, default 5
+            The number of rows to return.
+        """
+        return LOOP.run(self._table.query().limit(n).to_arrow())
+
 
 def add_index(tbl: pa.Table, i: int) -> pa.Table:
     return tbl.add_column(

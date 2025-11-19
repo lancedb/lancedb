@@ -740,6 +740,7 @@ pub struct MergeResult {
     pub num_inserted_rows: i64,
     pub num_updated_rows: i64,
     pub num_deleted_rows: i64,
+    pub num_attempts: i64,
 }
 
 impl From<lancedb::table::MergeResult> for MergeResult {
@@ -749,6 +750,7 @@ impl From<lancedb::table::MergeResult> for MergeResult {
             num_inserted_rows: value.num_inserted_rows as i64,
             num_updated_rows: value.num_updated_rows as i64,
             num_deleted_rows: value.num_deleted_rows as i64,
+            num_attempts: value.num_attempts as i64,
         }
     }
 }

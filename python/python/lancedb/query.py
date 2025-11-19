@@ -14,6 +14,7 @@ from typing import (
     Literal,
     Optional,
     Tuple,
+    Type,
     TypeVar,
     Union,
     Any,
@@ -786,10 +787,7 @@ class LanceQueryBuilder(ABC):
         -------
         List[LanceModel]
         """
-        return [
-            model(**{k: v for k, v in row.items() if k in model.field_names()})
-            for row in self.to_arrow(timeout=timeout).to_pylist()
-        ]
+        return [model(**row) for row in self.to_arrow(timeout=timeout).to_pylist()]
 
     def to_polars(self, *, timeout: Optional[timedelta] = None) -> "pl.DataFrame":
         """
@@ -2399,6 +2397,28 @@ class AsyncQueryBase(object):
         import polars as pl
 
         return pl.from_arrow(await self.to_arrow(timeout=timeout))
+
+    async def to_pydantic(
+        self, model: Type[LanceModel], *, timeout: Optional[timedelta] = None
+    ) -> List[LanceModel]:
+        """
+        Convert results to a list of pydantic models.
+
+        Parameters
+        ----------
+        model : Type[LanceModel]
+            The pydantic model to use.
+        timeout : timedelta, optional
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
+
+        Returns
+        -------
+        list[LanceModel]
+        """
+        return [
+            model(**row) for row in (await self.to_arrow(timeout=timeout)).to_pylist()
+        ]
 
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.

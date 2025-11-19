@@ -19,6 +19,7 @@ env:
   PYTEST_ADDOPTS: "--color=yes"
   FORCE_COLOR: "1"
   PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lancedb/"
+  RUST_BACKTRACE: "1"
 
 jobs:
   lint:
@@ -97,9 +98,6 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: python
       - name: Install
         run: |
           pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
@@ -131,10 +129,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: 3.${{ matrix.python-minor-version }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: python
       - uses: ./.github/workflows/build_linux_wheel
+        with:
+          args: --profile ci
       - uses: ./.github/workflows/run_tests
         with:
           integration: true
@@ -169,10 +166,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: python
       - uses: ./.github/workflows/build_mac_wheel
+        with:
+          args: --profile ci
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
@@ -199,10 +195,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: python
       - uses: ./.github/workflows/build_windows_wheel
+        with:
+          args: --profile ci
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels

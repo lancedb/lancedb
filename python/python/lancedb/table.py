@@ -1717,6 +1717,7 @@ class LanceTable(Table):
     ):
         self._conn = connection
         self._namespace = namespace
+        self._location = location  # Store location for use in _dataset_path
         if _async is not None:
             self._table = _async
         else:
@@ -1794,6 +1795,10 @@ class LanceTable(Table):
     @cached_property
     def _dataset_path(self) -> str:
         # Cacheable since it's deterministic
+        # If table was opened with explicit location (e.g., from namespace),
+        # use that location directly instead of constructing from base URI
+        if self._location is not None:
+            return self._location
         return _table_path(self._conn.uri, self.name)
 
     def to_lance(self, **kwargs) -> lance.LanceDataset:
@@ -2681,6 +2686,7 @@ class LanceTable(Table):
         self = cls.__new__(cls)
         self._conn = db
         self._namespace = namespace
+        self._location = location
 
         if data_storage_version is not None:
             warnings.warn(
