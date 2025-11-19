@@ -546,6 +546,22 @@ def query_test_table(query_handler, *, server_version=Version("0.1.0")):
         yield table
 
 
+def test_head():
+    def handler(body):
+        assert body == {
+            "k": 5,
+            "prefilter": True,
+            "vector": [],
+            "version": None,
+        }
+
+        return pa.table({"id": [1, 2, 3]})
+
+    with query_test_table(handler) as table:
+        data = table.head(5)
+        assert data == pa.table({"id": [1, 2, 3]})
+
+
 def test_query_sync_minimal():
     def handler(body):
         assert body == {
