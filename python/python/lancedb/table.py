@@ -2686,6 +2686,7 @@ class LanceTable(Table):
         self = cls.__new__(cls)
         self._conn = db
         self._namespace = namespace
+        self._location = location
 
         if data_storage_version is not None:
             warnings.warn(
