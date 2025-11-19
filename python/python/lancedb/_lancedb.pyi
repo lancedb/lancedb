@@ -306,6 +306,7 @@ class MergeResult:
     num_updated_rows: int
     num_inserted_rows: int
     num_deleted_rows: int
+    num_attempts: int
 
 class AddColumnsResult:
     version: int
