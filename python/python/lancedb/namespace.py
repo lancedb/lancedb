@@ -235,8 +235,10 @@ class LanceNamespaceDBConnection(DBConnection):
         page_token: Optional[str] = None,
         limit: int = 10,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
     ) -> Iterable[str]:
+        if namespace is None:
+            namespace = []
         request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
         response = self._ns.list_tables(request)
         return response.tables if response.tables else []
@@ -253,12 +255,14 @@ class LanceNamespaceDBConnection(DBConnection):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
+        if namespace is None:
+            namespace = []
         if mode.lower() not in ["create", "overwrite"]:
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
@@ -347,11 +351,13 @@ class LanceNamespaceDBConnection(DBConnection):
         self,
         name: str,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
+        if namespace is None:
+            namespace = []
         table_id = namespace + [name]
         request = DescribeTableRequest(id=table_id)
         response = self._ns.describe_table(request)
@@ -381,8 +387,10 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
     @override
-    def drop_table(self, name: str, namespace: List[str] = []):
+    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
         # Use namespace drop_table directly
+        if namespace is None:
+            namespace = []
         table_id = namespace + [name]
         request = DropTableRequest(id=table_id)
         self._ns.drop_table(request)
@@ -392,9 +400,13 @@ class LanceNamespaceDBConnection(DBConnection):
         self,
         cur_name: str,
         new_name: str,
-        cur_namespace: List[str] = [],
-        new_namespace: List[str] = [],
+        cur_namespace: Optional[List[str]] = None,
+        new_namespace: Optional[List[str]] = None,
     ):
+        if cur_namespace is None:
+            cur_namespace = []
+        if new_namespace is None:
+            new_namespace = []
         raise NotImplementedError(
             "rename_table is not supported for namespace connections"
         )
@@ -406,14 +418,16 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
     @override
-    def drop_all_tables(self, namespace: List[str] = []):
+    def drop_all_tables(self, namespace: Optional[List[str]] = None):
+        if namespace is None:
+            namespace = []
         for table_name in self.table_names(namespace=namespace):
             self.drop_table(table_name, namespace=namespace)
 
     @override
     def list_namespaces(
         self,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: int = 10,
     ) -> Iterable[str]:
@@ -435,6 +449,8 @@ class LanceNamespaceDBConnection(DBConnection):
         Iterable[str]
             Names of child namespaces.
         """
+        if namespace is None:
+            namespace = []
         request = ListNamespacesRequest(
             id=namespace, page_token=page_token, limit=limit
         )
@@ -472,13 +488,15 @@ class LanceNamespaceDBConnection(DBConnection):
         name: str,
         table_uri: str,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
     ) -> LanceTable:
         # Open a table directly from a URI using the location parameter
         # Note: storage_options should already be merged by the caller
+        if namespace is None:
+            namespace = []
         temp_conn = LanceDBConnection(
             table_uri,  # Use the table location as the connection URI
             read_consistency_interval=self.read_consistency_interval,
@@ -539,9 +557,11 @@ class AsyncLanceNamespaceDBConnection:
         page_token: Optional[str] = None,
         limit: int = 10,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """List table names in the namespace."""
+        if namespace is None:
+            namespace = []
         request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
         response = self._ns.list_tables(request)
         return response.tables if response.tables else []
@@ -557,13 +577,15 @@ class AsyncLanceNamespaceDBConnection:
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ) -> AsyncTable:
         """Create a new table in the namespace."""
+        if namespace is None:
+            namespace = []
         if mode.lower() not in ["create", "overwrite"]:
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
@@ -655,12 +677,14 @@ class AsyncLanceNamespaceDBConnection:
         self,
         name: str,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
     ) -> AsyncTable:
         """Open an existing table from the namespace."""
+        if namespace is None:
+            namespace = []
         table_id = namespace + [name]
         request = DescribeTableRequest(id=table_id)
         response = self._ns.describe_table(request)
@@ -701,8 +725,10 @@ class AsyncLanceNamespaceDBConnection:
         lance_table = await asyncio.to_thread(_open_table)
         return lance_table._table
 
-    async def drop_table(self, name: str, namespace: List[str] = []):
+    async def drop_table(self, name: str, namespace: Optional[List[str]] = None):
         """Drop a table from the namespace."""
+        if namespace is None:
+            namespace = []
         table_id = namespace + [name]
         request = DropTableRequest(id=table_id)
         self._ns.drop_table(request)
@@ -711,10 +737,14 @@ class AsyncLanceNamespaceDBConnection:
         self,
         cur_name: str,
         new_name: str,
-        cur_namespace: List[str] = [],
-        new_namespace: List[str] = [],
+        cur_namespace: Optional[List[str]] = None,
+        new_namespace: Optional[List[str]] = None,
     ):
         """Rename is not supported for namespace connections."""
+        if cur_namespace is None:
+            cur_namespace = []
+        if new_namespace is None:
+            new_namespace = []
         raise NotImplementedError(
             "rename_table is not supported for namespace connections"
         )
@@ -725,15 +755,17 @@ class AsyncLanceNamespaceDBConnection:
             "drop_database is deprecated, use drop_all_tables instead"
         )
 
-    async def drop_all_tables(self, namespace: List[str] = []):
+    async def drop_all_tables(self, namespace: Optional[List[str]] = None):
         """Drop all tables in the namespace."""
+        if namespace is None:
+            namespace = []
         table_names = await self.table_names(namespace=namespace)
         for table_name in table_names:
             await self.drop_table(table_name, namespace=namespace)
 
     async def list_namespaces(
         self,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: int = 10,
     ) -> Iterable[str]:
@@ -755,6 +787,8 @@ class AsyncLanceNamespaceDBConnection:
         Iterable[str]
             Names of child namespaces.
         """
+        if namespace is None:
+            namespace = []
         request = ListNamespacesRequest(
             id=namespace, page_token=page_token, limit=limit
         )

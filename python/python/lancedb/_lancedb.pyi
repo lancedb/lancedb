@@ -26,7 +26,7 @@ class Connection(object):
     async def close(self): ...
     async def list_namespaces(
         self,
-        namespace: List[str],
+        namespace: Optional[List[str]],
         page_token: Optional[str],
         limit: Optional[int],
     ) -> List[str]: ...
@@ -34,7 +34,7 @@ class Connection(object):
     async def drop_namespace(self, namespace: List[str]) -> None: ...
     async def table_names(
         self,
-        namespace: List[str],
+        namespace: Optional[List[str]],
         start_after: Optional[str],
         limit: Optional[int],
     ) -> list[str]: ...
@@ -43,7 +43,7 @@ class Connection(object):
         name: str,
         mode: str,
         data: pa.RecordBatchReader,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         location: Optional[str] = None,
@@ -53,7 +53,7 @@ class Connection(object):
         name: str,
         mode: str,
         schema: pa.Schema,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         location: Optional[str] = None,
@@ -61,7 +61,7 @@ class Connection(object):
     async def open_table(
         self,
         name: str,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
@@ -71,7 +71,7 @@ class Connection(object):
         self,
         target_table_name: str,
         source_uri: str,
-        target_namespace: List[str] = [],
+        target_namespace: Optional[List[str]] = None,
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
@@ -80,11 +80,11 @@ class Connection(object):
         self,
         cur_name: str,
         new_name: str,
-        cur_namespace: List[str] = [],
-        new_namespace: List[str] = [],
+        cur_namespace: Optional[List[str]] = None,
+        new_namespace: Optional[List[str]] = None,
     ) -> None: ...
-    async def drop_table(self, name: str, namespace: List[str] = []) -> None: ...
-    async def drop_all_tables(self, namespace: List[str] = []) -> None: ...
+    async def drop_table(self, name: str, namespace: Optional[List[str]] = None) -> None: ...
+    async def drop_all_tables(self, namespace: Optional[List[str]] = None) -> None: ...
 
 class Table:
     def name(self) -> str: ...
