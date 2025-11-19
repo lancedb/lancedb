@@ -326,7 +326,7 @@ def test_search_fts_phrase_query(table):
     results = table.search("puppy").limit(100).to_list()
 
     # Test with quotation marks
-    phrase_results = table.search("puppy runs").phrase_query().limit(100).to_list()
+    phrase_results = table.search('"puppy runs"').limit(100).to_list()
     assert len(results) > len(phrase_results)
     assert len(phrase_results) > 0
 
