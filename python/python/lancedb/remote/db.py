@@ -104,7 +104,7 @@ class RemoteDBConnection(DBConnection):
     @override
     def list_namespaces(
         self,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: int = 10,
     ) -> Iterable[str]:
@@ -125,6 +125,8 @@ class RemoteDBConnection(DBConnection):
         Iterable of str
             List of immediate child namespace names
         """
+        if namespace is None:
+            namespace = []
         return LOOP.run(
             self._conn.list_namespaces(
                 namespace=namespace, page_token=page_token, limit=limit
@@ -159,7 +161,7 @@ class RemoteDBConnection(DBConnection):
         page_token: Optional[str] = None,
         limit: int = 10,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """List the names of all tables in the database.
 
@@ -177,6 +179,8 @@ class RemoteDBConnection(DBConnection):
         -------
         An iterator of table names.
         """
+        if namespace is None:
+            namespace = []
         return LOOP.run(
             self._conn.table_names(
                 namespace=namespace, start_after=page_token, limit=limit
@@ -188,7 +192,7 @@ class RemoteDBConnection(DBConnection):
         self,
         name: str,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
@@ -208,6 +212,8 @@ class RemoteDBConnection(DBConnection):
         """
         from .table import RemoteTable
 
+        if namespace is None:
+            namespace = []
         if index_cache_size is not None:
             logging.info(
                 "index_cache_size is ignored in LanceDb Cloud"
@@ -222,7 +228,7 @@ class RemoteDBConnection(DBConnection):
         target_table_name: str,
         source_uri: str,
         *,
-        target_namespace: List[str] = [],
+        target_namespace: Optional[List[str]] = None,
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
@@ -252,6 +258,8 @@ class RemoteDBConnection(DBConnection):
         """
         from .table import RemoteTable
 
+        if target_namespace is None:
+            target_namespace = []
         table = LOOP.run(
             self._conn.clone_table(
                 target_table_name,
@@ -275,7 +283,7 @@ class RemoteDBConnection(DBConnection):
         mode: Optional[str] = None,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -372,6 +380,8 @@ class RemoteDBConnection(DBConnection):
         LanceTable(table4)
 
         """
+        if namespace is None:
+            namespace = []
         validate_table_name(name)
         if embedding_functions is not None:
             logging.warning(
@@ -396,7 +406,7 @@ class RemoteDBConnection(DBConnection):
         return RemoteTable(table, self.db_name)
 
     @override
-    def drop_table(self, name: str, namespace: List[str] = []):
+    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
         """Drop a table from the database.
 
         Parameters
@@ -407,6 +417,8 @@ class RemoteDBConnection(DBConnection):
             The namespace to drop the table from.
             None or empty list represents root namespace.
         """
+        if namespace is None:
+            namespace = []
         LOOP.run(self._conn.drop_table(name, namespace=namespace))
 
     @override
@@ -414,8 +426,8 @@ class RemoteDBConnection(DBConnection):
         self,
         cur_name: str,
         new_name: str,
-        cur_namespace: List[str] = [],
-        new_namespace: List[str] = [],
+        cur_namespace: Optional[List[str]] = None,
+        new_namespace: Optional[List[str]] = None,
     ):
         """Rename a table in the database.
 
@@ -426,6 +438,10 @@ class RemoteDBConnection(DBConnection):
         new_name: str
             The new name of the table.
         """
+        if cur_namespace is None:
+            cur_namespace = []
+        if new_namespace is None:
+            new_namespace = []
         LOOP.run(
             self._conn.rename_table(
                 cur_name,

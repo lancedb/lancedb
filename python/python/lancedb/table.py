@@ -1708,13 +1708,15 @@ class LanceTable(Table):
         connection: "LanceDBConnection",
         name: str,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
         _async: AsyncTable = None,
     ):
+        if namespace is None:
+            namespace = []
         self._conn = connection
         self._namespace = namespace
         self._location = location  # Store location for use in _dataset_path
@@ -1766,12 +1768,14 @@ class LanceTable(Table):
         db,
         name,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
     ):
+        if namespace is None:
+            namespace = []
         tbl = cls(
             db,
             name,
@@ -2623,7 +2627,7 @@ class LanceTable(Table):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str | bool]] = None,
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         data_storage_version: Optional[str] = None,
@@ -2683,6 +2687,8 @@ class LanceTable(Table):
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
         """
+        if namespace is None:
+            namespace = []
         self = cls.__new__(cls)
         self._conn = db
         self._namespace = namespace
