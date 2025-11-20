@@ -24,7 +24,7 @@ env:
   # according to: https://matklad.github.io/2021/09/04/fast-rust-builds.html
   # CI builds are faster with incremental disabled.
   CARGO_INCREMENTAL: "0"
-  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lancedb/"
+  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/"
 
 jobs:
   # Single deploy job since we're just deploying
@@ -50,8 +50,8 @@ jobs:
       - name: Build Python
         working-directory: python
         run: |
-          python -m pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .
-          python -m pip install --extra-index-url https://pypi.fury.io/lancedb/ -r ../docs/requirements.txt
+          python -m pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .
+          python -m pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -r ../docs/requirements.txt
       - name: Set up node
         uses: actions/setup-node@v3
         with:

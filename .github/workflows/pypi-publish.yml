@@ -11,7 +11,7 @@ on:
       - Cargo.toml # Change in dependency frequently breaks builds
 
 env:
-  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lancedb/"
+  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/"
 
 jobs:
   linux:

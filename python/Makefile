@@ -1,4 +1,4 @@
-PIP_EXTRA_INDEX_URL ?= https://pypi.fury.io/lancedb/
+PIP_EXTRA_INDEX_URL ?= https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/
 
 help:		## Show this help.
 	@sed -ne '/@sed/!s/## //p' $(MAKEFILE_LIST)
