@@ -97,4 +97,4 @@ Configuration for object storage.
 Options already set on the connection will be inherited by the table,
 but can be overridden here.
 
-The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+The available options are described at https://lancedb.com/docs/storage/
