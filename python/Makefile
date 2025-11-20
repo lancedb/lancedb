@@ -5,7 +5,7 @@ help:		## Show this help.
 
 .PHONY: develop
 develop:	## Install the package in development mode.
-	PIP_EXTRA_INDEX_URL=$(PIP_EXTRA_INDEX_URL) maturin develop --extras tests,dev,embeddings
+	PIP_EXTRA_INDEX_URL="$(PIP_EXTRA_INDEX_URL)" maturin develop --extras tests,dev,embeddings
 
 .PHONY: format
 format:		## Format the code.
