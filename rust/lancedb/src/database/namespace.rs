@@ -10,8 +10,10 @@ use async_trait::async_trait;
 use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsProvider};
 use lance_namespace::{
     models::{
-        CreateEmptyTableRequest, CreateNamespaceRequest, DescribeTableRequest,
-        DropNamespaceRequest, DropTableRequest, ListNamespacesRequest, ListTablesRequest,
+        CreateEmptyTableRequest, CreateNamespaceRequest, CreateNamespaceResponse,
+        DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
+        DropNamespaceRequest, DropNamespaceResponse, DropTableRequest, ListNamespacesRequest,
+        ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
     },
     LanceNamespace,
 };
@@ -22,11 +24,8 @@ use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
 
 use super::{
-    listing::ListingDatabase, BaseTable, CloneTableRequest,
-    CreateNamespaceRequest as DbCreateNamespaceRequest, CreateTableMode,
-    CreateTableRequest as DbCreateTableRequest, Database,
-    DropNamespaceRequest as DbDropNamespaceRequest,
-    ListNamespacesRequest as DbListNamespacesRequest, OpenTableRequest, TableNamesRequest,
+    listing::ListingDatabase, BaseTable, CloneTableRequest, CreateTableMode,
+    CreateTableRequest as DbCreateTableRequest, Database, OpenTableRequest, TableNamesRequest,
 };
 
 /// A database implementation that uses lance-namespace for table management
@@ -154,68 +153,49 @@ impl Database for LanceNamespaceDatabase {
         }
     }
 
-    async fn list_namespaces(&self, request: DbListNamespacesRequest) -> Result<Vec<String>> {
-        let ns_request = ListNamespacesRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
-            page_token: request.page_token,
-            limit: request.limit.map(|l| l as i32),
-        };
-
-        let response = self
-            .namespace
-            .list_namespaces(ns_request)
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
+        self.namespace
+            .list_namespaces(request)
             .await
             .map_err(|e| Error::Runtime {
                 message: format!("Failed to list namespaces: {}", e),
-            })?;
-
-        Ok(response.namespaces)
+            })
     }
 
-    async fn create_namespace(&self, request: DbCreateNamespaceRequest) -> Result<()> {
-        let ns_request = CreateNamespaceRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
-            mode: None,
-            properties: None,
-        };
-
+    async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
         self.namespace
-            .create_namespace(ns_request)
+            .create_namespace(request)
             .await
             .map_err(|e| Error::Runtime {
                 message: format!("Failed to create namespace: {}", e),
-            })?;
-
-        Ok(())
+            })
     }
 
-    async fn drop_namespace(&self, request: DbDropNamespaceRequest) -> Result<()> {
-        let ns_request = DropNamespaceRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
-            mode: None,
-            behavior: None,
-        };
-
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
         self.namespace
-            .drop_namespace(ns_request)
+            .drop_namespace(request)
             .await
             .map_err(|e| Error::Runtime {
                 message: format!("Failed to drop namespace: {}", e),
-            })?;
+            })
+    }
 
-        Ok(())
+    async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse> {
+        self.namespace
+            .describe_namespace(request)
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to describe namespace: {}", e),
+            })
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
@@ -238,6 +218,15 @@ impl Database for LanceNamespaceDatabase {
                 })?;
 
         Ok(response.tables)
+    }
+
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        self.namespace
+            .list_tables(request)
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to list tables: {}", e),
+            })
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -451,6 +440,7 @@ impl Database for LanceNamespaceDatabase {
         Ok(())
     }
 
+    #[allow(deprecated)]
     async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
         let tables = self
             .table_names(TableNamesRequest {
@@ -477,7 +467,6 @@ impl Database for LanceNamespaceDatabase {
 mod tests {
     use super::*;
     use crate::connect_namespace;
-    use crate::database::CreateNamespaceRequest;
     use crate::query::ExecutableQuery;
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
     use arrow_schema::{DataType, Field, Schema};
@@ -590,7 +579,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -649,7 +640,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -711,7 +704,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -793,7 +788,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -847,7 +844,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -926,7 +925,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -958,7 +959,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");

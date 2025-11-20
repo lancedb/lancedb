@@ -24,10 +24,15 @@ use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
+    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+};
+
 use super::{
-    BaseTable, CloneTableRequest, CreateNamespaceRequest, CreateTableMode, CreateTableRequest,
-    Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
-    TableNamesRequest,
+    BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
+    OpenTableRequest, TableNamesRequest,
 };
 
 /// File extension to indicate a lance table
@@ -663,14 +668,20 @@ impl ListingDatabase {
 
 #[async_trait::async_trait]
 impl Database for ListingDatabase {
-    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>> {
-        if !request.namespace.is_empty() {
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
+        if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
             return Err(Error::NotSupported {
                 message: "Namespace operations are not supported for listing database".into(),
             });
         }
 
-        Ok(Vec::new())
+        Ok(ListNamespacesResponse {
+            namespaces: Vec::new(),
+            page_token: None,
+        })
     }
 
     fn uri(&self) -> &str {
@@ -689,13 +700,28 @@ impl Database for ListingDatabase {
         }
     }
 
-    async fn create_namespace(&self, _request: CreateNamespaceRequest) -> Result<()> {
+    async fn create_namespace(
+        &self,
+        _request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
         Err(Error::NotSupported {
             message: "Namespace operations are not supported for listing database".into(),
         })
     }
 
-    async fn drop_namespace(&self, _request: DropNamespaceRequest) -> Result<()> {
+    async fn drop_namespace(
+        &self,
+        _request: DropNamespaceRequest,
+    ) -> Result<DropNamespaceResponse> {
+        Err(Error::NotSupported {
+            message: "Namespace operations are not supported for listing database".into(),
+        })
+    }
+
+    async fn describe_namespace(
+        &self,
+        _request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse> {
         Err(Error::NotSupported {
             message: "Namespace operations are not supported for listing database".into(),
         })
@@ -734,6 +760,57 @@ impl Database for ListingDatabase {
             f.truncate(limit as usize);
         }
         Ok(f)
+    }
+
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
+            return Err(Error::NotSupported {
+                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+            });
+        }
+        let mut f = self
+            .object_store
+            .read_dir(self.base_path.clone())
+            .await?
+            .iter()
+            .map(Path::new)
+            .filter(|path| {
+                let is_lance = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e == LANCE_EXTENSION);
+                is_lance.unwrap_or(false)
+            })
+            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
+            .collect::<Vec<String>>();
+        f.sort();
+
+        // Handle pagination with page_token
+        if let Some(ref page_token) = request.page_token {
+            let index = f
+                .iter()
+                .position(|name| name.as_str() > page_token.as_str())
+                .unwrap_or(f.len());
+            f.drain(0..index);
+        }
+
+        // Determine if there's a next page
+        let next_page_token = if let Some(limit) = request.limit {
+            if f.len() > limit as usize {
+                let token = f[limit as usize].clone();
+                f.truncate(limit as usize);
+                Some(token)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Ok(ListTablesResponse {
+            tables: f,
+            page_token: next_page_token,
+        })
     }
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -951,6 +1028,7 @@ impl Database for ListingDatabase {
         self.drop_tables(vec![name.to_string()]).await
     }
 
+    #[allow(deprecated)]
     async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
         // Check if namespace parameter is provided
         if !namespace.is_empty() {
@@ -1037,6 +1115,7 @@ mod tests {
             .unwrap();
 
         // Verify both tables exist
+        #[allow(deprecated)]
         let table_names = db.table_names(TableNamesRequest::default()).await.unwrap();
         assert!(table_names.contains(&"source_table".to_string()));
         assert!(table_names.contains(&"cloned_table".to_string()));
