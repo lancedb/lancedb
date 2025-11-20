@@ -15,20 +15,20 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=1.0.0-beta.5", default-features = false, "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=1.0.0-beta.5", "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=1.0.0-beta.5", "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=1.0.0-beta.5", "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=1.0.0-beta.5", default-features = false, "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=1.0.0-beta.5", "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=1.0.0-beta.5", "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=1.0.0-beta.5", "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=1.0.0-beta.5", "features" = ["dir-aws", "dir-gcp", "dir-azure", "dir-oss", "rest"], "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=1.0.0-beta.5", "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=1.0.0-beta.5", "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=1.0.0-beta.5", "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=1.0.0-beta.5", "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=1.0.0-beta.5", "tag" = "v1.0.0-beta.5", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=1.0.0-beta.7", default-features = false, "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=1.0.0-beta.7", "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=1.0.0-beta.7", "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=1.0.0-beta.7", "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=1.0.0-beta.7", default-features = false, "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=1.0.0-beta.7", "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=1.0.0-beta.7", "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=1.0.0-beta.7", "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=1.0.0-beta.7", "features" = ["dir-aws", "dir-gcp", "dir-azure", "dir-oss", "rest"], "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=1.0.0-beta.7", "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=1.0.0-beta.7", "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=1.0.0-beta.7", "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=1.0.0-beta.7", "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=1.0.0-beta.7", "tag" = "v1.0.0-beta.7", "git" = "https://github.com/lance-format/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "56.2", optional = false }
