@@ -155,7 +155,7 @@ impl Database for LanceNamespaceDatabase {
         self.namespace
             .list_namespaces(request)
             .await
-            .map_err(|e| Error::Runtime {
+            .map_err(|e| Error::Namespace {
                 message: format!("Failed to list namespaces: {}", e),
             })
     }
@@ -167,7 +167,7 @@ impl Database for LanceNamespaceDatabase {
         self.namespace
             .create_namespace(request)
             .await
-            .map_err(|e| Error::Runtime {
+            .map_err(|e| Error::Namespace {
                 message: format!("Failed to create namespace: {}", e),
             })
     }
@@ -176,7 +176,7 @@ impl Database for LanceNamespaceDatabase {
         self.namespace
             .drop_namespace(request)
             .await
-            .map_err(|e| Error::Runtime {
+            .map_err(|e| Error::Namespace {
                 message: format!("Failed to drop namespace: {}", e),
             })
     }
@@ -188,7 +188,7 @@ impl Database for LanceNamespaceDatabase {
         self.namespace
             .describe_namespace(request)
             .await
-            .map_err(|e| Error::Runtime {
+            .map_err(|e| Error::Namespace {
                 message: format!("Failed to describe namespace: {}", e),
             })
     }
@@ -219,7 +219,7 @@ impl Database for LanceNamespaceDatabase {
         self.namespace
             .list_tables(request)
             .await
-            .map_err(|e| Error::Runtime {
+            .map_err(|e| Error::Namespace {
                 message: format!("Failed to list tables: {}", e),
             })
     }
