@@ -15,7 +15,7 @@
 
 # **The Multimodal AI Lakehouse**
 
-[**How to Install** ](#how-to-install) ✦ [**Detailed Documentation**](https://lancedb.github.io/lancedb/) ✦ [**Tutorials and Recipes**](https://github.com/lancedb/vectordb-recipes/tree/main) ✦  [**Contributors**](#contributors) 
+[**How to Install** ](#how-to-install) ✦ [**Detailed Documentation**](https://lancedb.com/docs) ✦ [**Tutorials and Recipes**](https://github.com/lancedb/vectordb-recipes/tree/main) ✦  [**Contributors**](#contributors) 
 
 **The ultimate multimodal data platform for AI/ML applications.** 
 
