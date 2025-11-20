@@ -128,7 +128,7 @@ class LanceNamespaceStorageOptionsProvider(StorageOptionsProvider):
     Examples
     --------
     >>> from lance_namespace import connect as namespace_connect
-    >>> namespace = namespace_connect("rest", {"url": "https://..."})
+    >>> namespace = namespace_connect("rest", {"uri": "https://..."})
     >>> provider = LanceNamespaceStorageOptionsProvider(
     ...     namespace=namespace,
     ...     table_id=["my_namespace", "my_table"]
