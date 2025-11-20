@@ -647,7 +647,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
-        resp.json().await.map_err(|e| Error::Runtime {
+        resp.json().await.map_err(|e| Error::Namespace {
             message: format!("Failed to parse namespace response: {}", e),
         })
     }
@@ -680,7 +680,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
-        resp.json().await.map_err(|e| Error::Runtime {
+        resp.json().await.map_err(|e| Error::Namespace {
             message: format!("Failed to parse create namespace response: {}", e),
         })
     }
@@ -710,7 +710,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
-        resp.json().await.map_err(|e| Error::Runtime {
+        resp.json().await.map_err(|e| Error::Namespace {
             message: format!("Failed to parse drop namespace response: {}", e),
         })
     }
@@ -728,7 +728,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
-        resp.json().await.map_err(|e| Error::Runtime {
+        resp.json().await.map_err(|e| Error::Namespace {
             message: format!("Failed to parse describe namespace response: {}", e),
         })
     }
