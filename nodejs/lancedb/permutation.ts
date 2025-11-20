@@ -118,7 +118,7 @@ export class PermutationBuilder {
    * @returns A new PermutationBuilder instance
    * @example
    * ```ts
-   * builder.splitCalculated("user_id % 3");
+   * builder.splitCalculated({ calculation: "user_id % 3" });
    * ```
    */
   splitCalculated(options: SplitCalculatedOptions): PermutationBuilder {
