@@ -1495,7 +1495,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if self._phrase_query:
             if isinstance(query, str):
                 if not query.startswith('"') or not query.endswith('"'):
-                    query = f'"{query}"'
+                    self._query = f'"{query}"'
             elif isinstance(query, FullTextQuery) and not isinstance(
                 query, PhraseQuery
             ):
