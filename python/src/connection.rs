@@ -10,9 +10,9 @@ use lancedb::{
 };
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
-    pyclass, pyfunction, pymethods, Bound, FromPyObject, Py, PyAny, PyObject, PyRef, PyResult,
-    Python,
+    pyclass, pyfunction, pymethods,
     types::{PyDict, PyDictMethods},
+    Bound, FromPyObject, Py, PyAny, PyObject, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -297,7 +297,11 @@ impl Connection {
         future_into_py(py, async move {
             use lance_namespace::models::ListNamespacesRequest;
             let request = ListNamespacesRequest {
-                id: if namespace.is_empty() { None } else { Some(namespace) },
+                id: if namespace.is_empty() {
+                    None
+                } else {
+                    Some(namespace)
+                },
                 page_token,
                 limit: limit.map(|l| l as i32),
             };
@@ -321,7 +325,7 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{CreateNamespaceRequest, create_namespace_request};
+            use lance_namespace::models::{create_namespace_request, CreateNamespaceRequest};
             let mode_enum = mode.and_then(|m| match m.as_str() {
                 "create" => Some(create_namespace_request::Mode::Create),
                 "exist_ok" => Some(create_namespace_request::Mode::ExistOk),
@@ -329,7 +333,11 @@ impl Connection {
                 _ => None,
             });
             let request = CreateNamespaceRequest {
-                id: if namespace.is_empty() { None } else { Some(namespace) },
+                id: if namespace.is_empty() {
+                    None
+                } else {
+                    Some(namespace)
+                },
                 mode: mode_enum,
                 properties,
             };
@@ -352,7 +360,7 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{DropNamespaceRequest, drop_namespace_request};
+            use lance_namespace::models::{drop_namespace_request, DropNamespaceRequest};
             let mode_enum = mode.and_then(|m| match m.as_str() {
                 "skip" => Some(drop_namespace_request::Mode::Skip),
                 "fail" => Some(drop_namespace_request::Mode::Fail),
@@ -364,7 +372,11 @@ impl Connection {
                 _ => None,
             });
             let request = DropNamespaceRequest {
-                id: if namespace.is_empty() { None } else { Some(namespace) },
+                id: if namespace.is_empty() {
+                    None
+                } else {
+                    Some(namespace)
+                },
                 mode: mode_enum,
                 behavior: behavior_enum,
             };
@@ -388,7 +400,11 @@ impl Connection {
         future_into_py(py, async move {
             use lance_namespace::models::DescribeNamespaceRequest;
             let request = DescribeNamespaceRequest {
-                id: if namespace.is_empty() { None } else { Some(namespace) },
+                id: if namespace.is_empty() {
+                    None
+                } else {
+                    Some(namespace)
+                },
             };
             let response = inner.describe_namespace(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {
@@ -411,7 +427,11 @@ impl Connection {
         future_into_py(py, async move {
             use lance_namespace::models::ListTablesRequest;
             let request = ListTablesRequest {
-                id: if namespace.is_empty() { None } else { Some(namespace) },
+                id: if namespace.is_empty() {
+                    None
+                } else {
+                    Some(namespace)
+                },
                 page_token,
                 limit: limit.map(|l| l as i32),
             };

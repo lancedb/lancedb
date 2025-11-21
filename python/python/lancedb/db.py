@@ -694,9 +694,11 @@ class LanceDBConnection(DBConnection):
         CreateNamespaceResponse
             Response containing the properties of the created namespace.
         """
-        return LOOP.run(self._conn.create_namespace(
-            namespace=namespace, mode=mode, properties=properties
-        ))
+        return LOOP.run(
+            self._conn.create_namespace(
+                namespace=namespace, mode=mode, properties=properties
+            )
+        )
 
     @override
     def drop_namespace(
@@ -721,9 +723,9 @@ class LanceDBConnection(DBConnection):
         DropNamespaceResponse
             Response containing properties and transaction_id if applicable.
         """
-        return LOOP.run(self._conn.drop_namespace(
-            namespace=namespace, mode=mode, behavior=behavior
-        ))
+        return LOOP.run(
+            self._conn.drop_namespace(namespace=namespace, mode=mode, behavior=behavior)
+        )
 
     @override
     def describe_namespace(self, namespace: List[str]) -> DescribeNamespaceResponse:
@@ -802,10 +804,11 @@ class LanceDBConnection(DBConnection):
             A list of table names.
         """
         import warnings
+
         warnings.warn(
             "table_names() is deprecated, use list_tables() instead",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
         )
         if namespace is None:
             namespace = []
@@ -1170,9 +1173,7 @@ class AsyncConnection(object):
             Response containing namespace properties
         """
         result = await self._inner.create_namespace(
-            namespace,
-            mode=mode.value if mode else None,
-            properties=properties
+            namespace, mode=mode.value if mode else None, properties=properties
         )
         return CreateNamespaceResponse(**result)
 
@@ -1201,7 +1202,7 @@ class AsyncConnection(object):
         result = await self._inner.drop_namespace(
             namespace,
             mode=mode.value if mode else None,
-            behavior=behavior.value if behavior else None
+            behavior=behavior.value if behavior else None,
         )
         return DropNamespaceResponse(**result)
 
@@ -1285,10 +1286,11 @@ class AsyncConnection(object):
         Iterable of str
         """
         import warnings
+
         warnings.warn(
             "table_names() is deprecated, use list_tables() instead",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
         )
         if namespace is None:
             namespace = []
