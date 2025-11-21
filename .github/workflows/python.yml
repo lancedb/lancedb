@@ -18,7 +18,7 @@ env:
   # Color output for pytest is off by default.
   PYTEST_ADDOPTS: "--color=yes"
   FORCE_COLOR: "1"
-  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lancedb/"
+  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/"
   RUST_BACKTRACE: "1"
 
 jobs:
@@ -100,7 +100,7 @@ jobs:
           sudo apt install -y protobuf-compiler
       - name: Install
         run: |
-          pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
+          pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
           pip install tantivy
           pip install mlx
       - name: Doctest
@@ -226,7 +226,7 @@ jobs:
         run: |
           pip install "pydantic<2"
           pip install pyarrow==16
-          pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests]
+          pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests]
           pip install tantivy
       - name: Run tests
         run: pytest -m "not slow and not s3_test" -x -v --durations=30 python/tests
