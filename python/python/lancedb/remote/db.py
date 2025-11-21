@@ -168,9 +168,11 @@ class RemoteDBConnection(DBConnection):
         CreateNamespaceResponse
             Response containing the properties of the created namespace.
         """
-        return LOOP.run(self._conn.create_namespace(
-            namespace=namespace, mode=mode, properties=properties
-        ))
+        return LOOP.run(
+            self._conn.create_namespace(
+                namespace=namespace, mode=mode, properties=properties
+            )
+        )
 
     @override
     def drop_namespace(
@@ -195,9 +197,9 @@ class RemoteDBConnection(DBConnection):
         DropNamespaceResponse
             Response containing properties and transaction_id if applicable.
         """
-        return LOOP.run(self._conn.drop_namespace(
-            namespace=namespace, mode=mode, behavior=behavior
-        ))
+        return LOOP.run(
+            self._conn.drop_namespace(namespace=namespace, mode=mode, behavior=behavior)
+        )
 
     @override
     def describe_namespace(self, namespace: List[str]) -> DescribeNamespaceResponse:
@@ -276,10 +278,11 @@ class RemoteDBConnection(DBConnection):
         An iterator of table names.
         """
         import warnings
+
         warnings.warn(
             "table_names() is deprecated, use list_tables() instead",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
         )
         if namespace is None:
             namespace = []

@@ -255,10 +255,11 @@ class LanceNamespaceDBConnection(DBConnection):
             Use :meth:`list_tables` instead, which provides proper pagination support.
         """
         import warnings
+
         warnings.warn(
             "table_names() is deprecated, use list_tables() instead",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
         )
         if namespace is None:
             namespace = []
@@ -481,7 +482,7 @@ class LanceNamespaceDBConnection(DBConnection):
         response = self._ns.list_namespaces(request)
         return ListNamespacesResponse(
             namespaces=response.namespaces if response.namespaces else [],
-            page_token=response.page_token
+            page_token=response.page_token,
         )
 
     @override
@@ -510,13 +511,11 @@ class LanceNamespaceDBConnection(DBConnection):
             Response containing the properties of the created namespace.
         """
         request = CreateNamespaceRequest(
-            id=namespace,
-            mode=mode.value if mode else None,
-            properties=properties
+            id=namespace, mode=mode.value if mode else None, properties=properties
         )
         response = self._ns.create_namespace(request)
         return CreateNamespaceResponse(
-            properties=response.properties if hasattr(response, 'properties') else None
+            properties=response.properties if hasattr(response, "properties") else None
         )
 
     @override
@@ -546,7 +545,7 @@ class LanceNamespaceDBConnection(DBConnection):
         request = DropNamespaceRequest(
             id=namespace,
             mode=mode.value if mode else None,
-            behavior=behavior.value if behavior else None
+            behavior=behavior.value if behavior else None,
         )
         response = self._ns.drop_namespace(request)
         return DropNamespaceResponse(
@@ -554,9 +553,7 @@ class LanceNamespaceDBConnection(DBConnection):
                 response.properties if hasattr(response, "properties") else None
             ),
             transaction_id=(
-                response.transaction_id
-                if hasattr(response, "transaction_id")
-                else None
+                response.transaction_id if hasattr(response, "transaction_id") else None
             ),
         )
 
@@ -578,7 +575,7 @@ class LanceNamespaceDBConnection(DBConnection):
         request = DescribeNamespaceRequest(id=namespace)
         response = self._ns.describe_namespace(request)
         return DescribeNamespaceResponse(
-            properties=response.properties if hasattr(response, 'properties') else None
+            properties=response.properties if hasattr(response, "properties") else None
         )
 
     @override
@@ -613,7 +610,7 @@ class LanceNamespaceDBConnection(DBConnection):
         response = self._ns.list_tables(request)
         return ListTablesResponse(
             tables=response.tables if response.tables else [],
-            page_token=response.page_token
+            page_token=response.page_token,
         )
 
     def _lance_table_from_uri(
@@ -699,10 +696,11 @@ class AsyncLanceNamespaceDBConnection:
             Use :meth:`list_tables` instead, which provides proper pagination support.
         """
         import warnings
+
         warnings.warn(
             "table_names() is deprecated, use list_tables() instead",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
         )
         if namespace is None:
             namespace = []
@@ -940,7 +938,7 @@ class AsyncLanceNamespaceDBConnection:
         response = self._ns.list_namespaces(request)
         return ListNamespacesResponse(
             namespaces=response.namespaces if response.namespaces else [],
-            page_token=response.page_token
+            page_token=response.page_token,
         )
 
     async def create_namespace(
@@ -968,13 +966,11 @@ class AsyncLanceNamespaceDBConnection:
             Response containing the properties of the created namespace.
         """
         request = CreateNamespaceRequest(
-            id=namespace,
-            mode=mode.value if mode else None,
-            properties=properties
+            id=namespace, mode=mode.value if mode else None, properties=properties
         )
         response = self._ns.create_namespace(request)
         return CreateNamespaceResponse(
-            properties=response.properties if hasattr(response, 'properties') else None
+            properties=response.properties if hasattr(response, "properties") else None
         )
 
     async def drop_namespace(
@@ -1003,7 +999,7 @@ class AsyncLanceNamespaceDBConnection:
         request = DropNamespaceRequest(
             id=namespace,
             mode=mode.value if mode else None,
-            behavior=behavior.value if behavior else None
+            behavior=behavior.value if behavior else None,
         )
         response = self._ns.drop_namespace(request)
         return DropNamespaceResponse(
@@ -1011,9 +1007,7 @@ class AsyncLanceNamespaceDBConnection:
                 response.properties if hasattr(response, "properties") else None
             ),
             transaction_id=(
-                response.transaction_id
-                if hasattr(response, "transaction_id")
-                else None
+                response.transaction_id if hasattr(response, "transaction_id") else None
             ),
         )
 
@@ -1036,7 +1030,7 @@ class AsyncLanceNamespaceDBConnection:
         request = DescribeNamespaceRequest(id=namespace)
         response = self._ns.describe_namespace(request)
         return DescribeNamespaceResponse(
-            properties=response.properties if hasattr(response, 'properties') else None
+            properties=response.properties if hasattr(response, "properties") else None
         )
 
     async def list_tables(
@@ -1070,7 +1064,7 @@ class AsyncLanceNamespaceDBConnection:
         response = self._ns.list_tables(request)
         return ListTablesResponse(
             tables=response.tables if response.tables else [],
-            page_token=response.page_token
+            page_token=response.page_token,
         )
 
 
