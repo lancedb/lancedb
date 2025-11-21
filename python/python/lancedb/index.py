@@ -613,7 +613,7 @@ class IvfRq:
     and organizes them into IVF partitions.
 
     The compression scheme is called RabitQ quantization. Each dimension is
-    quantized into a small number of bits, The parameters `num_bits` and
+    quantized into a small number of bits. The parameters `num_bits` and
     `num_partitions` control this process, providing a tradeoff between
     index size (and thus search speed) and index accuracy.
 
