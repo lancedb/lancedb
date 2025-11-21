@@ -98,3 +98,30 @@ jobs:
 
           printenv OPENAI_API_KEY | codex login --with-api-key
           codex --config shell_environment_policy.ignore_default_excludes=true exec --dangerously-bypass-approvals-and-sandbox "$(cat /tmp/codex-prompt.txt)"
+
+      - name: Trigger sophon dependency update
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#refs/tags/}"
+          VERSION="${VERSION#v}"
+          LANCEDB_BRANCH="codex/update-lance-${VERSION//[^a-zA-Z0-9]/-}"
+
+          echo "Triggering sophon workflow with:"
+          echo "  lance_ref: ${TAG#refs/tags/}"
+          echo "  lancedb_ref: ${LANCEDB_BRANCH}"
+
+          gh workflow run codex-bump-lancedb-lance.yml \
+            --repo lancedb/sophon \
+            -f lance_ref="${TAG#refs/tags/}" \
+            -f lancedb_ref="${LANCEDB_BRANCH}"
+
+      - name: Show latest sophon workflow run
+        env:
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Latest sophon workflow run:"
+          gh run list --repo lancedb/sophon --workflow codex-bump-lancedb-lance.yml --limit 1 --json databaseId,htmlUrl,displayTitle
