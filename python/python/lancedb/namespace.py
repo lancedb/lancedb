@@ -24,6 +24,16 @@ import pyarrow as pa
 
 from lancedb.db import DBConnection, LanceDBConnection
 from lancedb.io import StorageOptionsProvider
+from lancedb.namespace_models import (
+    CreateNamespaceResponse,
+    DescribeNamespaceResponse,
+    DropBehavior,
+    DropMode,
+    DropNamespaceResponse,
+    ListNamespacesResponse,
+    ListTablesResponse,
+    NamespaceMode,
+)
 from lancedb.table import AsyncTable, LanceTable, Table
 from lancedb.util import validate_table_name
 from lancedb.common import DATA
@@ -35,6 +45,7 @@ from lance_namespace import LanceNamespace, connect as namespace_connect
 from lance_namespace_urllib3_client.models import (
     ListTablesRequest,
     DescribeTableRequest,
+    DescribeNamespaceRequest,
     DropTableRequest,
     ListNamespacesRequest,
     CreateNamespaceRequest,
@@ -241,6 +252,18 @@ class LanceNamespaceDBConnection(DBConnection):
         *,
         namespace: Optional[List[str]] = None,
     ) -> Iterable[str]:
+        """
+        List table names in the database.
+
+        .. deprecated::
+            Use :meth:`list_tables` instead, which provides proper pagination support.
+        """
+        import warnings
+        warnings.warn(
+            "table_names() is deprecated, use list_tables() instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
         if namespace is None:
             namespace = []
         request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
@@ -433,8 +456,8 @@ class LanceNamespaceDBConnection(DBConnection):
         self,
         namespace: Optional[List[str]] = None,
         page_token: Optional[str] = None,
-        limit: int = 10,
-    ) -> Iterable[str]:
+        limit: Optional[int] = None,
+    ) -> ListNamespacesResponse:
         """
         List child namespaces under the given namespace.
 
@@ -444,14 +467,15 @@ class LanceNamespaceDBConnection(DBConnection):
             The parent namespace to list children from.
             If None, lists root-level namespaces.
         page_token : Optional[str]
-            Pagination token for listing results.
-        limit : int
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit : int, optional
             Maximum number of namespaces to return.
 
         Returns
         -------
-        Iterable[str]
-            Names of child namespaces.
+        ListNamespacesResponse
+            Response containing namespace names and optional page_token for pagination.
         """
         if namespace is None:
             namespace = []
@@ -459,10 +483,18 @@ class LanceNamespaceDBConnection(DBConnection):
             id=namespace, page_token=page_token, limit=limit
         )
         response = self._ns.list_namespaces(request)
-        return response.namespaces if response.namespaces else []
+        return ListNamespacesResponse(
+            namespaces=response.namespaces if response.namespaces else [],
+            page_token=response.page_token
+        )
 
     @override
-    def create_namespace(self, namespace: List[str]) -> None:
+    def create_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[NamespaceMode] = None,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> CreateNamespaceResponse:
         """
         Create a new namespace.
 
@@ -470,12 +502,34 @@ class LanceNamespaceDBConnection(DBConnection):
         ----------
         namespace : List[str]
             The namespace path to create.
+        mode : NamespaceMode, optional
+            Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
+            or "overwrite" (replace if exists).
+        properties : Dict[str, str], optional
+            Properties to set on the namespace.
+
+        Returns
+        -------
+        CreateNamespaceResponse
+            Response containing the properties of the created namespace.
         """
-        request = CreateNamespaceRequest(id=namespace)
-        self._ns.create_namespace(request)
+        request = CreateNamespaceRequest(
+            id=namespace,
+            mode=mode.value if mode else None,
+            properties=properties
+        )
+        response = self._ns.create_namespace(request)
+        return CreateNamespaceResponse(
+            properties=response.properties if hasattr(response, 'properties') else None
+        )
 
     @override
-    def drop_namespace(self, namespace: List[str]) -> None:
+    def drop_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[DropMode] = None,
+        behavior: Optional[DropBehavior] = None,
+    ) -> DropNamespaceResponse:
         """
         Drop a namespace.
 
@@ -483,9 +537,82 @@ class LanceNamespaceDBConnection(DBConnection):
         ----------
         namespace : List[str]
             The namespace path to drop.
+        mode : DropMode, optional
+            Whether to skip if not exists ("skip") or fail ("fail").
+        behavior : DropBehavior, optional
+            Whether to restrict drop if not empty ("restrict") or cascade ("cascade").
+
+        Returns
+        -------
+        DropNamespaceResponse
+            Response containing properties and transaction_id if applicable.
         """
-        request = DropNamespaceRequest(id=namespace)
-        self._ns.drop_namespace(request)
+        request = DropNamespaceRequest(
+            id=namespace,
+            mode=mode.value if mode else None,
+            behavior=behavior.value if behavior else None
+        )
+        response = self._ns.drop_namespace(request)
+        return DropNamespaceResponse(
+            properties=response.properties if hasattr(response, 'properties') else None,
+            transaction_id=response.transaction_id if hasattr(response, 'transaction_id') else None
+        )
+
+    @override
+    def describe_namespace(self, namespace: List[str]) -> DescribeNamespaceResponse:
+        """
+        Describe a namespace.
+
+        Parameters
+        ----------
+        namespace : List[str]
+            The namespace identifier to describe.
+
+        Returns
+        -------
+        DescribeNamespaceResponse
+            Response containing the namespace properties.
+        """
+        request = DescribeNamespaceRequest(id=namespace)
+        response = self._ns.describe_namespace(request)
+        return DescribeNamespaceResponse(
+            properties=response.properties if hasattr(response, 'properties') else None
+        )
+
+    @override
+    def list_tables(
+        self,
+        namespace: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListTablesResponse:
+        """
+        List all tables in this database with pagination support.
+
+        Parameters
+        ----------
+        namespace : List[str], optional
+            The namespace to list tables in.
+            None or empty list represents root namespace.
+        page_token : str, optional
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit : int, optional
+            The maximum number of results to return.
+
+        Returns
+        -------
+        ListTablesResponse
+            Response containing table names and optional page_token for pagination.
+        """
+        if namespace is None:
+            namespace = []
+        request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
+        response = self._ns.list_tables(request)
+        return ListTablesResponse(
+            tables=response.tables if response.tables else [],
+            page_token=response.page_token
+        )
 
     def _lance_table_from_uri(
         self,
@@ -563,7 +690,18 @@ class AsyncLanceNamespaceDBConnection:
         *,
         namespace: Optional[List[str]] = None,
     ) -> Iterable[str]:
-        """List table names in the namespace."""
+        """
+        List table names in the namespace.
+
+        .. deprecated::
+            Use :meth:`list_tables` instead, which provides proper pagination support.
+        """
+        import warnings
+        warnings.warn(
+            "table_names() is deprecated, use list_tables() instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
         if namespace is None:
             namespace = []
         request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
@@ -771,8 +909,8 @@ class AsyncLanceNamespaceDBConnection:
         self,
         namespace: Optional[List[str]] = None,
         page_token: Optional[str] = None,
-        limit: int = 10,
-    ) -> Iterable[str]:
+        limit: Optional[int] = None,
+    ) -> ListNamespacesResponse:
         """
         List child namespaces under the given namespace.
 
@@ -782,14 +920,15 @@ class AsyncLanceNamespaceDBConnection:
             The parent namespace to list children from.
             If None, lists root-level namespaces.
         page_token : Optional[str]
-            Pagination token for listing results.
-        limit : int
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit : int, optional
             Maximum number of namespaces to return.
 
         Returns
         -------
-        Iterable[str]
-            Names of child namespaces.
+        ListNamespacesResponse
+            Response containing namespace names and optional page_token for pagination.
         """
         if namespace is None:
             namespace = []
@@ -797,9 +936,17 @@ class AsyncLanceNamespaceDBConnection:
             id=namespace, page_token=page_token, limit=limit
         )
         response = self._ns.list_namespaces(request)
-        return response.namespaces if response.namespaces else []
+        return ListNamespacesResponse(
+            namespaces=response.namespaces if response.namespaces else [],
+            page_token=response.page_token
+        )
 
-    async def create_namespace(self, namespace: List[str]) -> None:
+    async def create_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[NamespaceMode] = None,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> CreateNamespaceResponse:
         """
         Create a new namespace.
 
@@ -807,11 +954,33 @@ class AsyncLanceNamespaceDBConnection:
         ----------
         namespace : List[str]
             The namespace path to create.
-        """
-        request = CreateNamespaceRequest(id=namespace)
-        self._ns.create_namespace(request)
+        mode : NamespaceMode, optional
+            Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
+            or "overwrite" (replace if exists).
+        properties : Dict[str, str], optional
+            Properties to set on the namespace.
 
-    async def drop_namespace(self, namespace: List[str]) -> None:
+        Returns
+        -------
+        CreateNamespaceResponse
+            Response containing the properties of the created namespace.
+        """
+        request = CreateNamespaceRequest(
+            id=namespace,
+            mode=mode.value if mode else None,
+            properties=properties
+        )
+        response = self._ns.create_namespace(request)
+        return CreateNamespaceResponse(
+            properties=response.properties if hasattr(response, 'properties') else None
+        )
+
+    async def drop_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[DropMode] = None,
+        behavior: Optional[DropBehavior] = None,
+    ) -> DropNamespaceResponse:
         """
         Drop a namespace.
 
@@ -819,9 +988,80 @@ class AsyncLanceNamespaceDBConnection:
         ----------
         namespace : List[str]
             The namespace path to drop.
+        mode : DropMode, optional
+            Whether to skip if not exists ("skip") or fail ("fail").
+        behavior : DropBehavior, optional
+            Whether to restrict drop if not empty ("restrict") or cascade ("cascade").
+
+        Returns
+        -------
+        DropNamespaceResponse
+            Response containing properties and transaction_id if applicable.
         """
-        request = DropNamespaceRequest(id=namespace)
-        self._ns.drop_namespace(request)
+        request = DropNamespaceRequest(
+            id=namespace,
+            mode=mode.value if mode else None,
+            behavior=behavior.value if behavior else None
+        )
+        response = self._ns.drop_namespace(request)
+        return DropNamespaceResponse(
+            properties=response.properties if hasattr(response, 'properties') else None,
+            transaction_id=response.transaction_id if hasattr(response, 'transaction_id') else None
+        )
+
+    async def describe_namespace(self, namespace: List[str]) -> DescribeNamespaceResponse:
+        """
+        Describe a namespace.
+
+        Parameters
+        ----------
+        namespace : List[str]
+            The namespace identifier to describe.
+
+        Returns
+        -------
+        DescribeNamespaceResponse
+            Response containing the namespace properties.
+        """
+        request = DescribeNamespaceRequest(id=namespace)
+        response = self._ns.describe_namespace(request)
+        return DescribeNamespaceResponse(
+            properties=response.properties if hasattr(response, 'properties') else None
+        )
+
+    async def list_tables(
+        self,
+        namespace: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListTablesResponse:
+        """
+        List all tables in this database with pagination support.
+
+        Parameters
+        ----------
+        namespace : List[str], optional
+            The namespace to list tables in.
+            None or empty list represents root namespace.
+        page_token : str, optional
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit : int, optional
+            The maximum number of results to return.
+
+        Returns
+        -------
+        ListTablesResponse
+            Response containing table names and optional page_token for pagination.
+        """
+        if namespace is None:
+            namespace = []
+        request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
+        response = self._ns.list_tables(request)
+        return ListTablesResponse(
+            tables=response.tables if response.tables else [],
+            page_token=response.page_token
+        )
 
 
 def connect_namespace(

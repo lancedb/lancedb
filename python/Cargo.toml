@@ -18,6 +18,7 @@ arrow = { version = "56.2", features = ["pyarrow"] }
 async-trait = "0.1"
 lancedb = { path = "../rust/lancedb", default-features = false }
 lance-core.workspace = true
+lance-namespace.workspace = true
 lance-io.workspace = true
 env_logger.workspace = true
 pyo3 = { version = "0.25", features = ["extension-module", "abi3-py39"] }

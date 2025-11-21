@@ -5071,6 +5071,7 @@ dependencies = [
  "futures",
  "lance-core",
  "lance-io",
+ "lance-namespace",
  "lancedb",
  "pin-project",
  "pyo3",
