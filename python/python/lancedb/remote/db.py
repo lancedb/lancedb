@@ -23,6 +23,16 @@ import pyarrow as pa
 from ..common import DATA
 from ..db import DBConnection, LOOP
 from ..embeddings import EmbeddingFunctionConfig
+from ..namespace_models import (
+    CreateNamespaceResponse,
+    DescribeNamespaceResponse,
+    DropBehavior,
+    DropMode,
+    DropNamespaceResponse,
+    ListNamespacesResponse,
+    ListTablesResponse,
+    NamespaceMode,
+)
 from ..pydantic import LanceModel
 from ..table import Table
 from ..util import validate_table_name
@@ -106,8 +116,8 @@ class RemoteDBConnection(DBConnection):
         self,
         namespace: Optional[List[str]] = None,
         page_token: Optional[str] = None,
-        limit: int = 10,
-    ) -> Iterable[str]:
+        limit: Optional[int] = None,
+    ) -> ListNamespacesResponse:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -116,14 +126,15 @@ class RemoteDBConnection(DBConnection):
             The parent namespace to list namespaces in.
             None or empty list represents root namespace.
         page_token: str, optional
-            The token to use for pagination. If not present, start from the beginning.
-        limit: int, default 10
-            The size of the page to return.
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit: int, optional
+            The maximum number of results to return.
 
         Returns
         -------
-        Iterable of str
-            List of immediate child namespace names
+        ListNamespacesResponse
+            Response containing namespace names and optional page_token for pagination.
         """
         if namespace is None:
             namespace = []
@@ -134,26 +145,108 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def create_namespace(self, namespace: List[str]) -> None:
+    def create_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[NamespaceMode] = None,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> CreateNamespaceResponse:
         """Create a new namespace.
 
         Parameters
         ----------
         namespace: List[str]
             The namespace identifier to create.
+        mode: NamespaceMode, optional
+            Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
+            or "overwrite" (replace if exists).
+        properties: Dict[str, str], optional
+            Properties to set on the namespace.
+
+        Returns
+        -------
+        CreateNamespaceResponse
+            Response containing the properties of the created namespace.
         """
-        LOOP.run(self._conn.create_namespace(namespace=namespace))
+        return LOOP.run(self._conn.create_namespace(
+            namespace=namespace, mode=mode, properties=properties
+        ))
 
     @override
-    def drop_namespace(self, namespace: List[str]) -> None:
+    def drop_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[DropMode] = None,
+        behavior: Optional[DropBehavior] = None,
+    ) -> DropNamespaceResponse:
         """Drop a namespace.
 
         Parameters
         ----------
         namespace: List[str]
             The namespace identifier to drop.
+        mode: DropMode, optional
+            Whether to skip if not exists ("skip") or fail ("fail").
+        behavior: DropBehavior, optional
+            Whether to restrict drop if not empty ("restrict") or cascade ("cascade").
+
+        Returns
+        -------
+        DropNamespaceResponse
+            Response containing properties and transaction_id if applicable.
         """
-        return LOOP.run(self._conn.drop_namespace(namespace=namespace))
+        return LOOP.run(self._conn.drop_namespace(
+            namespace=namespace, mode=mode, behavior=behavior
+        ))
+
+    @override
+    def describe_namespace(self, namespace: List[str]) -> DescribeNamespaceResponse:
+        """Describe a namespace.
+
+        Parameters
+        ----------
+        namespace: List[str]
+            The namespace identifier to describe.
+
+        Returns
+        -------
+        DescribeNamespaceResponse
+            Response containing the namespace properties.
+        """
+        return LOOP.run(self._conn.describe_namespace(namespace=namespace))
+
+    @override
+    def list_tables(
+        self,
+        namespace: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListTablesResponse:
+        """List all tables in this database with pagination support.
+
+        Parameters
+        ----------
+        namespace: List[str], optional
+            The namespace to list tables in.
+            None or empty list represents root namespace.
+        page_token: str, optional
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit: int, optional
+            The maximum number of results to return.
+
+        Returns
+        -------
+        ListTablesResponse
+            Response containing table names and optional page_token for pagination.
+        """
+        if namespace is None:
+            namespace = []
+        return LOOP.run(
+            self._conn.list_tables(
+                namespace=namespace, page_token=page_token, limit=limit
+            )
+        )
 
     @override
     def table_names(
@@ -164,6 +257,9 @@ class RemoteDBConnection(DBConnection):
         namespace: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """List the names of all tables in the database.
+
+        .. deprecated::
+            Use :meth:`list_tables` instead, which provides proper pagination support.
 
         Parameters
         ----------
@@ -179,6 +275,12 @@ class RemoteDBConnection(DBConnection):
         -------
         An iterator of table names.
         """
+        import warnings
+        warnings.warn(
+            "table_names() is deprecated, use list_tables() instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
         if namespace is None:
             namespace = []
         return LOOP.run(
