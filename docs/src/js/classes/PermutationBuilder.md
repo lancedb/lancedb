@@ -147,7 +147,7 @@ A new PermutationBuilder instance
 #### Example
 
 ```ts
-builder.splitCalculated("user_id % 3");
+builder.splitCalculated({ calculation: "user_id % 3" });
 ```
 
 ***
