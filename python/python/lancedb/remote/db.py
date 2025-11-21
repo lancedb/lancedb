@@ -26,12 +26,9 @@ from ..embeddings import EmbeddingFunctionConfig
 from ..namespace_models import (
     CreateNamespaceResponse,
     DescribeNamespaceResponse,
-    DropBehavior,
-    DropMode,
     DropNamespaceResponse,
     ListNamespacesResponse,
     ListTablesResponse,
-    NamespaceMode,
 )
 from ..pydantic import LanceModel
 from ..table import Table
@@ -148,7 +145,7 @@ class RemoteDBConnection(DBConnection):
     def create_namespace(
         self,
         namespace: List[str],
-        mode: Optional[NamespaceMode] = None,
+        mode: Optional[str] = None,
         properties: Optional[Dict[str, str]] = None,
     ) -> CreateNamespaceResponse:
         """Create a new namespace.
@@ -157,9 +154,9 @@ class RemoteDBConnection(DBConnection):
         ----------
         namespace: List[str]
             The namespace identifier to create.
-        mode: NamespaceMode, optional
+        mode: str, optional
             Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
-            or "overwrite" (replace if exists).
+            or "overwrite" (replace if exists). Case insensitive.
         properties: Dict[str, str], optional
             Properties to set on the namespace.
 
@@ -178,8 +175,8 @@ class RemoteDBConnection(DBConnection):
     def drop_namespace(
         self,
         namespace: List[str],
-        mode: Optional[DropMode] = None,
-        behavior: Optional[DropBehavior] = None,
+        mode: Optional[str] = None,
+        behavior: Optional[str] = None,
     ) -> DropNamespaceResponse:
         """Drop a namespace.
 
@@ -187,10 +184,11 @@ class RemoteDBConnection(DBConnection):
         ----------
         namespace: List[str]
             The namespace identifier to drop.
-        mode: DropMode, optional
-            Whether to skip if not exists ("skip") or fail ("fail").
-        behavior: DropBehavior, optional
-            Whether to restrict drop if not empty ("restrict") or cascade ("cascade").
+        mode: str, optional
+            Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
+        behavior: str, optional
+            Whether to restrict drop if not empty ("RESTRICT") or cascade ("CASCADE").
+            Case insensitive.
 
         Returns
         -------
