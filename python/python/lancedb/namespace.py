@@ -24,7 +24,7 @@ import pyarrow as pa
 
 from lancedb.db import DBConnection, LanceDBConnection
 from lancedb.io import StorageOptionsProvider
-from lancedb.namespace_models import (
+from lance_namespace import (
     CreateNamespaceResponse,
     DescribeNamespaceResponse,
     DropNamespaceResponse,
@@ -38,8 +38,9 @@ from lancedb.pydantic import LanceModel
 from lancedb.embeddings import EmbeddingFunctionConfig
 from ._lancedb import Session
 
-from lance_namespace import LanceNamespace, connect as namespace_connect
-from lance_namespace_urllib3_client.models import (
+from lance_namespace import (
+    LanceNamespace,
+    connect as namespace_connect,
     ListTablesRequest,
     DescribeTableRequest,
     DescribeNamespaceRequest,
@@ -48,10 +49,10 @@ from lance_namespace_urllib3_client.models import (
     CreateNamespaceRequest,
     DropNamespaceRequest,
     CreateEmptyTableRequest,
-    JsonArrowSchema,
-    JsonArrowField,
-    JsonArrowDataType,
 )
+from lance_namespace_urllib3_client.models.json_arrow_schema import JsonArrowSchema
+from lance_namespace_urllib3_client.models.json_arrow_field import JsonArrowField
+from lance_namespace_urllib3_client.models.json_arrow_data_type import JsonArrowDataType
 
 
 def _normalize_create_namespace_mode(mode: Optional[str]) -> Optional[str]:

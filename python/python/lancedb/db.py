@@ -22,7 +22,7 @@ from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP
-from lancedb.namespace_models import (
+from lance_namespace import (
     ListNamespacesResponse,
     CreateNamespaceResponse,
     DropNamespaceResponse,
