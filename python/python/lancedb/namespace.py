@@ -550,8 +550,14 @@ class LanceNamespaceDBConnection(DBConnection):
         )
         response = self._ns.drop_namespace(request)
         return DropNamespaceResponse(
-            properties=response.properties if hasattr(response, 'properties') else None,
-            transaction_id=response.transaction_id if hasattr(response, 'transaction_id') else None
+            properties=(
+                response.properties if hasattr(response, "properties") else None
+            ),
+            transaction_id=(
+                response.transaction_id
+                if hasattr(response, "transaction_id")
+                else None
+            ),
         )
 
     @override
@@ -1001,11 +1007,19 @@ class AsyncLanceNamespaceDBConnection:
         )
         response = self._ns.drop_namespace(request)
         return DropNamespaceResponse(
-            properties=response.properties if hasattr(response, 'properties') else None,
-            transaction_id=response.transaction_id if hasattr(response, 'transaction_id') else None
+            properties=(
+                response.properties if hasattr(response, "properties") else None
+            ),
+            transaction_id=(
+                response.transaction_id
+                if hasattr(response, "transaction_id")
+                else None
+            ),
         )
 
-    async def describe_namespace(self, namespace: List[str]) -> DescribeNamespaceResponse:
+    async def describe_namespace(
+        self, namespace: List[str]
+    ) -> DescribeNamespaceResponse:
         """
         Describe a namespace.
 
