@@ -28,9 +28,6 @@ from lancedb.namespace_models import (
     DropNamespaceResponse,
     DescribeNamespaceResponse,
     ListTablesResponse,
-    NamespaceMode,
-    DropMode,
-    DropBehavior,
 )
 
 from . import __version__
@@ -57,6 +54,27 @@ if TYPE_CHECKING:
     from .embeddings import EmbeddingFunctionConfig
     from .io import StorageOptionsProvider
     from ._lancedb import Session
+
+
+def _normalize_create_namespace_mode(mode: Optional[str]) -> Optional[str]:
+    """Normalize create namespace mode to lowercase (API expects lowercase)."""
+    if mode is None:
+        return None
+    return mode.lower()
+
+
+def _normalize_drop_namespace_mode(mode: Optional[str]) -> Optional[str]:
+    """Normalize drop namespace mode to uppercase (API expects uppercase)."""
+    if mode is None:
+        return None
+    return mode.upper()
+
+
+def _normalize_drop_namespace_behavior(behavior: Optional[str]) -> Optional[str]:
+    """Normalize drop namespace behavior to uppercase (API expects uppercase)."""
+    if behavior is None:
+        return None
+    return behavior.upper()
 
 
 class DBConnection(EnforceOverrides):
@@ -93,7 +111,7 @@ class DBConnection(EnforceOverrides):
     def create_namespace(
         self,
         namespace: List[str],
-        mode: Optional[NamespaceMode] = None,
+        mode: Optional[str] = None,
         properties: Optional[Dict[str, str]] = None,
     ) -> CreateNamespaceResponse:
         """Create a new namespace.
@@ -102,9 +120,9 @@ class DBConnection(EnforceOverrides):
         ----------
         namespace: List[str]
             The namespace identifier to create.
-        mode: NamespaceMode, optional
+        mode: str, optional
             Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
-            or "overwrite" (replace if exists).
+            or "overwrite" (replace if exists). Case insensitive.
         properties: Dict[str, str], optional
             Properties to set on the namespace.
 
@@ -120,8 +138,8 @@ class DBConnection(EnforceOverrides):
     def drop_namespace(
         self,
         namespace: List[str],
-        mode: Optional[DropMode] = None,
-        behavior: Optional[DropBehavior] = None,
+        mode: Optional[str] = None,
+        behavior: Optional[str] = None,
     ) -> DropNamespaceResponse:
         """Drop a namespace.
 
@@ -129,10 +147,11 @@ class DBConnection(EnforceOverrides):
         ----------
         namespace: List[str]
             The namespace identifier to drop.
-        mode: DropMode, optional
-            Whether to skip if not exists ("skip") or fail ("fail").
-        behavior: DropBehavior, optional
-            Whether to restrict drop if not empty ("restrict") or cascade ("cascade").
+        mode: str, optional
+            Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
+        behavior: str, optional
+            Whether to restrict drop if not empty ("RESTRICT") or cascade ("CASCADE").
+            Case insensitive.
 
         Returns
         -------
@@ -670,7 +689,7 @@ class LanceDBConnection(DBConnection):
     def create_namespace(
         self,
         namespace: List[str],
-        mode: Optional[NamespaceMode] = None,
+        mode: Optional[str] = None,
         properties: Optional[Dict[str, str]] = None,
     ) -> CreateNamespaceResponse:
         """Create a new namespace.
@@ -679,9 +698,9 @@ class LanceDBConnection(DBConnection):
         ----------
         namespace: List[str]
             The namespace identifier to create.
-        mode: NamespaceMode, optional
+        mode: str, optional
             Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
-            or "overwrite" (replace if exists).
+            or "overwrite" (replace if exists). Case insensitive.
         properties: Dict[str, str], optional
             Properties to set on the namespace.
 
@@ -700,8 +719,8 @@ class LanceDBConnection(DBConnection):
     def drop_namespace(
         self,
         namespace: List[str],
-        mode: Optional[DropMode] = None,
-        behavior: Optional[DropBehavior] = None,
+        mode: Optional[str] = None,
+        behavior: Optional[str] = None,
     ) -> DropNamespaceResponse:
         """Drop a namespace.
 
@@ -709,10 +728,11 @@ class LanceDBConnection(DBConnection):
         ----------
         namespace: List[str]
             The namespace identifier to drop.
-        mode: DropMode, optional
-            Whether to skip if not exists ("skip") or fail ("fail").
-        behavior: DropBehavior, optional
-            Whether to restrict drop if not empty ("restrict") or cascade ("cascade").
+        mode: str, optional
+            Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
+        behavior: str, optional
+            Whether to restrict drop if not empty ("RESTRICT") or cascade ("CASCADE").
+            Case insensitive.
 
         Returns
         -------
@@ -1149,7 +1169,7 @@ class AsyncConnection(object):
     async def create_namespace(
         self,
         namespace: List[str],
-        mode: Optional[NamespaceMode] = None,
+        mode: Optional[str] = None,
         properties: Optional[Dict[str, str]] = None,
     ) -> CreateNamespaceResponse:
         """Create a new namespace.
@@ -1158,8 +1178,8 @@ class AsyncConnection(object):
         ----------
         namespace: List[str]
             The namespace identifier to create.
-        mode: NamespaceMode, optional
-            Creation mode - CREATE, EXIST_OK, or OVERWRITE
+        mode: str, optional
+            Creation mode - "create", "exist_ok", or "overwrite". Case insensitive.
         properties: Dict[str, str], optional
             Properties to associate with the namespace
 
@@ -1169,15 +1189,17 @@ class AsyncConnection(object):
             Response containing namespace properties
         """
         result = await self._inner.create_namespace(
-            namespace, mode=mode.value if mode else None, properties=properties
+            namespace,
+            mode=_normalize_create_namespace_mode(mode),
+            properties=properties,
         )
         return CreateNamespaceResponse(**result)
 
     async def drop_namespace(
         self,
         namespace: List[str],
-        mode: Optional[DropMode] = None,
-        behavior: Optional[DropBehavior] = None,
+        mode: Optional[str] = None,
+        behavior: Optional[str] = None,
     ) -> DropNamespaceResponse:
         """Drop a namespace.
 
@@ -1185,10 +1207,11 @@ class AsyncConnection(object):
         ----------
         namespace: List[str]
             The namespace identifier to drop.
-        mode: DropMode, optional
-            Whether to skip if not exists ("skip") or fail ("fail").
-        behavior: DropBehavior, optional
-            Whether to restrict drop if not empty ("restrict") or cascade ("cascade").
+        mode: str, optional
+            Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
+        behavior: str, optional
+            Whether to restrict drop if not empty ("RESTRICT") or cascade ("CASCADE").
+            Case insensitive.
 
         Returns
         -------
@@ -1197,8 +1220,8 @@ class AsyncConnection(object):
         """
         result = await self._inner.drop_namespace(
             namespace,
-            mode=mode.value if mode else None,
-            behavior=behavior.value if behavior else None,
+            mode=_normalize_drop_namespace_mode(mode),
+            behavior=_normalize_drop_namespace_behavior(behavior),
         )
         return DropNamespaceResponse(**result)
 
