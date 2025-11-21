@@ -79,7 +79,7 @@ jobs:
   doctest:
     name: "Doctest"
     timeout-minutes: 30
-    runs-on: "ubuntu-24.04"
+    runs-on: ubuntu-2404-8x-x64
     defaults:
       run:
         shell: bash

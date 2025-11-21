@@ -1018,7 +1018,7 @@ class Table(ABC):
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
         >>> res
-        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0)
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -3634,7 +3634,7 @@ class AsyncTable:
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
         >>> res
-        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0)
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
