@@ -23,24 +23,20 @@ from datetime import timedelta
 import pyarrow as pa
 
 from lancedb.db import DBConnection, LanceDBConnection
+from lancedb.namespace_utils import (
+    _normalize_create_namespace_mode,
+    _normalize_drop_namespace_mode,
+    _normalize_drop_namespace_behavior,
+)
 from lancedb.io import StorageOptionsProvider
 from lance_namespace import (
+    LanceNamespace,
+    connect as namespace_connect,
     CreateNamespaceResponse,
     DescribeNamespaceResponse,
     DropNamespaceResponse,
     ListNamespacesResponse,
     ListTablesResponse,
-)
-from lancedb.table import AsyncTable, LanceTable, Table
-from lancedb.util import validate_table_name
-from lancedb.common import DATA
-from lancedb.pydantic import LanceModel
-from lancedb.embeddings import EmbeddingFunctionConfig
-from ._lancedb import Session
-
-from lance_namespace import (
-    LanceNamespace,
-    connect as namespace_connect,
     ListTablesRequest,
     DescribeTableRequest,
     DescribeNamespaceRequest,
@@ -50,30 +46,16 @@ from lance_namespace import (
     DropNamespaceRequest,
     CreateEmptyTableRequest,
 )
+from lancedb.table import AsyncTable, LanceTable, Table
+from lancedb.util import validate_table_name
+from lancedb.common import DATA
+from lancedb.pydantic import LanceModel
+from lancedb.embeddings import EmbeddingFunctionConfig
+from ._lancedb import Session
+
 from lance_namespace_urllib3_client.models.json_arrow_schema import JsonArrowSchema
 from lance_namespace_urllib3_client.models.json_arrow_field import JsonArrowField
 from lance_namespace_urllib3_client.models.json_arrow_data_type import JsonArrowDataType
-
-
-def _normalize_create_namespace_mode(mode: Optional[str]) -> Optional[str]:
-    """Normalize create namespace mode to lowercase (API expects lowercase)."""
-    if mode is None:
-        return None
-    return mode.lower()
-
-
-def _normalize_drop_namespace_mode(mode: Optional[str]) -> Optional[str]:
-    """Normalize drop namespace mode to uppercase (API expects uppercase)."""
-    if mode is None:
-        return None
-    return mode.upper()
-
-
-def _normalize_drop_namespace_behavior(behavior: Optional[str]) -> Optional[str]:
-    """Normalize drop namespace behavior to uppercase (API expects uppercase)."""
-    if behavior is None:
-        return None
-    return behavior.upper()
 
 
 def _convert_pyarrow_type_to_json(arrow_type: pa.DataType) -> JsonArrowDataType:
