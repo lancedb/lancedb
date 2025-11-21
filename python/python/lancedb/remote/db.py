@@ -23,7 +23,7 @@ import pyarrow as pa
 from ..common import DATA
 from ..db import DBConnection, LOOP
 from ..embeddings import EmbeddingFunctionConfig
-from ..namespace_models import (
+from lance_namespace import (
     CreateNamespaceResponse,
     DescribeNamespaceResponse,
     DropNamespaceResponse,

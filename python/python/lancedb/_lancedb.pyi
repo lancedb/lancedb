@@ -5,7 +5,7 @@ import pyarrow as pa
 
 from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 from .io import StorageOptionsProvider
-from .namespace_models import (
+from lance_namespace import (
     ListNamespacesResponse,
     CreateNamespaceResponse,
     DropNamespaceResponse,
