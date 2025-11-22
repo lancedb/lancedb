@@ -336,7 +336,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             self.client
                 .get(&format!("/v1/namespace/{}/table/list", namespace_id))
         } else {
-            // TODO: use new API for all listing operations once stable
             self.client.get("/v1/table/")
         };
 
