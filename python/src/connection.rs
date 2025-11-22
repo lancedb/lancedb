@@ -326,7 +326,7 @@ impl Connection {
         let py = self_.py();
         future_into_py(py, async move {
             use lance_namespace::models::{create_namespace_request, CreateNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.as_str() {
+            let mode_enum = mode.and_then(|m| match m.to_lowercase().as_str() {
                 "create" => Some(create_namespace_request::Mode::Create),
                 "exist_ok" => Some(create_namespace_request::Mode::ExistOk),
                 "overwrite" => Some(create_namespace_request::Mode::Overwrite),
@@ -361,14 +361,14 @@ impl Connection {
         let py = self_.py();
         future_into_py(py, async move {
             use lance_namespace::models::{drop_namespace_request, DropNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.as_str() {
-                "skip" => Some(drop_namespace_request::Mode::Skip),
-                "fail" => Some(drop_namespace_request::Mode::Fail),
+            let mode_enum = mode.and_then(|m| match m.to_uppercase().as_str() {
+                "SKIP" => Some(drop_namespace_request::Mode::Skip),
+                "FAIL" => Some(drop_namespace_request::Mode::Fail),
                 _ => None,
             });
-            let behavior_enum = behavior.and_then(|b| match b.as_str() {
-                "restrict" => Some(drop_namespace_request::Behavior::Restrict),
-                "cascade" => Some(drop_namespace_request::Behavior::Cascade),
+            let behavior_enum = behavior.and_then(|b| match b.to_uppercase().as_str() {
+                "RESTRICT" => Some(drop_namespace_request::Behavior::Restrict),
+                "CASCADE" => Some(drop_namespace_request::Behavior::Cascade),
                 _ => None,
             });
             let request = DropNamespaceRequest {
