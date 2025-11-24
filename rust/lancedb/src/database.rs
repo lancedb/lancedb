@@ -101,10 +101,7 @@ impl std::fmt::Debug for OpenTableRequest {
             .field("index_cache_size", &self.index_cache_size)
             .field("lance_read_params", &self.lance_read_params)
             .field("location", &self.location)
-            .field(
-                "namespace_client",
-                &self.namespace_client.as_ref().map(|_| "Some(...)"),
-            )
+            .field("namespace_client", &self.namespace_client)
             .finish()
     }
 }

@@ -1508,10 +1508,7 @@ impl std::fmt::Debug for NativeTable {
             .field("id", &self.id)
             .field("uri", &self.uri)
             .field("read_consistency_interval", &self.read_consistency_interval)
-            .field(
-                "namespace_client",
-                &self.namespace_client.as_ref().map(|_| "Some(...)"),
-            )
+            .field("namespace_client", &self.namespace_client)
             .finish()
     }
 }
@@ -2191,13 +2188,74 @@ impl NativeTable {
                     version: None,
                 })
             }
-            AnyQuery::Query(_q) => {
-                // For non-vector queries, we still need a vector field (namespace API requires it)
-                // This is a limitation - we should return an error for plain queries
-                Err(Error::NotSupported {
-                    message: "Non-vector queries are not yet supported for server-side execution. \
-                              Please use a vector query or disable server_side_query."
-                        .to_string(),
+            AnyQuery::Query(q) => {
+                // For non-vector queries, pass an empty vector (similar to remote table implementation)
+                if q.reranker.is_some() {
+                    return Err(Error::NotSupported {
+                        message: "Reranker is not supported for server-side query execution"
+                            .to_string(),
+                    });
+                }
+
+                let filter = q
+                    .filter
+                    .as_ref()
+                    .map(|f| self.filter_to_sql(f))
+                    .transpose()?;
+
+                let columns = match &q.select {
+                    Select::All => None,
+                    Select::Columns(cols) => Some(cols.clone()),
+                    Select::Dynamic(_) => {
+                        return Err(Error::NotSupported {
+                            message: "Dynamic columns are not supported for server-side query"
+                                .to_string(),
+                        });
+                    }
+                };
+
+                // Handle full text search if present
+                let full_text_query = q.full_text_search.as_ref().map(|fts| {
+                    let columns_vec = if fts.columns().is_empty() {
+                        None
+                    } else {
+                        Some(fts.columns().iter().cloned().collect())
+                    };
+                    Box::new(QueryTableRequestFullTextQuery {
+                        string_query: Some(Box::new(StringFtsQuery {
+                            query: fts.query.to_string(),
+                            columns: columns_vec,
+                        })),
+                        structured_query: None,
+                    })
+                });
+
+                // Empty vector for non-vector queries
+                let vector = Box::new(QueryTableRequestVector {
+                    single_vector: Some(vec![]),
+                    multi_vector: None,
+                });
+
+                Ok(NsQueryTableRequest {
+                    id: None, // Will be set by caller
+                    vector,
+                    k: q.limit.unwrap_or(10) as i32,
+                    filter,
+                    columns,
+                    prefilter: Some(q.prefilter),
+                    offset: q.offset.map(|o| o as i32),
+                    ef: None,
+                    refine_factor: None,
+                    distance_type: None,
+                    nprobes: None,
+                    vector_column: None, // No vector column for plain queries
+                    with_row_id: Some(q.with_row_id),
+                    bypass_vector_index: Some(true), // No vector index for plain queries
+                    full_text_query,
+                    version: None,
+                    fast_search: None,
+                    lower_bound: None,
+                    upper_bound: None,
                 })
             }
         }
@@ -4883,7 +4941,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_convert_to_namespace_query_unsupported_plain_query() {
+    async fn test_convert_to_namespace_query_plain_query() {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test_ns_plain.lance");
 
@@ -4896,20 +4954,29 @@ mod tests {
             .await
             .unwrap();
 
-        // Create a plain (non-vector) query
+        // Create a plain (non-vector) query with filter and select
         let q = QueryRequest {
-            limit: Some(10),
+            limit: Some(20),
+            offset: Some(5),
+            filter: Some(QueryFilter::Sql("id > 5".to_string())),
+            select: Select::Columns(vec!["id".to_string()]),
+            with_row_id: true,
             ..Default::default()
         };
 
         let any_query = AnyQuery::Query(q);
-        let result = table.convert_to_namespace_query(&any_query);
+        let ns_request = table.convert_to_namespace_query(&any_query).unwrap();
 
-        // Plain queries should return NotSupported error
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            Error::NotSupported { .. } => {}
-            e => panic!("Expected NotSupported error, got {:?}", e),
-        }
+        // Plain queries should pass an empty vector
+        assert_eq!(ns_request.k, 20);
+        assert_eq!(ns_request.offset, Some(5));
+        assert_eq!(ns_request.filter, Some("id > 5".to_string()));
+        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        assert_eq!(ns_request.with_row_id, Some(true));
+        assert_eq!(ns_request.bypass_vector_index, Some(true));
+        assert!(ns_request.vector_column.is_none()); // No vector column for plain queries
+
+        // Should have an empty vector
+        assert!(ns_request.vector.single_vector.as_ref().unwrap().is_empty());
     }
 }
