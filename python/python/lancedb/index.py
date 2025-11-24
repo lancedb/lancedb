@@ -609,9 +609,19 @@ class IvfPq:
 class IvfRq:
     """Describes an IVF RQ Index
 
-    IVF-RQ (Residual Quantization) stores a compressed copy of each vector using
-    residual quantization and organizes them into IVF partitions. Parameters
-    largely mirror IVF-PQ for consistency.
+    IVF-RQ (RabitQ Quantization) compresses vectors using RabitQ quantization
+    and organizes them into IVF partitions.
+
+    The compression scheme is called RabitQ quantization. Each dimension is
+    quantized into a small number of bits. The parameters `num_bits` and
+    `num_partitions` control this process, providing a tradeoff between
+    index size (and thus search speed) and index accuracy.
+
+    The partitioning process is called IVF and the `num_partitions` parameter
+    controls how many groups to create.
+
+    Note that training an IVF RQ index on a large dataset is a slow operation
+    and currently is also a memory intensive operation.
 
     Attributes
     ----------
@@ -628,7 +638,7 @@ class IvfRq:
         Number of IVF partitions to create.
 
     num_bits: int, default 1
-        Number of bits to encode each dimension.
+        Number of bits to encode each dimension in the RabitQ codebook.
 
     max_iterations: int, default 50
         Max iterations to train kmeans when computing IVF partitions.
