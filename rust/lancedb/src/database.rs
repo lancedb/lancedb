@@ -78,6 +78,7 @@ pub struct TableNamesRequest {
 }
 
 /// A request to open a table
+#[derive(Clone)]
 pub struct OpenTableRequest {
     pub name: String,
     /// The namespace to open the table from. Empty list represents root namespace.
@@ -90,19 +91,6 @@ pub struct OpenTableRequest {
     /// Optional namespace client for server-side query execution.
     /// When set, queries will be executed on the namespace server instead of locally.
     pub namespace_client: Option<Arc<dyn LanceNamespace>>,
-}
-
-impl Clone for OpenTableRequest {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            namespace: self.namespace.clone(),
-            index_cache_size: self.index_cache_size,
-            lance_read_params: self.lance_read_params.clone(),
-            location: self.location.clone(),
-            namespace_client: self.namespace_client.clone(),
-        }
-    }
 }
 
 impl std::fmt::Debug for OpenTableRequest {

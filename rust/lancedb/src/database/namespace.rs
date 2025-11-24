@@ -295,22 +295,20 @@ impl Database for LanceNamespaceDatabase {
                         )
                         .await?;
 
-                    let table = listing_db
+                    let namespace_client = self
+                        .server_side_query_enabled
+                        .then(|| self.namespace.clone());
+
+                    return listing_db
                         .open_table(OpenTableRequest {
                             name: request.name.clone(),
                             namespace: request.namespace.clone(),
                             index_cache_size: None,
                             lance_read_params: None,
                             location: Some(location),
-                            namespace_client: if self.server_side_query_enabled {
-                                Some(self.namespace.clone())
-                            } else {
-                                None
-                            },
+                            namespace_client,
                         })
-                        .await?;
-
-                    return Ok(table);
+                        .await;
                 }
             }
         }
@@ -351,6 +349,10 @@ impl Database for LanceNamespaceDatabase {
             )
             .await?;
 
+        let namespace_client = self
+            .server_side_query_enabled
+            .then(|| self.namespace.clone());
+
         let create_request = DbCreateTableRequest {
             name: request.name,
             namespace: request.namespace,
@@ -358,15 +360,10 @@ impl Database for LanceNamespaceDatabase {
             mode: request.mode,
             write_options: request.write_options,
             location: Some(location),
-            namespace_client: if self.server_side_query_enabled {
-                Some(self.namespace.clone())
-            } else {
-                None
-            },
+            namespace_client,
         };
-        let table = listing_db.create_table(create_request).await?;
 
-        Ok(table)
+        listing_db.create_table(create_request).await
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -405,21 +402,20 @@ impl Database for LanceNamespaceDatabase {
             )
             .await?;
 
+        let namespace_client = self
+            .server_side_query_enabled
+            .then(|| self.namespace.clone());
+
         let open_request = OpenTableRequest {
             name: request.name.clone(),
             namespace: request.namespace.clone(),
             index_cache_size: request.index_cache_size,
             lance_read_params: request.lance_read_params,
             location: Some(location),
-            namespace_client: if self.server_side_query_enabled {
-                Some(self.namespace.clone())
-            } else {
-                None
-            },
+            namespace_client,
         };
-        let table = listing_db.open_table(open_request).await?;
 
-        Ok(table)
+        listing_db.open_table(open_request).await
     }
 
     async fn clone_table(&self, _request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
