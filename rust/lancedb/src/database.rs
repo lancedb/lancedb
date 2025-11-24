@@ -90,8 +90,6 @@ pub struct OpenTableRequest {
     /// Optional namespace client for server-side query execution.
     /// When set, queries will be executed on the namespace server instead of locally.
     pub namespace_client: Option<Arc<dyn LanceNamespace>>,
-    /// The full table identifier for namespace API calls (namespace path + table name)
-    pub namespace_table_id: Option<Vec<String>>,
 }
 
 impl Clone for OpenTableRequest {
@@ -103,7 +101,6 @@ impl Clone for OpenTableRequest {
             lance_read_params: self.lance_read_params.clone(),
             location: self.location.clone(),
             namespace_client: self.namespace_client.clone(),
-            namespace_table_id: self.namespace_table_id.clone(),
         }
     }
 }
@@ -120,7 +117,6 @@ impl std::fmt::Debug for OpenTableRequest {
                 "namespace_client",
                 &self.namespace_client.as_ref().map(|_| "Some(...)"),
             )
-            .field("namespace_table_id", &self.namespace_table_id)
             .finish()
     }
 }
@@ -209,8 +205,6 @@ pub struct CreateTableRequest {
     /// Optional namespace client for server-side query execution.
     /// When set, queries will be executed on the namespace server instead of locally.
     pub namespace_client: Option<Arc<dyn LanceNamespace>>,
-    /// The full table identifier for namespace API calls (namespace path + table name)
-    pub namespace_table_id: Option<Vec<String>>,
 }
 
 impl CreateTableRequest {
@@ -223,7 +217,6 @@ impl CreateTableRequest {
             write_options: WriteOptions::default(),
             location: None,
             namespace_client: None,
-            namespace_table_id: None,
         }
     }
 }

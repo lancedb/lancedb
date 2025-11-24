@@ -1498,8 +1498,6 @@ pub struct NativeTable {
     // Optional namespace client for server-side query execution.
     // When set, queries will be executed on the namespace server instead of locally.
     namespace_client: Option<Arc<dyn LanceNamespace>>,
-    // The full table identifier for namespace API calls (namespace path + table name)
-    namespace_table_id: Option<Vec<String>>,
 }
 
 impl std::fmt::Debug for NativeTable {
@@ -1514,7 +1512,6 @@ impl std::fmt::Debug for NativeTable {
                 "namespace_client",
                 &self.namespace_client.as_ref().map(|_| "Some(...)"),
             )
-            .field("namespace_table_id", &self.namespace_table_id)
             .finish()
     }
 }
@@ -1551,7 +1548,7 @@ impl NativeTable {
     /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, vec![], None, None, None, None, None).await
+        Self::open_with_params(uri, &name, vec![], None, None, None, None).await
     }
 
     /// Opens an existing Table
@@ -1562,7 +1559,6 @@ impl NativeTable {
     /// * `name` The Table name
     /// * `params` The [ReadParams] to use when opening the table
     /// * `namespace_client` - Optional namespace client for server-side query execution
-    /// * `namespace_table_id` - The full table identifier for namespace API calls
     ///
     /// # Returns
     ///
@@ -1576,7 +1572,6 @@ impl NativeTable {
         params: Option<ReadParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
-        namespace_table_id: Option<Vec<String>>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -1608,20 +1603,14 @@ impl NativeTable {
             dataset,
             read_consistency_interval,
             namespace_client,
-            namespace_table_id,
         })
     }
 
     /// Set the namespace client for server-side query execution.
     ///
     /// When set, queries will be executed on the namespace server instead of locally.
-    pub fn with_namespace_client(
-        mut self,
-        namespace_client: Arc<dyn LanceNamespace>,
-        table_id: Vec<String>,
-    ) -> Self {
+    pub fn with_namespace_client(mut self, namespace_client: Arc<dyn LanceNamespace>) -> Self {
         self.namespace_client = Some(namespace_client);
-        self.namespace_table_id = Some(table_id);
         self
     }
 
@@ -1662,7 +1651,6 @@ impl NativeTable {
     /// * `batches` RecordBatch to be saved in the database.
     /// * `params` - Write parameters.
     /// * `namespace_client` - Optional namespace client for server-side query execution
-    /// * `namespace_table_id` - The full table identifier for namespace API calls
     ///
     /// # Returns
     ///
@@ -1677,7 +1665,6 @@ impl NativeTable {
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
-        namespace_table_id: Option<Vec<String>>,
     ) -> Result<Self> {
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
@@ -1710,7 +1697,6 @@ impl NativeTable {
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             read_consistency_interval,
             namespace_client,
-            namespace_table_id,
         })
     }
 
@@ -1724,7 +1710,6 @@ impl NativeTable {
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
-        namespace_table_id: Option<Vec<String>>,
     ) -> Result<Self> {
         let batches = RecordBatchIterator::new(vec![], schema);
         Self::create(
@@ -1736,7 +1721,6 @@ impl NativeTable {
             params,
             read_consistency_interval,
             namespace_client,
-            namespace_table_id,
         )
         .await
     }
@@ -2101,17 +2085,14 @@ impl NativeTable {
         query: &AnyQuery,
         _options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        let table_id = self
-            .namespace_table_id
-            .as_ref()
-            .ok_or_else(|| Error::Runtime {
-                message: "namespace_table_id is required for server-side query".to_string(),
-            })?;
+        // Build table_id from namespace + table name
+        let mut table_id = self.namespace.clone();
+        table_id.push(self.name.clone());
 
         // Convert AnyQuery to namespace QueryTableRequest
         let mut ns_request = self.convert_to_namespace_query(query)?;
         // Set the table ID on the request
-        ns_request.id = Some(table_id.clone());
+        ns_request.id = Some(table_id);
 
         // Call the namespace query_table API
         let response_bytes = namespace_client
@@ -3213,7 +3194,7 @@ mod tests {
 
         let batches = make_test_batches();
         let batches = Box::new(batches) as Box<dyn RecordBatchReader + Send>;
-        let table = NativeTable::create(uri, "test", vec![], batches, None, None, None, None, None)
+        let table = NativeTable::create(uri, "test", vec![], batches, None, None, None, None)
             .await
             .unwrap();
 

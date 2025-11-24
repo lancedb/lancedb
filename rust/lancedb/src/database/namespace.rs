@@ -307,11 +307,6 @@ impl Database for LanceNamespaceDatabase {
                             } else {
                                 None
                             },
-                            namespace_table_id: if self.server_side_query_enabled {
-                                Some(table_id)
-                            } else {
-                                None
-                            },
                         })
                         .await?;
 
@@ -368,11 +363,6 @@ impl Database for LanceNamespaceDatabase {
             } else {
                 None
             },
-            namespace_table_id: if self.server_side_query_enabled {
-                Some(table_id)
-            } else {
-                None
-            },
         };
         let table = listing_db.create_table(create_request).await?;
 
@@ -423,11 +413,6 @@ impl Database for LanceNamespaceDatabase {
             location: Some(location),
             namespace_client: if self.server_side_query_enabled {
                 Some(self.namespace.clone())
-            } else {
-                None
-            },
-            namespace_table_id: if self.server_side_query_enabled {
-                Some(table_id)
             } else {
                 None
             },
