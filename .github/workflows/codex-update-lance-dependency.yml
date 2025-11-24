@@ -124,4 +124,4 @@ jobs:
         run: |
           set -euo pipefail
           echo "Latest sophon workflow run:"
-          gh run list --repo lancedb/sophon --workflow codex-bump-lancedb-lance.yml --limit 1 --json databaseId,htmlUrl,displayTitle
+          gh run list --repo lancedb/sophon --workflow codex-bump-lancedb-lance.yml --limit 1 --json databaseId,url,displayTitle

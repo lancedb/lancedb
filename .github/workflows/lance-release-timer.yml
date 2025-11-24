@@ -59,4 +59,4 @@ jobs:
           GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
         run: |
           set -euo pipefail
-          gh run list --workflow codex-update-lance-dependency.yml --limit 1 --json databaseId,htmlUrl,displayTitle
+          gh run list --workflow codex-update-lance-dependency.yml --limit 1 --json databaseId,url,displayTitle
