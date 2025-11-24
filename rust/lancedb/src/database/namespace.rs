@@ -20,7 +20,6 @@ use lance_namespace_impls::ConnectBuilder;
 use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
-use crate::table::NativeTable;
 
 use super::{
     listing::ListingDatabase, BaseTable, CloneTableRequest,
@@ -303,22 +302,19 @@ impl Database for LanceNamespaceDatabase {
                             index_cache_size: None,
                             lance_read_params: None,
                             location: Some(location),
+                            namespace_client: if self.server_side_query_enabled {
+                                Some(self.namespace.clone())
+                            } else {
+                                None
+                            },
+                            namespace_table_id: if self.server_side_query_enabled {
+                                Some(table_id)
+                            } else {
+                                None
+                            },
                         })
                         .await?;
 
-                    // If server-side query is enabled, attach the namespace client
-                    if self.server_side_query_enabled {
-                        let native_table = table
-                            .as_any()
-                            .downcast_ref::<NativeTable>()
-                            .ok_or_else(|| Error::Runtime {
-                                message: "Expected NativeTable but got a different table type"
-                                    .to_string(),
-                            })?
-                            .clone()
-                            .with_namespace_client(self.namespace.clone(), table_id);
-                        return Ok(Arc::new(native_table));
-                    }
                     return Ok(table);
                 }
             }
@@ -367,23 +363,20 @@ impl Database for LanceNamespaceDatabase {
             mode: request.mode,
             write_options: request.write_options,
             location: Some(location),
+            namespace_client: if self.server_side_query_enabled {
+                Some(self.namespace.clone())
+            } else {
+                None
+            },
+            namespace_table_id: if self.server_side_query_enabled {
+                Some(table_id)
+            } else {
+                None
+            },
         };
         let table = listing_db.create_table(create_request).await?;
 
-        // If server-side query is enabled, attach the namespace client
-        if self.server_side_query_enabled {
-            let native_table = table
-                .as_any()
-                .downcast_ref::<NativeTable>()
-                .ok_or_else(|| Error::Runtime {
-                    message: "Expected NativeTable but got a different table type".to_string(),
-                })?
-                .clone()
-                .with_namespace_client(self.namespace.clone(), table_id);
-            Ok(Arc::new(native_table))
-        } else {
-            Ok(table)
-        }
+        Ok(table)
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -428,24 +421,20 @@ impl Database for LanceNamespaceDatabase {
             index_cache_size: request.index_cache_size,
             lance_read_params: request.lance_read_params,
             location: Some(location),
+            namespace_client: if self.server_side_query_enabled {
+                Some(self.namespace.clone())
+            } else {
+                None
+            },
+            namespace_table_id: if self.server_side_query_enabled {
+                Some(table_id)
+            } else {
+                None
+            },
         };
         let table = listing_db.open_table(open_request).await?;
 
-        // If server-side query is enabled, attach the namespace client to the table
-        if self.server_side_query_enabled {
-            // Downcast to NativeTable to set the namespace client
-            let native_table = table
-                .as_any()
-                .downcast_ref::<NativeTable>()
-                .ok_or_else(|| Error::Runtime {
-                    message: "Expected NativeTable but got a different table type".to_string(),
-                })?
-                .clone()
-                .with_namespace_client(self.namespace.clone(), table_id);
-            Ok(Arc::new(native_table))
-        } else {
-            Ok(table)
-        }
+        Ok(table)
     }
 
     async fn clone_table(&self, _request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {

@@ -408,6 +408,8 @@ impl OpenTableBuilder {
                 index_cache_size: None,
                 lance_read_params: None,
                 location: None,
+                namespace_client: None,
+                namespace_table_id: None,
             },
             embedding_registry,
         }

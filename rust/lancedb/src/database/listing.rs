@@ -599,6 +599,8 @@ impl ListingDatabase {
                     index_cache_size: None,
                     lance_read_params: None,
                     location: None,
+                    namespace_client: None,
+                    namespace_table_id: None,
                 };
                 let req = (callback)(req);
                 let table = self.open_table(req).await?;
@@ -722,6 +724,8 @@ impl Database for ListingDatabase {
             self.store_wrapper.clone(),
             Some(write_params),
             self.read_consistency_interval,
+            request.namespace_client,
+            request.namespace_table_id,
         )
         .await
         {
@@ -793,6 +797,8 @@ impl Database for ListingDatabase {
             self.store_wrapper.clone(),
             None,
             self.read_consistency_interval,
+            None,
+            None,
         )
         .await?;
 
@@ -864,6 +870,8 @@ impl Database for ListingDatabase {
                 self.store_wrapper.clone(),
                 Some(read_params),
                 self.read_consistency_interval,
+                request.namespace_client,
+                request.namespace_table_id,
             )
             .await?,
         );
@@ -965,6 +973,8 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
+                namespace_table_id: None,
             })
             .await
             .unwrap();
@@ -1029,6 +1039,8 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
+                namespace_table_id: None,
             })
             .await
             .unwrap();
@@ -1087,6 +1099,8 @@ mod tests {
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
+            namespace_client: None,
+            namespace_table_id: None,
         })
         .await
         .unwrap();
@@ -1122,6 +1136,8 @@ mod tests {
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
+            namespace_client: None,
+            namespace_table_id: None,
         })
         .await
         .unwrap();
@@ -1161,6 +1177,8 @@ mod tests {
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
+            namespace_client: None,
+            namespace_table_id: None,
         })
         .await
         .unwrap();
@@ -1200,6 +1218,8 @@ mod tests {
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
+            namespace_client: None,
+            namespace_table_id: None,
         })
         .await
         .unwrap();
@@ -1254,6 +1274,8 @@ mod tests {
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
+            namespace_client: None,
+            namespace_table_id: None,
         })
         .await
         .unwrap();
@@ -1311,6 +1333,8 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
+                namespace_table_id: None,
             })
             .await
             .unwrap();
@@ -1396,6 +1420,8 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
+                namespace_table_id: None,
             })
             .await
             .unwrap();
@@ -1482,6 +1508,8 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
+                namespace_table_id: None,
             })
             .await
             .unwrap();
@@ -1575,6 +1603,8 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
+                namespace_table_id: None,
             })
             .await
             .unwrap();

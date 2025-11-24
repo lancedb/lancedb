@@ -1551,7 +1551,7 @@ impl NativeTable {
     /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, vec![], None, None, None).await
+        Self::open_with_params(uri, &name, vec![], None, None, None, None, None).await
     }
 
     /// Opens an existing Table
@@ -1561,10 +1561,13 @@ impl NativeTable {
     /// * `base_path` - The base path where the table is located
     /// * `name` The Table name
     /// * `params` The [ReadParams] to use when opening the table
+    /// * `namespace_client` - Optional namespace client for server-side query execution
+    /// * `namespace_table_id` - The full table identifier for namespace API calls
     ///
     /// # Returns
     ///
     /// * A [NativeTable] object.
+    #[allow(clippy::too_many_arguments)]
     pub async fn open_with_params(
         uri: &str,
         name: &str,
@@ -1572,6 +1575,8 @@ impl NativeTable {
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<ReadParams>,
         read_consistency_interval: Option<std::time::Duration>,
+        namespace_client: Option<Arc<dyn LanceNamespace>>,
+        namespace_table_id: Option<Vec<String>>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -1602,8 +1607,8 @@ impl NativeTable {
             uri: uri.to_string(),
             dataset,
             read_consistency_interval,
-            namespace_client: None,
-            namespace_table_id: None,
+            namespace_client,
+            namespace_table_id,
         })
     }
 
@@ -1656,10 +1661,13 @@ impl NativeTable {
     /// * `namespace` - The namespace path. When non-empty, an explicit URI must be provided.
     /// * `batches` RecordBatch to be saved in the database.
     /// * `params` - Write parameters.
+    /// * `namespace_client` - Optional namespace client for server-side query execution
+    /// * `namespace_table_id` - The full table identifier for namespace API calls
     ///
     /// # Returns
     ///
     /// * A [TableImpl] object.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         uri: &str,
         name: &str,
@@ -1668,6 +1676,8 @@ impl NativeTable {
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
+        namespace_client: Option<Arc<dyn LanceNamespace>>,
+        namespace_table_id: Option<Vec<String>>,
     ) -> Result<Self> {
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
@@ -1699,11 +1709,12 @@ impl NativeTable {
             uri: uri.to_string(),
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             read_consistency_interval,
-            namespace_client: None,
-            namespace_table_id: None,
+            namespace_client,
+            namespace_table_id,
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_empty(
         uri: &str,
         name: &str,
@@ -1712,6 +1723,8 @@ impl NativeTable {
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
+        namespace_client: Option<Arc<dyn LanceNamespace>>,
+        namespace_table_id: Option<Vec<String>>,
     ) -> Result<Self> {
         let batches = RecordBatchIterator::new(vec![], schema);
         Self::create(
@@ -1722,6 +1735,8 @@ impl NativeTable {
             write_store_wrapper,
             params,
             read_consistency_interval,
+            namespace_client,
+            namespace_table_id,
         )
         .await
     }
@@ -3198,7 +3213,7 @@ mod tests {
 
         let batches = make_test_batches();
         let batches = Box::new(batches) as Box<dyn RecordBatchReader + Send>;
-        let table = NativeTable::create(uri, "test", vec![], batches, None, None, None)
+        let table = NativeTable::create(uri, "test", vec![], batches, None, None, None, None, None)
             .await
             .unwrap();
 

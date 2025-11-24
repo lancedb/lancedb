@@ -24,6 +24,7 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::stream;
 use lance::dataset::ReadParams;
 use lance_datafusion::utils::StreamingWriteSource;
+use lance_namespace::LanceNamespace;
 
 use crate::arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt};
 use crate::error::Result;
@@ -77,7 +78,6 @@ pub struct TableNamesRequest {
 }
 
 /// A request to open a table
-#[derive(Clone, Debug)]
 pub struct OpenTableRequest {
     pub name: String,
     /// The namespace to open the table from. Empty list represents root namespace.
@@ -87,6 +87,42 @@ pub struct OpenTableRequest {
     /// Optional custom location for the table. If not provided, the database will
     /// derive a location based on its URI and the table name.
     pub location: Option<String>,
+    /// Optional namespace client for server-side query execution.
+    /// When set, queries will be executed on the namespace server instead of locally.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
+    /// The full table identifier for namespace API calls (namespace path + table name)
+    pub namespace_table_id: Option<Vec<String>>,
+}
+
+impl Clone for OpenTableRequest {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            namespace: self.namespace.clone(),
+            index_cache_size: self.index_cache_size,
+            lance_read_params: self.lance_read_params.clone(),
+            location: self.location.clone(),
+            namespace_client: self.namespace_client.clone(),
+            namespace_table_id: self.namespace_table_id.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for OpenTableRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenTableRequest")
+            .field("name", &self.name)
+            .field("namespace", &self.namespace)
+            .field("index_cache_size", &self.index_cache_size)
+            .field("lance_read_params", &self.lance_read_params)
+            .field("location", &self.location)
+            .field(
+                "namespace_client",
+                &self.namespace_client.as_ref().map(|_| "Some(...)"),
+            )
+            .field("namespace_table_id", &self.namespace_table_id)
+            .finish()
+    }
 }
 
 pub type TableBuilderCallback = Box<dyn FnOnce(OpenTableRequest) -> OpenTableRequest + Send>;
@@ -170,6 +206,11 @@ pub struct CreateTableRequest {
     /// Optional custom location for the table. If not provided, the database will
     /// derive a location based on its URI and the table name.
     pub location: Option<String>,
+    /// Optional namespace client for server-side query execution.
+    /// When set, queries will be executed on the namespace server instead of locally.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
+    /// The full table identifier for namespace API calls (namespace path + table name)
+    pub namespace_table_id: Option<Vec<String>>,
 }
 
 impl CreateTableRequest {
@@ -181,6 +222,8 @@ impl CreateTableRequest {
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
             location: None,
+            namespace_client: None,
+            namespace_table_id: None,
         }
     }
 }
