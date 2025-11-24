@@ -20,6 +20,7 @@ use lance_namespace_impls::ConnectBuilder;
 use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
+use crate::table::NativeTable;
 
 use super::{
     listing::ListingDatabase, BaseTable, CloneTableRequest,
@@ -40,6 +41,8 @@ pub struct LanceNamespaceDatabase {
     session: Option<Arc<lance::session::Session>>,
     // database URI
     uri: String,
+    // Whether to enable server-side query execution
+    server_side_query_enabled: bool,
 }
 
 impl LanceNamespaceDatabase {
@@ -49,6 +52,7 @@ impl LanceNamespaceDatabase {
         storage_options: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
         session: Option<Arc<lance::session::Session>>,
+        server_side_query_enabled: bool,
     ) -> Result<Self> {
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
@@ -67,6 +71,7 @@ impl LanceNamespaceDatabase {
             read_consistency_interval,
             session,
             uri: format!("namespace://{}", ns_impl),
+            server_side_query_enabled,
         })
     }
 }
@@ -76,6 +81,7 @@ impl std::fmt::Debug for LanceNamespaceDatabase {
         f.debug_struct("LanceNamespaceDatabase")
             .field("storage_options", &self.storage_options)
             .field("read_consistency_interval", &self.read_consistency_interval)
+            .field("server_side_query_enabled", &self.server_side_query_enabled)
             .finish()
     }
 }
@@ -290,7 +296,7 @@ impl Database for LanceNamespaceDatabase {
                         )
                         .await?;
 
-                    return listing_db
+                    let table = listing_db
                         .open_table(OpenTableRequest {
                             name: request.name.clone(),
                             namespace: request.namespace.clone(),
@@ -298,7 +304,22 @@ impl Database for LanceNamespaceDatabase {
                             lance_read_params: None,
                             location: Some(location),
                         })
-                        .await;
+                        .await?;
+
+                    // If server-side query is enabled, attach the namespace client
+                    if self.server_side_query_enabled {
+                        let native_table = table
+                            .as_any()
+                            .downcast_ref::<NativeTable>()
+                            .ok_or_else(|| Error::Runtime {
+                                message: "Expected NativeTable but got a different table type"
+                                    .to_string(),
+                            })?
+                            .clone()
+                            .with_namespace_client(self.namespace.clone(), table_id);
+                        return Ok(Arc::new(native_table));
+                    }
+                    return Ok(table);
                 }
             }
         }
@@ -333,7 +354,7 @@ impl Database for LanceNamespaceDatabase {
         let listing_db = self
             .create_listing_database(
                 &location,
-                table_id,
+                table_id.clone(),
                 user_storage_options,
                 create_empty_response.storage_options.as_ref(),
             )
@@ -347,7 +368,22 @@ impl Database for LanceNamespaceDatabase {
             write_options: request.write_options,
             location: Some(location),
         };
-        listing_db.create_table(create_request).await
+        let table = listing_db.create_table(create_request).await?;
+
+        // If server-side query is enabled, attach the namespace client
+        if self.server_side_query_enabled {
+            let native_table = table
+                .as_any()
+                .downcast_ref::<NativeTable>()
+                .ok_or_else(|| Error::Runtime {
+                    message: "Expected NativeTable but got a different table type".to_string(),
+                })?
+                .clone()
+                .with_namespace_client(self.namespace.clone(), table_id);
+            Ok(Arc::new(native_table))
+        } else {
+            Ok(table)
+        }
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -380,7 +416,7 @@ impl Database for LanceNamespaceDatabase {
         let listing_db = self
             .create_listing_database(
                 &location,
-                table_id,
+                table_id.clone(),
                 user_storage_options,
                 response.storage_options.as_ref(),
             )
@@ -393,7 +429,23 @@ impl Database for LanceNamespaceDatabase {
             lance_read_params: request.lance_read_params,
             location: Some(location),
         };
-        listing_db.open_table(open_request).await
+        let table = listing_db.open_table(open_request).await?;
+
+        // If server-side query is enabled, attach the namespace client to the table
+        if self.server_side_query_enabled {
+            // Downcast to NativeTable to set the namespace client
+            let native_table = table
+                .as_any()
+                .downcast_ref::<NativeTable>()
+                .ok_or_else(|| Error::Runtime {
+                    message: "Expected NativeTable but got a different table type".to_string(),
+                })?
+                .clone()
+                .with_namespace_client(self.namespace.clone(), table_id);
+            Ok(Arc::new(native_table))
+        } else {
+            Ok(table)
+        }
     }
 
     async fn clone_table(&self, _request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {

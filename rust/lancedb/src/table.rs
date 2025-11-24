@@ -40,6 +40,11 @@ use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
+use lance_namespace::models::{
+    QueryTableRequest as NsQueryTableRequest, QueryTableRequestFullTextQuery,
+    QueryTableRequestVector, StringFtsQuery,
+};
+use lance_namespace::LanceNamespace;
 use lance_table::format::Manifest;
 use lance_table::io::commit::ManifestNamingScheme;
 use log::info;
@@ -1480,7 +1485,7 @@ impl NativeTableExt for Arc<dyn BaseTable> {
 }
 
 /// A table in a LanceDB database.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NativeTable {
     name: String,
     namespace: Vec<String>,
@@ -1490,6 +1495,28 @@ pub struct NativeTable {
     // This comes from the connection options. We store here so we can pass down
     // to the dataset when we recreate it (for example, in checkout_latest).
     read_consistency_interval: Option<std::time::Duration>,
+    // Optional namespace client for server-side query execution.
+    // When set, queries will be executed on the namespace server instead of locally.
+    namespace_client: Option<Arc<dyn LanceNamespace>>,
+    // The full table identifier for namespace API calls (namespace path + table name)
+    namespace_table_id: Option<Vec<String>>,
+}
+
+impl std::fmt::Debug for NativeTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeTable")
+            .field("name", &self.name)
+            .field("namespace", &self.namespace)
+            .field("id", &self.id)
+            .field("uri", &self.uri)
+            .field("read_consistency_interval", &self.read_consistency_interval)
+            .field(
+                "namespace_client",
+                &self.namespace_client.as_ref().map(|_| "Some(...)"),
+            )
+            .field("namespace_table_id", &self.namespace_table_id)
+            .finish()
+    }
 }
 
 impl std::fmt::Display for NativeTable {
@@ -1575,7 +1602,22 @@ impl NativeTable {
             uri: uri.to_string(),
             dataset,
             read_consistency_interval,
+            namespace_client: None,
+            namespace_table_id: None,
         })
+    }
+
+    /// Set the namespace client for server-side query execution.
+    ///
+    /// When set, queries will be executed on the namespace server instead of locally.
+    pub fn with_namespace_client(
+        mut self,
+        namespace_client: Arc<dyn LanceNamespace>,
+        table_id: Vec<String>,
+    ) -> Self {
+        self.namespace_client = Some(namespace_client);
+        self.namespace_table_id = Some(table_id);
+        self
     }
 
     fn get_table_name(uri: &str) -> Result<String> {
@@ -1657,6 +1699,8 @@ impl NativeTable {
             uri: uri.to_string(),
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             read_consistency_interval,
+            namespace_client: None,
+            namespace_table_id: None,
         })
     }
 
@@ -2033,6 +2077,220 @@ impl NativeTable {
             inner
         };
         Ok(DatasetRecordBatchStream::new(inner))
+    }
+
+    /// Execute a query on the namespace server instead of locally.
+    async fn namespace_query(
+        &self,
+        namespace_client: Arc<dyn LanceNamespace>,
+        query: &AnyQuery,
+        _options: QueryExecutionOptions,
+    ) -> Result<DatasetRecordBatchStream> {
+        let table_id = self
+            .namespace_table_id
+            .as_ref()
+            .ok_or_else(|| Error::Runtime {
+                message: "namespace_table_id is required for server-side query".to_string(),
+            })?;
+
+        // Convert AnyQuery to namespace QueryTableRequest
+        let mut ns_request = self.convert_to_namespace_query(query)?;
+        // Set the table ID on the request
+        ns_request.id = Some(table_id.clone());
+
+        // Call the namespace query_table API
+        let response_bytes = namespace_client
+            .query_table(ns_request)
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to execute server-side query: {}", e),
+            })?;
+
+        // Parse the Arrow IPC response into a RecordBatchStream
+        self.parse_arrow_ipc_response(response_bytes).await
+    }
+
+    /// Convert a QueryFilter to a SQL string for the namespace API.
+    fn filter_to_sql(&self, filter: &QueryFilter) -> Result<String> {
+        match filter {
+            QueryFilter::Sql(sql) => Ok(sql.clone()),
+            QueryFilter::Substrait(_) => Err(Error::NotSupported {
+                message: "Substrait filters are not supported for server-side queries".to_string(),
+            }),
+            QueryFilter::Datafusion(_) => Err(Error::NotSupported {
+                message: "Datafusion expression filters are not supported for server-side queries. Use SQL filter instead.".to_string(),
+            }),
+        }
+    }
+
+    /// Convert an AnyQuery to the namespace QueryTableRequest format.
+    fn convert_to_namespace_query(&self, query: &AnyQuery) -> Result<NsQueryTableRequest> {
+        match query {
+            AnyQuery::VectorQuery(vq) => {
+                // Extract the query vector(s)
+                let vector = self.extract_query_vector(&vq.query_vector)?;
+
+                // Convert filter to SQL string
+                let filter = match &vq.base.filter {
+                    Some(f) => Some(self.filter_to_sql(f)?),
+                    None => None,
+                };
+
+                // Convert select to columns list
+                let columns = match &vq.base.select {
+                    Select::All => None,
+                    Select::Columns(cols) => Some(cols.clone()),
+                    Select::Dynamic(_) => {
+                        return Err(Error::NotSupported {
+                            message:
+                                "Dynamic column selection is not supported for server-side queries"
+                                    .to_string(),
+                        });
+                    }
+                };
+
+                // Check for unsupported features
+                if vq.base.reranker.is_some() {
+                    return Err(Error::NotSupported {
+                        message: "Reranker is not supported for server-side queries".to_string(),
+                    });
+                }
+
+                // Convert FTS query if present
+                let full_text_query = vq.base.full_text_search.as_ref().map(|fts| {
+                    let columns = fts.columns();
+                    let columns_vec = if columns.is_empty() {
+                        None
+                    } else {
+                        Some(columns.into_iter().collect())
+                    };
+                    Box::new(QueryTableRequestFullTextQuery {
+                        string_query: Some(Box::new(StringFtsQuery {
+                            query: fts.query.to_string(),
+                            columns: columns_vec,
+                        })),
+                        structured_query: None,
+                    })
+                });
+
+                Ok(NsQueryTableRequest {
+                    id: None, // Will be set in namespace_query
+                    k: vq.base.limit.unwrap_or(10) as i32,
+                    vector: Box::new(vector),
+                    vector_column: vq.column.clone(),
+                    filter,
+                    columns,
+                    offset: vq.base.offset.map(|o| o as i32),
+                    distance_type: vq.distance_type.map(|dt| dt.to_string()),
+                    nprobes: Some(vq.minimum_nprobes as i32),
+                    ef: vq.ef.map(|e| e as i32),
+                    refine_factor: vq.refine_factor.map(|r| r as i32),
+                    lower_bound: vq.lower_bound,
+                    upper_bound: vq.upper_bound,
+                    prefilter: Some(vq.base.prefilter),
+                    fast_search: Some(vq.base.fast_search),
+                    with_row_id: Some(vq.base.with_row_id),
+                    bypass_vector_index: Some(!vq.use_index),
+                    full_text_query,
+                    version: None,
+                })
+            }
+            AnyQuery::Query(_q) => {
+                // For non-vector queries, we still need a vector field (namespace API requires it)
+                // This is a limitation - we should return an error for plain queries
+                Err(Error::NotSupported {
+                    message: "Non-vector queries are not yet supported for server-side execution. \
+                              Please use a vector query or disable server_side_query."
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Extract query vector(s) from Arrow arrays into the namespace format.
+    fn extract_query_vector(
+        &self,
+        query_vectors: &[Arc<dyn arrow_array::Array>],
+    ) -> Result<QueryTableRequestVector> {
+        if query_vectors.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "Query vector is required for vector search".to_string(),
+            });
+        }
+
+        // Handle single vector case
+        if query_vectors.len() == 1 {
+            let arr = &query_vectors[0];
+            let single_vector = self.array_to_f32_vec(arr)?;
+            Ok(QueryTableRequestVector {
+                single_vector: Some(single_vector),
+                multi_vector: None,
+            })
+        } else {
+            // Handle multi-vector case
+            let multi_vector: Result<Vec<Vec<f32>>> = query_vectors
+                .iter()
+                .map(|arr| self.array_to_f32_vec(arr))
+                .collect();
+            Ok(QueryTableRequestVector {
+                single_vector: None,
+                multi_vector: Some(multi_vector?),
+            })
+        }
+    }
+
+    /// Convert an Arrow array to a Vec<f32>.
+    fn array_to_f32_vec(&self, arr: &Arc<dyn arrow_array::Array>) -> Result<Vec<f32>> {
+        // Handle FixedSizeList (common for vectors)
+        if let Some(fsl) = arr
+            .as_any()
+            .downcast_ref::<arrow_array::FixedSizeListArray>()
+        {
+            let values = fsl.values();
+            if let Some(f32_arr) = values.as_any().downcast_ref::<arrow_array::Float32Array>() {
+                return Ok(f32_arr.values().to_vec());
+            }
+        }
+
+        // Handle direct Float32Array
+        if let Some(f32_arr) = arr.as_any().downcast_ref::<arrow_array::Float32Array>() {
+            return Ok(f32_arr.values().to_vec());
+        }
+
+        Err(Error::InvalidInput {
+            message: "Query vector must be Float32 type".to_string(),
+        })
+    }
+
+    /// Parse Arrow IPC response from the namespace server.
+    async fn parse_arrow_ipc_response(
+        &self,
+        bytes: bytes::Bytes,
+    ) -> Result<DatasetRecordBatchStream> {
+        use arrow_ipc::reader::StreamReader;
+        use std::io::Cursor;
+
+        let cursor = Cursor::new(bytes);
+        let reader = StreamReader::try_new(cursor, None).map_err(|e| Error::Runtime {
+            message: format!("Failed to parse Arrow IPC response: {}", e),
+        })?;
+
+        // Collect all record batches
+        let schema = reader.schema();
+        let batches: Vec<_> = reader
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to read Arrow IPC batches: {}", e),
+            })?;
+
+        // Create a stream from the batches
+        let stream = futures::stream::iter(batches.into_iter().map(Ok));
+        let record_batch_stream = Box::pin(
+            datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(schema, stream),
+        );
+
+        Ok(DatasetRecordBatchStream::new(record_batch_stream))
     }
 
     /// Check whether the table uses V2 manifest paths.
@@ -2466,6 +2724,12 @@ impl BaseTable for NativeTable {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
+        // If namespace client is configured, use server-side query execution
+        if let Some(ref namespace_client) = self.namespace_client {
+            return self
+                .namespace_query(namespace_client.clone(), query, options)
+                .await;
+        }
         self.generic_query(query, options).await
     }
 
@@ -4573,5 +4837,83 @@ mod tests {
         let result = table.list_indices().await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].index_type, crate::index::IndexType::Bitmap);
+    }
+
+    #[tokio::test]
+    async fn test_convert_to_namespace_query_vector() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test_ns_query.lance");
+
+        let batches = make_test_batches();
+        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
+            .await
+            .unwrap();
+
+        let table = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Create a vector query
+        let query_vector = Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0]));
+        let vq = VectorQueryRequest {
+            base: QueryRequest {
+                limit: Some(10),
+                offset: Some(5),
+                filter: Some(QueryFilter::Sql("id > 0".to_string())),
+                select: Select::Columns(vec!["id".to_string()]),
+                ..Default::default()
+            },
+            column: Some("vector".to_string()),
+            query_vector: vec![query_vector as Arc<dyn Array>],
+            minimum_nprobes: 20,
+            distance_type: Some(crate::DistanceType::L2),
+            ..Default::default()
+        };
+
+        let any_query = AnyQuery::VectorQuery(vq);
+        let ns_request = table.convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+        assert_eq!(ns_request.offset, Some(5));
+        assert_eq!(ns_request.filter, Some("id > 0".to_string()));
+        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        assert_eq!(ns_request.vector_column, Some("vector".to_string()));
+        assert_eq!(ns_request.distance_type, Some("l2".to_string()));
+        assert!(ns_request.vector.single_vector.is_some());
+        assert_eq!(
+            ns_request.vector.single_vector.as_ref().unwrap(),
+            &vec![1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_convert_to_namespace_query_unsupported_plain_query() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test_ns_plain.lance");
+
+        let batches = make_test_batches();
+        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
+            .await
+            .unwrap();
+
+        let table = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Create a plain (non-vector) query
+        let q = QueryRequest {
+            limit: Some(10),
+            ..Default::default()
+        };
+
+        let any_query = AnyQuery::Query(q);
+        let result = table.convert_to_namespace_query(&any_query);
+
+        // Plain queries should return NotSupported error
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::NotSupported { .. } => {}
+            e => panic!("Expected NotSupported error, got {:?}", e),
+        }
     }
 }
