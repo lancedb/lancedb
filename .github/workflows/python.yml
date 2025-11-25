@@ -149,7 +149,7 @@ jobs:
       matrix:
         config:
           - name: x86
-            runner: macos-13
+            runner: macos-15-large
           - name: Arm
             runner: macos-14
     runs-on: "${{ matrix.config.runner }}"
