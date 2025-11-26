@@ -40,6 +40,8 @@ pub struct LanceNamespaceDatabase {
     session: Option<Arc<lance::session::Session>>,
     // database URI
     uri: String,
+    // Whether to enable server-side query execution
+    server_side_query_enabled: bool,
 }
 
 impl LanceNamespaceDatabase {
@@ -49,6 +51,7 @@ impl LanceNamespaceDatabase {
         storage_options: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
         session: Option<Arc<lance::session::Session>>,
+        server_side_query_enabled: bool,
     ) -> Result<Self> {
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
@@ -67,6 +70,7 @@ impl LanceNamespaceDatabase {
             read_consistency_interval,
             session,
             uri: format!("namespace://{}", ns_impl),
+            server_side_query_enabled,
         })
     }
 }
@@ -76,6 +80,7 @@ impl std::fmt::Debug for LanceNamespaceDatabase {
         f.debug_struct("LanceNamespaceDatabase")
             .field("storage_options", &self.storage_options)
             .field("read_consistency_interval", &self.read_consistency_interval)
+            .field("server_side_query_enabled", &self.server_side_query_enabled)
             .finish()
     }
 }
@@ -290,6 +295,10 @@ impl Database for LanceNamespaceDatabase {
                         )
                         .await?;
 
+                    let namespace_client = self
+                        .server_side_query_enabled
+                        .then(|| self.namespace.clone());
+
                     return listing_db
                         .open_table(OpenTableRequest {
                             name: request.name.clone(),
@@ -297,6 +306,7 @@ impl Database for LanceNamespaceDatabase {
                             index_cache_size: None,
                             lance_read_params: None,
                             location: Some(location),
+                            namespace_client,
                         })
                         .await;
                 }
@@ -333,11 +343,15 @@ impl Database for LanceNamespaceDatabase {
         let listing_db = self
             .create_listing_database(
                 &location,
-                table_id,
+                table_id.clone(),
                 user_storage_options,
                 create_empty_response.storage_options.as_ref(),
             )
             .await?;
+
+        let namespace_client = self
+            .server_side_query_enabled
+            .then(|| self.namespace.clone());
 
         let create_request = DbCreateTableRequest {
             name: request.name,
@@ -346,7 +360,9 @@ impl Database for LanceNamespaceDatabase {
             mode: request.mode,
             write_options: request.write_options,
             location: Some(location),
+            namespace_client,
         };
+
         listing_db.create_table(create_request).await
     }
 
@@ -380,11 +396,15 @@ impl Database for LanceNamespaceDatabase {
         let listing_db = self
             .create_listing_database(
                 &location,
-                table_id,
+                table_id.clone(),
                 user_storage_options,
                 response.storage_options.as_ref(),
             )
             .await?;
+
+        let namespace_client = self
+            .server_side_query_enabled
+            .then(|| self.namespace.clone());
 
         let open_request = OpenTableRequest {
             name: request.name.clone(),
@@ -392,7 +412,9 @@ impl Database for LanceNamespaceDatabase {
             index_cache_size: request.index_cache_size,
             lance_read_params: request.lance_read_params,
             location: Some(location),
+            namespace_client,
         };
+
         listing_db.open_table(open_request).await
     }
 

@@ -408,6 +408,7 @@ impl OpenTableBuilder {
                 index_cache_size: None,
                 lance_read_params: None,
                 location: None,
+                namespace_client: None,
             },
             embedding_registry,
         }
@@ -1086,6 +1087,7 @@ pub struct ConnectNamespaceBuilder {
     read_consistency_interval: Option<std::time::Duration>,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     session: Option<Arc<lance::session::Session>>,
+    server_side_query_enabled: bool,
 }
 
 impl ConnectNamespaceBuilder {
@@ -1097,6 +1099,7 @@ impl ConnectNamespaceBuilder {
             read_consistency_interval: None,
             embedding_registry: None,
             session: None,
+            server_side_query_enabled: false,
         }
     }
 
@@ -1151,6 +1154,18 @@ impl ConnectNamespaceBuilder {
         self
     }
 
+    /// Enable server-side query execution.
+    ///
+    /// When enabled, queries will be executed on the namespace server instead of
+    /// locally. This can improve performance by reducing data transfer and
+    /// leveraging server-side compute resources.
+    ///
+    /// Default is `false` (queries executed locally).
+    pub fn server_side_query(mut self, enabled: bool) -> Self {
+        self.server_side_query_enabled = enabled;
+        self
+    }
+
     /// Execute the connection
     pub async fn execute(self) -> Result<Connection> {
         use crate::database::namespace::LanceNamespaceDatabase;
@@ -1162,6 +1177,7 @@ impl ConnectNamespaceBuilder {
                 self.storage_options,
                 self.read_consistency_interval,
                 self.session,
+                self.server_side_query_enabled,
             )
             .await?,
         );

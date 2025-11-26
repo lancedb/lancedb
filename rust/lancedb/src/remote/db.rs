@@ -417,6 +417,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                             index_cache_size: None,
                             lance_read_params: None,
                             location: None,
+                            namespace_client: None,
                         };
                         let req = (callback)(req);
                         self.open_table(req).await
