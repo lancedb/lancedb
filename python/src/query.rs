@@ -690,7 +690,7 @@ impl FTSQuery {
     }
 
     pub fn get_query(&self) -> String {
-        self.fts_query.query.query().to_owned()
+        self.fts_query.query.query().clone()
     }
 
     pub fn to_query_request(&self) -> PyQueryRequest {
