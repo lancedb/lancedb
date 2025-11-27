@@ -189,7 +189,7 @@ def flatten_columns(tbl: pa.Table, flatten: Optional[Union[int, bool]] = None):
     return tbl
 
 
-def inf_vector_column_query(schema: pa.Schema) -> str:
+def infer_vector_column_query(schema: pa.Schema) -> str:
     """
     Get the vector column name
 
@@ -202,26 +202,26 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
     -------
     str: the vector column name.
     """
-    vector_col_name = ""
-    vector_col_count = 0
+    vector_columns = []
     for field_name in schema.names:
         field = schema.field(field_name)
         if is_vector_column(field.type):
-            vector_col_count += 1
-            if vector_col_count > 1:
-                raise ValueError(
-                    "Schema has more than one vector column. "
-                    "Please specify the vector column name "
-                    "for vector search"
-                )
-            elif vector_col_count == 1:
-                vector_col_name = field_name
-    if vector_col_count == 0:
+            vector_columns.append(field_name)
+
+    if len(vector_columns) == 0:
         raise ValueError(
             "There is no vector column in the data. "
-            "Please specify the vector column name for vector search"
+            "Please specify the vector column name for vector search. "
+            f"Available columns: {list(schema.names)}"
         )
-    return vector_col_name
+    elif len(vector_columns) > 1:
+        raise ValueError(
+            f"Schema has more than one vector column: {vector_columns}. "
+            "Please specify the vector column name for vector search using "
+            "the 'vector_column_name' parameter."
+        )
+
+    return vector_columns[0]
 
 
 def is_vector_column(data_type: pa.DataType) -> bool:
@@ -262,7 +262,7 @@ def infer_vector_column_name(
 
     if query is not None or query_type == "hybrid":
         try:
-            vector_column_name = inf_vector_column_query(schema)
+            vector_column_name = infer_vector_column_query(schema)
         except Exception as e:
             raise e
 
