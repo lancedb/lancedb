@@ -76,7 +76,7 @@ pub fn query_schemas(
             (Arc::new(fts_schema), vec_schema)
         }
         (Some(fts_schema), None) => {
-            let vec_schema = with_field_name_replaced(&fts_schema, DIST_COL, SCORE_COL);
+            let vec_schema = with_field_name_replaced(&fts_schema, SCORE_COL, DIST_COL);
             (fts_schema, Arc::new(vec_schema))
         }
         (None, None) => (Arc::new(empty_fts_schema()), Arc::new(empty_vec_schema())),
@@ -342,5 +342,65 @@ mod test {
             scores.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
             vec![0.0, 0.0, 0.0, 0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn test_query_schemas() {
+        let fts_schema = Arc::new(Schema::new(vec![
+            Arc::new(Field::new("name", DataType::Utf8, false)),
+            Arc::new(Field::new(SCORE_COL, DataType::Float32, false)),
+            Arc::new(Field::new(ROW_ID, DataType::UInt64, false)),
+        ]));
+        let vec_schema = Arc::new(Schema::new(vec![
+            Arc::new(Field::new("name", DataType::Utf8, false)),
+            Arc::new(Field::new(DIST_COL, DataType::Float32, false)),
+            Arc::new(Field::new(ROW_ID, DataType::UInt64, false)),
+        ]));
+
+        let fts_batch = RecordBatch::try_new(
+            fts_schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["foo", "bar"])),
+                Arc::new(Float32Array::from(vec![0.8, 0.6])),
+                Arc::new(arrow_array::UInt64Array::from(vec![1, 2])),
+            ],
+        )
+        .unwrap();
+        let vec_batch = RecordBatch::try_new(
+            vec_schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["foo", "bar"])),
+                Arc::new(Float32Array::from(vec![0.2, 0.4])),
+                Arc::new(arrow_array::UInt64Array::from(vec![1, 2])),
+            ],
+        )
+        .unwrap();
+
+        // check that the schemas are correct when both fts_results and vec_results are non-empty
+        let (result_fts_schema, result_vec_schema) =
+            query_schemas(&[fts_batch.clone()], &[vec_batch.clone()]);
+        assert_eq!(result_fts_schema.as_ref(), fts_schema.as_ref());
+        assert_eq!(result_vec_schema.as_ref(), vec_schema.as_ref());
+
+        // check that the schemas are correct when only vec_results is non-empty (fts_results is empty)
+        let (result_fts_schema, result_vec_schema) = query_schemas(&[], &[vec_batch.clone()]);
+        assert_eq!(result_vec_schema.as_ref(), vec_schema.as_ref());
+        // The fts_schema should have SCORE_COL instead of DIST_COL
+        assert!(result_fts_schema.column_with_name(SCORE_COL).is_some());
+        assert!(result_fts_schema.column_with_name(DIST_COL).is_none());
+
+        // check that the schemas are correct when only fts_results is non-empty (vec_results is empty)
+        let (result_fts_schema, result_vec_schema) = query_schemas(&[fts_batch.clone()], &[]);
+        assert_eq!(result_fts_schema.as_ref(), fts_schema.as_ref());
+        // The vec_schema should have DIST_COL instead of SCORE_COL
+        assert!(result_vec_schema.column_with_name(DIST_COL).is_some());
+        assert!(result_vec_schema.column_with_name(SCORE_COL).is_none());
+
+        // check that the schemas are correct when both are empty
+        let (result_fts_schema, result_vec_schema) = query_schemas(&[], &[]);
+        let expected_fts_schema = empty_fts_schema();
+        let expected_vec_schema = empty_vec_schema();
+        assert_eq!(result_fts_schema.as_ref(), &expected_fts_schema);
+        assert_eq!(result_vec_schema.as_ref(), &expected_vec_schema);
     }
 }
