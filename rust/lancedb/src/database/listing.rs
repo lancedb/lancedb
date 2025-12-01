@@ -606,18 +606,11 @@ impl ListingDatabase {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
 
-        // Apply enable_stable_row_ids: request param takes precedence over database config
-        // The request's lance_write_params.enable_stable_row_ids (set via builder) takes
-        // highest precedence since it's already in write_params. Here we only set it if
-        // the request didn't explicitly set it (i.e., it's still false).
-        if !write_params.enable_stable_row_ids {
-            if let Some(enable_stable_row_ids) = self
-                .new_table_config
-                .enable_stable_row_ids
-                .or(stable_row_ids_override)
-            {
-                write_params.enable_stable_row_ids = enable_stable_row_ids;
-            }
+        // Apply enable_stable_row_ids: table-level override takes precedence over connection config
+        if let Some(enable_stable_row_ids) =
+            stable_row_ids_override.or(self.new_table_config.enable_stable_row_ids)
+        {
+            write_params.enable_stable_row_ids = enable_stable_row_ids;
         }
 
         if matches!(&request.mode, CreateTableMode::Overwrite) {
