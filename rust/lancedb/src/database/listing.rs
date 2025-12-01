@@ -51,9 +51,9 @@ pub struct NewTableConfig {
     pub enable_v2_manifest_paths: Option<bool>,
     /// Whether to enable stable row IDs for new tables
     ///
-    /// When enabled, row IDs remain stable after compaction operations,
-    /// though not after updates. This is useful for materialized views
-    /// and other use cases that need to track source rows across compaction.
+    /// When enabled, row IDs remain stable after compaction, update, delete,
+    /// and merges. This is useful for materialized views and other use cases
+    /// that need to track source rows across these operations.
     pub enable_stable_row_ids: Option<bool>,
 }
 
@@ -98,10 +98,7 @@ impl ListingDatabaseOptions {
                 .get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS)
                 .map(|s| {
                     s.parse::<bool>().map_err(|_| Error::InvalidInput {
-                        message: format!(
-                            "enable_stable_row_ids must be a boolean, received {}",
-                            s
-                        ),
+                        message: format!("enable_stable_row_ids must be a boolean, received {}", s),
                     })
                 })
                 .transpose()?,
@@ -977,7 +974,7 @@ impl Database for ListingDatabase {
 mod tests {
     use super::*;
     use crate::connection::ConnectRequest;
-    use crate::database::{CreateTableData, CreateTableMode, CreateTableRequest};
+    use crate::database::{CreateTableData, CreateTableMode, CreateTableRequest, WriteOptions};
     use crate::table::{Table, TableDefinition};
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
@@ -1676,5 +1673,268 @@ mod tests {
 
         // Cloned table should have all 8 rows from the latest version
         assert_eq!(cloned_table.count_rows(None).await.unwrap(), 8);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_with_stable_row_ids_connection_level() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with stable row IDs enabled at connection level
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        // Verify the config was parsed correctly
+        assert_eq!(db.new_table_config.enable_stable_row_ids, Some(true));
+
+        // Create a table - it should inherit the stable row IDs setting
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "test_stable".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify table was created successfully
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_with_stable_row_ids_table_level() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Verify connection has no stable row IDs config
+        assert_eq!(db.new_table_config.enable_stable_row_ids, None);
+
+        // Create a table with stable row IDs enabled at table level via storage_options
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        let mut storage_options = HashMap::new();
+        storage_options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        let write_options = WriteOptions {
+            lance_write_params: Some(lance::dataset::WriteParams {
+                store_params: Some(lance::io::ObjectStoreParams {
+                    storage_options: Some(storage_options),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "test_stable_table_level".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options,
+                location: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify table was created successfully
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_stable_row_ids_table_overrides_connection() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with stable row IDs enabled at connection level
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        assert_eq!(db.new_table_config.enable_stable_row_ids, Some(true));
+
+        // Create table with stable row IDs disabled at table level (overrides connection)
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        let mut storage_options = HashMap::new();
+        storage_options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "false".to_string(),
+        );
+
+        let write_options = WriteOptions {
+            lance_write_params: Some(lance::dataset::WriteParams {
+                store_params: Some(lance::io::ObjectStoreParams {
+                    storage_options: Some(storage_options),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "test_override".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options,
+                location: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify table was created successfully
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_stable_row_ids_invalid_value() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Try to create database with invalid stable row IDs value
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "not_a_boolean".to_string(),
+        );
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let result = ListingDatabase::connect_with_options(&request).await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidInput { message } if message.contains("enable_stable_row_ids must be a boolean")
+        ));
+    }
+
+    #[test]
+    fn test_stable_row_ids_config_serialization() {
+        // Test that ListingDatabaseOptions correctly serializes stable_row_ids
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        // Parse the options
+        let db_options = ListingDatabaseOptions::parse_from_map(&options).unwrap();
+        assert_eq!(
+            db_options.new_table_config.enable_stable_row_ids,
+            Some(true)
+        );
+
+        // Serialize back to map
+        let mut serialized = HashMap::new();
+        db_options.serialize_into_map(&mut serialized);
+
+        assert_eq!(
+            serialized.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_stable_row_ids_config_parse_false() {
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "false".to_string(),
+        );
+
+        let db_options = ListingDatabaseOptions::parse_from_map(&options).unwrap();
+        assert_eq!(
+            db_options.new_table_config.enable_stable_row_ids,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_stable_row_ids_config_not_set() {
+        let options = HashMap::new();
+
+        let db_options = ListingDatabaseOptions::parse_from_map(&options).unwrap();
+        assert_eq!(db_options.new_table_config.enable_stable_row_ids, None);
     }
 }

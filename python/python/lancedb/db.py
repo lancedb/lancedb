@@ -149,7 +149,6 @@ class DBConnection(EnforceOverrides):
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
-        enable_stable_row_ids: bool = False,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -195,17 +194,16 @@ class DBConnection(EnforceOverrides):
             connection will be inherited by the table, but can be overridden here.
             See available options at
             <https://lancedb.com/docs/storage/>
+
+            To enable stable row IDs (row IDs remain stable after compaction,
+            update, delete, and merges), set `new_table_enable_stable_row_ids`
+            to `"true"` in storage_options when connecting to the database.
         data_storage_version: optional, str, default "stable"
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_data_storage_version` in the options.
         enable_v2_manifest_paths: optional, bool, default False
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
-        enable_stable_row_ids: bool, default False
-            If True, the table will use stable row IDs. Row IDs will remain stable
-            after compaction operations, though not after updates. This is useful
-            for materialized views and other use cases that need to track source
-            rows across compaction. This is an experimental feature in Lance.
         Returns
         -------
         LanceTable
@@ -663,7 +661,6 @@ class LanceDBConnection(DBConnection):
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
-        enable_stable_row_ids: bool = False,
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -695,7 +692,6 @@ class LanceDBConnection(DBConnection):
             namespace=namespace,
             storage_options=storage_options,
             storage_options_provider=storage_options_provider,
-            enable_stable_row_ids=enable_stable_row_ids,
         )
         return tbl
 
@@ -1041,7 +1037,6 @@ class AsyncConnection(object):
         namespace: Optional[List[str]] = None,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         location: Optional[str] = None,
-        enable_stable_row_ids: bool = False,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -1087,11 +1082,10 @@ class AsyncConnection(object):
             connection will be inherited by the table, but can be overridden here.
             See available options at
             <https://lancedb.com/docs/storage/>
-        enable_stable_row_ids: bool, default False
-            If True, the table will use stable row IDs. Row IDs will remain stable
-            after compaction operations, though not after updates. This is useful
-            for materialized views and other use cases that need to track source
-            rows across compaction. This is an experimental feature in Lance.
+
+            To enable stable row IDs (row IDs remain stable after compaction,
+            update, delete, and merges), set `new_table_enable_stable_row_ids`
+            to `"true"` in storage_options when connecting to the database.
 
         Returns
         -------
@@ -1241,7 +1235,6 @@ class AsyncConnection(object):
                 storage_options=storage_options,
                 storage_options_provider=storage_options_provider,
                 location=location,
-                enable_stable_row_ids=enable_stable_row_ids,
             )
         else:
             data = data_to_reader(data, schema)
@@ -1253,7 +1246,6 @@ class AsyncConnection(object):
                 storage_options=storage_options,
                 storage_options_provider=storage_options_provider,
                 location=location,
-                enable_stable_row_ids=enable_stable_row_ids,
             )
 
         return AsyncTable(new_table)

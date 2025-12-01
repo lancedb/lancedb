@@ -47,7 +47,6 @@ class Connection(object):
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         location: Optional[str] = None,
-        enable_stable_row_ids: bool = False,
     ) -> Table: ...
     async def create_empty_table(
         self,
@@ -58,7 +57,6 @@ class Connection(object):
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         location: Optional[str] = None,
-        enable_stable_row_ids: bool = False,
     ) -> Table: ...
     async def open_table(
         self,

@@ -385,22 +385,6 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
             .storage_options_provider = Some(provider);
         self
     }
-
-    /// Enable stable row IDs for the table. (default: false)
-    ///
-    /// When enabled, row IDs remain stable after compaction operations,
-    /// though not after updates. This is useful for materialized views
-    /// and other use cases that need to track source rows across compaction.
-    ///
-    /// This is an experimental feature in Lance.
-    pub fn enable_stable_row_ids(mut self, enable: bool) -> Self {
-        self.request
-            .write_options
-            .lance_write_params
-            .get_or_insert_with(Default::default)
-            .enable_stable_row_ids = enable;
-        self
-    }
 }
 
 #[derive(Clone, Debug)]
