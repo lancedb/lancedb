@@ -105,7 +105,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, mode, data, namespace=vec![], storage_options=None, storage_options_provider=None, location=None))]
+    #[pyo3(signature = (name, mode, data, namespace=vec![], storage_options=None, storage_options_provider=None, location=None, enable_stable_row_ids=false))]
     pub fn create_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -115,6 +115,7 @@ impl Connection {
         storage_options: Option<HashMap<String, String>>,
         storage_options_provider: Option<PyObject>,
         location: Option<String>,
+        enable_stable_row_ids: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -135,6 +136,9 @@ impl Connection {
         if let Some(location) = location {
             builder = builder.location(location);
         }
+        if enable_stable_row_ids {
+            builder = builder.enable_stable_row_ids(true);
+        }
 
         future_into_py(self_.py(), async move {
             let table = builder.execute().await.infer_error()?;
@@ -143,7 +147,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, mode, schema, namespace=vec![], storage_options=None, storage_options_provider=None, location=None))]
+    #[pyo3(signature = (name, mode, schema, namespace=vec![], storage_options=None, storage_options_provider=None, location=None, enable_stable_row_ids=false))]
     pub fn create_empty_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -153,6 +157,7 @@ impl Connection {
         storage_options: Option<HashMap<String, String>>,
         storage_options_provider: Option<PyObject>,
         location: Option<String>,
+        enable_stable_row_ids: bool,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -172,6 +177,9 @@ impl Connection {
         }
         if let Some(location) = location {
             builder = builder.location(location);
+        }
+        if enable_stable_row_ids {
+            builder = builder.enable_stable_row_ids(true);
         }
 
         future_into_py(self_.py(), async move {

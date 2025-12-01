@@ -441,6 +441,62 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
         assert re.match(r"\d{20}\.manifest", manifest)
 
 
+@pytest.mark.asyncio
+async def test_create_table_with_stable_row_ids_async(tmp_path):
+    """Test that enable_stable_row_ids parameter works correctly."""
+    import lance
+
+    db = await lancedb.connect_async(tmp_path)
+
+    # Create table with stable row IDs enabled
+    await db.create_table(
+        "with_stable",
+        data=[{"id": i} for i in range(10)],
+        enable_stable_row_ids=True,
+    )
+    # Check that stable row IDs are enabled via fragment metadata
+    lance_ds_with = lance.dataset(tmp_path / "with_stable.lance")
+    fragments_with = lance_ds_with.get_fragments()
+    assert len(fragments_with) > 0
+    assert fragments_with[0].metadata.row_id_meta is not None
+
+    # Create table without stable row IDs (default)
+    await db.create_table(
+        "without_stable",
+        data=[{"id": i} for i in range(10)],
+        enable_stable_row_ids=False,
+    )
+    lance_ds_without = lance.dataset(tmp_path / "without_stable.lance")
+    fragments_without = lance_ds_without.get_fragments()
+    assert len(fragments_without) > 0
+    assert fragments_without[0].metadata.row_id_meta is None
+
+
+def test_create_table_with_stable_row_ids_sync(tmp_db: lancedb.DBConnection):
+    """Test that enable_stable_row_ids parameter works correctly (sync API)."""
+    # Create table with stable row IDs enabled
+    tbl_with = tmp_db.create_table(
+        "with_stable",
+        data=[{"id": i} for i in range(10)],
+        enable_stable_row_ids=True,
+    )
+    lance_ds_with = tbl_with.to_lance()
+    fragments_with = lance_ds_with.get_fragments()
+    assert len(fragments_with) > 0
+    assert fragments_with[0].metadata.row_id_meta is not None
+
+    # Create table without stable row IDs (default)
+    tbl_without = tmp_db.create_table(
+        "without_stable",
+        data=[{"id": i} for i in range(10)],
+        enable_stable_row_ids=False,
+    )
+    lance_ds_without = tbl_without.to_lance()
+    fragments_without = lance_ds_without.get_fragments()
+    assert len(fragments_without) > 0
+    assert fragments_without[0].metadata.row_id_meta is None
+
+
 def test_open_table_sync(tmp_db: lancedb.DBConnection):
     tmp_db.create_table("test", data=[{"id": 0}])
     assert tmp_db.open_table("test").count_rows() == 1

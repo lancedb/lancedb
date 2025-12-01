@@ -2633,6 +2633,7 @@ class LanceTable(Table):
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
         location: Optional[str] = None,
+        enable_stable_row_ids: bool = False,
     ):
         """
         Create a new table.
@@ -2729,6 +2730,7 @@ class LanceTable(Table):
                 storage_options=storage_options,
                 storage_options_provider=storage_options_provider,
                 location=location,
+                enable_stable_row_ids=enable_stable_row_ids,
             )
         )
         return self
