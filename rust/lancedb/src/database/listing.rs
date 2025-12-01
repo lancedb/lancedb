@@ -35,6 +35,7 @@ pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 pub const OPT_NEW_TABLE_STORAGE_VERSION: &str = "new_table_data_storage_version";
 pub const OPT_NEW_TABLE_V2_MANIFEST_PATHS: &str = "new_table_enable_v2_manifest_paths";
+pub const OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS: &str = "new_table_enable_stable_row_ids";
 
 /// Controls how new tables should be created
 #[derive(Clone, Debug, Default)]
@@ -48,6 +49,12 @@ pub struct NewTableConfig {
     /// V2 manifest paths are more efficient than V2 manifest paths but are not
     /// supported by old clients.
     pub enable_v2_manifest_paths: Option<bool>,
+    /// Whether to enable stable row IDs for new tables
+    ///
+    /// When enabled, row IDs remain stable after compaction operations,
+    /// though not after updates. This is useful for materialized views
+    /// and other use cases that need to track source rows across compaction.
+    pub enable_stable_row_ids: Option<bool>,
 }
 
 /// Options specific to the listing database
@@ -87,6 +94,17 @@ impl ListingDatabaseOptions {
                     })
                 })
                 .transpose()?,
+            enable_stable_row_ids: map
+                .get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS)
+                .map(|s| {
+                    s.parse::<bool>().map_err(|_| Error::InvalidInput {
+                        message: format!(
+                            "enable_stable_row_ids must be a boolean, received {}",
+                            s
+                        ),
+                    })
+                })
+                .transpose()?,
         };
         // We just assume that any options that are not new table config options are storage options
         let storage_options = map
@@ -94,6 +112,7 @@ impl ListingDatabaseOptions {
             .filter(|(key, _)| {
                 key.as_str() != OPT_NEW_TABLE_STORAGE_VERSION
                     && key.as_str() != OPT_NEW_TABLE_V2_MANIFEST_PATHS
+                    && key.as_str() != OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS
             })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
@@ -116,6 +135,12 @@ impl DatabaseOptions for ListingDatabaseOptions {
             map.insert(
                 OPT_NEW_TABLE_V2_MANIFEST_PATHS.to_string(),
                 enable_v2_manifest_paths.to_string(),
+            );
+        }
+        if let Some(enable_stable_row_ids) = self.new_table_config.enable_stable_row_ids {
+            map.insert(
+                OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                enable_stable_row_ids.to_string(),
             );
         }
     }
@@ -497,7 +522,7 @@ impl ListingDatabase {
     fn extract_storage_overrides(
         &self,
         request: &CreateTableRequest,
-    ) -> Result<(Option<LanceFileVersion>, Option<bool>)> {
+    ) -> Result<(Option<LanceFileVersion>, Option<bool>, Option<bool>)> {
         let storage_options = request
             .write_options
             .lance_write_params
@@ -518,7 +543,19 @@ impl ListingDatabase {
                 message: "enable_v2_manifest_paths must be a boolean".to_string(),
             })?;
 
-        Ok((storage_version_override, v2_manifest_override))
+        let stable_row_ids_override = storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS))
+            .map(|s| s.parse::<bool>())
+            .transpose()
+            .map_err(|_| Error::InvalidInput {
+                message: "enable_stable_row_ids must be a boolean".to_string(),
+            })?;
+
+        Ok((
+            storage_version_override,
+            v2_manifest_override,
+            stable_row_ids_override,
+        ))
     }
 
     /// Prepare write parameters for table creation
@@ -527,6 +564,7 @@ impl ListingDatabase {
         request: &CreateTableRequest,
         storage_version_override: Option<LanceFileVersion>,
         v2_manifest_override: Option<bool>,
+        stable_row_ids_override: Option<bool>,
     ) -> lance::dataset::WriteParams {
         let mut write_params = request
             .write_options
@@ -569,6 +607,20 @@ impl ListingDatabase {
             .or(v2_manifest_override)
         {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
+        }
+
+        // Apply enable_stable_row_ids: request param takes precedence over database config
+        // The request's lance_write_params.enable_stable_row_ids (set via builder) takes
+        // highest precedence since it's already in write_params. Here we only set it if
+        // the request didn't explicitly set it (i.e., it's still false).
+        if !write_params.enable_stable_row_ids {
+            if let Some(enable_stable_row_ids) = self
+                .new_table_config
+                .enable_stable_row_ids
+                .or(stable_row_ids_override)
+            {
+                write_params.enable_stable_row_ids = enable_stable_row_ids;
+            }
         }
 
         if matches!(&request.mode, CreateTableMode::Overwrite) {
@@ -706,11 +758,15 @@ impl Database for ListingDatabase {
             .clone()
             .unwrap_or_else(|| self.table_uri(&request.name).unwrap());
 
-        let (storage_version_override, v2_manifest_override) =
+        let (storage_version_override, v2_manifest_override, stable_row_ids_override) =
             self.extract_storage_overrides(&request)?;
 
-        let write_params =
-            self.prepare_write_params(&request, storage_version_override, v2_manifest_override);
+        let write_params = self.prepare_write_params(
+            &request,
+            storage_version_override,
+            v2_manifest_override,
+            stable_row_ids_override,
+        );
 
         let data_schema = request.data.arrow_schema();
 

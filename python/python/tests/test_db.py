@@ -497,6 +497,41 @@ def test_create_table_with_stable_row_ids_sync(tmp_db: lancedb.DBConnection):
     assert fragments_without[0].metadata.row_id_meta is None
 
 
+@pytest.mark.asyncio
+async def test_create_table_stable_row_ids_via_storage_options(tmp_path):
+    """Test that enable_stable_row_ids can be set via storage_options at connect time."""
+    import lance
+
+    # Connect with stable row IDs enabled as default for new tables
+    db_with = await lancedb.connect_async(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+    # Connect without stable row IDs (default)
+    db_without = await lancedb.connect_async(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "false"}
+    )
+
+    # Create table using connection with stable row IDs enabled
+    await db_with.create_table(
+        "with_stable_via_opts",
+        data=[{"id": i} for i in range(10)],
+    )
+    lance_ds_with = lance.dataset(tmp_path / "with_stable_via_opts.lance")
+    fragments_with = lance_ds_with.get_fragments()
+    assert len(fragments_with) > 0
+    assert fragments_with[0].metadata.row_id_meta is not None
+
+    # Create table using connection without stable row IDs
+    await db_without.create_table(
+        "without_stable_via_opts",
+        data=[{"id": i} for i in range(10)],
+    )
+    lance_ds_without = lance.dataset(tmp_path / "without_stable_via_opts.lance")
+    fragments_without = lance_ds_without.get_fragments()
+    assert len(fragments_without) > 0
+    assert fragments_without[0].metadata.row_id_meta is None
+
+
 def test_open_table_sync(tmp_db: lancedb.DBConnection):
     tmp_db.create_table("test", data=[{"id": 0}])
     assert tmp_db.open_table("test").count_rows() == 1
