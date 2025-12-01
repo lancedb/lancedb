@@ -1906,6 +1906,25 @@ impl NativeTable {
                     VectorIndexParams::with_ivf_flat_params(index.distance_type.into(), ivf_params);
                 Ok(Box::new(lance_idx_params))
             }
+            Index::IvfSq(index) => {
+                Self::validate_index_type(field, "IVF SQ", supported_vector_data_type)?;
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
+                let sq_params = SQBuildParams {
+                    sample_rate: index.sample_rate as usize,
+                    ..Default::default()
+                };
+                let lance_idx_params = VectorIndexParams::with_ivf_sq_params(
+                    index.distance_type.into(),
+                    ivf_params,
+                    sq_params,
+                );
+                Ok(Box::new(lance_idx_params))
+            }
             Index::IvfPq(index) => {
                 Self::validate_index_type(field, "IVF PQ", supported_vector_data_type)?;
                 let dim = Self::get_vector_dimension(field)?;
@@ -2013,6 +2032,7 @@ impl NativeTable {
             Index::LabelList(_) => IndexType::LabelList,
             Index::FTS(_) => IndexType::Inverted,
             Index::IvfFlat(_)
+            | Index::IvfSq(_)
             | Index::IvfPq(_)
             | Index::IvfRq(_)
             | Index::IvfHnswPq(_)

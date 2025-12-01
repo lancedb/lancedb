@@ -18,12 +18,20 @@ AddMode = Literal["append", "overwrite"]
 CreateMode = Literal["create", "overwrite"]
 
 # Index type literals
-VectorIndexType = Literal["IVF_FLAT", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ", "IVF_RQ"]
+VectorIndexType = Literal[
+    "IVF_FLAT",
+    "IVF_SQ",
+    "IVF_PQ",
+    "IVF_HNSW_SQ",
+    "IVF_HNSW_PQ",
+    "IVF_RQ",
+]
 ScalarIndexType = Literal["BTREE", "BITMAP", "LABEL_LIST"]
 IndexType = Literal[
     "IVF_PQ",
     "IVF_HNSW_PQ",
     "IVF_HNSW_SQ",
+    "IVF_SQ",
     "FTS",
     "BTREE",
     "BITMAP",

@@ -1072,6 +1072,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     body["num_bits"] = serde_json::Value::Number(num_bits.into());
                 }
             }
+            Index::IvfSq(index) => {
+                body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_SQ".to_string());
+                body[METRIC_TYPE_KEY] =
+                    serde_json::Value::String(index.distance_type.to_string().to_lowercase());
+                if let Some(num_partitions) = index.num_partitions {
+                    body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
+                }
+            }
             Index::IvfHnswSq(index) => {
                 body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_HNSW_SQ".to_string());
                 body[METRIC_TYPE_KEY] =

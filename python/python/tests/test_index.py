@@ -12,6 +12,9 @@ from lancedb.index import (
     BTree,
     IvfFlat,
     IvfPq,
+    IvfSq,
+    IvfHnswPq,
+    IvfHnswSq,
     IvfRq,
     Bitmap,
     LabelList,
@@ -227,6 +230,35 @@ async def test_create_hnswsq_index(some_table: AsyncTable):
     await some_table.create_index("vector", config=HnswSq(num_partitions=10))
     indices = await some_table.list_indices()
     assert len(indices) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_hnswsq_alias_index(some_table: AsyncTable):
+    await some_table.create_index("vector", config=IvfHnswSq(num_partitions=5))
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type in {"HnswSq", "IvfHnswSq"}
+
+
+@pytest.mark.asyncio
+async def test_create_hnswpq_alias_index(some_table: AsyncTable):
+    await some_table.create_index("vector", config=IvfHnswPq(num_partitions=5))
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type in {"HnswPq", "IvfHnswPq"}
+
+
+@pytest.mark.asyncio
+async def test_create_ivfsq_index(some_table: AsyncTable):
+    await some_table.create_index("vector", config=IvfSq(num_partitions=10))
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "IvfSq"
+    stats = await some_table.index_stats(indices[0].name)
+    assert stats.index_type == "IVF_SQ"
+    assert stats.distance_type == "l2"
+    assert stats.num_indexed_rows == await some_table.count_rows()
+    assert stats.num_unindexed_rows == 0
 
 
 @pytest.mark.asyncio

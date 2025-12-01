@@ -3,9 +3,22 @@ from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
 
 import pyarrow as pa
 
-from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from .index import (
+    BTree,
+    IvfFlat,
+    IvfPq,
+    IvfSq,
+    Bitmap,
+    LabelList,
+    HnswPq,
+    HnswSq,
+    FTS,
+)
 from .io import StorageOptionsProvider
 from .remote import ClientConfig
+
+IvfHnswPq: type[HnswPq] = HnswPq
+IvfHnswSq: type[HnswSq] = HnswSq
 
 class Session:
     def __init__(
@@ -104,7 +117,17 @@ class Table:
     async def create_index(
         self,
         column: str,
-        index: Union[IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS],
+        index: Union[
+            IvfFlat,
+            IvfSq,
+            IvfPq,
+            HnswPq,
+            HnswSq,
+            BTree,
+            Bitmap,
+            LabelList,
+            FTS,
+        ],
         replace: Optional[bool],
         wait_timeout: Optional[object],
         *,
