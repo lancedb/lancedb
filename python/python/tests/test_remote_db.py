@@ -14,10 +14,19 @@ from packaging.version import Version
 
 import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
+from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
 import pyarrow as pa
+
+DEFAULT_QUERY_SCHEMA = pa.schema(
+    [
+        pa.field("id", pa.int64(), nullable=False),
+        pa.field("vector", pa.list_(pa.float32(), 3)),
+        pa.field("text", pa.string()),
+    ]
+)
 
 
 def make_mock_http_handler(handler):
@@ -514,7 +523,15 @@ def test_stats():
 
 
 @contextlib.contextmanager
-def query_test_table(query_handler, *, server_version=Version("0.1.0")):
+def query_test_table(
+    query_handler,
+    *,
+    server_version=Version("0.1.0"),
+    schema: pa.Schema = DEFAULT_QUERY_SCHEMA,
+):
+    async def _schema():
+        return schema
+
     def handler(request):
         if request.path == "/v1/table/test/describe/":
             request.send_response(200)
@@ -543,6 +560,7 @@ def query_test_table(query_handler, *, server_version=Version("0.1.0")):
         assert repr(db) == "RemoteConnect(name=dev)"
         table = db.open_table("test")
         assert repr(table) == "RemoteTable(dev.test)"
+        table._table.schema = _schema
         yield table
 
 
@@ -572,6 +590,7 @@ def test_query_sync_minimal():
             "lower_bound": None,
             "upper_bound": None,
             "ef": None,
+            "vector_column": "vector",
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 20,
             "minimum_nprobes": 20,
@@ -711,6 +730,7 @@ def test_query_sync_batch_queries(server_version):
     def handler(body):
         # TODO: we will add the ability to get the server version,
         # so that we can decide how to perform batch quires.
+        assert body["vector_column"] == "vector"
         vectors = body["vector"]
         if server_version >= Version(
             "0.2.0"
@@ -806,6 +826,7 @@ def test_query_sync_hybrid():
                 "k": 42,
                 "prefilter": True,
                 "refine_factor": None,
+                "vector_column": "vector",
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "nprobes": 20,
                 "minimum_nprobes": 20,
@@ -828,6 +849,40 @@ def test_query_sync_hybrid():
         table.embedding_functions = embedding_funcs
 
         (table.search("puppy", query_type="hybrid").limit(42).to_list())
+
+
+def test_query_sync_embedding_function_auto_vector():
+    registry = EmbeddingFunctionRegistry.get_instance()
+    embedding_func = MockTextEmbeddingFunction.create()
+    conf = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="vector",
+        function=embedding_func,
+    )
+    metadata = registry.get_table_metadata([conf])
+    expected_vector = embedding_func.compute_query_embeddings_with_retry("puppy")[0]
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("vector", pa.list_(pa.float32(), len(expected_vector))),
+            pa.field("text", pa.string()),
+        ],
+        metadata=metadata,
+    )
+
+    def handler(body):
+        assert "full_text_query" not in body
+        assert body["vector_column"] == "vector"
+        assert body["prefilter"] is True
+        assert body["vector"] == pytest.approx(expected_vector)
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler, schema=schema) as table:
+        # fallback in case metadata is stripped in transit
+        if not table.embedding_functions:
+            table.embedding_functions = {conf.vector_column: conf}
+        data = table.search("puppy").to_list()
+        assert data == [{"id": 1}]
 
 
 def test_create_client():

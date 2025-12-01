@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-from datetime import timedelta
 import logging
-from functools import cached_property
-from typing import Dict, Iterable, List, Optional, Union, Literal
 import warnings
+from datetime import timedelta
+from functools import cached_property
+from typing import Dict, Iterable, List, Literal, Optional, Union
+
+import pyarrow as pa
 
 from lancedb._lancedb import (
     AddColumnsResult,
@@ -17,17 +19,21 @@ from lancedb._lancedb import (
     MergeResult,
     UpdateResult,
 )
-from lancedb.embeddings.base import EmbeddingFunctionConfig
-from lancedb.index import FTS, BTree, Bitmap, HnswSq, IvfFlat, IvfPq, LabelList
-from lancedb.remote.db import LOOP
-import pyarrow as pa
-
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
-from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
+from lancedb.embeddings.base import EmbeddingFunctionConfig
+from lancedb.index import FTS, Bitmap, BTree, HnswSq, IvfFlat, IvfPq, LabelList
+from lancedb.merge import LanceMergeInsertBuilder
+from lancedb.remote.db import LOOP
 
-from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
+from ..query import (
+    FullTextQuery,
+    LanceQueryBuilder,
+    LanceTakeQueryBuilder,
+    LanceVectorQueryBuilder,
+)
 from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
+from ..util import infer_vector_column_name
 
 
 class RemoteTable(Table):
@@ -401,6 +407,16 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        if isinstance(query, FullTextQuery):
+            query_type = "fts"
+
+        vector_column_name = infer_vector_column_name(
+            schema=self.schema,
+            query_type=query_type,
+            query=query,
+            vector_column_name=vector_column_name,
+        )
+
         return LanceQueryBuilder.create(
             self,
             query,
