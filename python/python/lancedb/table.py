@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import deprecation
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -25,26 +24,43 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-from . import __version__
+import deprecation
+import numpy as np
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.dataset
+import pyarrow.fs as pa_fs
+
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP
+
+from . import __version__
+from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .dependencies import (
     _check_for_hugging_face,
     _check_for_lance,
     _check_for_pandas,
     lance,
+)
+from .dependencies import (
     pandas as pd,
+)
+from .dependencies import (
     polars as pl,
 )
-import pyarrow as pa
-import pyarrow.dataset
-import pyarrow.compute as pc
-import pyarrow.fs as pa_fs
-import numpy as np
-
-from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from .index import BTree, IvfFlat, IvfPq, Bitmap, IvfRq, LabelList, HnswPq, HnswSq, FTS
+from .index import (
+    FTS,
+    Bitmap,
+    BTree,
+    HnswPq,
+    HnswSq,
+    IvfFlat,
+    IvfPq,
+    IvfRq,
+    LabelList,
+    lang_mapping,
+)
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -58,8 +74,8 @@ from .query import (
     LanceFtsQueryBuilder,
     LanceHybridQueryBuilder,
     LanceQueryBuilder,
-    LanceVectorQueryBuilder,
     LanceTakeQueryBuilder,
+    LanceVectorQueryBuilder,
     Query,
 )
 from .util import (
@@ -70,38 +86,39 @@ from .util import (
     join_uri,
     value_to_sql,
 )
-from .index import lang_mapping
-
 
 if TYPE_CHECKING:
-    from .db import LanceDBConnection
-    from .io import StorageOptionsProvider
+    import pandas
+    import PIL
+
     from ._lancedb import (
-        Table as LanceDBTable,
-        OptimizeStats,
-        CleanupStats,
-        CompactionStats,
-        Tag,
         AddColumnsResult,
         AddResult,
         AlterColumnsResult,
+        CleanupStats,
+        CompactionStats,
         DeleteResult,
         DropColumnsResult,
         MergeResult,
+        OptimizeStats,
+        Tag,
         UpdateResult,
     )
+    from ._lancedb import (
+        Table as LanceDBTable,
+    )
+    from .db import LanceDBConnection
     from .index import IndexConfig
-    import pandas
-    import PIL
+    from .io import StorageOptionsProvider
     from .types import (
-        QueryType,
-        OnBadVectorsType,
         AddMode,
-        CreateMode,
-        VectorIndexType,
-        ScalarIndexType,
         BaseTokenizerType,
+        CreateMode,
         DistanceType,
+        OnBadVectorsType,
+        QueryType,
+        ScalarIndexType,
+        VectorIndexType,
     )
 
 
@@ -2598,6 +2615,7 @@ class LanceTable(Table):
         """
         if isinstance(query, FullTextQuery):
             query_type = "fts"
+
         vector_column_name = infer_vector_column_name(
             schema=self.schema,
             query_type=query_type,
