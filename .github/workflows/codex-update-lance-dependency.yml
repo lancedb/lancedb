@@ -99,6 +99,26 @@ jobs:
           printenv OPENAI_API_KEY | codex login --with-api-key
           codex --config shell_environment_policy.ignore_default_excludes=true exec --dangerously-bypass-approvals-and-sandbox "$(cat /tmp/codex-prompt.txt)"
 
+      - name: Debug token access
+        env:
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "=== Checking authenticated user ==="
+          gh api user --jq '.login' || echo "Failed to get user info"
+
+          echo ""
+          echo "=== Listing repos in lancedb org that token can access ==="
+          gh repo list lancedb --limit 50 --json name,visibility --jq '.[] | "\(.name) (\(.visibility))"' || echo "Failed to list repos"
+
+          echo ""
+          echo "=== Checking if sophon repo exists and is accessible ==="
+          gh repo view lancedb/sophon --json name,visibility 2>&1 || echo "Cannot access lancedb/sophon"
+
+          echo ""
+          echo "=== Checking token scopes ==="
+          gh api -i user 2>&1 | grep -i "x-oauth-scopes" || echo "Could not determine token scopes"
+
       - name: Trigger sophon dependency update
         env:
           TAG: ${{ inputs.tag }}
