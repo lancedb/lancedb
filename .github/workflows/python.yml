@@ -143,16 +143,9 @@ jobs:
       - name: Delete wheels
         run: rm -rf target/wheels
   platform:
-    name: "Mac: ${{ matrix.config.name }}"
+    name: "Mac"
     timeout-minutes: 30
-    strategy:
-      matrix:
-        config:
-          - name: x86
-            runner: macos-15-large
-          - name: Arm
-            runner: macos-14
-    runs-on: "${{ matrix.config.runner }}"
+    runs-on: macos-14
     defaults:
       run:
         shell: bash
