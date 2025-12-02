@@ -194,6 +194,10 @@ class DBConnection(EnforceOverrides):
             connection will be inherited by the table, but can be overridden here.
             See available options at
             <https://lancedb.com/docs/storage/>
+
+            To enable stable row IDs (row IDs remain stable after compaction,
+            update, delete, and merges), set `new_table_enable_stable_row_ids`
+            to `"true"` in storage_options when connecting to the database.
         data_storage_version: optional, str, default "stable"
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_data_storage_version` in the options.
@@ -1078,6 +1082,10 @@ class AsyncConnection(object):
             connection will be inherited by the table, but can be overridden here.
             See available options at
             <https://lancedb.com/docs/storage/>
+
+            To enable stable row IDs (row IDs remain stable after compaction,
+            update, delete, and merges), set `new_table_enable_stable_row_ids`
+            to `"true"` in storage_options when connecting to the database.
 
         Returns
         -------
