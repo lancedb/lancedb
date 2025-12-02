@@ -64,8 +64,6 @@ jobs:
     strategy:
       matrix:
         config:
-          - target: x86_64-apple-darwin
-            runner: macos-15-large
           - target: aarch64-apple-darwin
             runner: warp-macos-14-arm64-6x
     env:
