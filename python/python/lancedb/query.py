@@ -2429,9 +2429,8 @@ class AsyncQueryBase(object):
         >>> from lancedb import connect_async
         >>> async def doctest_example():
         ...     conn = await connect_async("./.lancedb")
-        ...     table = await conn.create_table("my_table", [{"vector": [99, 99]}])
-        ...     query = [100, 100]
-        ...     plan = await table.query().nearest_to([1, 2]).explain_plan(True)
+        ...     table = await conn.create_table("my_table", [{"vector": [99.0, 99.0]}])
+        ...     plan = await table.query().nearest_to([1.0, 2.0]).explain_plan(True)
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
@@ -2440,6 +2439,7 @@ class AsyncQueryBase(object):
               SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
                   LanceRead: uri=..., projection=[vector], ...
+        <BLANKLINE>
 
         Parameters
         ----------
@@ -3141,10 +3141,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         >>> from lancedb.index import FTS
         >>> async def doctest_example():
         ...     conn = await connect_async("./.lancedb")
-        ...     table = await conn.create_table("my_table", [{"vector": [99, 99], "text": "hello world"}])
+        ...     table = await conn.create_table("my_table", [{"vector": [99.0, 99.0], "text": "hello world"}])
         ...     await table.create_index("text", config=FTS(with_position=False))
-        ...     query = [100, 100]
-        ...     plan = await table.query().nearest_to([1, 2]).nearest_to_text("hello").explain_plan(True)
+        ...     plan = await table.query().nearest_to([1.0, 2.0]).nearest_to_text("hello").explain_plan(True)
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         Vector Search Plan:
@@ -3418,9 +3417,8 @@ class BaseQueryBuilder(object):
         >>> from lancedb import connect_async
         >>> async def doctest_example():
         ...     conn = await connect_async("./.lancedb")
-        ...     table = await conn.create_table("my_table", [{"vector": [99, 99]}])
-        ...     query = [100, 100]
-        ...     plan = await table.query().nearest_to([1, 2]).explain_plan(True)
+        ...     table = await conn.create_table("my_table", [{"vector": [99.0, 99.0]}])
+        ...     plan = await table.query().nearest_to([1.0, 2.0]).explain_plan(True)
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
@@ -3429,6 +3427,7 @@ class BaseQueryBuilder(object):
               SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
                   LanceRead: uri=..., projection=[vector], ...
+        <BLANKLINE>
 
         Parameters
         ----------
