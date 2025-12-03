@@ -1812,6 +1812,7 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1865,6 +1866,7 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options,
                 location: None,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1938,6 +1940,7 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options,
                 location: None,
+                namespace_client: None,
             })
             .await
             .unwrap();

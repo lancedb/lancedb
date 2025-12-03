@@ -24,12 +24,12 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::stream;
 use lance::dataset::ReadParams;
 use lance_datafusion::utils::StreamingWriteSource;
-use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
     DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
     ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
 };
+use lance_namespace::LanceNamespace;
 
 use crate::arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt};
 use crate::error::Result;
