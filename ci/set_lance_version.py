@@ -260,7 +260,8 @@ else:
     if version.startswith("v"):
         version = version[1:]
 
-    if "beta" in version:
+    # Treat prerelease identifiers (beta/rc/etc) as preview builds fetched via git tags.
+    if "beta" in version or "rc" in version or "-" in version:
         set_preview_version(version)
     else:
         set_stable_version(version)
