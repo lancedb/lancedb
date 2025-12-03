@@ -5,6 +5,13 @@ import pyarrow as pa
 
 from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 from .io import StorageOptionsProvider
+from lance_namespace import (
+    ListNamespacesResponse,
+    CreateNamespaceResponse,
+    DropNamespaceResponse,
+    DescribeNamespaceResponse,
+    ListTablesResponse,
+)
 from .remote import ClientConfig
 
 class Session:
@@ -26,18 +33,38 @@ class Connection(object):
     async def close(self): ...
     async def list_namespaces(
         self,
-        namespace: Optional[List[str]],
-        page_token: Optional[str],
-        limit: Optional[int],
-    ) -> List[str]: ...
-    async def create_namespace(self, namespace: List[str]) -> None: ...
-    async def drop_namespace(self, namespace: List[str]) -> None: ...
+        namespace: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListNamespacesResponse: ...
+    async def create_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[str] = None,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> CreateNamespaceResponse: ...
+    async def drop_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[str] = None,
+        behavior: Optional[str] = None,
+    ) -> DropNamespaceResponse: ...
+    async def describe_namespace(
+        self,
+        namespace: List[str],
+    ) -> DescribeNamespaceResponse: ...
+    async def list_tables(
+        self,
+        namespace: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListTablesResponse: ...
     async def table_names(
         self,
         namespace: Optional[List[str]],
         start_after: Optional[str],
         limit: Optional[int],
-    ) -> list[str]: ...
+    ) -> list[str]: ...  # Deprecated: Use list_tables instead
     async def create_table(
         self,
         name: str,

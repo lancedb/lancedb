@@ -279,13 +279,13 @@ class TestNamespaceConnection:
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
 
         # Initially no namespaces
-        assert len(list(db.list_namespaces())) == 0
+        assert len(db.list_namespaces().namespaces) == 0
 
         # Create a namespace
         db.create_namespace(["test_namespace"])
 
         # Verify namespace exists
-        namespaces = list(db.list_namespaces())
+        namespaces = db.list_namespaces().namespaces
         assert "test_namespace" in namespaces
         assert len(namespaces) == 1
 
@@ -322,7 +322,7 @@ class TestNamespaceConnection:
         db.drop_namespace(["test_namespace"])
 
         # Verify namespace no longer exists
-        namespaces = list(db.list_namespaces())
+        namespaces = db.list_namespaces().namespaces
         assert len(namespaces) == 0
 
     def test_namespace_with_tables_cannot_be_dropped(self):
@@ -570,13 +570,13 @@ class TestAsyncNamespaceConnection:
 
         # Initially no namespaces
         namespaces = await db.list_namespaces()
-        assert len(list(namespaces)) == 0
+        assert len(namespaces.namespaces) == 0
 
         # Create a namespace
         await db.create_namespace(["test_namespace"])
 
         # Verify namespace exists
-        namespaces = list(await db.list_namespaces())
+        namespaces = (await db.list_namespaces()).namespaces
         assert "test_namespace" in namespaces
         assert len(namespaces) == 1
 
@@ -608,7 +608,7 @@ class TestAsyncNamespaceConnection:
         await db.drop_namespace(["test_namespace"])
 
         # Verify namespace no longer exists
-        namespaces = list(await db.list_namespaces())
+        namespaces = (await db.list_namespaces()).namespaces
         assert len(namespaces) == 0
 
     async def test_drop_all_tables_async(self):

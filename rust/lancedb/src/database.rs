@@ -24,6 +24,11 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::stream;
 use lance::dataset::ReadParams;
 use lance_datafusion::utils::StreamingWriteSource;
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
+    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+};
 use lance_namespace::LanceNamespace;
 
 use crate::arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt};
@@ -37,32 +42,7 @@ pub trait DatabaseOptions {
     fn serialize_into_map(&self, map: &mut HashMap<String, String>);
 }
 
-/// A request to list namespaces in the database
-#[derive(Clone, Debug, Default)]
-pub struct ListNamespacesRequest {
-    /// The parent namespace to list namespaces in. Empty list represents root namespace.
-    pub namespace: Vec<String>,
-    /// If present, only return names that come lexicographically after the supplied value.
-    pub page_token: Option<String>,
-    /// The maximum number of namespace names to return
-    pub limit: Option<u32>,
-}
-
-/// A request to create a namespace
-#[derive(Clone, Debug)]
-pub struct CreateNamespaceRequest {
-    /// The namespace identifier to create
-    pub namespace: Vec<String>,
-}
-
-/// A request to drop a namespace
-#[derive(Clone, Debug)]
-pub struct DropNamespaceRequest {
-    /// The namespace identifier to drop
-    pub namespace: Vec<String>,
-}
-
-/// A request to list names of tables in the database
+/// A request to list names of tables in the database (deprecated, use ListTablesRequest)
 #[derive(Clone, Debug, Default)]
 pub struct TableNamesRequest {
     /// The namespace to list tables in. Empty list represents root namespace.
@@ -268,13 +248,30 @@ pub trait Database:
     /// Get the read consistency of the database
     async fn read_consistency(&self) -> Result<ReadConsistency>;
     /// List immediate child namespace names in the given namespace
-    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>>;
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse>;
     /// Create a new namespace
-    async fn create_namespace(&self, request: CreateNamespaceRequest) -> Result<()>;
+    async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse>;
     /// Drop a namespace
-    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<()>;
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse>;
+    /// Describe a namespace (get its properties)
+    async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse>;
     /// List the names of tables in the database
+    ///
+    /// # Deprecated
+    /// Use `list_tables` instead for pagination support
+    #[deprecated(note = "Use list_tables instead")]
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>>;
+    /// List tables in the database with pagination support
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse>;
     /// Create a table in the database
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Clone a table in the database.

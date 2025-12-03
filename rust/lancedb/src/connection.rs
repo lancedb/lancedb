@@ -9,6 +9,11 @@ use std::sync::Arc;
 use arrow_array::RecordBatchReader;
 use arrow_schema::{Field, SchemaRef};
 use lance::dataset::ReadParams;
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
+    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+};
 #[cfg(feature = "aws")]
 use object_store::aws::AwsCredential;
 
@@ -17,9 +22,8 @@ use crate::database::listing::{
     ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
 use crate::database::{
-    CloneTableRequest, CreateNamespaceRequest, CreateTableData, CreateTableMode,
-    CreateTableRequest, Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest,
-    OpenTableRequest, ReadConsistency, TableNamesRequest,
+    CloneTableRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
+    DatabaseOptions, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::embeddings::{
     EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
@@ -74,6 +78,7 @@ impl TableNamesBuilder {
     }
 
     /// Execute the table names operation
+    #[allow(deprecated)]
     pub async fn execute(self) -> Result<Vec<String>> {
         self.parent.clone().table_names(self.request).await
     }
@@ -768,18 +773,40 @@ impl Connection {
     }
 
     /// List immediate child namespace names in the given namespace
-    pub async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>> {
+    pub async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
         self.internal.list_namespaces(request).await
     }
 
     /// Create a new namespace
-    pub async fn create_namespace(&self, request: CreateNamespaceRequest) -> Result<()> {
+    pub async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
         self.internal.create_namespace(request).await
     }
 
     /// Drop a namespace
-    pub async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<()> {
+    pub async fn drop_namespace(
+        &self,
+        request: DropNamespaceRequest,
+    ) -> Result<DropNamespaceResponse> {
         self.internal.drop_namespace(request).await
+    }
+
+    /// Describe a namespace
+    pub async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse> {
+        self.internal.describe_namespace(request).await
+    }
+
+    /// List tables with pagination support
+    pub async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        self.internal.list_tables(request).await
     }
 
     /// Get the in-memory embedding registry.
