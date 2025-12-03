@@ -209,6 +209,38 @@ impl IvfFlatIndexBuilder {
     impl_ivf_params_setter!();
 }
 
+/// Builder for an IVF SQ index.
+///
+/// This index compresses vectors using scalar quantization and groups them into IVF partitions.
+/// It offers a balance between search performance and storage footprint.
+#[derive(Debug, Clone)]
+pub struct IvfSqIndexBuilder {
+    pub(crate) distance_type: DistanceType,
+
+    // IVF
+    pub(crate) num_partitions: Option<u32>,
+    pub(crate) sample_rate: u32,
+    pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
+}
+
+impl Default for IvfSqIndexBuilder {
+    fn default() -> Self {
+        Self {
+            distance_type: DistanceType::L2,
+            num_partitions: None,
+            sample_rate: 256,
+            max_iterations: 50,
+            target_partition_size: None,
+        }
+    }
+}
+
+impl IvfSqIndexBuilder {
+    impl_distance_type_setter!();
+    impl_ivf_params_setter!();
+}
+
 /// Builder for an IVF PQ index.
 ///
 /// This index stores a compressed (quantized) copy of every vector.  These vectors
