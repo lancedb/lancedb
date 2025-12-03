@@ -180,11 +180,7 @@ impl Database for LanceNamespaceDatabase {
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let ns_request = ListTablesRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
+            id: Some(request.namespace),
             page_token: request.start_after,
             limit: request.limit.map(|l| l as i32),
         };
@@ -970,5 +966,47 @@ mod tests {
         // Verify: Cannot open dropped table
         let open_result = conn.open_table("drop_test").execute().await;
         assert!(open_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_table_names_at_root() {
+        // Test that table_names at root (empty namespace) works correctly
+        // This is a regression test for a bug where empty namespace was converted to None
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        // Create multiple tables at root namespace
+        let test_data1 = create_test_data();
+        let _table1 = conn
+            .create_table("table1", test_data1)
+            .execute()
+            .await
+            .expect("Failed to create table1 at root");
+
+        let test_data2 = create_test_data();
+        let _table2 = conn
+            .create_table("table2", test_data2)
+            .execute()
+            .await
+            .expect("Failed to create table2 at root");
+
+        // List tables at root using table_names (empty namespace means root)
+        let table_names = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("Failed to list tables at root");
+
+        assert!(table_names.contains(&"table1".to_string()));
+        assert!(table_names.contains(&"table2".to_string()));
+        assert_eq!(table_names.len(), 2);
     }
 }
