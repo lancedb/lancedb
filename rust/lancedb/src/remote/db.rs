@@ -646,9 +646,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
-        resp.json().await.map_err(|e| Error::Namespace {
-            message: format!("Failed to parse namespace response: {}", e),
-        })
+        resp.json().await.err_to_http(request_id)
     }
 
     async fn create_namespace(
@@ -679,9 +677,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
-        resp.json().await.map_err(|e| Error::Namespace {
-            message: format!("Failed to parse create namespace response: {}", e),
-        })
+        resp.json().await.err_to_http(request_id)
     }
 
     async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
@@ -709,9 +705,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
-        resp.json().await.map_err(|e| Error::Namespace {
-            message: format!("Failed to parse drop namespace response: {}", e),
-        })
+        resp.json().await.err_to_http(request_id)
     }
 
     async fn describe_namespace(
@@ -727,9 +721,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
 
-        resp.json().await.map_err(|e| Error::Namespace {
-            message: format!("Failed to parse describe namespace response: {}", e),
-        })
+        resp.json().await.err_to_http(request_id)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

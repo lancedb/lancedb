@@ -28,8 +28,6 @@ pub enum Error {
 
     #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },
-    #[snafu(display("Namespace error: {message}"))]
-    Namespace { message: String },
     #[snafu(display("Unable to created lance dataset at {path}: {source}"))]
     CreateDir {
         path: String,

@@ -157,45 +157,25 @@ impl Database for LanceNamespaceDatabase {
         &self,
         request: ListNamespacesRequest,
     ) -> Result<ListNamespacesResponse> {
-        self.namespace
-            .list_namespaces(request)
-            .await
-            .map_err(|e| Error::Namespace {
-                message: format!("Failed to list namespaces: {}", e),
-            })
+        Ok(self.namespace.list_namespaces(request).await?)
     }
 
     async fn create_namespace(
         &self,
         request: CreateNamespaceRequest,
     ) -> Result<CreateNamespaceResponse> {
-        self.namespace
-            .create_namespace(request)
-            .await
-            .map_err(|e| Error::Namespace {
-                message: format!("Failed to create namespace: {}", e),
-            })
+        Ok(self.namespace.create_namespace(request).await?)
     }
 
     async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
-        self.namespace
-            .drop_namespace(request)
-            .await
-            .map_err(|e| Error::Namespace {
-                message: format!("Failed to drop namespace: {}", e),
-            })
+        Ok(self.namespace.drop_namespace(request).await?)
     }
 
     async fn describe_namespace(
         &self,
         request: DescribeNamespaceRequest,
     ) -> Result<DescribeNamespaceResponse> {
-        self.namespace
-            .describe_namespace(request)
-            .await
-            .map_err(|e| Error::Namespace {
-                message: format!("Failed to describe namespace: {}", e),
-            })
+        Ok(self.namespace.describe_namespace(request).await?)
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
@@ -209,24 +189,13 @@ impl Database for LanceNamespaceDatabase {
             limit: request.limit.map(|l| l as i32),
         };
 
-        let response =
-            self.namespace
-                .list_tables(ns_request)
-                .await
-                .map_err(|e| Error::Runtime {
-                    message: format!("Failed to list tables: {}", e),
-                })?;
+        let response = self.namespace.list_tables(ns_request).await?;
 
         Ok(response.tables)
     }
 
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
-        self.namespace
-            .list_tables(request)
-            .await
-            .map_err(|e| Error::Namespace {
-                message: format!("Failed to list tables: {}", e),
-            })
+        Ok(self.namespace.list_tables(request).await?)
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
