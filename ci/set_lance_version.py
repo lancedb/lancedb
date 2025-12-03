@@ -260,7 +260,8 @@ else:
     if version.startswith("v"):
         version = version[1:]
 
-    if "beta" in version:
+    prerelease_tokens = ("beta", "rc", "alpha")
+    if any(token in version for token in prerelease_tokens):
         set_preview_version(version)
     else:
         set_stable_version(version)
