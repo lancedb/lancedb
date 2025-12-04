@@ -20,7 +20,7 @@ lance-core = { "version" = "=1.0.0-beta.14", "tag" = "v1.0.0-beta.14", "git" = "
 lance-datagen = { "version" = "=1.0.0-beta.14", "tag" = "v1.0.0-beta.14", "git" = "https://github.com/lance-format/lance.git" }
 lance-file = { "version" = "=1.0.0-beta.14", "tag" = "v1.0.0-beta.14", "git" = "https://github.com/lance-format/lance.git" }
 lance-io = { "version" = "=1.0.0-beta.14", default-features = false, "tag" = "v1.0.0-beta.14", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=1.0.0-beta.14", "tag" = "v1.0.0-beta.14", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=1.0.0-beta.14", "tag" = "v1.0.0-beta.14", features = ["tokenizer-lindera","tokenizer-jieba"], "git" = "https://github.com/lance-format/lance.git" }
 lance-linalg = { "version" = "=1.0.0-beta.14", "tag" = "v1.0.0-beta.14", "git" = "https://github.com/lance-format/lance.git" }
 lance-namespace = { "version" = "=1.0.0-beta.14", "tag" = "v1.0.0-beta.14", "git" = "https://github.com/lance-format/lance.git" }
 lance-namespace-impls = { "version" = "=1.0.0-beta.14", default-features = false, "tag" = "v1.0.0-beta.14", "git" = "https://github.com/lance-format/lance.git" }
