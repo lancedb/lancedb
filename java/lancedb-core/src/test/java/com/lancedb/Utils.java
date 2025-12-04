@@ -15,15 +15,25 @@ package com.lancedb;
 
 import org.lance.namespace.RestNamespace;
 import org.lance.namespace.model.CountTableRowsRequest;
+import org.lance.namespace.model.CreateNamespaceRequest;
+import org.lance.namespace.model.CreateNamespaceResponse;
 import org.lance.namespace.model.CreateTableRequest;
 import org.lance.namespace.model.CreateTableResponse;
+import org.lance.namespace.model.DescribeNamespaceRequest;
+import org.lance.namespace.model.DescribeNamespaceResponse;
 import org.lance.namespace.model.DescribeTableIndexStatsRequest;
 import org.lance.namespace.model.DescribeTableIndexStatsResponse;
+import org.lance.namespace.model.DropNamespaceRequest;
+import org.lance.namespace.model.DropNamespaceResponse;
 import org.lance.namespace.model.DropTableRequest;
 import org.lance.namespace.model.DropTableResponse;
 import org.lance.namespace.model.IndexContent;
+import org.lance.namespace.model.ListNamespacesRequest;
+import org.lance.namespace.model.ListNamespacesResponse;
 import org.lance.namespace.model.ListTableIndicesRequest;
 import org.lance.namespace.model.ListTableIndicesResponse;
+import org.lance.namespace.model.ListTablesRequest;
+import org.lance.namespace.model.ListTablesResponse;
 import org.lance.namespace.model.QueryTableRequest;
 import org.lance.namespace.model.QueryTableRequestVector;
 
@@ -63,7 +73,7 @@ import java.util.function.Consumer;
 public class Utils {
   private static final Logger log = LoggerFactory.getLogger(Utils.class);
 
-  /** Generate a unique table name for testing. */
+  /** Generate a unique name for testing (used for both tables and namespaces). */
   public static String generateTableName(String prefix) {
     return prefix + "_" + UUID.randomUUID().toString().replace("-", "_").substring(0, 8);
   }
@@ -73,49 +83,182 @@ public class Utils {
     return generateTableName("test_table");
   }
 
+  /** Generate a unique namespace name for testing. */
+  public static String generateNamespaceName(String prefix) {
+    return prefix + "_" + UUID.randomUUID().toString().replace("-", "_").substring(0, 8);
+  }
+
+  /** Generate a unique namespace name with default prefix. */
+  public static String generateNamespaceName() {
+    return generateNamespaceName("test_ns");
+  }
+
+  // ==================== Namespace Operations ====================
+
   /**
-   * Create a table with the given name and data. This method logs the table name for better
-   * visibility and centralized handling.
+   * Create a namespace.
    *
    * @param namespace The RestNamespace instance
-   * @param tableName The name of the table to create
-   * @param tableData The data to populate the table with (Arrow IPC format)
-   * @return The CreateTableResponse from the server
+   * @param namespacePath The path components for the namespace (e.g., "parent", "child")
+   * @return The CreateNamespaceResponse from the server
    */
-  public static CreateTableResponse createTable(
-      RestNamespace namespace, String tableName, byte[] tableData) {
-    log.info("Creating table: {}", tableName);
-    CreateTableRequest createRequest = new CreateTableRequest();
-    createRequest.setId(Lists.newArrayList(tableName));
-    CreateTableResponse response = namespace.createTable(createRequest, tableData);
-    log.info("Table created successfully: {}", tableName);
+  public static CreateNamespaceResponse createNamespace(
+      RestNamespace namespace, String... namespacePath) {
+    log.info("Creating namespace: {}", Arrays.toString(namespacePath));
+    CreateNamespaceRequest request = new CreateNamespaceRequest();
+    request.setId(Lists.newArrayList(namespacePath));
+    CreateNamespaceResponse response = namespace.createNamespace(request);
+    log.info("Namespace created successfully: {}", Arrays.toString(namespacePath));
     return response;
   }
 
   /**
-   * Create a table with the given name and number of rows using default schema. This method logs
-   * the table name for better visibility and centralized handling.
+   * Describe a namespace.
+   *
+   * @param namespace The RestNamespace instance
+   * @param namespacePath The path components for the namespace
+   * @return The DescribeNamespaceResponse from the server
+   */
+  public static DescribeNamespaceResponse describeNamespace(
+      RestNamespace namespace, String... namespacePath) {
+    DescribeNamespaceRequest request = new DescribeNamespaceRequest();
+    request.setId(Lists.newArrayList(namespacePath));
+    return namespace.describeNamespace(request);
+  }
+
+  /**
+   * Drop a namespace.
+   *
+   * @param namespace The RestNamespace instance
+   * @param namespacePath The path components for the namespace
+   * @return The DropNamespaceResponse from the server
+   */
+  public static DropNamespaceResponse dropNamespace(
+      RestNamespace namespace, String... namespacePath) {
+    log.info("Dropping namespace: {}", Arrays.toString(namespacePath));
+    DropNamespaceRequest request = new DropNamespaceRequest();
+    request.setId(Lists.newArrayList(namespacePath));
+    DropNamespaceResponse response = namespace.dropNamespace(request);
+    log.info("Namespace dropped successfully: {}", Arrays.toString(namespacePath));
+    return response;
+  }
+
+  /**
+   * List child namespaces under a parent namespace.
+   *
+   * @param namespace The RestNamespace instance
+   * @param parentPath The path components for the parent namespace (empty for root)
+   * @return The ListNamespacesResponse from the server
+   */
+  public static ListNamespacesResponse listNamespaces(
+      RestNamespace namespace, String... parentPath) {
+    ListNamespacesRequest request = new ListNamespacesRequest();
+    request.setParent(Lists.newArrayList(parentPath));
+    return namespace.listNamespaces(request);
+  }
+
+  /**
+   * List tables under a namespace.
+   *
+   * @param namespace The RestNamespace instance
+   * @param namespacePath The path components for the namespace (empty for root)
+   * @return The ListTablesResponse from the server
+   */
+  public static ListTablesResponse listTables(RestNamespace namespace, String... namespacePath) {
+    ListTablesRequest request = new ListTablesRequest();
+    request.setParent(Lists.newArrayList(namespacePath));
+    return namespace.listTables(request);
+  }
+
+  // ==================== Cleanup Utilities ====================
+
+  /**
+   * Clean up a table and its parent namespace. Logs warnings on failure but does not throw.
+   *
+   * @param namespace The RestNamespace instance
+   * @param tablePath The path to the table
+   * @param namespacePath The namespace path components to drop after the table
+   */
+  public static void cleanupTableAndNamespace(
+      RestNamespace namespace, List<String> tablePath, String... namespacePath) {
+    try {
+      dropTable(namespace, tablePath);
+    } catch (Exception e) {
+      log.warn("Failed to drop table {}: {}", tablePath, e.getMessage());
+    }
+    try {
+      dropNamespace(namespace, namespacePath);
+    } catch (Exception e) {
+      log.warn("Failed to drop namespace {}: {}", Arrays.toString(namespacePath), e.getMessage());
+    }
+  }
+
+  /**
+   * Clean up multiple tables and a namespace. Logs warnings on failure but does not throw.
+   *
+   * @param namespace The RestNamespace instance
+   * @param tablePaths List of table paths to drop
+   * @param namespacePath The namespace path components to drop after the tables
+   */
+  public static void cleanupTablesAndNamespace(
+      RestNamespace namespace, List<List<String>> tablePaths, String... namespacePath) {
+    for (List<String> tablePath : tablePaths) {
+      try {
+        dropTable(namespace, tablePath);
+      } catch (Exception e) {
+        log.warn("Failed to drop table {}: {}", tablePath, e.getMessage());
+      }
+    }
+    try {
+      dropNamespace(namespace, namespacePath);
+    } catch (Exception e) {
+      log.warn("Failed to drop namespace {}: {}", Arrays.toString(namespacePath), e.getMessage());
+    }
+  }
+
+  // ==================== Table Operations ====================
+
+  /**
+   * Create a table with the given path and data. This method logs the table path for better
+   * visibility and centralized handling.
+   *
+   * @param namespace The RestNamespace instance
+   * @param tablePath The path components for the table (e.g., "namespace", "table_name")
+   * @param tableData The data to populate the table with (Arrow IPC format)
+   * @return The CreateTableResponse from the server
+   */
+  public static CreateTableResponse createTable(
+      RestNamespace namespace, List<String> tablePath, byte[] tableData) {
+    log.info("Creating table: {}", tablePath);
+    CreateTableRequest createRequest = new CreateTableRequest();
+    createRequest.setId(tablePath);
+    CreateTableResponse response = namespace.createTable(createRequest, tableData);
+    log.info("Table created successfully: {}", tablePath);
+    return response;
+  }
+
+  /**
+   * Create a table with the given path and number of rows using default schema.
    *
    * @param namespace The RestNamespace instance
    * @param allocator The BufferAllocator to use for creating data
-   * @param tableName The name of the table to create
+   * @param tablePath The path components for the table
    * @param numRows The number of rows to create
    * @return The CreateTableResponse from the server
    * @throws IOException if data creation fails
    */
   public static CreateTableResponse createTable(
-      RestNamespace namespace, BufferAllocator allocator, String tableName, int numRows)
+      RestNamespace namespace, BufferAllocator allocator, List<String> tablePath, int numRows)
       throws IOException {
-    return createTable(namespace, allocator, tableName, 1, numRows);
+    return createTable(namespace, allocator, tablePath, 1, numRows);
   }
 
   /**
-   * Create a table with the given name and rows starting from a specific ID. This method logs the
-   * table name for better visibility and centralized handling.
+   * Create a table with the given path and rows starting from a specific ID.
    *
    * @param namespace The RestNamespace instance
    * @param allocator The BufferAllocator to use for creating data
-   * @param tableName The name of the table to create
+   * @param tablePath The path components for the table
    * @param startId The starting ID for the rows
    * @param numRows The number of rows to create
    * @return The CreateTableResponse from the server
@@ -124,36 +267,36 @@ public class Utils {
   public static CreateTableResponse createTable(
       RestNamespace namespace,
       BufferAllocator allocator,
-      String tableName,
+      List<String> tablePath,
       int startId,
       int numRows)
       throws IOException {
     byte[] tableData = new TableDataBuilder(allocator).addRows(startId, numRows).build();
-    return createTable(namespace, tableName, tableData);
+    return createTable(namespace, tablePath, tableData);
   }
 
   /**
-   * Create a table with the given name using a custom TableDataBuilder. This method logs the table
-   * name for better visibility and centralized handling.
+   * Create a table with the given path using a custom TableDataBuilder.
    *
    * @param namespace The RestNamespace instance
-   * @param tableName The name of the table to create
+   * @param tablePath The path components for the table
    * @param dataBuilder The TableDataBuilder configured with the desired data
    * @return The CreateTableResponse from the server
    * @throws IOException if data creation fails
    */
   public static CreateTableResponse createTable(
-      RestNamespace namespace, String tableName, TableDataBuilder dataBuilder) throws IOException {
+      RestNamespace namespace, List<String> tablePath, TableDataBuilder dataBuilder)
+      throws IOException {
     byte[] tableData = dataBuilder.build();
-    return createTable(namespace, tableName, tableData);
+    return createTable(namespace, tablePath, tableData);
   }
 
   /** Wait for an index to be fully built with no unindexed rows. */
   public static boolean waitForIndexComplete(
-      RestNamespace namespace, String tableName, String indexName, int maxSeconds)
+      RestNamespace namespace, List<String> tablePath, String indexName, int maxSeconds)
       throws InterruptedException {
     ListTableIndicesRequest listRequest = new ListTableIndicesRequest();
-    listRequest.setId(Lists.newArrayList(tableName));
+    listRequest.setId(tablePath);
 
     long startTime = System.currentTimeMillis();
     long elapsedSeconds = (System.currentTimeMillis() - startTime) / 1000;
@@ -169,7 +312,7 @@ public class Utils {
         if (indexOpt.isPresent()) {
           // Index exists, now check if it's fully built
           DescribeTableIndexStatsRequest statsRequest = new DescribeTableIndexStatsRequest();
-          statsRequest.setId(Lists.newArrayList(tableName));
+          statsRequest.setId(tablePath);
 
           DescribeTableIndexStatsResponse stats =
               namespace.describeTableIndexStats(statsRequest, indexName);
@@ -197,27 +340,27 @@ public class Utils {
   }
 
   /** Drop a table and print confirmation. */
-  public static DropTableResponse dropTable(RestNamespace namespace, String tableName) {
+  public static DropTableResponse dropTable(RestNamespace namespace, List<String> tablePath) {
     DropTableRequest dropRequest = new DropTableRequest();
-    dropRequest.setId(Lists.newArrayList(tableName));
+    dropRequest.setId(tablePath);
 
     DropTableResponse response = namespace.dropTable(dropRequest);
-    log.info("Table dropped successfully: {}", tableName);
+    log.info("Table dropped successfully: {}", tablePath);
 
     return response;
   }
 
   /** Count rows in a table. */
-  public static long countRows(RestNamespace namespace, String tableName) {
+  public static long countRows(RestNamespace namespace, List<String> tablePath) {
     CountTableRowsRequest countRequest = new CountTableRowsRequest();
-    countRequest.setId(Lists.newArrayList(tableName));
+    countRequest.setId(tablePath);
     return namespace.countTableRows(countRequest);
   }
 
   /** Create a simple query request for testing. */
-  public static QueryTableRequest createSimpleQuery(String tableName, int k) {
+  public static QueryTableRequest createSimpleQuery(List<String> tablePath, int k) {
     QueryTableRequest query = new QueryTableRequest();
-    query.setId(Lists.newArrayList(tableName));
+    query.setId(tablePath);
     query.setK(k);
     // Add default columns to avoid "no columns selected" error
     query.setColumns(java.util.Arrays.asList("id", "name", "category", "embedding"));
@@ -225,15 +368,15 @@ public class Utils {
   }
 
   /** Create a vector query request with a specific target value. */
-  public static QueryTableRequest createVectorQuery(String tableName, int k, int dimensions) {
-    return createVectorQuery(tableName, k, dimensions, 10.0f);
+  public static QueryTableRequest createVectorQuery(List<String> tablePath, int k, int dimensions) {
+    return createVectorQuery(tablePath, k, dimensions, 10.0f);
   }
 
   /** Create a vector query request with a specific target value for all dimensions. */
   public static QueryTableRequest createVectorQuery(
-      String tableName, int k, int dimensions, float targetValue) {
+      List<String> tablePath, int k, int dimensions, float targetValue) {
     QueryTableRequest query = new QueryTableRequest();
-    query.setId(Lists.newArrayList(tableName));
+    query.setId(tablePath);
     query.setK(k);
 
     // Generate a vector with all elements set to targetValue

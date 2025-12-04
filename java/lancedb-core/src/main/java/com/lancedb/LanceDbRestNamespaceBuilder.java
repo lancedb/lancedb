@@ -39,9 +39,7 @@ import java.util.Optional;
  * <pre>{@code
  * RestNamespace namespace = LanceDbRestNamespaceBuilder.newBuilder()
  *     .apiKey("your_lancedb_enterprise_api_key")
- *     // Your top level folder under your cloud bucket,
- *     // e.g. s3://your-bucket/your-top-dir/
- *     .database("your-top-dir")
+ *     .database("your_database_name")
  *     .endpoint("http://<vpc_endpoint_dns_name>:80")
  *     .build();
  * }</pre>

@@ -22,12 +22,12 @@ import org.lance.namespace.model.JsonArrowDataType;
 import org.lance.namespace.model.JsonArrowField;
 import org.lance.namespace.model.JsonArrowSchema;
 
-import com.google.common.collect.Lists;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -42,23 +42,29 @@ public class TestTableLifecycle extends LanceDbRestNamespaceTestBase {
     skipIfNotConfigured();
 
     log.info("=== Test: Table Lifecycle ===");
+    String nsName = Utils.generateNamespaceName("test_lifecycle_ns");
     String tableName = Utils.generateTableName("test_lifecycle");
+    List<String> tablePath = Arrays.asList(nsName, tableName);
 
     try {
-      // Create table with 3 rows
-      CreateTableResponse createResponse = Utils.createTable(namespace, allocator, tableName, 3);
+      // Create child namespace first
+      Utils.createNamespace(namespace, nsName);
+
+      // Create table with 3 rows in child namespace
+      CreateTableResponse createResponse =
+          Utils.createTable(namespace, allocator, tablePath, 3);
       assertNotNull(createResponse, "Create response should not be null");
 
       // Test count rows
       log.info("--- Testing count rows ---");
-      long count = Utils.countRows(namespace, tableName);
+      long count = Utils.countRows(namespace, tablePath);
       assertEquals(3, count, "Row count should match expected number");
       log.info("Count rows verified: {}", count);
 
       // Test describe table
       log.info("--- Testing describe table ---");
       DescribeTableRequest describeRequest = new DescribeTableRequest();
-      describeRequest.setId(Lists.newArrayList(tableName));
+      describeRequest.setId(tablePath);
 
       DescribeTableResponse describeResponse = namespace.describeTable(describeRequest);
       assertNotNull(describeResponse, "Describe response should not be null");
@@ -93,7 +99,7 @@ public class TestTableLifecycle extends LanceDbRestNamespaceTestBase {
               .build();
 
       InsertIntoTableRequest insertRequest = new InsertIntoTableRequest();
-      insertRequest.setId(Lists.newArrayList(tableName));
+      insertRequest.setId(tablePath);
       insertRequest.setMode(InsertIntoTableRequest.ModeEnum.APPEND);
       InsertIntoTableResponse insertResponse =
           namespace.insertIntoTable(insertRequest, insertData1);
@@ -102,7 +108,7 @@ public class TestTableLifecycle extends LanceDbRestNamespaceTestBase {
       log.info("Inserted 2 rows, new version: {}", insertResponse.getVersion());
 
       // Verify row count after first insert
-      long count2 = Utils.countRows(namespace, tableName);
+      long count2 = Utils.countRows(namespace, tablePath);
       assertEquals(5, count2, "Row count should be 5 after first insert");
       log.info("Verified row count after first insert: {}", count2);
 
@@ -114,7 +120,7 @@ public class TestTableLifecycle extends LanceDbRestNamespaceTestBase {
               .build();
 
       InsertIntoTableRequest insertRequest2 = new InsertIntoTableRequest();
-      insertRequest2.setId(Lists.newArrayList(tableName));
+      insertRequest2.setId(tablePath);
       insertRequest2.setMode(InsertIntoTableRequest.ModeEnum.APPEND);
       InsertIntoTableResponse secondInsertResponse =
           namespace.insertIntoTable(insertRequest2, insertData2);
@@ -122,26 +128,14 @@ public class TestTableLifecycle extends LanceDbRestNamespaceTestBase {
       log.info("Inserted 3 more rows, new version: {}", secondInsertResponse.getVersion());
 
       // Verify final row count
-      long finalCount = Utils.countRows(namespace, tableName);
+      long finalCount = Utils.countRows(namespace, tablePath);
       assertEquals(8, finalCount, "Row count should be 8 after second insert");
       log.info("Verified final row count: {}", finalCount);
 
       log.info("Table lifecycle test passed!");
 
     } finally {
-      // Clean up
-      Utils.dropTable(namespace, tableName);
-
-      // Verify table was dropped
-      log.info("--- Verifying table was dropped ---");
-      try {
-        DescribeTableRequest verifyDropRequest = new DescribeTableRequest();
-        verifyDropRequest.setId(Lists.newArrayList(tableName));
-        namespace.describeTable(verifyDropRequest);
-        fail("Expected exception when describing dropped table");
-      } catch (RuntimeException e) {
-        log.info("Confirmed table no longer exists (got exception as expected)");
-      }
+      Utils.cleanupTableAndNamespace(namespace, tablePath, nsName);
     }
   }
 
@@ -150,16 +144,22 @@ public class TestTableLifecycle extends LanceDbRestNamespaceTestBase {
     skipIfNotConfigured();
 
     log.info("=== Test: Describe Table With Version ===");
+    String nsName = Utils.generateNamespaceName("test_describe_ns");
     String tableName = Utils.generateTableName("test_describe_version");
+    List<String> tablePath = Arrays.asList(nsName, tableName);
 
     try {
-      // Create table
-      CreateTableResponse createResponse = Utils.createTable(namespace, allocator, tableName, 5);
+      // Create child namespace first
+      Utils.createNamespace(namespace, nsName);
+
+      // Create table in child namespace
+      CreateTableResponse createResponse =
+          Utils.createTable(namespace, allocator, tablePath, 5);
       assertNotNull(createResponse, "Create response should not be null");
 
       // Get initial version
       DescribeTableRequest describeV1 = new DescribeTableRequest();
-      describeV1.setId(Lists.newArrayList(tableName));
+      describeV1.setId(tablePath);
       DescribeTableResponse v1Response = namespace.describeTable(describeV1);
       Long version1 = v1Response.getVersion();
       log.info("Initial version: {}", version1);
@@ -167,13 +167,13 @@ public class TestTableLifecycle extends LanceDbRestNamespaceTestBase {
       // Insert more data to create new version
       byte[] insertData = new Utils.TableDataBuilder(allocator).addRows(100, 5).build();
       InsertIntoTableRequest insertRequest = new InsertIntoTableRequest();
-      insertRequest.setId(Lists.newArrayList(tableName));
+      insertRequest.setId(tablePath);
       insertRequest.setMode(InsertIntoTableRequest.ModeEnum.APPEND);
       namespace.insertIntoTable(insertRequest, insertData);
 
       // Describe current version
       DescribeTableRequest describeCurrent = new DescribeTableRequest();
-      describeCurrent.setId(Lists.newArrayList(tableName));
+      describeCurrent.setId(tablePath);
       DescribeTableResponse currentResponse = namespace.describeTable(describeCurrent);
       Long currentVersion = currentResponse.getVersion();
       log.info("Current version after insert: {}", currentVersion);
@@ -181,7 +181,7 @@ public class TestTableLifecycle extends LanceDbRestNamespaceTestBase {
 
       // Describe specific older version
       DescribeTableRequest describeOldVersion = new DescribeTableRequest();
-      describeOldVersion.setId(Lists.newArrayList(tableName));
+      describeOldVersion.setId(tablePath);
       describeOldVersion.setVersion(version1);
       DescribeTableResponse oldVersionResponse = namespace.describeTable(describeOldVersion);
 
@@ -208,12 +208,10 @@ public class TestTableLifecycle extends LanceDbRestNamespaceTestBase {
         }
       }
 
-      // Stats are not part of the response according to the current API
-
       log.info("Describe table with version tested successfully");
 
     } finally {
-      Utils.dropTable(namespace, tableName);
+      Utils.cleanupTableAndNamespace(namespace, tablePath, nsName);
     }
   }
 }

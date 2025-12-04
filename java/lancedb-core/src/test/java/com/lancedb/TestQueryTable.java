@@ -15,7 +15,6 @@ package com.lancedb;
 
 import org.lance.namespace.model.QueryTableRequest;
 
-import com.google.common.collect.Lists;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -40,19 +39,23 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
     skipIfNotConfigured();
 
     log.info("=== Test: Basic Vector Query ===");
+    String nsName = Utils.generateNamespaceName("test_query_ns");
     String tableName = Utils.generateTableName("test_vector_query");
+    List<String> tablePath = Arrays.asList(nsName, tableName);
 
     try {
-      // Create table with 10 rows
-      log.info("--- Creating table {} with 10 rows ---", tableName);
-      Utils.createTable(namespace, allocator, tableName, 10);
+      // Create child namespace first
+      Utils.createNamespace(namespace, nsName);
+
+      // Create table with 10 rows in child namespace
+      log.info("--- Creating table {} with 10 rows ---", tablePath);
+      Utils.createTable(namespace, allocator, tablePath, 10);
 
       // Create vector query
-      QueryTableRequest QueryTableRequest = Utils.createVectorQuery(tableName, 5, 128);
+      QueryTableRequest queryTableRequest = Utils.createVectorQuery(tablePath, 5, 128);
+      queryTableRequest.setK(5);
 
-      QueryTableRequest.setK(5);
-
-      byte[] queryResult = namespace.queryTable(QueryTableRequest);
+      byte[] queryResult = namespace.queryTable(queryTableRequest);
       assertNotNull(queryResult, "Query result should not be null");
 
       // Verify results
@@ -79,7 +82,7 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
       }
 
     } finally {
-      Utils.dropTable(namespace, tableName);
+      Utils.cleanupTableAndNamespace(namespace, tablePath, nsName);
     }
   }
 
@@ -88,17 +91,22 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
     skipIfNotConfigured();
 
     log.info("=== Test: Query with Filter ===");
+    String nsName = Utils.generateNamespaceName("test_filter_ns");
     String tableName = Utils.generateTableName("test_query_filter");
+    List<String> tablePath = Arrays.asList(nsName, tableName);
 
     try {
+      // Create child namespace first
+      Utils.createNamespace(namespace, nsName);
+
       // Create table with 100 rows for better filter testing
-      log.info("--- Creating table {} with 100 rows ---", tableName);
-      Utils.createTable(namespace, allocator, tableName, 100);
+      log.info("--- Creating table {} with 100 rows ---", tablePath);
+      Utils.createTable(namespace, allocator, tablePath, 100);
 
       // Test 1: Filter-only query (no vector)
       log.info("--- Test 1: Filter-only query ---");
       QueryTableRequest filterQuery = new QueryTableRequest();
-      filterQuery.setId(Lists.newArrayList(tableName));
+      filterQuery.setId(tablePath);
       filterQuery.setK(10);
       filterQuery.setFilter("id > 50");
       filterQuery.setColumns(Arrays.asList("id", "name", "embedding"));
@@ -112,7 +120,7 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
 
       // Test 2: Vector query with filter
       log.info("--- Test 2: Vector query with filter ---");
-      QueryTableRequest vectorFilterQuery = Utils.createVectorQuery(tableName, 5, 128);
+      QueryTableRequest vectorFilterQuery = Utils.createVectorQuery(tablePath, 5, 128);
       vectorFilterQuery.setFilter("id < 20");
 
       byte[] vectorFilterResult = namespace.queryTable(vectorFilterQuery);
@@ -123,7 +131,7 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
       log.info("Vector query with filter returned IDs: {}", ids);
 
     } finally {
-      Utils.dropTable(namespace, tableName);
+      Utils.cleanupTableAndNamespace(namespace, tablePath, nsName);
     }
   }
 
@@ -132,17 +140,22 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
     skipIfNotConfigured();
 
     log.info("=== Test: Query with Prefilter ===");
+    String nsName = Utils.generateNamespaceName("test_prefilter_ns");
     String tableName = Utils.generateTableName("test_prefilter");
+    List<String> tablePath = Arrays.asList(nsName, tableName);
 
     try {
+      // Create child namespace first
+      Utils.createNamespace(namespace, nsName);
+
       // Create table
-      log.info("--- Creating table {} with 50 rows ---", tableName);
-      Utils.createTable(namespace, allocator, tableName, 50);
+      log.info("--- Creating table {} with 50 rows ---", tablePath);
+      Utils.createTable(namespace, allocator, tablePath, 50);
 
       // Test prefilter = true
       log.info("--- Testing prefilter = true ---");
       QueryTableRequest prefilterQuery = new QueryTableRequest();
-      prefilterQuery.setId(Lists.newArrayList(tableName));
+      prefilterQuery.setId(tablePath);
       prefilterQuery.setK(5);
       prefilterQuery.setPrefilter(true);
       prefilterQuery.setFilter("id < 20");
@@ -158,7 +171,7 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
 
       // Test prefilter = false (postfilter)
       log.info("--- Testing prefilter = false (postfilter) ---");
-      QueryTableRequest postfilterQuery = Utils.createVectorQuery(tableName, 10, 128);
+      QueryTableRequest postfilterQuery = Utils.createVectorQuery(tablePath, 10, 128);
       postfilterQuery.setPrefilter(false);
       postfilterQuery.setFilter("id % 2 = 0"); // Even IDs only
 
@@ -171,7 +184,7 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
       log.info("Postfilter query returned {} even IDs", evenIds.size());
 
     } finally {
-      Utils.dropTable(namespace, tableName);
+      Utils.cleanupTableAndNamespace(namespace, tablePath, nsName);
     }
   }
 
@@ -180,16 +193,21 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
     skipIfNotConfigured();
 
     log.info("=== Test: Query with Fast Search ===");
+    String nsName = Utils.generateNamespaceName("test_fastsearch_ns");
     String tableName = Utils.generateTableName("test_fast_search");
+    List<String> tablePath = Arrays.asList(nsName, tableName);
 
     try {
+      // Create child namespace first
+      Utils.createNamespace(namespace, nsName);
+
       // Create table
-      log.info("--- Creating table {} with 100 rows ---", tableName);
-      Utils.createTable(namespace, allocator, tableName, 100);
+      log.info("--- Creating table {} with 100 rows ---", tablePath);
+      Utils.createTable(namespace, allocator, tablePath, 100);
 
       // Test fast_search = true
       log.info("--- Testing fast_search = true ---");
-      QueryTableRequest fastSearchQuery = Utils.createVectorQuery(tableName, 10, 128);
+      QueryTableRequest fastSearchQuery = Utils.createVectorQuery(tablePath, 10, 128);
       fastSearchQuery.setFastSearch(true);
 
       byte[] fastSearchResult = namespace.queryTable(fastSearchQuery);
@@ -201,7 +219,7 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
 
       // Test fast_search = false
       log.info("--- Testing fast_search = false ---");
-      QueryTableRequest noFastSearchQuery = Utils.createVectorQuery(tableName, 10, 128);
+      QueryTableRequest noFastSearchQuery = Utils.createVectorQuery(tablePath, 10, 128);
       noFastSearchQuery.setFastSearch(false);
 
       byte[] noFastSearchResult = namespace.queryTable(noFastSearchQuery);
@@ -212,7 +230,7 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
       log.info("No fast search returned {} rows", noFastSearchRows);
 
     } finally {
-      Utils.dropTable(namespace, tableName);
+      Utils.cleanupTableAndNamespace(namespace, tablePath, nsName);
     }
   }
 
@@ -221,16 +239,21 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
     skipIfNotConfigured();
 
     log.info("=== Test: Query with Column Selection ===");
+    String nsName = Utils.generateNamespaceName("test_colsel_ns");
     String tableName = Utils.generateTableName("test_column_selection");
+    List<String> tablePath = Arrays.asList(nsName, tableName);
 
     try {
+      // Create child namespace first
+      Utils.createNamespace(namespace, nsName);
+
       // Create table
-      log.info("--- Creating table {} with 20 rows ---", tableName);
-      Utils.createTable(namespace, allocator, tableName, 20);
+      log.info("--- Creating table {} with 20 rows ---", tablePath);
+      Utils.createTable(namespace, allocator, tablePath, 20);
 
       // Query with specific columns
       QueryTableRequest columnQuery = new QueryTableRequest();
-      columnQuery.setId(Lists.newArrayList(tableName));
+      columnQuery.setId(tablePath);
       columnQuery.setK(5);
       columnQuery.setColumns(Arrays.asList("id", "name")); // Don't include embedding
 
@@ -259,7 +282,7 @@ public class TestQueryTable extends LanceDbRestNamespaceTestBase {
       }
 
     } finally {
-      Utils.dropTable(namespace, tableName);
+      Utils.cleanupTableAndNamespace(namespace, tablePath, nsName);
     }
   }
 }
