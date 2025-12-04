@@ -31,13 +31,13 @@ RestNamespace namespace = LanceDbRestNamespaceBuilder.newBuilder()
 
 ### Connecting to LanceDB Enterprise
 
-For LanceDB Enterprise deployments with a custom VPC endpoint:
+For LanceDB Enterprise deployments with a custom endpoint:
 
 ```java
 RestNamespace namespace = LanceDbRestNamespaceBuilder.newBuilder()
     .apiKey("your_lancedb_enterprise_api_key")
     .database("your_database_name")
-    .endpoint("http://<vpc_endpoint_dns_name>:80")
+    .endpoint("<your_enterprise_endpoint>")
     .build();
 ```
 

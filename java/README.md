@@ -19,13 +19,13 @@ RestNamespace namespace = LanceDbRestNamespaceBuilder.newBuilder()
 
 ### LanceDB Enterprise
 
-For Enterprise deployments, use your VPC endpoint:
+For Enterprise deployments, use your custom endpoint:
 
 ```java
 RestNamespace namespace = LanceDbRestNamespaceBuilder.newBuilder()
     .apiKey("your_lancedb_enterprise_api_key")
     .database("your_database_name")
-    .endpoint("http://<vpc_endpoint_dns_name>:80")
+    .endpoint("<your_enterprise_endpoint>")
     .build();
 ```
 
@@ -37,8 +37,8 @@ Build:
 ./mvnw install -pl lancedb-core -am
 ```
 
-Run tests (requires LANCEDB_DB and LANCEDB_API_KEY environment variables):
+Run tests:
 
 ```shell
-./mvnw test -pl lancedb-core -P integration-tests
+./mvnw test -pl lancedb-core
 ```

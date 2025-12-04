@@ -34,13 +34,13 @@ import java.util.Optional;
  *     .build();
  * }</pre>
  *
- * <p>For LanceDB Enterprise deployments, use your VPC endpoint:
+ * <p>For LanceDB Enterprise deployments, use your custom endpoint:
  *
  * <pre>{@code
  * RestNamespace namespace = LanceDbRestNamespaceBuilder.newBuilder()
  *     .apiKey("your_lancedb_enterprise_api_key")
  *     .database("your_database_name")
- *     .endpoint("http://<vpc_endpoint_dns_name>:80")
+ *     .endpoint("<your_enterprise_endpoint>")
  *     .build();
  * }</pre>
  */
@@ -97,7 +97,7 @@ public class LanceDbRestNamespaceBuilder {
    * Set a custom endpoint URL (optional). When set, this overrides the default LanceDB Cloud URL
    * construction. Use this for LanceDB Enterprise deployments.
    *
-   * @param endpoint The complete base URL (e.g., "http://your-vpc-endpoint:80")
+   * @param endpoint The complete base URL for your LanceDB Enterprise deployment
    * @return This builder
    */
   public LanceDbRestNamespaceBuilder endpoint(String endpoint) {
