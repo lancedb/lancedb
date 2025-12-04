@@ -93,29 +93,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <configuration>
-                    <!-- Skip integration tests by default - they require LanceDB Cloud credentials -->
-                    <skipTests>true</skipTests>
-                </configuration>
             </plugin>
         </plugins>
     </build>
-
-    <profiles>
-        <!-- Profile to run integration tests when LanceDB Cloud is configured -->
-        <profile>
-            <id>integration-tests</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-surefire-plugin</artifactId>
-                        <configuration>
-                            <skipTests>false</skipTests>
-                        </configuration>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-    </profiles>
 </project>
