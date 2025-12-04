@@ -123,6 +123,7 @@ nav:
       - Overview: index.md
       - Python: python/python.md
       - Javascript/TypeScript: js/globals.md
+      - Java: java/java.md
       - Rust: https://docs.rs/lancedb/latest/lancedb/index.html
 
 extra_css:
