@@ -13,6 +13,7 @@
  */
 package com.lancedb;
 
+import org.junit.jupiter.api.Test;
 import org.lance.namespace.model.CreateTableResponse;
 import org.lance.namespace.model.DescribeTableRequest;
 import org.lance.namespace.model.DescribeTableResponse;
@@ -21,8 +22,6 @@ import org.lance.namespace.model.InsertIntoTableResponse;
 import org.lance.namespace.model.JsonArrowDataType;
 import org.lance.namespace.model.JsonArrowField;
 import org.lance.namespace.model.JsonArrowSchema;
-
-import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,8 +50,7 @@ public class TestTableLifecycle extends LanceDbRestNamespaceTestBase {
       Utils.createNamespace(namespace, nsName);
 
       // Create table with 3 rows in child namespace
-      CreateTableResponse createResponse =
-          Utils.createTable(namespace, allocator, tablePath, 3);
+      CreateTableResponse createResponse = Utils.createTable(namespace, allocator, tablePath, 3);
       assertNotNull(createResponse, "Create response should not be null");
 
       // Test count rows
@@ -153,8 +151,7 @@ public class TestTableLifecycle extends LanceDbRestNamespaceTestBase {
       Utils.createNamespace(namespace, nsName);
 
       // Create table in child namespace
-      CreateTableResponse createResponse =
-          Utils.createTable(namespace, allocator, tablePath, 5);
+      CreateTableResponse createResponse = Utils.createTable(namespace, allocator, tablePath, 5);
       assertNotNull(createResponse, "Create response should not be null");
 
       // Get initial version

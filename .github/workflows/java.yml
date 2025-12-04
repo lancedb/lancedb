@@ -25,9 +25,9 @@ on:
       - .github/workflows/java.yml
 
 jobs:
-  build-java-17:
+  build-java:
     runs-on: ubuntu-24.04
-    name: ubuntu-24.04 + Java 17
+    name: Build
     defaults:
       run:
         working-directory: ./java
@@ -41,6 +41,6 @@ jobs:
           java-version: 17
           cache: "maven"
       - name: Java Style Check
-        run: mvn checkstyle:check
+        run: ./mvnw checkstyle:check
       - name: Build and install
-        run: mvn clean install
+        run: ./mvnw clean install

@@ -13,6 +13,20 @@
  */
 package com.lancedb;
 
+import com.google.common.collect.Lists;
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.Float4Vector;
+import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.VarCharVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.complex.FixedSizeListVector;
+import org.apache.arrow.vector.ipc.ArrowFileReader;
+import org.apache.arrow.vector.ipc.ArrowStreamWriter;
+import org.apache.arrow.vector.types.FloatingPointPrecision;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.FieldType;
+import org.apache.arrow.vector.types.pojo.Schema;
 import org.lance.namespace.RestNamespace;
 import org.lance.namespace.model.CountTableRowsRequest;
 import org.lance.namespace.model.CreateNamespaceRequest;
@@ -36,21 +50,6 @@ import org.lance.namespace.model.ListTablesRequest;
 import org.lance.namespace.model.ListTablesResponse;
 import org.lance.namespace.model.QueryTableRequest;
 import org.lance.namespace.model.QueryTableRequestVector;
-
-import com.google.common.collect.Lists;
-import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.vector.Float4Vector;
-import org.apache.arrow.vector.IntVector;
-import org.apache.arrow.vector.VarCharVector;
-import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.complex.FixedSizeListVector;
-import org.apache.arrow.vector.ipc.ArrowFileReader;
-import org.apache.arrow.vector.ipc.ArrowStreamWriter;
-import org.apache.arrow.vector.types.FloatingPointPrecision;
-import org.apache.arrow.vector.types.pojo.ArrowType;
-import org.apache.arrow.vector.types.pojo.Field;
-import org.apache.arrow.vector.types.pojo.FieldType;
-import org.apache.arrow.vector.types.pojo.Schema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -153,7 +152,7 @@ public class Utils {
   public static ListNamespacesResponse listNamespaces(
       RestNamespace namespace, String... parentPath) {
     ListNamespacesRequest request = new ListNamespacesRequest();
-    request.setParent(Lists.newArrayList(parentPath));
+    request.setId(Lists.newArrayList(parentPath));
     return namespace.listNamespaces(request);
   }
 
@@ -166,7 +165,7 @@ public class Utils {
    */
   public static ListTablesResponse listTables(RestNamespace namespace, String... namespacePath) {
     ListTablesRequest request = new ListTablesRequest();
-    request.setParent(Lists.newArrayList(namespacePath));
+    request.setId(Lists.newArrayList(namespacePath));
     return namespace.listTables(request);
   }
 

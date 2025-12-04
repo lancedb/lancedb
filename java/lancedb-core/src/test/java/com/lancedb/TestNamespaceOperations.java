@@ -13,12 +13,11 @@
  */
 package com.lancedb;
 
+import org.junit.jupiter.api.Test;
 import org.lance.namespace.model.CreateNamespaceResponse;
 import org.lance.namespace.model.DescribeNamespaceResponse;
 import org.lance.namespace.model.ListNamespacesResponse;
 import org.lance.namespace.model.ListTablesResponse;
-
-import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,9 +48,11 @@ public class TestNamespaceOperations extends LanceDbRestNamespaceTestBase {
       log.info("--- Describing namespace {} ---", nsName);
       DescribeNamespaceResponse describeResponse = Utils.describeNamespace(namespace, nsName);
       assertNotNull(describeResponse, "Describe namespace response should not be null");
-      assertNotNull(describeResponse.getId(), "Namespace ID should not be null");
-      assertTrue(describeResponse.getId().contains(nsName), "Namespace ID should contain the name");
-      log.info("Namespace described: {}", describeResponse.getId());
+      // Properties may be null or empty if server doesn't support namespace properties
+      log.info(
+          "Namespace described successfully: {}, properties: {}",
+          nsName,
+          describeResponse.getProperties());
 
       // List namespaces (should include our namespace)
       log.info("--- Listing namespaces ---");
@@ -59,10 +60,10 @@ public class TestNamespaceOperations extends LanceDbRestNamespaceTestBase {
       assertNotNull(listResponse, "List namespaces response should not be null");
       assertNotNull(listResponse.getNamespaces(), "Namespaces list should not be null");
 
-      boolean found = listResponse.getNamespaces().stream()
-          .anyMatch(ns -> ns.contains(nsName));
+      boolean found = listResponse.getNamespaces().stream().anyMatch(ns -> ns.contains(nsName));
       assertTrue(found, "Our namespace should be in the list");
-      log.info("Namespace listing verified, found {} namespaces", listResponse.getNamespaces().size());
+      log.info(
+          "Namespace listing verified, found {} namespaces", listResponse.getNamespaces().size());
 
       log.info("Namespace lifecycle test passed!");
 
@@ -94,10 +95,15 @@ public class TestNamespaceOperations extends LanceDbRestNamespaceTestBase {
 
       // Describe child namespace
       log.info("--- Describing child namespace ---");
-      DescribeNamespaceResponse describeResponse = Utils.describeNamespace(namespace, parentNs, childNs);
+      DescribeNamespaceResponse describeResponse =
+          Utils.describeNamespace(namespace, parentNs, childNs);
       assertNotNull(describeResponse, "Describe namespace response should not be null");
-      assertNotNull(describeResponse.getId(), "Namespace ID should not be null");
-      log.info("Child namespace described: {}", describeResponse.getId());
+      // Properties may be null or empty if server doesn't support namespace properties
+      log.info(
+          "Child namespace described successfully: {}/{}, properties: {}",
+          parentNs,
+          childNs,
+          describeResponse.getProperties());
 
       // List child namespaces under parent
       log.info("--- Listing child namespaces under parent ---");
@@ -105,8 +111,7 @@ public class TestNamespaceOperations extends LanceDbRestNamespaceTestBase {
       assertNotNull(listResponse, "List namespaces response should not be null");
       assertNotNull(listResponse.getNamespaces(), "Namespaces list should not be null");
 
-      boolean found = listResponse.getNamespaces().stream()
-          .anyMatch(ns -> ns.contains(childNs));
+      boolean found = listResponse.getNamespaces().stream().anyMatch(ns -> ns.contains(childNs));
       assertTrue(found, "Child namespace should be in the list");
       log.info("Found {} child namespaces under parent", listResponse.getNamespaces().size());
 
@@ -155,10 +160,8 @@ public class TestNamespaceOperations extends LanceDbRestNamespaceTestBase {
       assertNotNull(listResponse.getTables(), "Tables list should not be null");
       assertEquals(2, listResponse.getTables().size(), "Should have 2 tables");
 
-      boolean foundTable1 = listResponse.getTables().stream()
-          .anyMatch(t -> t.contains(table1));
-      boolean foundTable2 = listResponse.getTables().stream()
-          .anyMatch(t -> t.contains(table2));
+      boolean foundTable1 = listResponse.getTables().stream().anyMatch(t -> t.contains(table1));
+      boolean foundTable2 = listResponse.getTables().stream().anyMatch(t -> t.contains(table2));
       assertTrue(foundTable1, "Table 1 should be in the list");
       assertTrue(foundTable2, "Table 2 should be in the list");
       log.info("Found {} tables in namespace", listResponse.getTables().size());

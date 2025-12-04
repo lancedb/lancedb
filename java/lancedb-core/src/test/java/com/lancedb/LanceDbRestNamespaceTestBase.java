@@ -13,13 +13,12 @@
  */
 package com.lancedb;
 
-import org.lance.namespace.RestNamespace;
-
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.lance.namespace.RestNamespace;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

@@ -13,13 +13,12 @@
  */
 package com.lancedb;
 
-import org.lance.namespace.model.QueryTableRequest;
-
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.junit.jupiter.api.Test;
+import org.lance.namespace.model.QueryTableRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

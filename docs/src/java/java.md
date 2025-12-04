@@ -88,7 +88,7 @@ DescribeNamespaceRequest request = new DescribeNamespaceRequest();
 request.setId(Arrays.asList("my_namespace"));
 
 DescribeNamespaceResponse response = namespace.describeNamespace(request);
-System.out.println("Namespace ID: " + response.getId());
+System.out.println("Namespace properties: " + response.getProperties());
 ```
 
 ### Listing Namespaces
@@ -99,7 +99,7 @@ import org.lance.namespace.model.ListNamespacesResponse;
 
 // List all namespaces at root level
 ListNamespacesRequest request = new ListNamespacesRequest();
-request.setParent(Arrays.asList());  // Empty for root
+request.setId(Arrays.asList());  // Empty for root
 
 ListNamespacesResponse response = namespace.listNamespaces(request);
 for (String ns : response.getNamespaces()) {
@@ -108,7 +108,7 @@ for (String ns : response.getNamespaces()) {
 
 // List child namespaces under a parent
 ListNamespacesRequest childRequest = new ListNamespacesRequest();
-childRequest.setParent(Arrays.asList("parent_namespace"));
+childRequest.setId(Arrays.asList("parent_namespace"));
 
 ListNamespacesResponse childResponse = namespace.listNamespaces(childRequest);
 ```
@@ -121,7 +121,7 @@ import org.lance.namespace.model.ListTablesResponse;
 
 // List tables in a namespace
 ListTablesRequest request = new ListTablesRequest();
-request.setParent(Arrays.asList("my_namespace"));
+request.setId(Arrays.asList("my_namespace"));
 
 ListTablesResponse response = namespace.listTables(request);
 for (String table : response.getTables()) {
@@ -264,7 +264,7 @@ System.out.println("New version: " + response.getVersion());
 
 ### Update
 
-Update rows matching a filter condition:
+Update rows matching a predicate condition:
 
 ```java
 import org.lance.namespace.model.UpdateTableRequest;
@@ -273,21 +273,21 @@ import org.lance.namespace.model.UpdateTableResponse;
 UpdateTableRequest request = new UpdateTableRequest();
 request.setId(Arrays.asList("my_namespace", "my_table"));
 
-// Filter to select rows to update
-request.setFilter("id = 1");
+// Predicate to select rows to update
+request.setPredicate("id = 1");
 
-// Set new values using SQL expressions
-request.setUpdates(Map.of(
-    "name", "'updated_name'"
+// Set new values using SQL expressions as [column_name, expression] pairs
+request.setUpdates(Arrays.asList(
+    Arrays.asList("name", "'updated_name'")
 ));
 
 UpdateTableResponse response = namespace.updateTable(request);
-System.out.println("Updated rows: " + response.getNumUpdatedRows());
+System.out.println("Updated rows: " + response.getUpdatedRows());
 ```
 
 ### Delete
 
-Delete rows matching a filter condition:
+Delete rows matching a predicate condition:
 
 ```java
 import org.lance.namespace.model.DeleteFromTableRequest;
@@ -296,11 +296,11 @@ import org.lance.namespace.model.DeleteFromTableResponse;
 DeleteFromTableRequest request = new DeleteFromTableRequest();
 request.setId(Arrays.asList("my_namespace", "my_table"));
 
-// Filter to select rows to delete
-request.setFilter("id > 100");
+// Predicate to select rows to delete
+request.setPredicate("id > 100");
 
 DeleteFromTableResponse response = namespace.deleteFromTable(request);
-System.out.println("Deleted rows: " + response.getNumDeletedRows());
+System.out.println("New version: " + response.getVersion());
 ```
 
 ### Merge Insert (Upsert)
@@ -376,17 +376,21 @@ byte[] result = namespace.queryTable(query);
 
 ```java
 import org.lance.namespace.model.QueryTableRequest;
-import org.lance.namespace.model.QueryTableRequestFullTextSearch;
+import org.lance.namespace.model.QueryTableRequestFullTextQuery;
+import org.lance.namespace.model.StringFtsQuery;
 
 QueryTableRequest query = new QueryTableRequest();
 query.setId(Arrays.asList("my_namespace", "my_table"));
 query.setK(10);
 
 // Set full text search query
-QueryTableRequestFullTextSearch fts = new QueryTableRequestFullTextSearch();
-fts.setQuery("search terms");
-fts.setColumns(Arrays.asList("text_column"));
-query.setFullTextSearch(fts);
+StringFtsQuery stringQuery = new StringFtsQuery();
+stringQuery.setQuery("search terms");
+stringQuery.setColumns(Arrays.asList("text_column"));
+
+QueryTableRequestFullTextQuery fts = new QueryTableRequestFullTextQuery();
+fts.setStringQuery(stringQuery);
+query.setFullTextQuery(fts);
 
 // Specify columns to return
 query.setColumns(Arrays.asList("id", "text_column"));
