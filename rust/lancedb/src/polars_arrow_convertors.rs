@@ -12,9 +12,11 @@
 /// requires a feature flagged dependency on arrow-rs. The version of arrow-rs
 /// depended on by polars-arrow and LanceDB may not be compatible,
 /// which necessitates using the C FFI.
-use crate::error::Result;
-use polars::prelude::{DataFrame, Series};
 use std::{mem, sync::Arc};
+
+use polars::prelude::{DataFrame, Series, SchemaExt, CompatLevel};
+
+use crate::error::Result;
 
 /// When interpreting Polars dataframes as polars-arrow record batches,
 /// one must decide whether to use Arrow string/binary view types
@@ -23,19 +25,18 @@ use std::{mem, sync::Arc};
 /// for string view types from polars-arrow to arrow-rs are not yet implemented.
 /// See: https://lists.apache.org/thread/w88tpz76ox8h3rxkjl4so6rg3f1rv7wt for the
 /// differences in the types.
-pub const POLARS_ARROW_FLAVOR: bool = false;
+pub const COMPAT_LEVEL:CompatLevel = CompatLevel::newest();
 const IS_ARRAY_NULLABLE: bool = true;
 
 /// Converts a Polars DataFrame schema to an Arrow RecordBatch schema.
 pub fn convert_polars_df_schema_to_arrow_rb_schema(
-    polars_df_schema: polars::prelude::Schema,
-) -> Result<Arc<arrow_schema::Schema>> {
-    let arrow_fields: Result<Vec<arrow_schema::Field>> = polars_df_schema
-        .into_iter()
+    polars_df_schema: &polars::prelude::SchemaRef,
+) -> Result<Arc<arrow_schema::Schema> > {
+    let arrow_fields: Result<Vec<arrow_schema::Field>> = polars_df_schema.iter()
         .map(|(name, df_dtype)| {
-            let polars_arrow_dtype = df_dtype.to_arrow(POLARS_ARROW_FLAVOR);
+            let polars_arrow_dtype = df_dtype.to_arrow(CompatLevel::newest());
             let polars_field =
-                polars_arrow::datatypes::Field::new(name, polars_arrow_dtype, IS_ARRAY_NULLABLE);
+                polars_arrow::datatypes::Field::new(name.clone(), polars_arrow_dtype, IS_ARRAY_NULLABLE);
             convert_polars_arrow_field_to_arrow_rs_field(polars_field)
         })
         .collect();
@@ -46,18 +47,19 @@ pub fn convert_polars_df_schema_to_arrow_rb_schema(
 pub fn convert_arrow_rb_schema_to_polars_df_schema(
     arrow_schema: &arrow_schema::Schema,
 ) -> Result<polars::prelude::Schema> {
-    let polars_df_fields: Result<Vec<polars::prelude::Field>> = arrow_schema
-        .fields()
-        .iter()
-        .map(|arrow_rs_field| {
-            let polars_arrow_field = convert_arrow_rs_field_to_polars_arrow_field(arrow_rs_field)?;
-            Ok(polars::prelude::Field::new(
-                arrow_rs_field.name(),
-                polars::datatypes::DataType::from(polars_arrow_field.data_type()),
-            ))
-        })
-        .collect();
-    Ok(polars::prelude::Schema::from_iter(polars_df_fields?))
+    let polars_arrow_schema: Result<polars::prelude::ArrowSchema> =
+        arrow_schema
+            .fields()
+            .iter()
+            .map(|arrow_rs_field| {
+                let polars_arrow_field =
+                    convert_arrow_rs_field_to_polars_arrow_field(arrow_rs_field)?;
+                Ok((arrow_rs_field.name().into(), polars_arrow_field))
+            })
+            .collect();
+    Ok(polars::prelude::Schema::from_arrow_schema(
+        &polars_arrow_schema?,
+    ))
 }
 
 /// Converts an Arrow RecordBatch to a Polars DataFrame, using a provided Polars DataFrame schema.
@@ -67,15 +69,11 @@ pub fn convert_arrow_rb_to_polars_df(
 ) -> Result<DataFrame> {
     let mut columns: Vec<Series> = Vec::with_capacity(arrow_rb.num_columns());
 
-    for (i, column) in arrow_rb.columns().iter().enumerate() {
-        let polars_df_dtype = polars_schema.try_get_at_index(i)?.1;
-        let polars_arrow_dtype = polars_df_dtype.to_arrow(POLARS_ARROW_FLAVOR);
+    for (column, (name, polars_df_dtype)) in arrow_rb.columns().iter().zip(polars_schema.iter()) {
+        let polars_arrow_dtype = polars_df_dtype.to_arrow(CompatLevel::newest());
         let polars_array =
             convert_arrow_rs_array_to_polars_arrow_array(column, polars_arrow_dtype)?;
-        columns.push(Series::from_arrow(
-            polars_schema.try_get_at_index(i)?.0,
-            polars_array,
-        )?);
+        columns.push(Series::from_arrow(name.clone(), polars_array)?);
     }
 
     Ok(DataFrame::from_iter(columns))
@@ -112,19 +110,13 @@ fn convert_polars_arrow_field_to_arrow_rs_field(
     // Safety: `polars_arrow::ffi::ArrowSchema` has the same memory layout as `arrow::ffi::FFI_ArrowSchema`.
     let arrow_c_schema: arrow::ffi::FFI_ArrowSchema =
         unsafe { mem::transmute::<_, _>(polars_c_schema) };
-    let arrow_rs_dtype = arrow_schema::DataType::try_from(&arrow_c_schema)?;
-    Ok(arrow_schema::Field::new(
-        polars_arrow_field.name,
-        arrow_rs_dtype,
-        IS_ARRAY_NULLABLE,
-    ))
+    Ok(arrow_schema::Field::try_from(&arrow_c_schema)?)
 }
 
 fn convert_arrow_rs_field_to_polars_arrow_field(
     arrow_rs_field: &arrow_schema::Field,
 ) -> Result<polars_arrow::datatypes::Field> {
-    let arrow_rs_dtype = arrow_rs_field.data_type();
-    let arrow_c_schema = arrow::ffi::FFI_ArrowSchema::try_from(arrow_rs_dtype)?;
+    let arrow_c_schema = arrow::ffi::FFI_ArrowSchema::try_from(arrow_rs_field)?;
     // Safety: `polars_arrow::ffi::ArrowSchema` has the same memory layout as `arrow::ffi::FFI_ArrowSchema`.
     let polars_c_schema: polars_arrow::ffi::ArrowSchema =
         unsafe { mem::transmute::<_, _>(arrow_c_schema) };
