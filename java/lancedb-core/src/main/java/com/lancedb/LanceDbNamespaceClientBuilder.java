@@ -13,22 +13,22 @@
  */
 package com.lancedb;
 
-import org.lance.namespace.RestNamespace;
+import org.lance.namespace.LanceNamespace;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
 /**
- * Util class to help construct a {@link RestNamespace} for LanceDB.
+ * Util class to help construct a {@link LanceNamespace} for LanceDB.
  *
  * <p>For LanceDB Cloud, use the simplified builder API:
  *
  * <pre>{@code
- * import org.lance.namespace.RestNamespace;
+ * import org.lance.namespace.LanceNamespace;
  *
  * // If your DB url is db://example-db, then your database here is example-db
- * RestNamespace namespace = LanceDbRestNamespaceBuilder.newBuilder()
+ * LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
  *     .apiKey("your_lancedb_cloud_api_key")
  *     .database("your_database_name")
  *     .build();
@@ -37,14 +37,14 @@ import java.util.Optional;
  * <p>For LanceDB Enterprise deployments, use your custom endpoint:
  *
  * <pre>{@code
- * RestNamespace namespace = LanceDbRestNamespaceBuilder.newBuilder()
+ * LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
  *     .apiKey("your_lancedb_enterprise_api_key")
  *     .database("your_database_name")
  *     .endpoint("<your_enterprise_endpoint>")
  *     .build();
  * }</pre>
  */
-public class LanceDbRestNamespaceBuilder {
+public class LanceDbNamespaceClientBuilder {
   private static final String DEFAULT_REGION = "us-east-1";
   private static final String CLOUD_URL_PATTERN = "https://%s.%s.api.lancedb.com";
 
@@ -54,15 +54,15 @@ public class LanceDbRestNamespaceBuilder {
   private Optional<String> region = Optional.empty();
   private Map<String, String> additionalConfig = new HashMap<>();
 
-  private LanceDbRestNamespaceBuilder() {}
+  private LanceDbNamespaceClientBuilder() {}
 
   /**
    * Create a new builder instance.
    *
-   * @return A new RestNamespaceBuilder
+   * @return A new LanceDbNamespaceClientBuilder
    */
-  public static LanceDbRestNamespaceBuilder newBuilder() {
-    return new LanceDbRestNamespaceBuilder();
+  public static LanceDbNamespaceClientBuilder newBuilder() {
+    return new LanceDbNamespaceClientBuilder();
   }
 
   /**
@@ -71,7 +71,7 @@ public class LanceDbRestNamespaceBuilder {
    * @param apiKey The LanceDB API key
    * @return This builder
    */
-  public LanceDbRestNamespaceBuilder apiKey(String apiKey) {
+  public LanceDbNamespaceClientBuilder apiKey(String apiKey) {
     if (apiKey == null || apiKey.trim().isEmpty()) {
       throw new IllegalArgumentException("API key cannot be null or empty");
     }
@@ -85,7 +85,7 @@ public class LanceDbRestNamespaceBuilder {
    * @param database The database name
    * @return This builder
    */
-  public LanceDbRestNamespaceBuilder database(String database) {
+  public LanceDbNamespaceClientBuilder database(String database) {
     if (database == null || database.trim().isEmpty()) {
       throw new IllegalArgumentException("Database cannot be null or empty");
     }
@@ -100,7 +100,7 @@ public class LanceDbRestNamespaceBuilder {
    * @param endpoint The complete base URL for your LanceDB Enterprise deployment
    * @return This builder
    */
-  public LanceDbRestNamespaceBuilder endpoint(String endpoint) {
+  public LanceDbNamespaceClientBuilder endpoint(String endpoint) {
     this.endpoint = Optional.ofNullable(endpoint);
     return this;
   }
@@ -112,7 +112,7 @@ public class LanceDbRestNamespaceBuilder {
    * @param region The AWS region (e.g., "us-east-1", "eu-west-1")
    * @return This builder
    */
-  public LanceDbRestNamespaceBuilder region(String region) {
+  public LanceDbNamespaceClientBuilder region(String region) {
     this.region = Optional.ofNullable(region);
     return this;
   }
@@ -124,18 +124,18 @@ public class LanceDbRestNamespaceBuilder {
    * @param value The configuration value
    * @return This builder
    */
-  public LanceDbRestNamespaceBuilder config(String key, String value) {
+  public LanceDbNamespaceClientBuilder config(String key, String value) {
     this.additionalConfig.put(key, value);
     return this;
   }
 
   /**
-   * Build the Lance RestNamespace instance.
+   * Build the LanceNamespace instance.
    *
-   * @return A configured Lance RestNamespace
+   * @return A configured LanceNamespace
    * @throws IllegalStateException if required parameters are missing
    */
-  public RestNamespace build() {
+  public LanceNamespace build() {
     // Validate required fields
     if (apiKey == null) {
       throw new IllegalStateException("API key is required");
@@ -158,8 +158,7 @@ public class LanceDbRestNamespaceBuilder {
       uri = String.format(CLOUD_URL_PATTERN, database, effectiveRegion);
     }
     config.put("uri", uri);
-    RestNamespace ns = new RestNamespace();
-    ns.initialize(config, null);
-    return ns;
+
+    return LanceNamespace.connect("rest", config, null);
   }
 }

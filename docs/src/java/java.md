@@ -23,11 +23,11 @@ Add the following dependency to your `pom.xml`:
 ### Connecting to LanceDB Cloud
 
 ```java
-import com.lancedb.LanceDbRestNamespaceBuilder;
-import org.lance.namespace.RestNamespace;
+import com.lancedb.LanceDbNamespaceClientBuilder;
+import org.lance.namespace.LanceNamespace;
 
 // If your DB url is db://example-db, then your database here is example-db
-RestNamespace namespace = LanceDbRestNamespaceBuilder.newBuilder()
+LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
     .apiKey("your_lancedb_cloud_api_key")
     .database("your_database_name")
     .build();
@@ -38,7 +38,7 @@ RestNamespace namespace = LanceDbRestNamespaceBuilder.newBuilder()
 For LanceDB Enterprise deployments with a custom endpoint:
 
 ```java
-RestNamespace namespace = LanceDbRestNamespaceBuilder.newBuilder()
+LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
     .apiKey("your_lancedb_enterprise_api_key")
     .database("your_database_name")
     .endpoint("<your_enterprise_endpoint>")
@@ -69,7 +69,7 @@ import org.lance.namespace.model.CreateNamespaceResponse;
 CreateNamespaceRequest request = new CreateNamespaceRequest();
 request.setId(Arrays.asList("my_namespace"));
 
-CreateNamespaceResponse response = namespace.createNamespace(request);
+CreateNamespaceResponse response = namespaceClient.createNamespace(request);
 ```
 
 You can also create nested namespaces:
@@ -79,7 +79,7 @@ You can also create nested namespaces:
 CreateNamespaceRequest request = new CreateNamespaceRequest();
 request.setId(Arrays.asList("parent_namespace", "child_namespace"));
 
-CreateNamespaceResponse response = namespace.createNamespace(request);
+CreateNamespaceResponse response = namespaceClient.createNamespace(request);
 ```
 
 ### Describing a Namespace
@@ -91,7 +91,7 @@ import org.lance.namespace.model.DescribeNamespaceResponse;
 DescribeNamespaceRequest request = new DescribeNamespaceRequest();
 request.setId(Arrays.asList("my_namespace"));
 
-DescribeNamespaceResponse response = namespace.describeNamespace(request);
+DescribeNamespaceResponse response = namespaceClient.describeNamespace(request);
 System.out.println("Namespace properties: " + response.getProperties());
 ```
 
@@ -105,7 +105,7 @@ import org.lance.namespace.model.ListNamespacesResponse;
 ListNamespacesRequest request = new ListNamespacesRequest();
 request.setId(Arrays.asList());  // Empty for root
 
-ListNamespacesResponse response = namespace.listNamespaces(request);
+ListNamespacesResponse response = namespaceClient.listNamespaces(request);
 for (String ns : response.getNamespaces()) {
     System.out.println("Namespace: " + ns);
 }
@@ -114,7 +114,7 @@ for (String ns : response.getNamespaces()) {
 ListNamespacesRequest childRequest = new ListNamespacesRequest();
 childRequest.setId(Arrays.asList("parent_namespace"));
 
-ListNamespacesResponse childResponse = namespace.listNamespaces(childRequest);
+ListNamespacesResponse childResponse = namespaceClient.listNamespaces(childRequest);
 ```
 
 ### Listing Tables
@@ -127,7 +127,7 @@ import org.lance.namespace.model.ListTablesResponse;
 ListTablesRequest request = new ListTablesRequest();
 request.setId(Arrays.asList("my_namespace"));
 
-ListTablesResponse response = namespace.listTables(request);
+ListTablesResponse response = namespaceClient.listTables(request);
 for (String table : response.getTables()) {
     System.out.println("Table: " + table);
 }
@@ -142,7 +142,7 @@ import org.lance.namespace.model.DropNamespaceResponse;
 DropNamespaceRequest request = new DropNamespaceRequest();
 request.setId(Arrays.asList("my_namespace"));
 
-DropNamespaceResponse response = namespace.dropNamespace(request);
+DropNamespaceResponse response = namespaceClient.dropNamespace(request);
 ```
 
 ### Describing a Table
@@ -154,7 +154,7 @@ import org.lance.namespace.model.DescribeTableResponse;
 DescribeTableRequest request = new DescribeTableRequest();
 request.setId(Arrays.asList("my_namespace", "my_table"));
 
-DescribeTableResponse response = namespace.describeTable(request);
+DescribeTableResponse response = namespaceClient.describeTable(request);
 System.out.println("Table version: " + response.getVersion());
 System.out.println("Schema fields: " + response.getSchema().getFields());
 ```
@@ -168,7 +168,7 @@ import org.lance.namespace.model.DropTableResponse;
 DropTableRequest request = new DropTableRequest();
 request.setId(Arrays.asList("my_namespace", "my_table"));
 
-DropTableResponse response = namespace.dropTable(request);
+DropTableResponse response = namespaceClient.dropTable(request);
 ```
 
 ## Writing Data
@@ -178,7 +178,7 @@ DropTableResponse response = namespace.dropTable(request);
 Tables are created within a namespace by providing data in Apache Arrow IPC format:
 
 ```java
-import org.lance.namespace.RestNamespace;
+import org.lance.namespace.LanceNamespace;
 import org.lance.namespace.model.CreateTableRequest;
 import org.lance.namespace.model.CreateTableResponse;
 import org.apache.arrow.memory.BufferAllocator;
@@ -245,7 +245,7 @@ try (BufferAllocator allocator = new RootAllocator();
     // Create table in a namespace
     CreateTableRequest request = new CreateTableRequest();
     request.setId(Arrays.asList("my_namespace", "my_table"));
-    CreateTableResponse response = namespace.createTable(request, tableData);
+    CreateTableResponse response = namespaceClient.createTable(request, tableData);
 }
 ```
 
@@ -262,7 +262,7 @@ InsertIntoTableRequest request = new InsertIntoTableRequest();
 request.setId(Arrays.asList("my_namespace", "my_table"));
 request.setMode(InsertIntoTableRequest.ModeEnum.APPEND);
 
-InsertIntoTableResponse response = namespace.insertIntoTable(request, insertData);
+InsertIntoTableResponse response = namespaceClient.insertIntoTable(request, insertData);
 System.out.println("New version: " + response.getVersion());
 ```
 
@@ -285,7 +285,7 @@ request.setUpdates(Arrays.asList(
     Arrays.asList("name", "'updated_name'")
 ));
 
-UpdateTableResponse response = namespace.updateTable(request);
+UpdateTableResponse response = namespaceClient.updateTable(request);
 System.out.println("Updated rows: " + response.getUpdatedRows());
 ```
 
@@ -303,7 +303,7 @@ request.setId(Arrays.asList("my_namespace", "my_table"));
 // Predicate to select rows to delete
 request.setPredicate("id > 100");
 
-DeleteFromTableResponse response = namespace.deleteFromTable(request);
+DeleteFromTableResponse response = namespaceClient.deleteFromTable(request);
 System.out.println("New version: " + response.getVersion());
 ```
 
@@ -330,7 +330,7 @@ request.setWhenMatchedUpdateAll(true);
 // Insert new rows when no match is found
 request.setWhenNotMatchedInsertAll(true);
 
-MergeInsertIntoTableResponse response = namespace.mergeInsertIntoTable(request, mergeData);
+MergeInsertIntoTableResponse response = namespaceClient.mergeInsertIntoTable(request, mergeData);
 
 System.out.println("Updated rows: " + response.getNumUpdatedRows());
 System.out.println("Inserted rows: " + response.getNumInsertedRows());
@@ -346,7 +346,7 @@ import org.lance.namespace.model.CountTableRowsRequest;
 CountTableRowsRequest request = new CountTableRowsRequest();
 request.setId(Arrays.asList("my_namespace", "my_table"));
 
-Long rowCount = namespace.countTableRows(request);
+Long rowCount = namespaceClient.countTableRows(request);
 System.out.println("Row count: " + rowCount);
 ```
 
@@ -373,7 +373,7 @@ query.setVector(vector);
 query.setColumns(Arrays.asList("id", "name", "embedding"));
 
 // Execute query - returns Arrow IPC format
-byte[] result = namespace.queryTable(query);
+byte[] result = namespaceClient.queryTable(query);
 ```
 
 ### Full Text Search
@@ -399,7 +399,7 @@ query.setFullTextQuery(fts);
 // Specify columns to return
 query.setColumns(Arrays.asList("id", "text_column"));
 
-byte[] result = namespace.queryTable(query);
+byte[] result = namespaceClient.queryTable(query);
 ```
 
 ### Query with Filter
@@ -411,7 +411,7 @@ query.setK(10);
 query.setFilter("id > 50");
 query.setColumns(Arrays.asList("id", "name"));
 
-byte[] result = namespace.queryTable(query);
+byte[] result = namespaceClient.queryTable(query);
 ```
 
 ### Query with Prefilter
@@ -428,7 +428,7 @@ QueryTableRequestVector vector = new QueryTableRequestVector();
 vector.setSingleVector(queryVector);
 query.setVector(vector);
 
-byte[] result = namespace.queryTable(query);
+byte[] result = namespaceClient.queryTable(query);
 ```
 
 ### Reading Query Results
@@ -475,7 +475,7 @@ class ByteArraySeekableByteChannel implements SeekableByteChannel {
 }
 
 // Read query results
-byte[] queryResult = namespace.queryTable(query);
+byte[] queryResult = namespaceClient.queryTable(query);
 
 try (BufferAllocator allocator = new RootAllocator();
      ArrowFileReader reader = new ArrowFileReader(
