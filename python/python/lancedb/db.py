@@ -9,6 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
+from urllib.parse import urlparse
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -569,12 +570,8 @@ class LanceDBConnection(DBConnection):
         is_local = isinstance(uri, Path) or scheme == "file"
         if is_local:
             if isinstance(uri, str):
-                # Strip file:// or file:/ scheme if present
-                # file:///path becomes file:/path after URL normalization
-                if uri.startswith("file://"):
-                    uri = uri[7:]  # Remove "file://"
-                elif uri.startswith("file:/"):
-                    uri = uri[5:]  # Remove "file:"
+                # remove the file prefix
+                uri = urlparse(uri).path
 
                 if sys.platform == "win32":
                     # On Windows, a path like /C:/path should become C:/path
