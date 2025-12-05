@@ -260,7 +260,7 @@ else:
     if version.startswith("v"):
         version = version[1:]
 
-    if "beta" in version:
+    if "beta" in version or "rc" in version:
         set_preview_version(version)
     else:
         set_stable_version(version)
