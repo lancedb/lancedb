@@ -17,13 +17,13 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Unit tests for LanceDbRestNamespaceBuilder. */
-public class LanceDbRestNamespaceBuilderTest {
+/** Unit tests for LanceDbNamespaceClientBuilder. */
+public class LanceDbNamespaceClientBuilderTest {
 
   @Test
   public void testBuilderRequiresApiKey() {
-    LanceDbRestNamespaceBuilder builder =
-        LanceDbRestNamespaceBuilder.newBuilder().database("test-db");
+    LanceDbNamespaceClientBuilder builder =
+        LanceDbNamespaceClientBuilder.newBuilder().database("test-db");
 
     IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
     assertEquals("API key is required", exception.getMessage());
@@ -31,8 +31,8 @@ public class LanceDbRestNamespaceBuilderTest {
 
   @Test
   public void testBuilderRequiresDatabase() {
-    LanceDbRestNamespaceBuilder builder =
-        LanceDbRestNamespaceBuilder.newBuilder().apiKey("test-api-key");
+    LanceDbNamespaceClientBuilder builder =
+        LanceDbNamespaceClientBuilder.newBuilder().apiKey("test-api-key");
 
     IllegalStateException exception = assertThrows(IllegalStateException.class, builder::build);
     assertEquals("Database is required", exception.getMessage());
@@ -43,7 +43,7 @@ public class LanceDbRestNamespaceBuilderTest {
     IllegalArgumentException exception =
         assertThrows(
             IllegalArgumentException.class,
-            () -> LanceDbRestNamespaceBuilder.newBuilder().apiKey(null));
+            () -> LanceDbNamespaceClientBuilder.newBuilder().apiKey(null));
     assertEquals("API key cannot be null or empty", exception.getMessage());
   }
 
@@ -52,7 +52,7 @@ public class LanceDbRestNamespaceBuilderTest {
     IllegalArgumentException exception =
         assertThrows(
             IllegalArgumentException.class,
-            () -> LanceDbRestNamespaceBuilder.newBuilder().apiKey("  "));
+            () -> LanceDbNamespaceClientBuilder.newBuilder().apiKey("  "));
     assertEquals("API key cannot be null or empty", exception.getMessage());
   }
 
@@ -61,7 +61,7 @@ public class LanceDbRestNamespaceBuilderTest {
     IllegalArgumentException exception =
         assertThrows(
             IllegalArgumentException.class,
-            () -> LanceDbRestNamespaceBuilder.newBuilder().database(null));
+            () -> LanceDbNamespaceClientBuilder.newBuilder().database(null));
     assertEquals("Database cannot be null or empty", exception.getMessage());
   }
 
@@ -70,14 +70,14 @@ public class LanceDbRestNamespaceBuilderTest {
     IllegalArgumentException exception =
         assertThrows(
             IllegalArgumentException.class,
-            () -> LanceDbRestNamespaceBuilder.newBuilder().database("  "));
+            () -> LanceDbNamespaceClientBuilder.newBuilder().database("  "));
     assertEquals("Database cannot be null or empty", exception.getMessage());
   }
 
   @Test
   public void testBuilderFluentApi() {
     // Verify the builder returns itself for chaining
-    LanceDbRestNamespaceBuilder builder = LanceDbRestNamespaceBuilder.newBuilder();
+    LanceDbNamespaceClientBuilder builder = LanceDbNamespaceClientBuilder.newBuilder();
 
     assertSame(builder, builder.apiKey("test-key"));
     assertSame(builder, builder.database("test-db"));
@@ -88,8 +88,8 @@ public class LanceDbRestNamespaceBuilderTest {
 
   @Test
   public void testNewBuilderCreatesNewInstance() {
-    LanceDbRestNamespaceBuilder builder1 = LanceDbRestNamespaceBuilder.newBuilder();
-    LanceDbRestNamespaceBuilder builder2 = LanceDbRestNamespaceBuilder.newBuilder();
+    LanceDbNamespaceClientBuilder builder1 = LanceDbNamespaceClientBuilder.newBuilder();
+    LanceDbNamespaceClientBuilder builder2 = LanceDbNamespaceClientBuilder.newBuilder();
 
     assertNotSame(builder1, builder2);
   }
