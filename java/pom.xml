@@ -6,7 +6,7 @@
 
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-parent</artifactId>
-    <version>0.22.4-beta.2</version>
+    <version>0.23.0-beta.1</version>
     <packaging>pom</packaging>
     <name>${project.artifactId}</name>
     <description>LanceDB Java SDK Parent POM</description>
@@ -28,7 +28,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <arrow.version>15.0.0</arrow.version>
-        <lance-namespace.verison>0.0.1</lance-namespace.verison>
+        <lance-core.version>1.0.0-rc.2</lance-core.version>
         <spotless.skip>false</spotless.skip>
         <spotless.version>2.30.0</spotless.version>
         <spotless.java.googlejavaformat.version>1.7</spotless.java.googlejavaformat.version>
@@ -51,8 +51,7 @@
     </properties>
 
     <modules>
-        <module>core</module>
-        <module>lance-namespace</module>
+        <module>lancedb-core</module>
     </modules>
 
     <scm>
@@ -64,9 +63,9 @@
     <dependencyManagement>
         <dependencies>
             <dependency>
-                <groupId>com.lancedb</groupId>
-                <artifactId>lance-namespace-core</artifactId>
-                <version>${lance-namespace.verison}</version>
+                <groupId>org.lance</groupId>
+                <artifactId>lance-core</artifactId>
+                <version>${lance-core.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.arrow</groupId>
@@ -89,19 +88,9 @@
                 <version>${arrow.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.questdb</groupId>
-                <artifactId>jar-jni</artifactId>
-                <version>1.1.1</version>
-            </dependency>
-            <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter</artifactId>
                 <version>5.10.1</version>
-            </dependency>
-            <dependency>
-                <groupId>org.json</groupId>
-                <artifactId>json</artifactId>
-                <version>20210307</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

@@ -44,7 +44,18 @@ import numpy as np
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from .index import BTree, IvfFlat, IvfPq, Bitmap, IvfRq, LabelList, HnswPq, HnswSq, FTS
+from .index import (
+    BTree,
+    IvfFlat,
+    IvfPq,
+    IvfSq,
+    Bitmap,
+    IvfRq,
+    LabelList,
+    HnswPq,
+    HnswSq,
+    FTS,
+)
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -2054,7 +2065,7 @@ class LanceTable(Table):
         index_cache_size: Optional[int] = None,
         num_bits: int = 8,
         index_type: Literal[
-            "IVF_FLAT", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+            "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
         ] = "IVF_PQ",
         max_iterations: int = 50,
         sample_rate: int = 256,
@@ -2086,6 +2097,14 @@ class LanceTable(Table):
             return
         elif index_type == "IVF_FLAT":
             config = IvfFlat(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
+            )
+        elif index_type == "IVF_SQ":
+            config = IvfSq(
                 distance_type=metric,
                 num_partitions=num_partitions,
                 max_iterations=max_iterations,
@@ -3456,11 +3475,22 @@ class AsyncTable:
         if config is not None:
             if not isinstance(
                 config,
-                (IvfFlat, IvfPq, IvfRq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS),
+                (
+                    IvfFlat,
+                    IvfSq,
+                    IvfPq,
+                    IvfRq,
+                    HnswPq,
+                    HnswSq,
+                    BTree,
+                    Bitmap,
+                    LabelList,
+                    FTS,
+                ),
             ):
                 raise TypeError(
-                    "config must be an instance of IvfPq, IvfRq, HnswPq, HnswSq, BTree,"
-                    " Bitmap, LabelList, or FTS, but got " + str(type(config))
+                    "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
+                    " BTree, Bitmap, LabelList, or FTS, but got " + str(type(config))
                 )
         try:
             await self._inner.create_index(

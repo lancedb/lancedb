@@ -10,8 +10,10 @@ use async_trait::async_trait;
 use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsProvider};
 use lance_namespace::{
     models::{
-        CreateEmptyTableRequest, CreateNamespaceRequest, DescribeTableRequest,
-        DropNamespaceRequest, DropTableRequest, ListNamespacesRequest, ListTablesRequest,
+        CreateEmptyTableRequest, CreateNamespaceRequest, CreateNamespaceResponse,
+        DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
+        DropNamespaceRequest, DropNamespaceResponse, DropTableRequest, ListNamespacesRequest,
+        ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
     },
     LanceNamespace,
 };
@@ -22,11 +24,8 @@ use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
 
 use super::{
-    listing::ListingDatabase, BaseTable, CloneTableRequest,
-    CreateNamespaceRequest as DbCreateNamespaceRequest, CreateTableMode,
-    CreateTableRequest as DbCreateTableRequest, Database,
-    DropNamespaceRequest as DbDropNamespaceRequest,
-    ListNamespacesRequest as DbListNamespacesRequest, OpenTableRequest, TableNamesRequest,
+    listing::ListingDatabase, BaseTable, CloneTableRequest, CreateTableMode,
+    CreateTableRequest as DbCreateTableRequest, Database, OpenTableRequest, TableNamesRequest,
 };
 
 /// A database implementation that uses lance-namespace for table management
@@ -40,6 +39,8 @@ pub struct LanceNamespaceDatabase {
     session: Option<Arc<lance::session::Session>>,
     // database URI
     uri: String,
+    // Whether to enable server-side query execution
+    server_side_query_enabled: bool,
 }
 
 impl LanceNamespaceDatabase {
@@ -49,6 +50,7 @@ impl LanceNamespaceDatabase {
         storage_options: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
         session: Option<Arc<lance::session::Session>>,
+        server_side_query_enabled: bool,
     ) -> Result<Self> {
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
@@ -67,6 +69,7 @@ impl LanceNamespaceDatabase {
             read_consistency_interval,
             session,
             uri: format!("namespace://{}", ns_impl),
+            server_side_query_enabled,
         })
     }
 }
@@ -76,6 +79,7 @@ impl std::fmt::Debug for LanceNamespaceDatabase {
         f.debug_struct("LanceNamespaceDatabase")
             .field("storage_options", &self.storage_options)
             .field("read_consistency_interval", &self.read_consistency_interval)
+            .field("server_side_query_enabled", &self.server_side_query_enabled)
             .finish()
     }
 }
@@ -149,90 +153,45 @@ impl Database for LanceNamespaceDatabase {
         }
     }
 
-    async fn list_namespaces(&self, request: DbListNamespacesRequest) -> Result<Vec<String>> {
-        let ns_request = ListNamespacesRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
-            page_token: request.page_token,
-            limit: request.limit.map(|l| l as i32),
-        };
-
-        let response = self
-            .namespace
-            .list_namespaces(ns_request)
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to list namespaces: {}", e),
-            })?;
-
-        Ok(response.namespaces)
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
+        Ok(self.namespace.list_namespaces(request).await?)
     }
 
-    async fn create_namespace(&self, request: DbCreateNamespaceRequest) -> Result<()> {
-        let ns_request = CreateNamespaceRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
-            mode: None,
-            properties: None,
-        };
-
-        self.namespace
-            .create_namespace(ns_request)
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to create namespace: {}", e),
-            })?;
-
-        Ok(())
+    async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
+        Ok(self.namespace.create_namespace(request).await?)
     }
 
-    async fn drop_namespace(&self, request: DbDropNamespaceRequest) -> Result<()> {
-        let ns_request = DropNamespaceRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
-            mode: None,
-            behavior: None,
-        };
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
+        Ok(self.namespace.drop_namespace(request).await?)
+    }
 
-        self.namespace
-            .drop_namespace(ns_request)
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to drop namespace: {}", e),
-            })?;
-
-        Ok(())
+    async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse> {
+        Ok(self.namespace.describe_namespace(request).await?)
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let ns_request = ListTablesRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
+            id: Some(request.namespace),
             page_token: request.start_after,
             limit: request.limit.map(|l| l as i32),
         };
 
-        let response =
-            self.namespace
-                .list_tables(ns_request)
-                .await
-                .map_err(|e| Error::Runtime {
-                    message: format!("Failed to list tables: {}", e),
-                })?;
+        let response = self.namespace.list_tables(ns_request).await?;
 
         Ok(response.tables)
+    }
+
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        Ok(self.namespace.list_tables(request).await?)
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -290,6 +249,10 @@ impl Database for LanceNamespaceDatabase {
                         )
                         .await?;
 
+                    let namespace_client = self
+                        .server_side_query_enabled
+                        .then(|| self.namespace.clone());
+
                     return listing_db
                         .open_table(OpenTableRequest {
                             name: request.name.clone(),
@@ -297,6 +260,7 @@ impl Database for LanceNamespaceDatabase {
                             index_cache_size: None,
                             lance_read_params: None,
                             location: Some(location),
+                            namespace_client,
                         })
                         .await;
                 }
@@ -333,11 +297,15 @@ impl Database for LanceNamespaceDatabase {
         let listing_db = self
             .create_listing_database(
                 &location,
-                table_id,
+                table_id.clone(),
                 user_storage_options,
                 create_empty_response.storage_options.as_ref(),
             )
             .await?;
+
+        let namespace_client = self
+            .server_side_query_enabled
+            .then(|| self.namespace.clone());
 
         let create_request = DbCreateTableRequest {
             name: request.name,
@@ -346,7 +314,9 @@ impl Database for LanceNamespaceDatabase {
             mode: request.mode,
             write_options: request.write_options,
             location: Some(location),
+            namespace_client,
         };
+
         listing_db.create_table(create_request).await
     }
 
@@ -380,11 +350,15 @@ impl Database for LanceNamespaceDatabase {
         let listing_db = self
             .create_listing_database(
                 &location,
-                table_id,
+                table_id.clone(),
                 user_storage_options,
                 response.storage_options.as_ref(),
             )
             .await?;
+
+        let namespace_client = self
+            .server_side_query_enabled
+            .then(|| self.namespace.clone());
 
         let open_request = OpenTableRequest {
             name: request.name.clone(),
@@ -392,7 +366,9 @@ impl Database for LanceNamespaceDatabase {
             index_cache_size: request.index_cache_size,
             lance_read_params: request.lance_read_params,
             location: Some(location),
+            namespace_client,
         };
+
         listing_db.open_table(open_request).await
     }
 
@@ -429,6 +405,7 @@ impl Database for LanceNamespaceDatabase {
         Ok(())
     }
 
+    #[allow(deprecated)]
     async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
         let tables = self
             .table_names(TableNamesRequest {
@@ -455,7 +432,6 @@ impl Database for LanceNamespaceDatabase {
 mod tests {
     use super::*;
     use crate::connect_namespace;
-    use crate::database::CreateNamespaceRequest;
     use crate::query::ExecutableQuery;
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
     use arrow_schema::{DataType, Field, Schema};
@@ -568,7 +544,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -627,7 +605,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -689,7 +669,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -771,7 +753,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -825,7 +809,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -904,7 +890,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -936,7 +924,9 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
-            namespace: vec!["test_ns".into()],
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
         })
         .await
         .expect("Failed to create namespace");
@@ -976,5 +966,47 @@ mod tests {
         // Verify: Cannot open dropped table
         let open_result = conn.open_table("drop_test").execute().await;
         assert!(open_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_table_names_at_root() {
+        // Test that table_names at root (empty namespace) works correctly
+        // This is a regression test for a bug where empty namespace was converted to None
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        // Create multiple tables at root namespace
+        let test_data1 = create_test_data();
+        let _table1 = conn
+            .create_table("table1", test_data1)
+            .execute()
+            .await
+            .expect("Failed to create table1 at root");
+
+        let test_data2 = create_test_data();
+        let _table2 = conn
+            .create_table("table2", test_data2)
+            .execute()
+            .await
+            .expect("Failed to create table2 at root");
+
+        // List tables at root using table_names (empty namespace means root)
+        let table_names = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("Failed to list tables at root");
+
+        assert!(table_names.contains(&"table1".to_string()));
+        assert!(table_names.contains(&"table2".to_string()));
+        assert_eq!(table_names.len(), 2);
     }
 }

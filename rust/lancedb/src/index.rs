@@ -13,7 +13,7 @@ use crate::{table::BaseTable, DistanceType, Error, Result};
 
 use self::{
     scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder},
-    vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
+    vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, IvfSqIndexBuilder},
 };
 
 pub mod scalar;
@@ -53,6 +53,9 @@ pub enum Index {
 
     /// IVF index with Product Quantization
     IvfPq(IvfPqIndexBuilder),
+
+    /// IVF index with Scalar Quantization
+    IvfSq(IvfSqIndexBuilder),
 
     /// IVF index with RabitQ Quantization
     IvfRq(IvfRqIndexBuilder),
@@ -277,6 +280,8 @@ pub enum IndexType {
     // Vector
     #[serde(alias = "IVF_FLAT")]
     IvfFlat,
+    #[serde(alias = "IVF_SQ")]
+    IvfSq,
     #[serde(alias = "IVF_PQ")]
     IvfPq,
     #[serde(alias = "IVF_RQ")]
@@ -301,6 +306,7 @@ impl std::fmt::Display for IndexType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::IvfFlat => write!(f, "IVF_FLAT"),
+            Self::IvfSq => write!(f, "IVF_SQ"),
             Self::IvfPq => write!(f, "IVF_PQ"),
             Self::IvfRq => write!(f, "IVF_RQ"),
             Self::IvfHnswPq => write!(f, "IVF_HNSW_PQ"),
@@ -323,6 +329,7 @@ impl std::str::FromStr for IndexType {
             "LABEL_LIST" | "LABELLIST" => Ok(Self::LabelList),
             "FTS" | "INVERTED" => Ok(Self::FTS),
             "IVF_FLAT" => Ok(Self::IvfFlat),
+            "IVF_SQ" => Ok(Self::IvfSq),
             "IVF_PQ" => Ok(Self::IvfPq),
             "IVF_RQ" => Ok(Self::IvfRq),
             "IVF_HNSW_PQ" => Ok(Self::IvfHnswPq),
