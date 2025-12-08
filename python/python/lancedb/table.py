@@ -3208,7 +3208,27 @@ def _infer_target_schema(
             if pa.types.is_floating(field.type.value_type):
                 target_type = pa.list_(pa.float32(), dim)
             elif pa.types.is_integer(field.type.value_type):
-                target_type = pa.list_(pa.uint8(), dim)
+                values = peeked.column(i)
+
+                if isinstance(values, pa.ChunkedArray):
+                    values = values.combine_chunks()
+
+                flattened = values.flatten()
+                valid_count = pc.count(flattened, mode="only_valid").as_py()
+
+                if valid_count == 0:
+                    target_type = pa.list_(pa.uint8(), dim)
+                else:
+                    min_max = pc.min_max(flattened)
+                    min_value = min_max["min"].as_py()
+                    max_value = min_max["max"].as_py()
+
+                    if (min_value is not None and min_value < 0) or (
+                        max_value is not None and max_value > 255
+                    ):
+                        target_type = pa.list_(pa.float32(), dim)
+                    else:
+                        target_type = pa.list_(pa.uint8(), dim)
             else:
                 continue  # Skip non-numeric types
 
