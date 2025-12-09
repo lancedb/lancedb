@@ -14,7 +14,7 @@
 /// which necessitates using the C FFI.
 use std::{mem, sync::Arc};
 
-use polars::prelude::{DataFrame, Series, SchemaExt, CompatLevel};
+use polars::prelude::{CompatLevel, DataFrame, SchemaExt, Series};
 
 use crate::error::Result;
 
@@ -25,18 +25,22 @@ use crate::error::Result;
 /// for string view types from polars-arrow to arrow-rs are not yet implemented.
 /// See: https://lists.apache.org/thread/w88tpz76ox8h3rxkjl4so6rg3f1rv7wt for the
 /// differences in the types.
-pub const COMPAT_LEVEL:CompatLevel = CompatLevel::newest();
+pub const COMPAT_LEVEL: CompatLevel = CompatLevel::newest();
 const IS_ARRAY_NULLABLE: bool = true;
 
 /// Converts a Polars DataFrame schema to an Arrow RecordBatch schema.
 pub fn convert_polars_df_schema_to_arrow_rb_schema(
     polars_df_schema: &polars::prelude::SchemaRef,
-) -> Result<Arc<arrow_schema::Schema> > {
-    let arrow_fields: Result<Vec<arrow_schema::Field>> = polars_df_schema.iter()
+) -> Result<Arc<arrow_schema::Schema>> {
+    let arrow_fields: Result<Vec<arrow_schema::Field>> = polars_df_schema
+        .iter()
         .map(|(name, df_dtype)| {
             let polars_arrow_dtype = df_dtype.to_arrow(CompatLevel::newest());
-            let polars_field =
-                polars_arrow::datatypes::Field::new(name.clone(), polars_arrow_dtype, IS_ARRAY_NULLABLE);
+            let polars_field = polars_arrow::datatypes::Field::new(
+                name.clone(),
+                polars_arrow_dtype,
+                IS_ARRAY_NULLABLE,
+            );
             convert_polars_arrow_field_to_arrow_rs_field(polars_field)
         })
         .collect();
@@ -47,16 +51,14 @@ pub fn convert_polars_df_schema_to_arrow_rb_schema(
 pub fn convert_arrow_rb_schema_to_polars_df_schema(
     arrow_schema: &arrow_schema::Schema,
 ) -> Result<polars::prelude::Schema> {
-    let polars_arrow_schema: Result<polars::prelude::ArrowSchema> =
-        arrow_schema
-            .fields()
-            .iter()
-            .map(|arrow_rs_field| {
-                let polars_arrow_field =
-                    convert_arrow_rs_field_to_polars_arrow_field(arrow_rs_field)?;
-                Ok((arrow_rs_field.name().into(), polars_arrow_field))
-            })
-            .collect();
+    let polars_arrow_schema: Result<polars::prelude::ArrowSchema> = arrow_schema
+        .fields()
+        .iter()
+        .map(|arrow_rs_field| {
+            let polars_arrow_field = convert_arrow_rs_field_to_polars_arrow_field(arrow_rs_field)?;
+            Ok((arrow_rs_field.name().into(), polars_arrow_field))
+        })
+        .collect();
     Ok(polars::prelude::Schema::from_arrow_schema(
         &polars_arrow_schema?,
     ))
