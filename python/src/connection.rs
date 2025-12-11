@@ -325,12 +325,12 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{create_namespace_request, CreateNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_lowercase().as_str() {
-                "create" => Some(create_namespace_request::Mode::Create),
-                "exist_ok" => Some(create_namespace_request::Mode::ExistOk),
-                "overwrite" => Some(create_namespace_request::Mode::Overwrite),
-                _ => None,
+            use lance_namespace::models::CreateNamespaceRequest;
+            let mode_enum = mode.map(|m| match m.to_lowercase().as_str() {
+                "create" => "Create".to_string(),
+                "exist_ok" => "ExistOk".to_string(),
+                "overwrite" => "Overwrite".to_string(),
+                _ => m,
             });
             let request = CreateNamespaceRequest {
                 id: if namespace.is_empty() {
@@ -360,16 +360,16 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{drop_namespace_request, DropNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_uppercase().as_str() {
-                "SKIP" => Some(drop_namespace_request::Mode::Skip),
-                "FAIL" => Some(drop_namespace_request::Mode::Fail),
-                _ => None,
+            use lance_namespace::models::DropNamespaceRequest;
+            let mode_enum = mode.map(|m| match m.to_lowercase().as_str() {
+                "skip" => "Skip".to_string(),
+                "fail" => "Fail".to_string(),
+                _ => m,
             });
-            let behavior_enum = behavior.and_then(|b| match b.to_uppercase().as_str() {
-                "RESTRICT" => Some(drop_namespace_request::Behavior::Restrict),
-                "CASCADE" => Some(drop_namespace_request::Behavior::Cascade),
-                _ => None,
+            let behavior_enum = behavior.map(|b| match b.to_lowercase().as_str() {
+                "restrict" => "Restrict".to_string(),
+                "cascade" => "Cascade".to_string(),
+                _ => b,
             });
             let request = DropNamespaceRequest {
                 id: if namespace.is_empty() {
