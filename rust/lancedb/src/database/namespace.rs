@@ -208,6 +208,7 @@ impl Database for LanceNamespaceDatabase {
         let describe_request = DescribeTableRequest {
             id: Some(table_id.clone()),
             version: None,
+            with_table_uri: Some(true),
         };
 
         let describe_result = self.namespace.describe_table(describe_request).await;
@@ -334,6 +335,7 @@ impl Database for LanceNamespaceDatabase {
         let describe_request = DescribeTableRequest {
             id: Some(table_id.clone()),
             version: None,
+            with_table_uri: Some(true),
         };
         let response = self
             .namespace
