@@ -6,8 +6,6 @@
 //!
 //! Vector indices are only supported on fixed-size-list (tensor) columns of floating point
 //! values
-use std::cmp::max;
-
 use lance::table::format::{IndexMetadata, Manifest};
 
 use crate::DistanceType;
@@ -211,6 +209,38 @@ impl IvfFlatIndexBuilder {
     impl_ivf_params_setter!();
 }
 
+/// Builder for an IVF SQ index.
+///
+/// This index compresses vectors using scalar quantization and groups them into IVF partitions.
+/// It offers a balance between search performance and storage footprint.
+#[derive(Debug, Clone)]
+pub struct IvfSqIndexBuilder {
+    pub(crate) distance_type: DistanceType,
+
+    // IVF
+    pub(crate) num_partitions: Option<u32>,
+    pub(crate) sample_rate: u32,
+    pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
+}
+
+impl Default for IvfSqIndexBuilder {
+    fn default() -> Self {
+        Self {
+            distance_type: DistanceType::L2,
+            num_partitions: None,
+            sample_rate: 256,
+            max_iterations: 50,
+            target_partition_size: None,
+        }
+    }
+}
+
+impl IvfSqIndexBuilder {
+    impl_distance_type_setter!();
+    impl_ivf_params_setter!();
+}
+
 /// Builder for an IVF PQ index.
 ///
 /// This index stores a compressed (quantized) copy of every vector.  These vectors
@@ -264,16 +294,6 @@ impl IvfPqIndexBuilder {
     impl_distance_type_setter!();
     impl_ivf_params_setter!();
     impl_pq_params_setter!();
-}
-
-pub(crate) fn suggested_num_partitions(rows: usize) -> u32 {
-    let num_partitions = (rows as f64).sqrt() as u32;
-    max(1, num_partitions)
-}
-
-pub(crate) fn suggested_num_partitions_for_hnsw(rows: usize, dim: u32) -> u32 {
-    let num_partitions = (((rows as u64) * (dim as u64)) / (256 * 5_000_000)) as u32;
-    max(1, num_partitions)
 }
 
 pub(crate) fn suggested_num_sub_vectors(dim: u32) -> u32 {

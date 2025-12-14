@@ -3,17 +3,9 @@
 
 import pyarrow as pa
 import pytest
+from lancedb.util import tbl_to_tensor
 
 torch = pytest.importorskip("torch")
-
-
-def tbl_to_tensor(tbl):
-    def to_tensor(col: pa.ChunkedArray):
-        if col.num_chunks > 1:
-            raise Exception("Single batch was too large to fit into a one-chunk table")
-        return torch.from_dlpack(col.chunk(0))
-
-    return torch.stack([to_tensor(tbl.column(i)) for i in range(tbl.num_columns)])
 
 
 def test_table_dataloader(mem_db):

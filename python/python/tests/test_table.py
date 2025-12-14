@@ -46,6 +46,39 @@ def test_basic(mem_db: DBConnection):
     assert table.to_arrow() == expected_data
 
 
+def test_create_table_infers_large_int_vectors(mem_db: DBConnection):
+    data = [{"vector": [0, 300]}]
+
+    table = mem_db.create_table(
+        "int_vector_overflow", data=data, mode="overwrite", exist_ok=True
+    )
+
+    vector_field = table.schema.field("vector")
+    assert vector_field.type == pa.list_(pa.float32(), 2)
+
+    vector_column = table.to_arrow().column("vector")
+    assert vector_column.type == pa.list_(pa.float32(), 2)
+    assert vector_column.to_pylist() == [[0.0, 300.0]]
+
+
+@pytest.mark.asyncio
+async def test_create_table_async_infers_large_int_vectors(
+    mem_db_async: AsyncConnection,
+):
+    data = [{"vector": [256, 257]}]
+
+    table = await mem_db_async.create_table(
+        "int_vector_overflow_async", data=data, mode="overwrite", exist_ok=True
+    )
+
+    schema = await table.schema()
+    assert schema.field("vector").type == pa.list_(pa.float32(), 2)
+
+    vector_column = (await table.to_arrow()).column("vector")
+    assert vector_column.type == pa.list_(pa.float32(), 2)
+    assert vector_column.to_pylist() == [[256.0, 257.0]]
+
+
 def test_input_data_type(mem_db: DBConnection, tmp_path):
     schema = pa.schema(
         {
@@ -1487,7 +1520,7 @@ def setup_hybrid_search_table(db: DBConnection, embedding_func):
     table.add([{"text": p} for p in phrases])
 
     # Create a fts index
-    table.create_fts_index("text")
+    table.create_fts_index("text", with_position=True)
 
     return table, MyTable, emb
 

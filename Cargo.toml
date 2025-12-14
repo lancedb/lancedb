@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/lancedb", "nodejs", "python", "java/core/lancedb-jni"]
+members = ["rust/lancedb", "nodejs", "python"]
 # Python package needs to be built by maturin.
 exclude = ["python"]
 resolver = "2"
@@ -15,20 +15,20 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.38.3-beta.11", default-features = false, "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-core = { "version" = "=0.38.3-beta.11", "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-datagen = { "version" = "=0.38.3-beta.11", "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-file = { "version" = "=0.38.3-beta.11", "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-io = { "version" = "=0.38.3-beta.11", default-features = false, "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-index = { "version" = "=0.38.3-beta.11", "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-linalg = { "version" = "=0.38.3-beta.11", "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-namespace = { "version" = "=0.38.3-beta.11", "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-namespace-impls = { "version" = "=0.38.3-beta.11", "features" = ["dir-aws", "dir-gcp", "dir-azure", "dir-oss", "rest"], "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-table = { "version" = "=0.38.3-beta.11", "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-testing = { "version" = "=0.38.3-beta.11", "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-datafusion = { "version" = "=0.38.3-beta.11", "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-encoding = { "version" = "=0.38.3-beta.11", "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
-lance-arrow = { "version" = "=0.38.3-beta.11", "tag" = "v0.38.3-beta.11", "git" = "https://github.com/lancedb/lance.git" }
+lance = { "version" = "=1.1.0-beta.1", default-features = false, "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=1.1.0-beta.1", "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=1.1.0-beta.1", "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=1.1.0-beta.1", "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=1.1.0-beta.1", default-features = false, "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=1.1.0-beta.1", "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=1.1.0-beta.1", "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=1.1.0-beta.1", "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=1.1.0-beta.1", default-features = false, "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=1.1.0-beta.1", "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=1.1.0-beta.1", "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=1.1.0-beta.1", "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=1.1.0-beta.1", "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=1.1.0-beta.1", "tag" = "v1.1.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "56.2", optional = false }
@@ -62,7 +62,18 @@ num-traits = "0.2"
 regex = "1.10"
 lazy_static = "1"
 semver = "1.0.25"
-crunchy = "0.2.4"
 chrono = "0.4"
-# Workaround for: https://github.com/Lokathor/bytemuck/issues/306
-bytemuck_derive = ">=1.8.1, <1.9.0"
+
+[profile.ci]
+debug = "line-tables-only"
+inherits = "dev"
+incremental = false
+
+# This rule applies to every package except workspace members (dependencies
+# such as `arrow` and `tokio`). It disables debug info and related features on
+# dependencies so their binaries stay smaller, improving cache reuse.
+[profile.ci.package."*"]
+debug = false
+debug-assertions = false
+strip = "debuginfo"
+incremental = false

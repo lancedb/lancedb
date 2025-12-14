@@ -3,6 +3,8 @@ import re
 import sys
 import json
 
+LANCE_GIT_URL = "https://github.com/lance-format/lance.git"
+
 
 def run_command(command: str) -> str:
     """
@@ -29,7 +31,7 @@ def get_latest_stable_version() -> str:
 
 def get_latest_preview_version() -> str:
     lance_tags = run_command(
-        "git ls-remote --tags https://github.com/lancedb/lance.git | grep 'refs/tags/v[0-9beta.-]\\+$'"
+        f"git ls-remote --tags {LANCE_GIT_URL} | grep 'refs/tags/v[0-9beta.-]\\+$'"
     ).splitlines()
     lance_tags = (
         tag.split("refs/tags/")[1]
@@ -55,7 +57,7 @@ def extract_features(line: str) -> list:
     match = re.search(r'"features"\s*=\s*\[\s*(.*?)\s*\]', line, re.DOTALL)
     if match:
         features_str = match.group(1)
-        return [f.strip('"') for f in features_str.split(",") if len(f) > 0]
+        return [f.strip().strip('"') for f in features_str.split(",") if f.strip()]
     return []
 
 
@@ -176,8 +178,8 @@ def set_stable_version(version: str):
 def set_preview_version(version: str):
     """
     Sets lines to
-    lance = { "version" = "=0.29.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-    lance-io = { "version" = "=0.29.0", default-features = false, "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
+    lance = { "version" = "=0.29.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.29.0-beta.2", "git" = LANCE_GIT_URL }
+    lance-io = { "version" = "=0.29.0", default-features = false, "tag" = "v0.29.0-beta.2", "git" = LANCE_GIT_URL }
     ...
     """
 
@@ -194,7 +196,7 @@ def set_preview_version(version: str):
             config["features"] = features
 
         config["tag"] = f"v{version}"
-        config["git"] = "https://github.com/lancedb/lance.git"
+        config["git"] = LANCE_GIT_URL
 
         return dict_to_toml_line(package_name, config)
 

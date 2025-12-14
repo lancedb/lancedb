@@ -43,6 +43,7 @@ export {
   DeleteResult,
   DropColumnsResult,
   UpdateResult,
+  SplitCalculatedOptions,
   SplitRandomOptions,
   SplitHashOptions,
   SplitSequentialOptions,

@@ -63,27 +63,18 @@ jobs:
           git config user.name "lancedb automation"
           git config user.email "robot@lancedb.com"
 
-      - name: Configure Codex authentication
-        env:
-          CODEX_TOKEN_B64: ${{ secrets.CODEX_TOKEN }}
-        run: |
-          if [ -z "${CODEX_TOKEN_B64}" ]; then
-            echo "Repository secret CODEX_TOKEN is not defined; skipping Codex execution."
-            exit 1
-          fi
-          mkdir -p ~/.codex
-          echo "${CODEX_TOKEN_B64}" | base64 --decode > ~/.codex/auth.json
-
       - name: Run Codex to update Lance dependency
         env:
           TAG: ${{ inputs.tag }}
           GITHUB_TOKEN: ${{ secrets.ROBOT_TOKEN }}
           GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.CODEX_TOKEN }}
         run: |
           set -euo pipefail
           VERSION="${TAG#refs/tags/}"
           VERSION="${VERSION#v}"
           BRANCH_NAME="codex/update-lance-${VERSION//[^a-zA-Z0-9]/-}"
+
           cat <<EOF >/tmp/codex-prompt.txt
           You are running inside the lancedb repository on a GitHub Actions runner. Update the Lance dependency to version ${VERSION} and prepare a pull request for maintainers to review.
 
@@ -104,4 +95,33 @@ jobs:
           - Do not merge the PR.
           - If any command fails, diagnose and fix the issue instead of aborting.
           EOF
+
+          printenv OPENAI_API_KEY | codex login --with-api-key
           codex --config shell_environment_policy.ignore_default_excludes=true exec --dangerously-bypass-approvals-and-sandbox "$(cat /tmp/codex-prompt.txt)"
+
+      - name: Trigger sophon dependency update
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#refs/tags/}"
+          VERSION="${VERSION#v}"
+          LANCEDB_BRANCH="codex/update-lance-${VERSION//[^a-zA-Z0-9]/-}"
+
+          echo "Triggering sophon workflow with:"
+          echo "  lance_ref: ${TAG#refs/tags/}"
+          echo "  lancedb_ref: ${LANCEDB_BRANCH}"
+
+          gh workflow run codex-bump-lancedb-lance.yml \
+            --repo lancedb/sophon \
+            -f lance_ref="${TAG#refs/tags/}" \
+            -f lancedb_ref="${LANCEDB_BRANCH}"
+
+      - name: Show latest sophon workflow run
+        env:
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Latest sophon workflow run:"
+          gh run list --repo lancedb/sophon --workflow codex-bump-lancedb-lance.yml --limit 1 --json databaseId,url,displayTitle

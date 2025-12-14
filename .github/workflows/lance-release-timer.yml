@@ -1,0 +1,62 @@
+name: Lance Release Timer
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: lance-release-timer
+  cancel-in-progress: false
+
+jobs:
+  trigger-update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for new Lance tag
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+        run: |
+          python3 ci/check_lance_release.py --github-output "$GITHUB_OUTPUT"
+
+      - name: Look for existing PR
+        if: steps.check.outputs.needs_update == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          TITLE="chore: update lance dependency to v${{ steps.check.outputs.latest_version }}"
+          COUNT=$(gh pr list --search "\"$TITLE\" in:title" --state open --limit 1 --json number --jq 'length')
+          if [ "$COUNT" -gt 0 ]; then
+            echo "Open PR already exists for $TITLE"
+            echo "pr_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No existing PR for $TITLE"
+            echo "pr_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger codex update workflow
+        if: steps.check.outputs.needs_update == 'true' && steps.pr.outputs.pr_exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG=${{ steps.check.outputs.latest_tag }}
+          gh workflow run codex-update-lance-dependency.yml -f tag=refs/tags/$TAG
+
+      - name: Show latest codex workflow run
+        if: steps.check.outputs.needs_update == 'true' && steps.pr.outputs.pr_exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh run list --workflow codex-update-lance-dependency.yml --limit 1 --json databaseId,url,displayTitle

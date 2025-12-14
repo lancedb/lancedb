@@ -134,17 +134,19 @@ pub struct MergeResult {
     pub num_updated_rows: u64,
     pub num_inserted_rows: u64,
     pub num_deleted_rows: u64,
+    pub num_attempts: u32,
 }
 
 #[pymethods]
 impl MergeResult {
     pub fn __repr__(&self) -> String {
         format!(
-            "MergeResult(version={}, num_updated_rows={}, num_inserted_rows={}, num_deleted_rows={})",
+            "MergeResult(version={}, num_updated_rows={}, num_inserted_rows={}, num_deleted_rows={}, num_attempts={})",
             self.version,
             self.num_updated_rows,
             self.num_inserted_rows,
-            self.num_deleted_rows
+            self.num_deleted_rows,
+            self.num_attempts
         )
     }
 }
@@ -156,6 +158,7 @@ impl From<lancedb::table::MergeResult> for MergeResult {
             num_updated_rows: result.num_updated_rows,
             num_inserted_rows: result.num_inserted_rows,
             num_deleted_rows: result.num_deleted_rows,
+            num_attempts: result.num_attempts,
         }
     }
 }

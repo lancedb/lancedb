@@ -44,7 +44,18 @@ import numpy as np
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from .index import BTree, IvfFlat, IvfPq, Bitmap, IvfRq, LabelList, HnswPq, HnswSq, FTS
+from .index import (
+    BTree,
+    IvfFlat,
+    IvfPq,
+    IvfSq,
+    Bitmap,
+    IvfRq,
+    LabelList,
+    HnswPq,
+    HnswSq,
+    FTS,
+)
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -75,6 +86,7 @@ from .index import lang_mapping
 
 if TYPE_CHECKING:
     from .db import LanceDBConnection
+    from .io import StorageOptionsProvider
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -177,7 +189,7 @@ def _into_pyarrow_reader(
             f"Unknown data type {type(data)}. "
             "Supported types: list of dicts, pandas DataFrame, polars DataFrame, "
             "pyarrow Table/RecordBatch, or Pydantic models. "
-            "See https://lancedb.github.io/lancedb/guides/tables/ for examples."
+            "See https://lancedb.com/docs/tables/ for examples."
         )
 
 
@@ -1017,7 +1029,7 @@ class Table(ABC):
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
         >>> res
-        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0)
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -1707,13 +1719,18 @@ class LanceTable(Table):
         connection: "LanceDBConnection",
         name: str,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
         _async: AsyncTable = None,
     ):
+        if namespace is None:
+            namespace = []
         self._conn = connection
         self._namespace = namespace
+        self._location = location  # Store location for use in _dataset_path
         if _async is not None:
             self._table = _async
         else:
@@ -1722,13 +1739,27 @@ class LanceTable(Table):
                     name,
                     namespace=namespace,
                     storage_options=storage_options,
+                    storage_options_provider=storage_options_provider,
                     index_cache_size=index_cache_size,
+                    location=location,
                 )
             )
 
     @property
     def name(self) -> str:
         return self._table.name
+
+    @property
+    def namespace(self) -> List[str]:
+        """Return the namespace path of the table."""
+        return self._namespace
+
+    @property
+    def id(self) -> str:
+        """Return the full identifier of the table (namespace$name)."""
+        if self._namespace:
+            return "$".join(self._namespace + [self.name])
+        return self.name
 
     @classmethod
     def from_inner(cls, tbl: LanceDBTable):
@@ -1743,8 +1774,28 @@ class LanceTable(Table):
         )
 
     @classmethod
-    def open(cls, db, name, *, namespace: List[str] = [], **kwargs):
-        tbl = cls(db, name, namespace=namespace, **kwargs)
+    def open(
+        cls,
+        db,
+        name,
+        *,
+        namespace: Optional[List[str]] = None,
+        storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
+        index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
+    ):
+        if namespace is None:
+            namespace = []
+        tbl = cls(
+            db,
+            name,
+            namespace=namespace,
+            storage_options=storage_options,
+            storage_options_provider=storage_options_provider,
+            index_cache_size=index_cache_size,
+            location=location,
+        )
 
         # check the dataset exists
         try:
@@ -1759,6 +1810,10 @@ class LanceTable(Table):
     @cached_property
     def _dataset_path(self) -> str:
         # Cacheable since it's deterministic
+        # If table was opened with explicit location (e.g., from namespace),
+        # use that location directly instead of constructing from base URI
+        if self._location is not None:
+            return self._location
         return _table_path(self._conn.uri, self.name)
 
     def to_lance(self, **kwargs) -> lance.LanceDataset:
@@ -2010,7 +2065,7 @@ class LanceTable(Table):
         index_cache_size: Optional[int] = None,
         num_bits: int = 8,
         index_type: Literal[
-            "IVF_FLAT", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+            "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
         ] = "IVF_PQ",
         max_iterations: int = 50,
         sample_rate: int = 256,
@@ -2042,6 +2097,14 @@ class LanceTable(Table):
             return
         elif index_type == "IVF_FLAT":
             config = IvfFlat(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
+            )
+        elif index_type == "IVF_SQ":
+            config = IvfSq(
                 distance_type=metric,
                 num_partitions=num_partitions,
                 max_iterations=max_iterations,
@@ -2583,10 +2646,12 @@ class LanceTable(Table):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str | bool]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        location: Optional[str] = None,
     ):
         """
         Create a new table.
@@ -2641,9 +2706,12 @@ class LanceTable(Table):
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
         """
+        if namespace is None:
+            namespace = []
         self = cls.__new__(cls)
         self._conn = db
         self._namespace = namespace
+        self._location = location
 
         if data_storage_version is not None:
             warnings.warn(
@@ -2678,6 +2746,8 @@ class LanceTable(Table):
                 embedding_functions=embedding_functions,
                 namespace=namespace,
                 storage_options=storage_options,
+                storage_options_provider=storage_options_provider,
+                location=location,
             )
         )
         return self
@@ -3138,7 +3208,27 @@ def _infer_target_schema(
             if pa.types.is_floating(field.type.value_type):
                 target_type = pa.list_(pa.float32(), dim)
             elif pa.types.is_integer(field.type.value_type):
-                target_type = pa.list_(pa.uint8(), dim)
+                values = peeked.column(i)
+
+                if isinstance(values, pa.ChunkedArray):
+                    values = values.combine_chunks()
+
+                flattened = values.flatten()
+                valid_count = pc.count(flattened, mode="only_valid").as_py()
+
+                if valid_count == 0:
+                    target_type = pa.list_(pa.uint8(), dim)
+                else:
+                    min_max = pc.min_max(flattened)
+                    min_value = min_max["min"].as_py()
+                    max_value = min_max["max"].as_py()
+
+                    if (min_value is not None and min_value < 0) or (
+                        max_value is not None and max_value > 255
+                    ):
+                        target_type = pa.list_(pa.float32(), dim)
+                    else:
+                        target_type = pa.list_(pa.uint8(), dim)
             else:
                 continue  # Skip non-numeric types
 
@@ -3405,11 +3495,22 @@ class AsyncTable:
         if config is not None:
             if not isinstance(
                 config,
-                (IvfFlat, IvfPq, IvfRq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS),
+                (
+                    IvfFlat,
+                    IvfSq,
+                    IvfPq,
+                    IvfRq,
+                    HnswPq,
+                    HnswSq,
+                    BTree,
+                    Bitmap,
+                    LabelList,
+                    FTS,
+                ),
             ):
                 raise TypeError(
-                    "config must be an instance of IvfPq, IvfRq, HnswPq, HnswSq, BTree,"
-                    " Bitmap, LabelList, or FTS, but got " + str(type(config))
+                    "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
+                    " BTree, Bitmap, LabelList, or FTS, but got " + str(type(config))
                 )
         try:
             await self._inner.create_index(
@@ -3583,7 +3684,7 @@ class AsyncTable:
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
         >>> res
-        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0)
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()

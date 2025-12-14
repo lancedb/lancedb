@@ -41,7 +41,6 @@ theme:
   icon:
     repo: fontawesome/brands/github
     annotation: material/arrow-right-circle
-  custom_dir: overrides
 
 plugins:
   - search
@@ -49,7 +48,9 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
-          paths: [../python]
+          # Ensure the handler points to the real package root
+          # so it reads local sources at python/python/lancedb
+          paths: [../python/python]
           options:
             docstring_style: numpy
             heading_level: 3
@@ -65,26 +66,24 @@ plugins:
             # for cross references
             - https://arrow.apache.org/docs/objects.inv
             - https://pandas.pydata.org/docs/objects.inv
-            - https://lancedb.github.io/lance/objects.inv
             - https://docs.pydantic.dev/latest/objects.inv
-  - mkdocs-jupyter
   - render_swagger:
       allow_arbitrary_locations: true
-  - redirects:
-      redirect_maps:
-        # Redirect the home page and other top-level markdown files. This enables maximum SEO benefit
-        # other sub-pages are handled by the ingected js in overrides/partials/header.html
-        'index.md': 'https://lancedb.com/docs/'
-        'guides/tables.md': 'https://lancedb.com/docs/tables/'
-        'ann_indexes.md': 'https://lancedb.com/docs/indexing/'
-        'basic.md': 'https://lancedb.com/docs/quickstart/'
-        'faq.md': 'https://lancedb.com/docs/faq/'
-        'embeddings/understanding_embeddings.md': 'https://lancedb.com/docs/embedding/'
-        'integrations.md': 'https://lancedb.com/docs/integrations/'
-        'examples.md': 'https://lancedb.com/docs/tutorials/'
-        'concepts/vector_search.md': 'https://lancedb.com/docs/search/vector-search/'
-        'troubleshooting.md': 'https://lancedb.com/docs/troubleshooting/'
-        'guides/storage.md': 'https://lancedb.com/docs/storage/integrations'
+#   - redirects:
+#       redirect_maps:
+#         # Redirect the home page and other top-level markdown files. This enables maximum SEO benefit
+#         # other sub-pages are handled by the ingected js in overrides/partials/header.html
+#         'index.md': 'https://lancedb.com/docs/'
+#         'guides/tables.md': 'https://lancedb.com/docs/tables/'
+#         'ann_indexes.md': 'https://lancedb.com/docs/indexing/'
+#         'basic.md': 'https://lancedb.com/docs/quickstart/'
+#         'faq.md': 'https://lancedb.com/docs/faq/'
+#         'embeddings/understanding_embeddings.md': 'https://lancedb.com/docs/embedding/'
+#         'integrations.md': 'https://lancedb.com/docs/integrations/'
+#         'examples.md': 'https://lancedb.com/docs/tutorials/'
+#         'concepts/vector_search.md': 'https://lancedb.com/docs/search/vector-search/'
+#         'troubleshooting.md': 'https://lancedb.com/docs/troubleshooting/'
+#         'guides/storage.md': 'https://lancedb.com/docs/storage/integrations'
 
 
 
@@ -120,269 +119,11 @@ markdown_extensions:
       permalink: ""
 
 nav:
-  - Home:
-      - LanceDB: index.md
-      - 🏃🏼‍♂️ Quick start: basic.md
-      - 📚 Concepts:
-          - Vector search: concepts/vector_search.md
-          - Indexing:
-              - IVFPQ: concepts/index_ivfpq.md
-              - HNSW: concepts/index_hnsw.md
-          - Storage: concepts/storage.md
-          - Data management: concepts/data_management.md
-      - 🔨 Guides:
-          - Working with tables: guides/tables.md
-          - Building a vector index: ann_indexes.md
-          - Vector Search: search.md
-          - Full-text search (native): fts.md
-          - Full-text search (tantivy-based): fts_tantivy.md
-          - Building a scalar index: guides/scalar_index.md
-          - Hybrid search:
-              - Overview: hybrid_search/hybrid_search.md
-              - Comparing Rerankers: hybrid_search/eval.md
-              - Airbnb financial data example: notebooks/hybrid_search.ipynb
-          - Late interaction with MultiVector search:
-              - Overview: guides/multi-vector.md
-              - Example: notebooks/Multivector_on_LanceDB.ipynb
-          - RAG:
-              - Vanilla RAG: rag/vanilla_rag.md
-              - Multi-head RAG: rag/multi_head_rag.md
-              - Corrective RAG: rag/corrective_rag.md
-              - Agentic RAG: rag/agentic_rag.md
-              - Graph RAG: rag/graph_rag.md
-              - Self RAG: rag/self_rag.md
-              - Adaptive RAG: rag/adaptive_rag.md
-              - SFR RAG: rag/sfr_rag.md
-              - Advanced Techniques:
-                  - HyDE: rag/advanced_techniques/hyde.md
-                  - FLARE: rag/advanced_techniques/flare.md
-          - Reranking:
-              - Quickstart: reranking/index.md
-              - Cohere Reranker: reranking/cohere.md
-              - Linear Combination Reranker: reranking/linear_combination.md
-              - Reciprocal Rank Fusion Reranker: reranking/rrf.md
-              - Cross Encoder Reranker: reranking/cross_encoder.md
-              - ColBERT Reranker: reranking/colbert.md
-              - Jina Reranker: reranking/jina.md
-              - OpenAI Reranker: reranking/openai.md
-              - AnswerDotAi Rerankers: reranking/answerdotai.md
-              - Voyage AI Rerankers: reranking/voyageai.md
-              - Building Custom Rerankers: reranking/custom_reranker.md
-              - Example: notebooks/lancedb_reranking.ipynb
-          - Filtering: sql.md
-          - Versioning & Reproducibility:
-              - sync API: notebooks/reproducibility.ipynb
-              - async API: notebooks/reproducibility_async.ipynb
-          - Configuring Storage: guides/storage.md
-          - Migration Guide: migration.md
-          - Tuning retrieval performance:
-              - Choosing right query type: guides/tuning_retrievers/1_query_types.md
-              - Reranking: guides/tuning_retrievers/2_reranking.md
-              - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
-      - 🧬 Managing embeddings:
-          - Understand Embeddings: embeddings/understanding_embeddings.md
-          - Get Started: embeddings/index.md
-          - Embedding functions: embeddings/embedding_functions.md
-          - Available models:
-              - Overview: embeddings/default_embedding_functions.md
-              - Text Embedding Functions:
-                  - Sentence Transformers: embeddings/available_embedding_models/text_embedding_functions/sentence_transformers.md
-                  - Huggingface Embedding Models: embeddings/available_embedding_models/text_embedding_functions/huggingface_embedding.md
-                  - Ollama Embeddings: embeddings/available_embedding_models/text_embedding_functions/ollama_embedding.md
-                  - OpenAI Embeddings: embeddings/available_embedding_models/text_embedding_functions/openai_embedding.md
-                  - Instructor Embeddings: embeddings/available_embedding_models/text_embedding_functions/instructor_embedding.md
-                  - Gemini Embeddings: embeddings/available_embedding_models/text_embedding_functions/gemini_embedding.md
-                  - Cohere Embeddings: embeddings/available_embedding_models/text_embedding_functions/cohere_embedding.md
-                  - Jina Embeddings: embeddings/available_embedding_models/text_embedding_functions/jina_embedding.md
-                  - AWS Bedrock Text Embedding Functions: embeddings/available_embedding_models/text_embedding_functions/aws_bedrock_embedding.md
-                  - IBM watsonx.ai Embeddings: embeddings/available_embedding_models/text_embedding_functions/ibm_watsonx_ai_embedding.md
-                  - Voyage AI Embeddings: embeddings/available_embedding_models/text_embedding_functions/voyageai_embedding.md
-              - Multimodal Embedding Functions:
-                  - OpenClip embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/openclip_embedding.md
-                  - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md
-                  - Jina Embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/jina_multimodal_embedding.md
-          - User-defined embedding functions: embeddings/custom_embedding_function.md
-          - Variables and secrets: embeddings/variables_and_secrets.md
-          - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
-          - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
-      - 🔌 Integrations:
-          - Tools and data formats: integrations/index.md
-          - Pandas and PyArrow: python/pandas_and_pyarrow.md
-          - Polars: python/polars_arrow.md
-          - DuckDB: python/duckdb.md
-          - Datafusion: python/datafusion.md
-          - LangChain:
-              - LangChain 🔗: integrations/langchain.md
-              - LangChain demo: notebooks/langchain_demo.ipynb
-              - LangChain JS/TS 🔗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
-          - LlamaIndex 🦙:
-              - LlamaIndex docs: integrations/llamaIndex.md
-              - LlamaIndex demo: notebooks/llamaIndex_demo.ipynb
-          - Pydantic: python/pydantic.md
-          - Voxel51: integrations/voxel51.md
-          - PromptTools: integrations/prompttools.md
-          - dlt: integrations/dlt.md
-          - phidata: integrations/phidata.md
-          - Genkit: integrations/genkit.md
-      - 🎯 Examples:
-          - Overview: examples/index.md
-          - 🐍 Python:
-              - Overview: examples/examples_python.md
-              - Build From Scratch: examples/python_examples/build_from_scratch.md
-              - Multimodal: examples/python_examples/multimodal.md
-              - Rag: examples/python_examples/rag.md
-              - Vector Search: examples/python_examples/vector_search.md
-              - Chatbot: examples/python_examples/chatbot.md
-              - Evaluation: examples/python_examples/evaluations.md
-              - AI Agent: examples/python_examples/aiagent.md
-              - Recommender System: examples/python_examples/recommendersystem.md
-              - Miscellaneous:
-                  - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
-                  - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
-          - 👾 JavaScript:
-              - Overview: examples/examples_js.md
-              - Serverless Website Chatbot: examples/serverless_website_chatbot.md
-              - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
-              - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
-          - 🦀 Rust:
-              - Overview: examples/examples_rust.md
-      - 📓 Studies:
-          - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
-      - 💭 FAQs: faq.md
-      - 🔍 Troubleshooting: troubleshooting.md
-      - ⚙️ API reference:
-          - 🐍 Python: python/python.md
-          - 👾 JavaScript (vectordb): javascript/modules.md
-          - 👾 JavaScript (lancedb): js/globals.md
-          - 🦀 Rust: https://docs.rs/lancedb/latest/lancedb/
-
-  - Quick start: basic.md
-  - Concepts:
-      - Vector search: concepts/vector_search.md
-      - Indexing:
-          - IVFPQ: concepts/index_ivfpq.md
-          - HNSW: concepts/index_hnsw.md
-      - Storage: concepts/storage.md
-      - Data management: concepts/data_management.md
-  - Guides:
-      - Working with tables: guides/tables.md
-      - Working with SQL: guides/sql_querying.md
-      - Building an ANN index: ann_indexes.md
-      - Vector Search: search.md
-      - Full-text search (native): fts.md
-      - Full-text search (tantivy-based): fts_tantivy.md
-      - Building a scalar index: guides/scalar_index.md
-      - Hybrid search:
-          - Overview: hybrid_search/hybrid_search.md
-          - Comparing Rerankers: hybrid_search/eval.md
-          - Airbnb financial data example: notebooks/hybrid_search.ipynb
-      - Late interaction with MultiVector search:
-          - Overview: guides/multi-vector.md
-          - Document search Example: notebooks/Multivector_on_LanceDB.ipynb
-      - RAG:
-          - Vanilla RAG: rag/vanilla_rag.md
-          - Multi-head RAG: rag/multi_head_rag.md
-          - Corrective RAG: rag/corrective_rag.md
-          - Agentic RAG: rag/agentic_rag.md
-          - Graph RAG: rag/graph_rag.md
-          - Self RAG: rag/self_rag.md
-          - Adaptive RAG: rag/adaptive_rag.md
-          - SFR RAG: rag/sfr_rag.md
-          - Advanced Techniques:
-              - HyDE: rag/advanced_techniques/hyde.md
-              - FLARE: rag/advanced_techniques/flare.md
-      - Reranking:
-          - Quickstart: reranking/index.md
-          - Cohere Reranker: reranking/cohere.md
-          - Linear Combination Reranker: reranking/linear_combination.md
-          - Reciprocal Rank Fusion Reranker: reranking/rrf.md
-          - Cross Encoder Reranker: reranking/cross_encoder.md
-          - ColBERT Reranker: reranking/colbert.md
-          - Jina Reranker: reranking/jina.md
-          - OpenAI Reranker: reranking/openai.md
-          - AnswerDotAi Rerankers: reranking/answerdotai.md
-          - Building Custom Rerankers: reranking/custom_reranker.md
-          - Example: notebooks/lancedb_reranking.ipynb
-      - Filtering: sql.md
-      - Versioning & Reproducibility:
-          - sync API: notebooks/reproducibility.ipynb
-          - async API: notebooks/reproducibility_async.ipynb
-      - Configuring Storage: guides/storage.md
-      - Migration Guide: migration.md
-      - Tuning retrieval performance:
-          - Choosing right query type: guides/tuning_retrievers/1_query_types.md
-          - Reranking: guides/tuning_retrievers/2_reranking.md
-          - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
-  - Managing Embeddings:
-      - Understand Embeddings: embeddings/understanding_embeddings.md
-      - Get Started: embeddings/index.md
-      - Embedding functions: embeddings/embedding_functions.md
-      - Available models:
-          - Overview: embeddings/default_embedding_functions.md
-          - Text Embedding Functions:
-              - Sentence Transformers: embeddings/available_embedding_models/text_embedding_functions/sentence_transformers.md
-              - Huggingface Embedding Models: embeddings/available_embedding_models/text_embedding_functions/huggingface_embedding.md
-              - Ollama Embeddings: embeddings/available_embedding_models/text_embedding_functions/ollama_embedding.md
-              - OpenAI Embeddings: embeddings/available_embedding_models/text_embedding_functions/openai_embedding.md
-              - Instructor Embeddings: embeddings/available_embedding_models/text_embedding_functions/instructor_embedding.md
-              - Gemini Embeddings: embeddings/available_embedding_models/text_embedding_functions/gemini_embedding.md
-              - Cohere Embeddings: embeddings/available_embedding_models/text_embedding_functions/cohere_embedding.md
-              - Jina Embeddings: embeddings/available_embedding_models/text_embedding_functions/jina_embedding.md
-              - AWS Bedrock Text Embedding Functions: embeddings/available_embedding_models/text_embedding_functions/aws_bedrock_embedding.md
-              - IBM watsonx.ai Embeddings: embeddings/available_embedding_models/text_embedding_functions/ibm_watsonx_ai_embedding.md
-          - Multimodal Embedding Functions:
-              - OpenClip embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/openclip_embedding.md
-              - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md
-              - Jina Embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/jina_multimodal_embedding.md
-      - User-defined embedding functions: embeddings/custom_embedding_function.md
-      - Variables and secrets: embeddings/variables_and_secrets.md
-      - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
-      - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
-  - Integrations:
-      - Overview: integrations/index.md
-      - Pandas and PyArrow: python/pandas_and_pyarrow.md
-      - Polars: python/polars_arrow.md
-      - DuckDB: python/duckdb.md
-      - Datafusion: python/datafusion.md
-      - LangChain 🦜️🔗↗: integrations/langchain.md
-      - LangChain.js 🦜️🔗↗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
-      - LlamaIndex 🦙↗: integrations/llamaIndex.md
-      - Pydantic: python/pydantic.md
-      - Voxel51: integrations/voxel51.md
-      - PromptTools: integrations/prompttools.md
-      - dlt: integrations/dlt.md
-      - phidata: integrations/phidata.md
-      - Genkit: integrations/genkit.md
-  - Examples:
-      - examples/index.md
-      - 🐍 Python:
-          - Overview: examples/examples_python.md
-          - Build From Scratch: examples/python_examples/build_from_scratch.md
-          - Multimodal: examples/python_examples/multimodal.md
-          - Rag: examples/python_examples/rag.md
-          - Vector Search: examples/python_examples/vector_search.md
-          - Chatbot: examples/python_examples/chatbot.md
-          - Evaluation: examples/python_examples/evaluations.md
-          - AI Agent: examples/python_examples/aiagent.md
-          - Recommender System: examples/python_examples/recommendersystem.md
-          - Miscellaneous:
-              - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
-              - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
-      - 👾 JavaScript:
-          - Overview: examples/examples_js.md
-          - Serverless Website Chatbot: examples/serverless_website_chatbot.md
-          - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
-          - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
-      - 🦀 Rust:
-          - Overview: examples/examples_rust.md
-  - Studies:
-      - studies/overview.md
-      - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
   - API reference:
-      - Overview: api_reference.md
+      - Overview: index.md
       - Python: python/python.md
-      - Javascript (vectordb): javascript/modules.md
-      - Javascript (lancedb): js/globals.md
+      - Javascript/TypeScript: js/globals.md
+      - Java: java/java.md
       - Rust: https://docs.rs/lancedb/latest/lancedb/index.html
 
 extra_css:
@@ -390,7 +131,6 @@ extra_css:
   - styles/extra.css
 
 extra_javascript:
-  - "extra_js/init_ask_ai_widget.js"
   - "extra_js/reo.js"
 
 extra:

@@ -34,7 +34,7 @@ pub(crate) const DEFAULT_TOP_K: usize = 10;
 /// Which columns should be retrieved from the database
 #[derive(Debug, Clone)]
 pub enum Select {
-    /// Select all columns
+    /// Select all non-system columns
     ///
     /// Warning: This will always be slower than selecting only the columns you need.
     All,
@@ -667,6 +667,12 @@ pub struct QueryRequest {
 
     /// Configure how query results are normalized when doing hybrid search
     pub norm: Option<NormalizeMethod>,
+
+    /// If set to true, disables automatic projection of scoring columns (_score, _distance).
+    /// When disabled, these columns are only included if explicitly requested in the projection.
+    ///
+    /// By default, this is false (scoring columns are auto-projected for backward compatibility).
+    pub disable_scoring_autoprojection: bool,
 }
 
 impl Default for QueryRequest {
@@ -682,6 +688,7 @@ impl Default for QueryRequest {
             prefilter: true,
             reranker: None,
             norm: None,
+            disable_scoring_autoprojection: false,
         }
     }
 }

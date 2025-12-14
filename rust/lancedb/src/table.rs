@@ -33,12 +33,18 @@ use lance::io::WrappingObjectStore;
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
+use lance_index::vector::bq::RQBuildParams;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
+use lance_namespace::models::{
+    QueryTableRequest as NsQueryTableRequest, QueryTableRequestFullTextQuery,
+    QueryTableRequestVector, StringFtsQuery,
+};
+use lance_namespace::LanceNamespace;
 use lance_table::format::Manifest;
 use lance_table::io::commit::ManifestNamingScheme;
 use log::info;
@@ -53,12 +59,9 @@ use crate::connection::NoData;
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
-use crate::index::vector::{suggested_num_partitions_for_hnsw, VectorIndex};
+use crate::index::vector::VectorIndex;
 use crate::index::IndexStatistics;
-use crate::index::{
-    vector::{suggested_num_partitions, suggested_num_sub_vectors},
-    Index, IndexBuilder,
-};
+use crate::index::{vector::suggested_num_sub_vectors, Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{
     IntoQueryVector, Query, QueryExecutionOptions, QueryFilter, QueryRequest, Select, TakeQuery,
@@ -469,6 +472,11 @@ pub struct MergeResult {
     /// However those rows are not shared with the user.
     #[serde(default)]
     pub num_deleted_rows: u64,
+    /// Number of attempts performed during the merge operation.
+    /// This includes the initial attempt plus any retries due to transaction conflicts.
+    /// A value of 1 means the operation succeeded on the first try.
+    #[serde(default)]
+    pub num_attempts: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -513,7 +521,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Get the id of the table
     ///
     /// This is the namespace of the table concatenated with the name
-    /// separated by a dot (".")
+    /// separated by $
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
@@ -620,7 +628,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
 #[derive(Clone, Debug)]
 pub struct Table {
     inner: Arc<dyn BaseTable>,
-    database: Arc<dyn Database>,
+    database: Option<Arc<dyn Database>>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
 
@@ -644,7 +652,7 @@ mod test_utils {
             let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
                 inner,
-                database,
+                database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
             }
@@ -666,7 +674,7 @@ mod test_utils {
             let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
                 inner,
-                database,
+                database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
             }
@@ -680,11 +688,21 @@ impl std::fmt::Display for Table {
     }
 }
 
+impl From<Arc<dyn BaseTable>> for Table {
+    fn from(inner: Arc<dyn BaseTable>) -> Self {
+        Self {
+            inner,
+            database: None,
+            embedding_registry: Arc::new(MemoryRegistry::new()),
+        }
+    }
+}
+
 impl Table {
     pub fn new(inner: Arc<dyn BaseTable>, database: Arc<dyn Database>) -> Self {
         Self {
             inner,
-            database,
+            database: Some(database),
             embedding_registry: Arc::new(MemoryRegistry::new()),
         }
     }
@@ -694,7 +712,7 @@ impl Table {
     }
 
     pub fn database(&self) -> &Arc<dyn Database> {
-        &self.database
+        self.database.as_ref().unwrap()
     }
 
     pub fn embedding_registry(&self) -> &Arc<dyn EmbeddingRegistry> {
@@ -708,7 +726,7 @@ impl Table {
     ) -> Self {
         Self {
             inner,
-            database,
+            database: Some(database),
             embedding_registry,
         }
     }
@@ -724,6 +742,16 @@ impl Table {
     /// Get the name of the table.
     pub fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    /// Get the namespace of the table.
+    pub fn namespace(&self) -> &[String] {
+        self.inner.namespace()
+    }
+
+    /// Get the ID of the table (namespace + name joined by '$').
+    pub fn id(&self) -> &str {
+        self.inner.id()
     }
 
     /// Get the dataset of the table if it is a native table
@@ -1457,14 +1485,32 @@ impl NativeTableExt for Arc<dyn BaseTable> {
 }
 
 /// A table in a LanceDB database.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NativeTable {
     name: String,
+    namespace: Vec<String>,
+    id: String,
     uri: String,
     pub(crate) dataset: dataset::DatasetConsistencyWrapper,
     // This comes from the connection options. We store here so we can pass down
     // to the dataset when we recreate it (for example, in checkout_latest).
     read_consistency_interval: Option<std::time::Duration>,
+    // Optional namespace client for server-side query execution.
+    // When set, queries will be executed on the namespace server instead of locally.
+    namespace_client: Option<Arc<dyn LanceNamespace>>,
+}
+
+impl std::fmt::Debug for NativeTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeTable")
+            .field("name", &self.name)
+            .field("namespace", &self.namespace)
+            .field("id", &self.id)
+            .field("uri", &self.uri)
+            .field("read_consistency_interval", &self.read_consistency_interval)
+            .field("namespace_client", &self.namespace_client)
+            .finish()
+    }
 }
 
 impl std::fmt::Display for NativeTable {
@@ -1499,7 +1545,7 @@ impl NativeTable {
     /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, None, None, None).await
+        Self::open_with_params(uri, &name, vec![], None, None, None, None).await
     }
 
     /// Opens an existing Table
@@ -1509,16 +1555,20 @@ impl NativeTable {
     /// * `base_path` - The base path where the table is located
     /// * `name` The Table name
     /// * `params` The [ReadParams] to use when opening the table
+    /// * `namespace_client` - Optional namespace client for server-side query execution
     ///
     /// # Returns
     ///
     /// * A [NativeTable] object.
+    #[allow(clippy::too_many_arguments)]
     pub async fn open_with_params(
         uri: &str,
         name: &str,
+        namespace: Vec<String>,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<ReadParams>,
         read_consistency_interval: Option<std::time::Duration>,
+        namespace_client: Option<Arc<dyn LanceNamespace>>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -1534,18 +1584,31 @@ impl NativeTable {
             .map_err(|e| match e {
                 lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
                     name: name.to_string(),
+                    source: Box::new(e),
                 },
                 source => Error::Lance { source },
             })?;
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
+        let id = Self::build_id(&namespace, name);
 
         Ok(Self {
             name: name.to_string(),
+            namespace,
+            id,
             uri: uri.to_string(),
             dataset,
             read_consistency_interval,
+            namespace_client,
         })
+    }
+
+    /// Set the namespace client for server-side query execution.
+    ///
+    /// When set, queries will be executed on the namespace server instead of locally.
+    pub fn with_namespace_client(mut self, namespace_client: Arc<dyn LanceNamespace>) -> Self {
+        self.namespace_client = Some(namespace_client);
+        self
     }
 
     fn get_table_name(uri: &str) -> Result<String> {
@@ -1554,6 +1617,7 @@ impl NativeTable {
             .file_stem()
             .ok_or(Error::TableNotFound {
                 name: uri.to_string(),
+                source: format!("Could not extract table name from URI: '{}'", uri).into(),
             })?
             .to_str()
             .ok_or(Error::InvalidTableName {
@@ -1563,25 +1627,41 @@ impl NativeTable {
         Ok(name.to_string())
     }
 
+    fn build_id(namespace: &[String], name: &str) -> String {
+        if namespace.is_empty() {
+            name.to_string()
+        } else {
+            let mut parts = namespace.to_vec();
+            parts.push(name.to_string());
+            parts.join("$")
+        }
+    }
+
     /// Creates a new Table
     ///
     /// # Arguments
     ///
-    /// * `uri` - The URI to the table.
+    /// * `uri` - The URI to the table. When namespace is not empty, the caller must
+    ///   provide an explicit URI (location) rather than deriving it from the table name.
     /// * `name` The Table name
+    /// * `namespace` - The namespace path. When non-empty, an explicit URI must be provided.
     /// * `batches` RecordBatch to be saved in the database.
     /// * `params` - Write parameters.
+    /// * `namespace_client` - Optional namespace client for server-side query execution
     ///
     /// # Returns
     ///
     /// * A [TableImpl] object.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         uri: &str,
         name: &str,
+        namespace: Vec<String>,
         batches: impl StreamingWriteSource,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
+        namespace_client: Option<Arc<dyn LanceNamespace>>,
     ) -> Result<Self> {
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
@@ -1604,30 +1684,40 @@ impl NativeTable {
                 source => Error::Lance { source },
             })?;
 
+        let id = Self::build_id(&namespace, name);
+
         Ok(Self {
             name: name.to_string(),
+            namespace,
+            id,
             uri: uri.to_string(),
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             read_consistency_interval,
+            namespace_client,
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_empty(
         uri: &str,
         name: &str,
+        namespace: Vec<String>,
         schema: SchemaRef,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
+        namespace_client: Option<Arc<dyn LanceNamespace>>,
     ) -> Result<Self> {
         let batches = RecordBatchIterator::new(vec![], schema);
         Self::create(
             uri,
             name,
+            namespace,
             batches,
             write_store_wrapper,
             params,
             read_consistency_interval,
+            namespace_client,
         )
         .await
     }
@@ -1745,33 +1835,37 @@ impl NativeTable {
         Ok(())
     }
 
-    // Helper to get num_partitions with default calculation
-    async fn get_num_partitions(
-        &self,
-        provided: Option<u32>,
-        for_hnsw: bool,
-        dim: Option<u32>,
-    ) -> Result<u32> {
-        if let Some(n) = provided {
-            Ok(n)
-        } else {
-            let row_count = self.count_rows(None).await?;
-            if for_hnsw {
-                Ok(suggested_num_partitions_for_hnsw(
-                    row_count,
-                    dim.ok_or_else(|| Error::InvalidInput {
-                        message: "Vector dimension required for HNSW partitioning".to_string(),
-                    })?,
-                ))
-            } else {
-                Ok(suggested_num_partitions(row_count))
+    // Helper to build IVF params honoring table options.
+    fn build_ivf_params(
+        num_partitions: Option<u32>,
+        target_partition_size: Option<u32>,
+        sample_rate: u32,
+        max_iterations: u32,
+    ) -> IvfBuildParams {
+        let mut ivf_params = match (num_partitions, target_partition_size) {
+            (Some(num_partitions), _) => IvfBuildParams::new(num_partitions as usize),
+            (None, Some(target_partition_size)) => {
+                IvfBuildParams::with_target_partition_size(target_partition_size as usize)
             }
-        }
+            (None, None) => IvfBuildParams::default(),
+        };
+        ivf_params.sample_rate = sample_rate as usize;
+        ivf_params.max_iters = max_iterations as usize;
+        ivf_params
     }
 
     // Helper to get num_sub_vectors with default calculation
-    fn get_num_sub_vectors(provided: Option<u32>, dim: u32) -> u32 {
-        provided.unwrap_or_else(|| suggested_num_sub_vectors(dim))
+    fn get_num_sub_vectors(provided: Option<u32>, dim: u32, num_bits: Option<u32>) -> u32 {
+        if let Some(provided) = provided {
+            return provided;
+        }
+        let suggested = suggested_num_sub_vectors(dim);
+        if num_bits.is_some_and(|num_bits| num_bits == 4) && suggested % 2 != 0 {
+            // num_sub_vectors must be even when 4 bits are used
+            suggested + 1
+        } else {
+            suggested
+        }
     }
 
     // Helper to extract vector dimension from field
@@ -1793,15 +1887,16 @@ impl NativeTable {
                 if supported_vector_data_type(field.data_type()) {
                     // Use IvfPq as the default for auto vector indices
                     let dim = Self::get_vector_dimension(field)?;
-                    let num_partitions = self.get_num_partitions(None, false, None).await?;
-                    let num_sub_vectors = Self::get_num_sub_vectors(None, dim);
-                    let lance_idx_params = lance::index::vector::VectorIndexParams::ivf_pq(
-                        num_partitions as usize,
-                        /*num_bits=*/ 8,
-                        num_sub_vectors as usize,
-                        lance_linalg::distance::MetricType::L2,
-                        /*max_iterations=*/ 50,
-                    );
+                    let ivf_params = lance_index::vector::ivf::IvfBuildParams::default();
+                    let num_sub_vectors = Self::get_num_sub_vectors(None, dim, None);
+                    let pq_params =
+                        lance_index::vector::pq::PQBuildParams::new(num_sub_vectors as usize, 8);
+                    let lance_idx_params =
+                        lance::index::vector::VectorIndexParams::with_ivf_pq_params(
+                            lance_linalg::distance::MetricType::L2,
+                            ivf_params,
+                            pq_params,
+                        );
                     Ok(Box::new(lance_idx_params))
                 } else if supported_btree_data_type(field.data_type()) {
                     Ok(Box::new(ScalarIndexParams::for_builtin(
@@ -1841,60 +1936,90 @@ impl NativeTable {
             }
             Index::IvfFlat(index) => {
                 Self::validate_index_type(field, "IVF Flat", supported_vector_data_type)?;
-                let num_partitions = self
-                    .get_num_partitions(index.num_partitions, false, None)
-                    .await?;
-                let lance_idx_params = VectorIndexParams::ivf_flat(
-                    num_partitions as usize,
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
+                let lance_idx_params =
+                    VectorIndexParams::with_ivf_flat_params(index.distance_type.into(), ivf_params);
+                Ok(Box::new(lance_idx_params))
+            }
+            Index::IvfSq(index) => {
+                Self::validate_index_type(field, "IVF SQ", supported_vector_data_type)?;
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
+                let sq_params = SQBuildParams {
+                    sample_rate: index.sample_rate as usize,
+                    ..Default::default()
+                };
+                let lance_idx_params = VectorIndexParams::with_ivf_sq_params(
                     index.distance_type.into(),
+                    ivf_params,
+                    sq_params,
                 );
                 Ok(Box::new(lance_idx_params))
             }
             Index::IvfPq(index) => {
                 Self::validate_index_type(field, "IVF PQ", supported_vector_data_type)?;
                 let dim = Self::get_vector_dimension(field)?;
-                let num_partitions = self
-                    .get_num_partitions(index.num_partitions, false, None)
-                    .await?;
-                let num_sub_vectors = Self::get_num_sub_vectors(index.num_sub_vectors, dim);
-                let lance_idx_params = VectorIndexParams::ivf_pq(
-                    num_partitions as usize,
-                    /*num_bits=*/ 8,
-                    num_sub_vectors as usize,
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
+                let num_sub_vectors =
+                    Self::get_num_sub_vectors(index.num_sub_vectors, dim, index.num_bits);
+                let num_bits = index.num_bits.unwrap_or(8) as usize;
+                let mut pq_params = PQBuildParams::new(num_sub_vectors as usize, num_bits);
+                pq_params.max_iters = index.max_iterations as usize;
+                let lance_idx_params = VectorIndexParams::with_ivf_pq_params(
                     index.distance_type.into(),
-                    index.max_iterations as usize,
+                    ivf_params,
+                    pq_params,
                 );
                 Ok(Box::new(lance_idx_params))
             }
             Index::IvfRq(index) => {
                 Self::validate_index_type(field, "IVF RQ", supported_vector_data_type)?;
-                let num_partitions = self
-                    .get_num_partitions(index.num_partitions, false, None)
-                    .await?;
-                let lance_idx_params = VectorIndexParams::ivf_rq(
-                    num_partitions as usize,
-                    index.num_bits.unwrap_or(1) as u8,
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
+                let rq_params = RQBuildParams::new(index.num_bits.unwrap_or(1) as u8);
+                let lance_idx_params = VectorIndexParams::with_ivf_rq_params(
                     index.distance_type.into(),
+                    ivf_params,
+                    rq_params,
                 );
                 Ok(Box::new(lance_idx_params))
             }
             Index::IvfHnswPq(index) => {
                 Self::validate_index_type(field, "IVF HNSW PQ", supported_vector_data_type)?;
                 let dim = Self::get_vector_dimension(field)?;
-                let num_partitions = self
-                    .get_num_partitions(index.num_partitions, true, Some(dim))
-                    .await?;
-                let num_sub_vectors = Self::get_num_sub_vectors(index.num_sub_vectors, dim);
-                let mut ivf_params = IvfBuildParams::new(num_partitions as usize);
-                ivf_params.sample_rate = index.sample_rate as usize;
-                ivf_params.max_iters = index.max_iterations as usize;
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
+                let num_sub_vectors =
+                    Self::get_num_sub_vectors(index.num_sub_vectors, dim, index.num_bits);
                 let hnsw_params = HnswBuildParams::default()
                     .num_edges(index.m as usize)
                     .ef_construction(index.ef_construction as usize);
-                let pq_params = PQBuildParams {
-                    num_sub_vectors: num_sub_vectors as usize,
-                    ..Default::default()
-                };
+                let pq_params = PQBuildParams::new(
+                    num_sub_vectors as usize,
+                    index.num_bits.unwrap_or(8) as usize,
+                );
                 let lance_idx_params = VectorIndexParams::with_ivf_hnsw_pq_params(
                     index.distance_type.into(),
                     ivf_params,
@@ -1905,13 +2030,12 @@ impl NativeTable {
             }
             Index::IvfHnswSq(index) => {
                 Self::validate_index_type(field, "IVF HNSW SQ", supported_vector_data_type)?;
-                let dim = Self::get_vector_dimension(field)?;
-                let num_partitions = self
-                    .get_num_partitions(index.num_partitions, true, Some(dim))
-                    .await?;
-                let mut ivf_params = IvfBuildParams::new(num_partitions as usize);
-                ivf_params.sample_rate = index.sample_rate as usize;
-                ivf_params.max_iters = index.max_iterations as usize;
+                let ivf_params = Self::build_ivf_params(
+                    index.num_partitions,
+                    index.target_partition_size,
+                    index.sample_rate,
+                    index.max_iterations,
+                );
                 let hnsw_params = HnswBuildParams::default()
                     .num_edges(index.m as usize)
                     .ef_construction(index.ef_construction as usize);
@@ -1948,6 +2072,7 @@ impl NativeTable {
             Index::LabelList(_) => IndexType::LabelList,
             Index::FTS(_) => IndexType::Inverted,
             Index::IvfFlat(_)
+            | Index::IvfSq(_)
             | Index::IvfPq(_)
             | Index::IvfRq(_)
             | Index::IvfHnswPq(_)
@@ -1968,6 +2093,278 @@ impl NativeTable {
             inner
         };
         Ok(DatasetRecordBatchStream::new(inner))
+    }
+
+    /// Execute a query on the namespace server instead of locally.
+    async fn namespace_query(
+        &self,
+        namespace_client: Arc<dyn LanceNamespace>,
+        query: &AnyQuery,
+        _options: QueryExecutionOptions,
+    ) -> Result<DatasetRecordBatchStream> {
+        // Build table_id from namespace + table name
+        let mut table_id = self.namespace.clone();
+        table_id.push(self.name.clone());
+
+        // Convert AnyQuery to namespace QueryTableRequest
+        let mut ns_request = self.convert_to_namespace_query(query)?;
+        // Set the table ID on the request
+        ns_request.id = Some(table_id);
+
+        // Call the namespace query_table API
+        let response_bytes = namespace_client
+            .query_table(ns_request)
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to execute server-side query: {}", e),
+            })?;
+
+        // Parse the Arrow IPC response into a RecordBatchStream
+        self.parse_arrow_ipc_response(response_bytes).await
+    }
+
+    /// Convert a QueryFilter to a SQL string for the namespace API.
+    fn filter_to_sql(&self, filter: &QueryFilter) -> Result<String> {
+        match filter {
+            QueryFilter::Sql(sql) => Ok(sql.clone()),
+            QueryFilter::Substrait(_) => Err(Error::NotSupported {
+                message: "Substrait filters are not supported for server-side queries".to_string(),
+            }),
+            QueryFilter::Datafusion(_) => Err(Error::NotSupported {
+                message: "Datafusion expression filters are not supported for server-side queries. Use SQL filter instead.".to_string(),
+            }),
+        }
+    }
+
+    /// Convert an AnyQuery to the namespace QueryTableRequest format.
+    fn convert_to_namespace_query(&self, query: &AnyQuery) -> Result<NsQueryTableRequest> {
+        match query {
+            AnyQuery::VectorQuery(vq) => {
+                // Extract the query vector(s)
+                let vector = self.extract_query_vector(&vq.query_vector)?;
+
+                // Convert filter to SQL string
+                let filter = match &vq.base.filter {
+                    Some(f) => Some(self.filter_to_sql(f)?),
+                    None => None,
+                };
+
+                // Convert select to columns list
+                let columns = match &vq.base.select {
+                    Select::All => None,
+                    Select::Columns(cols) => Some(cols.clone()),
+                    Select::Dynamic(_) => {
+                        return Err(Error::NotSupported {
+                            message:
+                                "Dynamic column selection is not supported for server-side queries"
+                                    .to_string(),
+                        });
+                    }
+                };
+
+                // Check for unsupported features
+                if vq.base.reranker.is_some() {
+                    return Err(Error::NotSupported {
+                        message: "Reranker is not supported for server-side queries".to_string(),
+                    });
+                }
+
+                // Convert FTS query if present
+                let full_text_query = vq.base.full_text_search.as_ref().map(|fts| {
+                    let columns = fts.columns();
+                    let columns_vec = if columns.is_empty() {
+                        None
+                    } else {
+                        Some(columns.into_iter().collect())
+                    };
+                    Box::new(QueryTableRequestFullTextQuery {
+                        string_query: Some(Box::new(StringFtsQuery {
+                            query: fts.query.to_string(),
+                            columns: columns_vec,
+                        })),
+                        structured_query: None,
+                    })
+                });
+
+                Ok(NsQueryTableRequest {
+                    id: None, // Will be set in namespace_query
+                    k: vq.base.limit.unwrap_or(10) as i32,
+                    vector: Box::new(vector),
+                    vector_column: vq.column.clone(),
+                    filter,
+                    columns,
+                    offset: vq.base.offset.map(|o| o as i32),
+                    distance_type: vq.distance_type.map(|dt| dt.to_string()),
+                    nprobes: Some(vq.minimum_nprobes as i32),
+                    ef: vq.ef.map(|e| e as i32),
+                    refine_factor: vq.refine_factor.map(|r| r as i32),
+                    lower_bound: vq.lower_bound,
+                    upper_bound: vq.upper_bound,
+                    prefilter: Some(vq.base.prefilter),
+                    fast_search: Some(vq.base.fast_search),
+                    with_row_id: Some(vq.base.with_row_id),
+                    bypass_vector_index: Some(!vq.use_index),
+                    full_text_query,
+                    version: None,
+                })
+            }
+            AnyQuery::Query(q) => {
+                // For non-vector queries, pass an empty vector (similar to remote table implementation)
+                if q.reranker.is_some() {
+                    return Err(Error::NotSupported {
+                        message: "Reranker is not supported for server-side query execution"
+                            .to_string(),
+                    });
+                }
+
+                let filter = q
+                    .filter
+                    .as_ref()
+                    .map(|f| self.filter_to_sql(f))
+                    .transpose()?;
+
+                let columns = match &q.select {
+                    Select::All => None,
+                    Select::Columns(cols) => Some(cols.clone()),
+                    Select::Dynamic(_) => {
+                        return Err(Error::NotSupported {
+                            message: "Dynamic columns are not supported for server-side query"
+                                .to_string(),
+                        });
+                    }
+                };
+
+                // Handle full text search if present
+                let full_text_query = q.full_text_search.as_ref().map(|fts| {
+                    let columns_vec = if fts.columns().is_empty() {
+                        None
+                    } else {
+                        Some(fts.columns().iter().cloned().collect())
+                    };
+                    Box::new(QueryTableRequestFullTextQuery {
+                        string_query: Some(Box::new(StringFtsQuery {
+                            query: fts.query.to_string(),
+                            columns: columns_vec,
+                        })),
+                        structured_query: None,
+                    })
+                });
+
+                // Empty vector for non-vector queries
+                let vector = Box::new(QueryTableRequestVector {
+                    single_vector: Some(vec![]),
+                    multi_vector: None,
+                });
+
+                Ok(NsQueryTableRequest {
+                    id: None, // Will be set by caller
+                    vector,
+                    k: q.limit.unwrap_or(10) as i32,
+                    filter,
+                    columns,
+                    prefilter: Some(q.prefilter),
+                    offset: q.offset.map(|o| o as i32),
+                    ef: None,
+                    refine_factor: None,
+                    distance_type: None,
+                    nprobes: None,
+                    vector_column: None, // No vector column for plain queries
+                    with_row_id: Some(q.with_row_id),
+                    bypass_vector_index: Some(true), // No vector index for plain queries
+                    full_text_query,
+                    version: None,
+                    fast_search: None,
+                    lower_bound: None,
+                    upper_bound: None,
+                })
+            }
+        }
+    }
+
+    /// Extract query vector(s) from Arrow arrays into the namespace format.
+    fn extract_query_vector(
+        &self,
+        query_vectors: &[Arc<dyn arrow_array::Array>],
+    ) -> Result<QueryTableRequestVector> {
+        if query_vectors.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "Query vector is required for vector search".to_string(),
+            });
+        }
+
+        // Handle single vector case
+        if query_vectors.len() == 1 {
+            let arr = &query_vectors[0];
+            let single_vector = self.array_to_f32_vec(arr)?;
+            Ok(QueryTableRequestVector {
+                single_vector: Some(single_vector),
+                multi_vector: None,
+            })
+        } else {
+            // Handle multi-vector case
+            let multi_vector: Result<Vec<Vec<f32>>> = query_vectors
+                .iter()
+                .map(|arr| self.array_to_f32_vec(arr))
+                .collect();
+            Ok(QueryTableRequestVector {
+                single_vector: None,
+                multi_vector: Some(multi_vector?),
+            })
+        }
+    }
+
+    /// Convert an Arrow array to a Vec<f32>.
+    fn array_to_f32_vec(&self, arr: &Arc<dyn arrow_array::Array>) -> Result<Vec<f32>> {
+        // Handle FixedSizeList (common for vectors)
+        if let Some(fsl) = arr
+            .as_any()
+            .downcast_ref::<arrow_array::FixedSizeListArray>()
+        {
+            let values = fsl.values();
+            if let Some(f32_arr) = values.as_any().downcast_ref::<arrow_array::Float32Array>() {
+                return Ok(f32_arr.values().to_vec());
+            }
+        }
+
+        // Handle direct Float32Array
+        if let Some(f32_arr) = arr.as_any().downcast_ref::<arrow_array::Float32Array>() {
+            return Ok(f32_arr.values().to_vec());
+        }
+
+        Err(Error::InvalidInput {
+            message: "Query vector must be Float32 type".to_string(),
+        })
+    }
+
+    /// Parse Arrow IPC response from the namespace server.
+    async fn parse_arrow_ipc_response(
+        &self,
+        bytes: bytes::Bytes,
+    ) -> Result<DatasetRecordBatchStream> {
+        use arrow_ipc::reader::StreamReader;
+        use std::io::Cursor;
+
+        let cursor = Cursor::new(bytes);
+        let reader = StreamReader::try_new(cursor, None).map_err(|e| Error::Runtime {
+            message: format!("Failed to parse Arrow IPC response: {}", e),
+        })?;
+
+        // Collect all record batches
+        let schema = reader.schema();
+        let batches: Vec<_> = reader
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to read Arrow IPC batches: {}", e),
+            })?;
+
+        // Create a stream from the batches
+        let stream = futures::stream::iter(batches.into_iter().map(Ok));
+        let record_batch_stream = Box::pin(
+            datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(schema, stream),
+        );
+
+        Ok(DatasetRecordBatchStream::new(record_batch_stream))
     }
 
     /// Check whether the table uses V2 manifest paths.
@@ -2064,13 +2461,11 @@ impl BaseTable for NativeTable {
     }
 
     fn namespace(&self) -> &[String] {
-        // Native tables don't support namespaces yet, return empty slice for root namespace
-        &[]
+        &self.namespace
     }
 
     fn id(&self) -> &str {
-        // For native tables, id is same as name since no namespace support
-        self.name.as_str()
+        &self.id
     }
 
     async fn version(&self) -> Result<u64> {
@@ -2391,6 +2786,10 @@ impl BaseTable for NativeTable {
             scanner.distance_metric(distance_type.into());
         }
 
+        if query.base.disable_scoring_autoprojection {
+            scanner.disable_scoring_autoprojection();
+        }
+
         Ok(scanner.create_plan().await?)
     }
 
@@ -2399,6 +2798,12 @@ impl BaseTable for NativeTable {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
+        // If namespace client is configured, use server-side query execution
+        if let Some(ref namespace_client) = self.namespace_client {
+            return self
+                .namespace_query(namespace_client.clone(), query, options)
+                .await;
+        }
         self.generic_query(query, options).await
     }
 
@@ -2469,6 +2874,7 @@ impl BaseTable for NativeTable {
             num_updated_rows: stats.num_updated_rows,
             num_inserted_rows: stats.num_inserted_rows,
             num_deleted_rows: stats.num_deleted_rows,
+            num_attempts: stats.num_attempts,
         })
     }
 
@@ -2866,7 +3272,7 @@ mod tests {
 
         let batches = make_test_batches();
         let batches = Box::new(batches) as Box<dyn RecordBatchReader + Send>;
-        let table = NativeTable::create(uri, "test", batches, None, None, None)
+        let table = NativeTable::create(uri, "test", vec![], batches, None, None, None, None)
             .await
             .unwrap();
 
@@ -2928,9 +3334,13 @@ mod tests {
         // Perform a "insert if not exists"
         let mut merge_insert_builder = table.merge_insert(&["i"]);
         merge_insert_builder.when_not_matched_insert_all();
-        merge_insert_builder.execute(new_batches).await.unwrap();
+        let result = merge_insert_builder.execute(new_batches).await.unwrap();
         // Only 5 rows should actually be inserted
         assert_eq!(table.count_rows(None).await.unwrap(), 15);
+        assert_eq!(result.num_inserted_rows, 5);
+        assert_eq!(result.num_updated_rows, 0);
+        assert_eq!(result.num_deleted_rows, 0);
+        assert_eq!(result.num_attempts, 1);
 
         // Create new data with i=15..25 (no id matches)
         let new_batches = Box::new(merge_insert_test_batches(15, 2));
@@ -3355,8 +3765,8 @@ mod tests {
     impl WrappingObjectStore for NoOpCacheWrapper {
         fn wrap(
             &self,
+            _store_prefix: &str,
             original: Arc<dyn object_store::ObjectStore>,
-            _storage_options: Option<&std::collections::HashMap<String, String>>,
         ) -> Arc<dyn object_store::ObjectStore> {
             self.called.store(true, Ordering::Relaxed);
             original
@@ -3548,6 +3958,78 @@ mod tests {
 
         table.drop_index(index_name).await.unwrap();
         assert_eq!(table.list_indices().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_ivf_pq_uses_default_partition_size_for_num_partitions() {
+        use arrow_array::{Float32Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+
+        use crate::index::vector::IvfPqIndexBuilder;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        const PARTITION_SIZE: usize = 8192;
+        let num_rows = PARTITION_SIZE * 2;
+        let dimension = 8usize;
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "embeddings",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                dimension as i32,
+            ),
+            false,
+        )]));
+
+        let float_arr =
+            Float32Array::from_iter_values((0..(num_rows * dimension)).map(|v| v as f32));
+        let vectors = Arc::new(create_fixed_size_list(float_arr, dimension as i32).unwrap());
+        let batches = RecordBatchIterator::new(
+            vec![RecordBatch::try_new(schema.clone(), vec![vectors]).unwrap()]
+                .into_iter()
+                .map(Ok),
+            schema,
+        );
+
+        let table = conn.create_table("test", batches).execute().await.unwrap();
+        let native_table = table.as_native().unwrap();
+        let builder = IvfPqIndexBuilder::default();
+        table
+            .create_index(&["embeddings"], Index::IvfPq(builder))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .wait_for_index(&["embeddings_idx"], std::time::Duration::from_secs(30))
+            .await
+            .unwrap();
+
+        use lance::index::vector::ivf::v2::IvfPq as LanceIvfPq;
+        use lance::index::DatasetIndexInternalExt;
+        use lance_index::metrics::NoOpMetricsCollector;
+        use lance_index::vector::VectorIndex as LanceVectorIndex;
+
+        let indices = native_table.load_indices().await.unwrap();
+        let index_uuid = indices[0].index_uuid.clone();
+
+        let dataset_guard = native_table.dataset.get().await.unwrap();
+        let dataset = (*dataset_guard).clone();
+        drop(dataset_guard);
+
+        let lance_index = dataset
+            .open_vector_index("embeddings", &index_uuid, &NoOpMetricsCollector)
+            .await
+            .unwrap();
+        let ivf_index = lance_index
+            .as_any()
+            .downcast_ref::<LanceIvfPq>()
+            .expect("expected IvfPq index");
+        let partition_count = ivf_index.ivf_model().num_partitions();
+
+        let expected_partitions = num_rows / PARTITION_SIZE;
+        assert_eq!(partition_count, expected_partitions);
     }
 
     #[tokio::test]
@@ -3999,6 +4481,8 @@ mod tests {
         table.prewarm_index("text_idx").await.unwrap();
     }
 
+    // Windows does not support precise sleep durations due to timer resolution limitations.
+    #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn test_read_consistency_interval() {
         let intervals = vec![
@@ -4427,5 +4911,92 @@ mod tests {
         let result = table.list_indices().await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].index_type, crate::index::IndexType::Bitmap);
+    }
+
+    #[tokio::test]
+    async fn test_convert_to_namespace_query_vector() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test_ns_query.lance");
+
+        let batches = make_test_batches();
+        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
+            .await
+            .unwrap();
+
+        let table = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Create a vector query
+        let query_vector = Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0]));
+        let vq = VectorQueryRequest {
+            base: QueryRequest {
+                limit: Some(10),
+                offset: Some(5),
+                filter: Some(QueryFilter::Sql("id > 0".to_string())),
+                select: Select::Columns(vec!["id".to_string()]),
+                ..Default::default()
+            },
+            column: Some("vector".to_string()),
+            query_vector: vec![query_vector as Arc<dyn Array>],
+            minimum_nprobes: 20,
+            distance_type: Some(crate::DistanceType::L2),
+            ..Default::default()
+        };
+
+        let any_query = AnyQuery::VectorQuery(vq);
+        let ns_request = table.convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+        assert_eq!(ns_request.offset, Some(5));
+        assert_eq!(ns_request.filter, Some("id > 0".to_string()));
+        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        assert_eq!(ns_request.vector_column, Some("vector".to_string()));
+        assert_eq!(ns_request.distance_type, Some("l2".to_string()));
+        assert!(ns_request.vector.single_vector.is_some());
+        assert_eq!(
+            ns_request.vector.single_vector.as_ref().unwrap(),
+            &vec![1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_convert_to_namespace_query_plain_query() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test_ns_plain.lance");
+
+        let batches = make_test_batches();
+        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
+            .await
+            .unwrap();
+
+        let table = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Create a plain (non-vector) query with filter and select
+        let q = QueryRequest {
+            limit: Some(20),
+            offset: Some(5),
+            filter: Some(QueryFilter::Sql("id > 5".to_string())),
+            select: Select::Columns(vec!["id".to_string()]),
+            with_row_id: true,
+            ..Default::default()
+        };
+
+        let any_query = AnyQuery::Query(q);
+        let ns_request = table.convert_to_namespace_query(&any_query).unwrap();
+
+        // Plain queries should pass an empty vector
+        assert_eq!(ns_request.k, 20);
+        assert_eq!(ns_request.offset, Some(5));
+        assert_eq!(ns_request.filter, Some("id > 5".to_string()));
+        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        assert_eq!(ns_request.with_row_id, Some(true));
+        assert_eq!(ns_request.bypass_vector_index, Some(true));
+        assert!(ns_request.vector_column.is_none()); // No vector column for plain queries
+
+        // Should have an empty vector
+        assert!(ns_request.vector.single_vector.as_ref().unwrap().is_empty());
     }
 }

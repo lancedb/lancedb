@@ -14,12 +14,18 @@ __version__ = importlib.metadata.version("lancedb")
 from ._lancedb import connect as lancedb_connect
 from .common import URI, sanitize_uri
 from .db import AsyncConnection, DBConnection, LanceDBConnection
+from .io import StorageOptionsProvider
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .schema import vector
-from .table import AsyncTable
+from .table import AsyncTable, Table
 from ._lancedb import Session
-from .namespace import connect_namespace, LanceNamespaceDBConnection
+from .namespace import (
+    connect_namespace,
+    connect_namespace_async,
+    LanceNamespaceDBConnection,
+    AsyncLanceNamespaceDBConnection,
+)
 
 
 def connect(
@@ -66,7 +72,7 @@ def connect(
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
-        <https://lancedb.github.io/lancedb/guides/storage/>
+        <https://lancedb.com/docs/storage/>
     session: Session, optional
         (For LanceDB OSS only)
         A session to use for this connection. Sessions allow you to configure
@@ -168,7 +174,7 @@ async def connect_async(
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
-        <https://lancedb.github.io/lancedb/guides/storage/>
+        <https://lancedb.com/docs/storage/>
     session: Session, optional
         (For LanceDB OSS only)
         A session to use for this connection. Sessions allow you to configure
@@ -223,7 +229,9 @@ __all__ = [
     "connect",
     "connect_async",
     "connect_namespace",
+    "connect_namespace_async",
     "AsyncConnection",
+    "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
     "URI",
     "sanitize_uri",
@@ -233,6 +241,8 @@ __all__ = [
     "LanceNamespaceDBConnection",
     "RemoteDBConnection",
     "Session",
+    "StorageOptionsProvider",
+    "Table",
     "__version__",
 ]
 

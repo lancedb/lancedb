@@ -18,7 +18,17 @@ from lancedb._lancedb import (
     UpdateResult,
 )
 from lancedb.embeddings.base import EmbeddingFunctionConfig
-from lancedb.index import FTS, BTree, Bitmap, HnswSq, IvfFlat, IvfPq, IvfRq, LabelList
+from lancedb.index import (
+    FTS,
+    BTree,
+    Bitmap,
+    HnswSq,
+    IvfFlat,
+    IvfPq,
+    IvfRq,
+    IvfSq,
+    LabelList,
+)
 from lancedb.remote.db import LOOP
 import pyarrow as pa
 
@@ -271,6 +281,8 @@ class RemoteTable(Table):
                 num_partitions=num_partitions,
                 num_bits=num_bits,
             )
+        elif index_type == "IVF_SQ":
+            config = IvfSq(distance_type=metric, num_partitions=num_partitions)
         elif index_type == "IVF_HNSW_PQ":
             raise ValueError(
                 "IVF_HNSW_PQ is not supported on LanceDB cloud."
@@ -283,7 +295,8 @@ class RemoteTable(Table):
         else:
             raise ValueError(
                 f"Unknown vector index type: {index_type}. Valid options are"
-                " 'IVF_FLAT', 'IVF_PQ', 'IVF_RQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
+                " 'IVF_FLAT', 'IVF_PQ', 'IVF_RQ', 'IVF_SQ',"
+                " 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
             )
 
         LOOP.run(
@@ -657,6 +670,17 @@ class RemoteTable(Table):
         raise NotImplementedError(
             "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
         )
+
+    def head(self, n=5) -> pa.Table:
+        """
+        Return the first `n` rows of the table.
+
+        Parameters
+        ----------
+        n: int, default 5
+            The number of rows to return.
+        """
+        return LOOP.run(self._table.query().limit(n).to_arrow())
 
 
 def add_index(tbl: pa.Table, i: int) -> pa.Table:

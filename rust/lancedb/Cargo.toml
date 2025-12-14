@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.22.3-beta.3"
+version = "0.23.0-beta.1"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -86,10 +86,6 @@ candle-nn = { version = "0.9.1", optional = true }
 tokenizers = { version = "0.19.1", optional = true }
 semver = { workspace = true }
 
-# For a workaround, see workspace Cargo.toml
-crunchy.workspace = true
-bytemuck_derive.workspace = true
-
 [dev-dependencies]
 anyhow = "1"
 tempfile = "3.5.0"
@@ -109,12 +105,12 @@ test-log = "0.2"
 
 [features]
 default = ["aws", "gcs", "azure", "dynamodb", "oss"]
-aws = ["lance/aws", "lance-io/aws"]
-oss = ["lance/oss", "lance-io/oss"]
-gcs = ["lance/gcp", "lance-io/gcp"]
-azure = ["lance/azure", "lance-io/azure"]
+aws = ["lance/aws", "lance-io/aws", "lance-namespace-impls/dir-aws"]
+oss = ["lance/oss", "lance-io/oss", "lance-namespace-impls/dir-oss"]
+gcs = ["lance/gcp", "lance-io/gcp", "lance-namespace-impls/dir-gcp"]
+azure = ["lance/azure", "lance-io/azure", "lance-namespace-impls/dir-azure"]
 dynamodb = ["lance/dynamodb", "aws"]
-remote = ["dep:reqwest", "dep:http"]
+remote = ["dep:reqwest", "dep:http", "lance-namespace-impls/rest"]
 fp16kernels = ["lance-linalg/fp16kernels"]
 s3-test = []
 bedrock = ["dep:aws-sdk-bedrockruntime"]

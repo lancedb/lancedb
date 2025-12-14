@@ -32,7 +32,6 @@
 - [PhraseQuery](classes/PhraseQuery.md)
 - [Query](classes/Query.md)
 - [QueryBase](classes/QueryBase.md)
-- [RecordBatchIterator](classes/RecordBatchIterator.md)
 - [Session](classes/Session.md)
 - [StaticHeaderProvider](classes/StaticHeaderProvider.md)
 - [Table](classes/Table.md)
@@ -78,6 +77,7 @@
 - [RemovalStats](interfaces/RemovalStats.md)
 - [RetryConfig](interfaces/RetryConfig.md)
 - [ShuffleOptions](interfaces/ShuffleOptions.md)
+- [SplitCalculatedOptions](interfaces/SplitCalculatedOptions.md)
 - [SplitHashOptions](interfaces/SplitHashOptions.md)
 - [SplitRandomOptions](interfaces/SplitRandomOptions.md)
 - [SplitSequentialOptions](interfaces/SplitSequentialOptions.md)
@@ -105,6 +105,7 @@
 
 ## Functions
 
+- [RecordBatchIterator](functions/RecordBatchIterator.md)
 - [connect](functions/connect.md)
 - [makeArrowTable](functions/makeArrowTable.md)
 - [packBits](functions/packBits.md)

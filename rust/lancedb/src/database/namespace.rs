@@ -7,24 +7,25 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsProvider};
 use lance_namespace::{
     models::{
-        CreateEmptyTableRequest, CreateNamespaceRequest, DescribeTableRequest,
-        DropNamespaceRequest, DropTableRequest, ListNamespacesRequest, ListTablesRequest,
+        CreateEmptyTableRequest, CreateNamespaceRequest, CreateNamespaceResponse,
+        DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
+        DropNamespaceRequest, DropNamespaceResponse, DropTableRequest, ListNamespacesRequest,
+        ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
     },
     LanceNamespace,
 };
 use lance_namespace_impls::ConnectBuilder;
 
-use crate::database::listing::ListingDatabase;
+use crate::connection::ConnectRequest;
+use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
-use crate::{connection::ConnectRequest, database::ReadConsistency};
 
 use super::{
-    BaseTable, CloneTableRequest, CreateNamespaceRequest as DbCreateNamespaceRequest,
-    CreateTableMode, CreateTableRequest as DbCreateTableRequest, Database,
-    DropNamespaceRequest as DbDropNamespaceRequest,
-    ListNamespacesRequest as DbListNamespacesRequest, OpenTableRequest, TableNamesRequest,
+    listing::ListingDatabase, BaseTable, CloneTableRequest, CreateTableMode,
+    CreateTableRequest as DbCreateTableRequest, Database, OpenTableRequest, TableNamesRequest,
 };
 
 /// A database implementation that uses lance-namespace for table management
@@ -38,6 +39,8 @@ pub struct LanceNamespaceDatabase {
     session: Option<Arc<lance::session::Session>>,
     // database URI
     uri: String,
+    // Whether to enable server-side query execution
+    server_side_query_enabled: bool,
 }
 
 impl LanceNamespaceDatabase {
@@ -47,6 +50,7 @@ impl LanceNamespaceDatabase {
         storage_options: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
         session: Option<Arc<lance::session::Session>>,
+        server_side_query_enabled: bool,
     ) -> Result<Self> {
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
@@ -65,59 +69,8 @@ impl LanceNamespaceDatabase {
             read_consistency_interval,
             session,
             uri: format!("namespace://{}", ns_impl),
+            server_side_query_enabled,
         })
-    }
-
-    /// Helper method to create a ListingDatabase from a table location
-    ///
-    /// This method:
-    /// 1. Validates that the location ends with <table_name>.lance
-    /// 2. Extracts the parent directory from the location
-    /// 3. Creates a ListingDatabase at that parent directory
-    async fn create_listing_database(
-        &self,
-        table_name: &str,
-        location: &str,
-        additional_storage_options: Option<HashMap<String, String>>,
-    ) -> Result<Arc<ListingDatabase>> {
-        let expected_suffix = format!("{}.lance", table_name);
-        if !location.ends_with(&expected_suffix) {
-            return Err(Error::Runtime {
-                message: format!(
-                    "Invalid table location '{}': expected to end with '{}'",
-                    location, expected_suffix
-                ),
-            });
-        }
-
-        let parent_dir = location
-            .rsplit_once('/')
-            .map(|(parent, _)| parent.to_string())
-            .ok_or_else(|| Error::Runtime {
-                message: format!("Invalid table location '{}': no parent directory", location),
-            })?;
-
-        let mut merged_storage_options = self.storage_options.clone();
-        if let Some(opts) = additional_storage_options {
-            merged_storage_options.extend(opts);
-        }
-
-        let connect_request = ConnectRequest {
-            uri: parent_dir,
-            options: merged_storage_options,
-            read_consistency_interval: self.read_consistency_interval,
-            session: self.session.clone(),
-            #[cfg(feature = "remote")]
-            client_config: Default::default(),
-        };
-
-        let listing_db = ListingDatabase::connect_with_options(&connect_request)
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to create listing database: {}", e),
-            })?;
-
-        Ok(Arc::new(listing_db))
     }
 }
 
@@ -126,6 +79,7 @@ impl std::fmt::Debug for LanceNamespaceDatabase {
         f.debug_struct("LanceNamespaceDatabase")
             .field("storage_options", &self.storage_options)
             .field("read_consistency_interval", &self.read_consistency_interval)
+            .field("server_side_query_enabled", &self.server_side_query_enabled)
             .finish()
     }
 }
@@ -133,6 +87,51 @@ impl std::fmt::Debug for LanceNamespaceDatabase {
 impl std::fmt::Display for LanceNamespaceDatabase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "LanceNamespaceDatabase")
+    }
+}
+
+impl LanceNamespaceDatabase {
+    /// Create a temporary listing database for the given location
+    ///
+    /// Merges storage options with priority: connection < user < namespace
+    async fn create_listing_database(
+        &self,
+        location: &str,
+        table_id: Vec<String>,
+        user_storage_options: Option<&HashMap<String, String>>,
+        response_storage_options: Option<&HashMap<String, String>>,
+    ) -> Result<ListingDatabase> {
+        // Merge storage options: connection < user < namespace
+        let mut merged_storage_options = self.storage_options.clone();
+        if let Some(opts) = user_storage_options {
+            merged_storage_options.extend(opts.clone());
+        }
+        if let Some(opts) = response_storage_options {
+            merged_storage_options.extend(opts.clone());
+        }
+
+        let request = ConnectRequest {
+            uri: location.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: merged_storage_options,
+            read_consistency_interval: self.read_consistency_interval,
+            session: self.session.clone(),
+        };
+
+        let mut listing_db = ListingDatabase::connect_with_options(&request).await?;
+
+        // Create storage options provider only if namespace returned storage options
+        // (not just user-provided options)
+        if response_storage_options.is_some() {
+            let provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
+                self.namespace.clone(),
+                table_id,
+            )) as Arc<dyn StorageOptionsProvider>;
+            listing_db.storage_options_provider = Some(provider);
+        }
+
+        Ok(listing_db)
     }
 }
 
@@ -154,93 +153,56 @@ impl Database for LanceNamespaceDatabase {
         }
     }
 
-    async fn list_namespaces(&self, request: DbListNamespacesRequest) -> Result<Vec<String>> {
-        let ns_request = ListNamespacesRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
-            page_token: request.page_token,
-            limit: request.limit.map(|l| l as i32),
-        };
-
-        let response = self
-            .namespace
-            .list_namespaces(ns_request)
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to list namespaces: {}", e),
-            })?;
-
-        Ok(response.namespaces)
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
+        Ok(self.namespace.list_namespaces(request).await?)
     }
 
-    async fn create_namespace(&self, request: DbCreateNamespaceRequest) -> Result<()> {
-        let ns_request = CreateNamespaceRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
-            mode: None,
-            properties: None,
-        };
-
-        self.namespace
-            .create_namespace(ns_request)
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to create namespace: {}", e),
-            })?;
-
-        Ok(())
+    async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
+        Ok(self.namespace.create_namespace(request).await?)
     }
 
-    async fn drop_namespace(&self, request: DbDropNamespaceRequest) -> Result<()> {
-        let ns_request = DropNamespaceRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
-            mode: None,
-            behavior: None,
-        };
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
+        Ok(self.namespace.drop_namespace(request).await?)
+    }
 
-        self.namespace
-            .drop_namespace(ns_request)
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to drop namespace: {}", e),
-            })?;
-
-        Ok(())
+    async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse> {
+        Ok(self.namespace.describe_namespace(request).await?)
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let ns_request = ListTablesRequest {
-            id: if request.namespace.is_empty() {
-                None
-            } else {
-                Some(request.namespace)
-            },
+            id: Some(request.namespace),
             page_token: request.start_after,
             limit: request.limit.map(|l| l as i32),
         };
 
-        let response =
-            self.namespace
-                .list_tables(ns_request)
-                .await
-                .map_err(|e| Error::Runtime {
-                    message: format!("Failed to list tables: {}", e),
-                })?;
+        let response = self.namespace.list_tables(ns_request).await?;
 
         Ok(response.tables)
     }
 
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        Ok(self.namespace.list_tables(request).await?)
+    }
+
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Extract user-provided storage options from request
+        let user_storage_options = request
+            .write_options
+            .lance_write_params
+            .as_ref()
+            .and_then(|lwp| lwp.store_params.as_ref())
+            .and_then(|sp| sp.storage_options.as_ref());
+
         let mut table_id = request.namespace.clone();
         table_id.push(request.name.clone());
         let describe_request = DescribeTableRequest {
@@ -279,15 +241,26 @@ impl Database for LanceNamespaceDatabase {
                     })?;
 
                     let listing_db = self
-                        .create_listing_database(&request.name, &location, response.storage_options)
+                        .create_listing_database(
+                            &location,
+                            table_id.clone(),
+                            user_storage_options,
+                            response.storage_options.as_ref(),
+                        )
                         .await?;
+
+                    let namespace_client = self
+                        .server_side_query_enabled
+                        .then(|| self.namespace.clone());
 
                     return listing_db
                         .open_table(OpenTableRequest {
                             name: request.name.clone(),
-                            namespace: vec![],
+                            namespace: request.namespace.clone(),
                             index_cache_size: None,
                             lance_read_params: None,
+                            location: Some(location),
+                            namespace_client,
                         })
                         .await;
                 }
@@ -298,7 +271,7 @@ impl Database for LanceNamespaceDatabase {
         table_id.push(request.name.clone());
 
         let create_empty_request = CreateEmptyTableRequest {
-            id: Some(table_id),
+            id: Some(table_id.clone()),
             location: None,
             properties: if self.storage_options.is_empty() {
                 None
@@ -323,28 +296,43 @@ impl Database for LanceNamespaceDatabase {
 
         let listing_db = self
             .create_listing_database(
-                &request.name,
                 &location,
-                create_empty_response.storage_options,
+                table_id.clone(),
+                user_storage_options,
+                create_empty_response.storage_options.as_ref(),
             )
             .await?;
 
+        let namespace_client = self
+            .server_side_query_enabled
+            .then(|| self.namespace.clone());
+
         let create_request = DbCreateTableRequest {
             name: request.name,
-            namespace: vec![],
+            namespace: request.namespace,
             data: request.data,
             mode: request.mode,
             write_options: request.write_options,
+            location: Some(location),
+            namespace_client,
         };
+
         listing_db.create_table(create_request).await
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Extract user-provided storage options from request
+        let user_storage_options = request
+            .lance_read_params
+            .as_ref()
+            .and_then(|lrp| lrp.store_options.as_ref())
+            .and_then(|so| so.storage_options.as_ref());
+
         let mut table_id = request.namespace.clone();
         table_id.push(request.name.clone());
 
         let describe_request = DescribeTableRequest {
-            id: Some(table_id),
+            id: Some(table_id.clone()),
             version: None,
         };
         let response = self
@@ -360,15 +348,27 @@ impl Database for LanceNamespaceDatabase {
         })?;
 
         let listing_db = self
-            .create_listing_database(&request.name, &location, response.storage_options)
+            .create_listing_database(
+                &location,
+                table_id.clone(),
+                user_storage_options,
+                response.storage_options.as_ref(),
+            )
             .await?;
+
+        let namespace_client = self
+            .server_side_query_enabled
+            .then(|| self.namespace.clone());
 
         let open_request = OpenTableRequest {
             name: request.name.clone(),
-            namespace: vec![],
+            namespace: request.namespace.clone(),
             index_cache_size: request.index_cache_size,
             lance_read_params: request.lance_read_params,
+            location: Some(location),
+            namespace_client,
         };
+
         listing_db.open_table(open_request).await
     }
 
@@ -405,6 +405,7 @@ impl Database for LanceNamespaceDatabase {
         Ok(())
     }
 
+    #[allow(deprecated)]
     async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
         let tables = self
             .table_names(TableNamesRequest {
@@ -541,10 +542,20 @@ mod tests {
             .await
             .expect("Failed to connect to namespace");
 
-        // Test: Create a table
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Test: Create a table in the child namespace
         let test_data = create_test_data();
         let table = conn
             .create_table("test_table", test_data)
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to create table");
@@ -562,9 +573,15 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].num_rows(), 5);
 
-        // Verify: Table appears in table_names
+        // Verify: Table namespace is correct
+        assert_eq!(table.namespace(), &["test_ns"]);
+        assert_eq!(table.name(), "test_table");
+        assert_eq!(table.id(), "test_ns$test_table");
+
+        // Verify: Table appears in table_names for the child namespace
         let table_names = conn
             .table_names()
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to list tables");
@@ -586,10 +603,20 @@ mod tests {
             .await
             .expect("Failed to connect to namespace");
 
-        // Create a table first
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create a table in child namespace
         let test_data = create_test_data();
         let _table = conn
             .create_table("describe_test", test_data)
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to create table");
@@ -597,6 +624,7 @@ mod tests {
         // Test: Open the table (which internally uses describe_table)
         let opened_table = conn
             .open_table("describe_test")
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to open table");
@@ -619,6 +647,10 @@ mod tests {
         assert_eq!(schema.fields.len(), 2);
         assert_eq!(schema.field(0).name(), "id");
         assert_eq!(schema.field(1).name(), "name");
+
+        // Verify namespace and id
+        assert_eq!(opened_table.namespace(), &["test_ns"]);
+        assert_eq!(opened_table.id(), "test_ns$describe_test");
     }
 
     #[tokio::test]
@@ -635,10 +667,20 @@ mod tests {
             .await
             .expect("Failed to connect to namespace");
 
-        // Create initial table with 5 rows
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create initial table with 5 rows in child namespace
         let test_data1 = create_test_data();
         let _table1 = conn
             .create_table("overwrite_test", test_data1)
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to create table");
@@ -665,6 +707,7 @@ mod tests {
                     schema,
                 ),
             )
+            .namespace(vec!["test_ns".into()])
             .mode(CreateTableMode::Overwrite)
             .execute()
             .await
@@ -708,10 +751,20 @@ mod tests {
             .await
             .expect("Failed to connect to namespace");
 
-        // Create initial table with test data
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create initial table with test data in child namespace
         let test_data1 = create_test_data();
         let _table1 = conn
             .create_table("exist_ok_test", test_data1)
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to create table");
@@ -720,6 +773,7 @@ mod tests {
         let test_data2 = create_test_data();
         let table2 = conn
             .create_table("exist_ok_test", test_data2)
+            .namespace(vec!["test_ns".into()])
             .mode(CreateTableMode::exist_ok(|req| req))
             .execute()
             .await
@@ -753,25 +807,37 @@ mod tests {
             .await
             .expect("Failed to connect to namespace");
 
-        // Create first table
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create first table in child namespace
         let test_data1 = create_test_data();
         let _table1 = conn
             .create_table("table1", test_data1)
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to create first table");
 
-        // Create second table
+        // Create second table in child namespace
         let test_data2 = create_test_data();
         let _table2 = conn
             .create_table("table2", test_data2)
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to create second table");
 
-        // Verify: Both tables appear in table list
+        // Verify: Both tables appear in table list for the child namespace
         let table_names = conn
             .table_names()
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to list tables");
@@ -782,12 +848,14 @@ mod tests {
         // Verify: Can open both tables
         let opened_table1 = conn
             .open_table("table1")
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to open table1");
 
         let opened_table2 = conn
             .open_table("table2")
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to open table2");
@@ -820,8 +888,21 @@ mod tests {
             .await
             .expect("Failed to connect to namespace");
 
-        // Test: Try to open a non-existent table
-        let result = conn.open_table("non_existent_table").execute().await;
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Test: Try to open a non-existent table in the child namespace
+        let result = conn
+            .open_table("non_existent_table")
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await;
 
         // Verify: Should return an error
         assert!(result.is_err());
@@ -841,30 +922,42 @@ mod tests {
             .await
             .expect("Failed to connect to namespace");
 
-        // Create a table first
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            mode: None,
+            properties: None,
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create a table in child namespace
         let test_data = create_test_data();
         let _table = conn
             .create_table("drop_test", test_data)
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to create table");
 
-        // Verify table exists
+        // Verify table exists in child namespace
         let table_names_before = conn
             .table_names()
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to list tables");
         assert!(table_names_before.contains(&"drop_test".to_string()));
 
         // Test: Drop the table
-        conn.drop_table("drop_test", &[])
+        conn.drop_table("drop_test", &["test_ns".into()])
             .await
             .expect("Failed to drop table");
 
         // Verify: Table no longer exists
         let table_names_after = conn
             .table_names()
+            .namespace(vec!["test_ns".into()])
             .execute()
             .await
             .expect("Failed to list tables");
@@ -873,5 +966,47 @@ mod tests {
         // Verify: Cannot open dropped table
         let open_result = conn.open_table("drop_test").execute().await;
         assert!(open_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_table_names_at_root() {
+        // Test that table_names at root (empty namespace) works correctly
+        // This is a regression test for a bug where empty namespace was converted to None
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        // Create multiple tables at root namespace
+        let test_data1 = create_test_data();
+        let _table1 = conn
+            .create_table("table1", test_data1)
+            .execute()
+            .await
+            .expect("Failed to create table1 at root");
+
+        let test_data2 = create_test_data();
+        let _table2 = conn
+            .create_table("table2", test_data2)
+            .execute()
+            .await
+            .expect("Failed to create table2 at root");
+
+        // List tables at root using table_names (empty namespace means root)
+        let table_names = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("Failed to list tables at root");
+
+        assert!(table_names.contains(&"table1".to_string()));
+        assert!(table_names.contains(&"table2".to_string()));
+        assert_eq!(table_names.len(), 2);
     }
 }

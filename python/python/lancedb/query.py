@@ -14,6 +14,7 @@ from typing import (
     Literal,
     Optional,
     Tuple,
+    Type,
     TypeVar,
     Union,
     Any,
@@ -37,7 +38,7 @@ from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .util import flatten_columns
-
+from lancedb._lancedb import fts_query_to_json
 from typing_extensions import Annotated
 
 if TYPE_CHECKING:
@@ -123,6 +124,24 @@ class FullTextQuery(ABC):
             The type of the query.
         """
         pass
+
+    def to_json(self) -> str:
+        """
+        Convert the query to a JSON string.
+
+        Returns
+        -------
+        str
+            A JSON string representation of the query.
+
+        Examples
+        --------
+        >>> from lancedb.query import MatchQuery
+        >>> query = MatchQuery("puppy", "text", fuzziness=2)
+        >>> query.to_json()
+        '{"match":{"column":"text","terms":"puppy","boost":1.0,"fuzziness":2,"max_expansions":50,"operator":"Or","prefix_length":0}}'
+        """
+        return fts_query_to_json(self)
 
     def __and__(self, other: "FullTextQuery") -> "FullTextQuery":
         """
@@ -288,6 +307,8 @@ class BooleanQuery(FullTextQuery):
     ----------
     queries : list[tuple(Occur, FullTextQuery)]
         The list of queries with their occurrence requirements.
+        Each tuple contains an Occur value (MUST, SHOULD, or MUST_NOT)
+        and a FullTextQuery to apply.
     """
 
     queries: list[tuple[Occur, FullTextQuery]]
@@ -766,10 +787,7 @@ class LanceQueryBuilder(ABC):
         -------
         List[LanceModel]
         """
-        return [
-            model(**{k: v for k, v in row.items() if k in model.field_names()})
-            for row in self.to_arrow(timeout=timeout).to_pylist()
-        ]
+        return [model(**row) for row in self.to_arrow(timeout=timeout).to_pylist()]
 
     def to_polars(self, *, timeout: Optional[timedelta] = None) -> "pl.DataFrame":
         """
@@ -865,7 +883,7 @@ class LanceQueryBuilder(ABC):
         ----------
         where: str
             The where clause which is a valid SQL where clause. See
-            `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
+            `Lance filter pushdown <https://lance.org/guide/read_and_write#filter-push-down>`_
             for valid SQL expressions.
         prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
@@ -1338,7 +1356,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         ----------
         where: str
             The where clause which is a valid SQL where clause. See
-            `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
+            `Lance filter pushdown <https://lance.org/guide/read_and_write#filter-push-down>`_
             for valid SQL expressions.
         prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
@@ -1477,7 +1495,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if self._phrase_query:
             if isinstance(query, str):
                 if not query.startswith('"') or not query.endswith('"'):
-                    query = f'"{query}"'
+                    self._query = f'"{query}"'
             elif isinstance(query, FullTextQuery) and not isinstance(
                 query, PhraseQuery
             ):
@@ -2380,6 +2398,28 @@ class AsyncQueryBase(object):
 
         return pl.from_arrow(await self.to_arrow(timeout=timeout))
 
+    async def to_pydantic(
+        self, model: Type[LanceModel], *, timeout: Optional[timedelta] = None
+    ) -> List[LanceModel]:
+        """
+        Convert results to a list of pydantic models.
+
+        Parameters
+        ----------
+        model : Type[LanceModel]
+            The pydantic model to use.
+        timeout : timedelta, optional
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
+
+        Returns
+        -------
+        list[LanceModel]
+        """
+        return [
+            model(**row) for row in (await self.to_arrow(timeout=timeout)).to_pylist()
+        ]
+
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
 
@@ -2389,9 +2429,8 @@ class AsyncQueryBase(object):
         >>> from lancedb import connect_async
         >>> async def doctest_example():
         ...     conn = await connect_async("./.lancedb")
-        ...     table = await conn.create_table("my_table", [{"vector": [99, 99]}])
-        ...     query = [100, 100]
-        ...     plan = await table.query().nearest_to([1, 2]).explain_plan(True)
+        ...     table = await conn.create_table("my_table", [{"vector": [99.0, 99.0]}])
+        ...     plan = await table.query().nearest_to([1.0, 2.0]).explain_plan(True)
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
@@ -2400,6 +2439,7 @@ class AsyncQueryBase(object):
               SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
                   LanceRead: uri=..., projection=[vector], ...
+        <BLANKLINE>
 
         Parameters
         ----------
@@ -3101,10 +3141,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         >>> from lancedb.index import FTS
         >>> async def doctest_example():
         ...     conn = await connect_async("./.lancedb")
-        ...     table = await conn.create_table("my_table", [{"vector": [99, 99], "text": "hello world"}])
+        ...     table = await conn.create_table("my_table", [{"vector": [99.0, 99.0], "text": "hello world"}])
         ...     await table.create_index("text", config=FTS(with_position=False))
-        ...     query = [100, 100]
-        ...     plan = await table.query().nearest_to([1, 2]).nearest_to_text("hello").explain_plan(True)
+        ...     plan = await table.query().nearest_to([1.0, 2.0]).nearest_to_text("hello").explain_plan(True)
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         Vector Search Plan:
@@ -3122,7 +3161,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
           Take: columns="_rowid, _score, (vector), (text)"
             CoalesceBatchesExec: target_batch_size=1024
               GlobalLimitExec: skip=0, fetch=10
-                MatchQuery: query=hello
+                MatchQuery: column=text, query=hello
         <BLANKLINE>
 
         Parameters
@@ -3378,9 +3417,8 @@ class BaseQueryBuilder(object):
         >>> from lancedb import connect_async
         >>> async def doctest_example():
         ...     conn = await connect_async("./.lancedb")
-        ...     table = await conn.create_table("my_table", [{"vector": [99, 99]}])
-        ...     query = [100, 100]
-        ...     plan = await table.query().nearest_to([1, 2]).explain_plan(True)
+        ...     table = await conn.create_table("my_table", [{"vector": [99.0, 99.0]}])
+        ...     plan = await table.query().nearest_to([1.0, 2.0]).explain_plan(True)
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
@@ -3389,6 +3427,7 @@ class BaseQueryBuilder(object):
               SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
                   LanceRead: uri=..., projection=[vector], ...
+        <BLANKLINE>
 
         Parameters
         ----------

@@ -23,6 +23,13 @@ import pyarrow as pa
 from ..common import DATA
 from ..db import DBConnection, LOOP
 from ..embeddings import EmbeddingFunctionConfig
+from lance_namespace import (
+    CreateNamespaceResponse,
+    DescribeNamespaceResponse,
+    DropNamespaceResponse,
+    ListNamespacesResponse,
+    ListTablesResponse,
+)
 from ..pydantic import LanceModel
 from ..table import Table
 from ..util import validate_table_name
@@ -104,10 +111,10 @@ class RemoteDBConnection(DBConnection):
     @override
     def list_namespaces(
         self,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         page_token: Optional[str] = None,
-        limit: int = 10,
-    ) -> Iterable[str]:
+        limit: Optional[int] = None,
+    ) -> ListNamespacesResponse:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -116,15 +123,18 @@ class RemoteDBConnection(DBConnection):
             The parent namespace to list namespaces in.
             None or empty list represents root namespace.
         page_token: str, optional
-            The token to use for pagination. If not present, start from the beginning.
-        limit: int, default 10
-            The size of the page to return.
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit: int, optional
+            The maximum number of results to return.
 
         Returns
         -------
-        Iterable of str
-            List of immediate child namespace names
+        ListNamespacesResponse
+            Response containing namespace names and optional page_token for pagination.
         """
+        if namespace is None:
+            namespace = []
         return LOOP.run(
             self._conn.list_namespaces(
                 namespace=namespace, page_token=page_token, limit=limit
@@ -132,26 +142,111 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def create_namespace(self, namespace: List[str]) -> None:
+    def create_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[str] = None,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> CreateNamespaceResponse:
         """Create a new namespace.
 
         Parameters
         ----------
         namespace: List[str]
             The namespace identifier to create.
+        mode: str, optional
+            Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
+            or "overwrite" (replace if exists). Case insensitive.
+        properties: Dict[str, str], optional
+            Properties to set on the namespace.
+
+        Returns
+        -------
+        CreateNamespaceResponse
+            Response containing the properties of the created namespace.
         """
-        LOOP.run(self._conn.create_namespace(namespace=namespace))
+        return LOOP.run(
+            self._conn.create_namespace(
+                namespace=namespace, mode=mode, properties=properties
+            )
+        )
 
     @override
-    def drop_namespace(self, namespace: List[str]) -> None:
+    def drop_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[str] = None,
+        behavior: Optional[str] = None,
+    ) -> DropNamespaceResponse:
         """Drop a namespace.
 
         Parameters
         ----------
         namespace: List[str]
             The namespace identifier to drop.
+        mode: str, optional
+            Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
+        behavior: str, optional
+            Whether to restrict drop if not empty ("RESTRICT") or cascade ("CASCADE").
+            Case insensitive.
+
+        Returns
+        -------
+        DropNamespaceResponse
+            Response containing properties and transaction_id if applicable.
         """
-        return LOOP.run(self._conn.drop_namespace(namespace=namespace))
+        return LOOP.run(
+            self._conn.drop_namespace(namespace=namespace, mode=mode, behavior=behavior)
+        )
+
+    @override
+    def describe_namespace(self, namespace: List[str]) -> DescribeNamespaceResponse:
+        """Describe a namespace.
+
+        Parameters
+        ----------
+        namespace: List[str]
+            The namespace identifier to describe.
+
+        Returns
+        -------
+        DescribeNamespaceResponse
+            Response containing the namespace properties.
+        """
+        return LOOP.run(self._conn.describe_namespace(namespace=namespace))
+
+    @override
+    def list_tables(
+        self,
+        namespace: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListTablesResponse:
+        """List all tables in this database with pagination support.
+
+        Parameters
+        ----------
+        namespace: List[str], optional
+            The namespace to list tables in.
+            None or empty list represents root namespace.
+        page_token: str, optional
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit: int, optional
+            The maximum number of results to return.
+
+        Returns
+        -------
+        ListTablesResponse
+            Response containing table names and optional page_token for pagination.
+        """
+        if namespace is None:
+            namespace = []
+        return LOOP.run(
+            self._conn.list_tables(
+                namespace=namespace, page_token=page_token, limit=limit
+            )
+        )
 
     @override
     def table_names(
@@ -159,9 +254,12 @@ class RemoteDBConnection(DBConnection):
         page_token: Optional[str] = None,
         limit: int = 10,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """List the names of all tables in the database.
+
+        .. deprecated::
+            Use :meth:`list_tables` instead, which provides proper pagination support.
 
         Parameters
         ----------
@@ -177,6 +275,15 @@ class RemoteDBConnection(DBConnection):
         -------
         An iterator of table names.
         """
+        import warnings
+
+        warnings.warn(
+            "table_names() is deprecated, use list_tables() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if namespace is None:
+            namespace = []
         return LOOP.run(
             self._conn.table_names(
                 namespace=namespace, start_after=page_token, limit=limit
@@ -188,7 +295,7 @@ class RemoteDBConnection(DBConnection):
         self,
         name: str,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
@@ -208,6 +315,8 @@ class RemoteDBConnection(DBConnection):
         """
         from .table import RemoteTable
 
+        if namespace is None:
+            namespace = []
         if index_cache_size is not None:
             logging.info(
                 "index_cache_size is ignored in LanceDb Cloud"
@@ -222,7 +331,7 @@ class RemoteDBConnection(DBConnection):
         target_table_name: str,
         source_uri: str,
         *,
-        target_namespace: List[str] = [],
+        target_namespace: Optional[List[str]] = None,
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
@@ -252,6 +361,8 @@ class RemoteDBConnection(DBConnection):
         """
         from .table import RemoteTable
 
+        if target_namespace is None:
+            target_namespace = []
         table = LOOP.run(
             self._conn.clone_table(
                 target_table_name,
@@ -275,7 +386,7 @@ class RemoteDBConnection(DBConnection):
         mode: Optional[str] = None,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: List[str] = [],
+        namespace: Optional[List[str]] = None,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -372,6 +483,8 @@ class RemoteDBConnection(DBConnection):
         LanceTable(table4)
 
         """
+        if namespace is None:
+            namespace = []
         validate_table_name(name)
         if embedding_functions is not None:
             logging.warning(
@@ -396,7 +509,7 @@ class RemoteDBConnection(DBConnection):
         return RemoteTable(table, self.db_name)
 
     @override
-    def drop_table(self, name: str, namespace: List[str] = []):
+    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
         """Drop a table from the database.
 
         Parameters
@@ -407,6 +520,8 @@ class RemoteDBConnection(DBConnection):
             The namespace to drop the table from.
             None or empty list represents root namespace.
         """
+        if namespace is None:
+            namespace = []
         LOOP.run(self._conn.drop_table(name, namespace=namespace))
 
     @override
@@ -414,8 +529,8 @@ class RemoteDBConnection(DBConnection):
         self,
         cur_name: str,
         new_name: str,
-        cur_namespace: List[str] = [],
-        new_namespace: List[str] = [],
+        cur_namespace: Optional[List[str]] = None,
+        new_namespace: Optional[List[str]] = None,
     ):
         """Rename a table in the database.
 
@@ -426,6 +541,10 @@ class RemoteDBConnection(DBConnection):
         new_name: str
             The new name of the table.
         """
+        if cur_namespace is None:
+            cur_namespace = []
+        if new_namespace is None:
+            new_namespace = []
         LOOP.run(
             self._conn.rename_table(
                 cur_name,

@@ -15,7 +15,7 @@
 
 # **The Multimodal AI Lakehouse**
 
-[**How to Install** ](#how-to-install) ✦ [**Detailed Documentation**](https://lancedb.github.io/lancedb/) ✦ [**Tutorials and Recipes**](https://github.com/lancedb/vectordb-recipes/tree/main) ✦  [**Contributors**](#contributors) 
+[**How to Install** ](#how-to-install) ✦ [**Detailed Documentation**](https://lancedb.com/docs) ✦ [**Tutorials and Recipes**](https://github.com/lancedb/vectordb-recipes/tree/main) ✦  [**Contributors**](#contributors) 
 
 **The ultimate multimodal data platform for AI/ML applications.** 
 
@@ -57,7 +57,7 @@ LanceDB is a central location where developers can build, train and analyze thei
 
 ## **How to Install**:
 
-Follow the [Quickstart](https://lancedb.github.io/lancedb/basic/) doc to set up LanceDB locally. 
+Follow the [Quickstart](https://lancedb.com/docs/quickstart/) doc to set up LanceDB locally. 
 
 **API & SDK:** We also support Python, Typescript and Rust SDKs
 

@@ -6,15 +6,19 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::{
     connection::Connection as LanceConnection,
-    database::{CreateTableMode, ReadConsistency},
+    database::{CreateTableMode, Database, ReadConsistency},
 };
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
-    pyclass, pyfunction, pymethods, Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
+    pyclass, pyfunction, pymethods,
+    types::{PyDict, PyDictMethods},
+    Bound, FromPyObject, Py, PyAny, PyObject, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
-use crate::{error::PythonErrorExt, table::Table};
+use crate::{
+    error::PythonErrorExt, storage_options::py_object_to_storage_options_provider, table::Table,
+};
 
 #[pyclass]
 pub struct Connection {
@@ -41,6 +45,10 @@ impl Connection {
             "exist_ok" => Ok(CreateTableMode::exist_ok(|builder| builder)),
             _ => Err(PyValueError::new_err(format!("Invalid mode {}", mode))),
         }
+    }
+
+    pub fn database(&self) -> PyResult<Arc<dyn Database>> {
+        Ok(self.get_inner()?.database().clone())
     }
 }
 
@@ -97,7 +105,8 @@ impl Connection {
         future_into_py(self_.py(), async move { op.execute().await.infer_error() })
     }
 
-    #[pyo3(signature = (name, mode, data, namespace=vec![], storage_options=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, mode, data, namespace=vec![], storage_options=None, storage_options_provider=None, location=None))]
     pub fn create_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -105,6 +114,8 @@ impl Connection {
         data: Bound<'_, PyAny>,
         namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
+        storage_options_provider: Option<PyObject>,
+        location: Option<String>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -118,6 +129,13 @@ impl Connection {
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
         }
+        if let Some(provider_obj) = storage_options_provider {
+            let provider = py_object_to_storage_options_provider(provider_obj)?;
+            builder = builder.storage_options_provider(provider);
+        }
+        if let Some(location) = location {
+            builder = builder.location(location);
+        }
 
         future_into_py(self_.py(), async move {
             let table = builder.execute().await.infer_error()?;
@@ -125,7 +143,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, mode, schema, namespace=vec![], storage_options=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, mode, schema, namespace=vec![], storage_options=None, storage_options_provider=None, location=None))]
     pub fn create_empty_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -133,6 +152,8 @@ impl Connection {
         schema: Bound<'_, PyAny>,
         namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
+        storage_options_provider: Option<PyObject>,
+        location: Option<String>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -146,6 +167,13 @@ impl Connection {
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
         }
+        if let Some(provider_obj) = storage_options_provider {
+            let provider = py_object_to_storage_options_provider(provider_obj)?;
+            builder = builder.storage_options_provider(provider);
+        }
+        if let Some(location) = location {
+            builder = builder.location(location);
+        }
 
         future_into_py(self_.py(), async move {
             let table = builder.execute().await.infer_error()?;
@@ -153,13 +181,15 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, namespace=vec![], storage_options = None, index_cache_size = None))]
+    #[pyo3(signature = (name, namespace=vec![], storage_options = None, storage_options_provider=None, index_cache_size = None, location=None))]
     pub fn open_table(
         self_: PyRef<'_, Self>,
         name: String,
         namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
+        storage_options_provider: Option<PyObject>,
         index_cache_size: Option<u32>,
+        location: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -168,8 +198,15 @@ impl Connection {
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
         }
+        if let Some(provider_obj) = storage_options_provider {
+            let provider = py_object_to_storage_options_provider(provider_obj)?;
+            builder = builder.storage_options_provider(provider);
+        }
         if let Some(index_cache_size) = index_cache_size {
             builder = builder.index_cache_size(index_cache_size);
+        }
+        if let Some(location) = location {
+            builder = builder.location(location);
         }
 
         future_into_py(self_.py(), async move {
@@ -256,40 +293,155 @@ impl Connection {
         limit: Option<u32>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
-        future_into_py(self_.py(), async move {
-            use lancedb::database::ListNamespacesRequest;
+        let py = self_.py();
+        future_into_py(py, async move {
+            use lance_namespace::models::ListNamespacesRequest;
             let request = ListNamespacesRequest {
-                namespace,
+                id: if namespace.is_empty() {
+                    None
+                } else {
+                    Some(namespace)
+                },
                 page_token,
-                limit,
+                limit: limit.map(|l| l as i32),
             };
-            inner.list_namespaces(request).await.infer_error()
+            let response = inner.list_namespaces(request).await.infer_error()?;
+            Python::with_gil(|py| -> PyResult<Py<PyDict>> {
+                let dict = PyDict::new(py);
+                dict.set_item("namespaces", response.namespaces)?;
+                dict.set_item("page_token", response.page_token)?;
+                Ok(dict.unbind())
+            })
         })
     }
 
-    #[pyo3(signature = (namespace,))]
+    #[pyo3(signature = (namespace, mode=None, properties=None))]
     pub fn create_namespace(
         self_: PyRef<'_, Self>,
         namespace: Vec<String>,
+        mode: Option<String>,
+        properties: Option<std::collections::HashMap<String, String>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
-        future_into_py(self_.py(), async move {
-            use lancedb::database::CreateNamespaceRequest;
-            let request = CreateNamespaceRequest { namespace };
-            inner.create_namespace(request).await.infer_error()
+        let py = self_.py();
+        future_into_py(py, async move {
+            use lance_namespace::models::{create_namespace_request, CreateNamespaceRequest};
+            let mode_enum = mode.and_then(|m| match m.to_lowercase().as_str() {
+                "create" => Some(create_namespace_request::Mode::Create),
+                "exist_ok" => Some(create_namespace_request::Mode::ExistOk),
+                "overwrite" => Some(create_namespace_request::Mode::Overwrite),
+                _ => None,
+            });
+            let request = CreateNamespaceRequest {
+                id: if namespace.is_empty() {
+                    None
+                } else {
+                    Some(namespace)
+                },
+                mode: mode_enum,
+                properties,
+            };
+            let response = inner.create_namespace(request).await.infer_error()?;
+            Python::with_gil(|py| -> PyResult<Py<PyDict>> {
+                let dict = PyDict::new(py);
+                dict.set_item("properties", response.properties)?;
+                Ok(dict.unbind())
+            })
+        })
+    }
+
+    #[pyo3(signature = (namespace, mode=None, behavior=None))]
+    pub fn drop_namespace(
+        self_: PyRef<'_, Self>,
+        namespace: Vec<String>,
+        mode: Option<String>,
+        behavior: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let py = self_.py();
+        future_into_py(py, async move {
+            use lance_namespace::models::{drop_namespace_request, DropNamespaceRequest};
+            let mode_enum = mode.and_then(|m| match m.to_uppercase().as_str() {
+                "SKIP" => Some(drop_namespace_request::Mode::Skip),
+                "FAIL" => Some(drop_namespace_request::Mode::Fail),
+                _ => None,
+            });
+            let behavior_enum = behavior.and_then(|b| match b.to_uppercase().as_str() {
+                "RESTRICT" => Some(drop_namespace_request::Behavior::Restrict),
+                "CASCADE" => Some(drop_namespace_request::Behavior::Cascade),
+                _ => None,
+            });
+            let request = DropNamespaceRequest {
+                id: if namespace.is_empty() {
+                    None
+                } else {
+                    Some(namespace)
+                },
+                mode: mode_enum,
+                behavior: behavior_enum,
+            };
+            let response = inner.drop_namespace(request).await.infer_error()?;
+            Python::with_gil(|py| -> PyResult<Py<PyDict>> {
+                let dict = PyDict::new(py);
+                dict.set_item("properties", response.properties)?;
+                dict.set_item("transaction_id", response.transaction_id)?;
+                Ok(dict.unbind())
+            })
         })
     }
 
     #[pyo3(signature = (namespace,))]
-    pub fn drop_namespace(
+    pub fn describe_namespace(
         self_: PyRef<'_, Self>,
         namespace: Vec<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
-        future_into_py(self_.py(), async move {
-            use lancedb::database::DropNamespaceRequest;
-            let request = DropNamespaceRequest { namespace };
-            inner.drop_namespace(request).await.infer_error()
+        let py = self_.py();
+        future_into_py(py, async move {
+            use lance_namespace::models::DescribeNamespaceRequest;
+            let request = DescribeNamespaceRequest {
+                id: if namespace.is_empty() {
+                    None
+                } else {
+                    Some(namespace)
+                },
+            };
+            let response = inner.describe_namespace(request).await.infer_error()?;
+            Python::with_gil(|py| -> PyResult<Py<PyDict>> {
+                let dict = PyDict::new(py);
+                dict.set_item("properties", response.properties)?;
+                Ok(dict.unbind())
+            })
+        })
+    }
+
+    #[pyo3(signature = (namespace=vec![], page_token=None, limit=None))]
+    pub fn list_tables(
+        self_: PyRef<'_, Self>,
+        namespace: Vec<String>,
+        page_token: Option<String>,
+        limit: Option<u32>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let py = self_.py();
+        future_into_py(py, async move {
+            use lance_namespace::models::ListTablesRequest;
+            let request = ListTablesRequest {
+                id: if namespace.is_empty() {
+                    None
+                } else {
+                    Some(namespace)
+                },
+                page_token,
+                limit: limit.map(|l| l as i32),
+            };
+            let response = inner.list_tables(request).await.infer_error()?;
+            Python::with_gil(|py| -> PyResult<Py<PyDict>> {
+                let dict = PyDict::new(py);
+                dict.set_item("tables", response.tables)?;
+                dict.set_item("page_token", response.page_token)?;
+                Ok(dict.unbind())
+            })
         })
     }
 }

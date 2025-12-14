@@ -441,6 +441,150 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
         assert re.match(r"\d{20}\.manifest", manifest)
 
 
+@pytest.mark.asyncio
+async def test_create_table_stable_row_ids_via_storage_options(tmp_path):
+    """Test stable_row_ids via storage_options at connect time."""
+    import lance
+
+    # Connect with stable row IDs enabled as default for new tables
+    db_with = await lancedb.connect_async(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+    # Connect without stable row IDs (default)
+    db_without = await lancedb.connect_async(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "false"}
+    )
+
+    # Create table using connection with stable row IDs enabled
+    await db_with.create_table(
+        "with_stable_via_opts",
+        data=[{"id": i} for i in range(10)],
+    )
+    lance_ds_with = lance.dataset(tmp_path / "with_stable_via_opts.lance")
+    fragments_with = lance_ds_with.get_fragments()
+    assert len(fragments_with) > 0
+    assert fragments_with[0].metadata.row_id_meta is not None
+
+    # Create table using connection without stable row IDs
+    await db_without.create_table(
+        "without_stable_via_opts",
+        data=[{"id": i} for i in range(10)],
+    )
+    lance_ds_without = lance.dataset(tmp_path / "without_stable_via_opts.lance")
+    fragments_without = lance_ds_without.get_fragments()
+    assert len(fragments_without) > 0
+    assert fragments_without[0].metadata.row_id_meta is None
+
+
+def test_create_table_stable_row_ids_via_storage_options_sync(tmp_path):
+    """Test that enable_stable_row_ids can be set via storage_options (sync API)."""
+    # Connect with stable row IDs enabled as default for new tables
+    db_with = lancedb.connect(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+    # Connect without stable row IDs (default)
+    db_without = lancedb.connect(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "false"}
+    )
+
+    # Create table using connection with stable row IDs enabled
+    tbl_with = db_with.create_table(
+        "with_stable_sync",
+        data=[{"id": i} for i in range(10)],
+    )
+    lance_ds_with = tbl_with.to_lance()
+    fragments_with = lance_ds_with.get_fragments()
+    assert len(fragments_with) > 0
+    assert fragments_with[0].metadata.row_id_meta is not None
+
+    # Create table using connection without stable row IDs
+    tbl_without = db_without.create_table(
+        "without_stable_sync",
+        data=[{"id": i} for i in range(10)],
+    )
+    lance_ds_without = tbl_without.to_lance()
+    fragments_without = lance_ds_without.get_fragments()
+    assert len(fragments_without) > 0
+    assert fragments_without[0].metadata.row_id_meta is None
+
+
+@pytest.mark.asyncio
+async def test_create_table_stable_row_ids_table_level_override(tmp_path):
+    """Test that stable_row_ids can be enabled/disabled at create_table level."""
+    import lance
+
+    # Connect without any stable row ID setting
+    db_default = await lancedb.connect_async(tmp_path)
+
+    # Connect with stable row IDs enabled at connection level
+    db_with_stable = await lancedb.connect_async(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+
+    # Case 1: No connection setting, enable at table level
+    await db_default.create_table(
+        "table_level_enabled",
+        data=[{"id": i} for i in range(10)],
+        storage_options={"new_table_enable_stable_row_ids": "true"},
+    )
+    lance_ds = lance.dataset(tmp_path / "table_level_enabled.lance")
+    fragments = lance_ds.get_fragments()
+    assert len(fragments) > 0
+    assert fragments[0].metadata.row_id_meta is not None, (
+        "Table should have stable row IDs when enabled at table level"
+    )
+
+    # Case 2: Connection has stable row IDs, override with false at table level
+    await db_with_stable.create_table(
+        "table_level_disabled",
+        data=[{"id": i} for i in range(10)],
+        storage_options={"new_table_enable_stable_row_ids": "false"},
+    )
+    lance_ds = lance.dataset(tmp_path / "table_level_disabled.lance")
+    fragments = lance_ds.get_fragments()
+    assert len(fragments) > 0
+    assert fragments[0].metadata.row_id_meta is None, (
+        "Table should NOT have stable row IDs when disabled at table level"
+    )
+
+
+def test_create_table_stable_row_ids_table_level_override_sync(tmp_path):
+    """Test that stable_row_ids can be enabled/disabled at create_table level (sync)."""
+    # Connect without any stable row ID setting
+    db_default = lancedb.connect(tmp_path)
+
+    # Connect with stable row IDs enabled at connection level
+    db_with_stable = lancedb.connect(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+
+    # Case 1: No connection setting, enable at table level
+    tbl = db_default.create_table(
+        "table_level_enabled_sync",
+        data=[{"id": i} for i in range(10)],
+        storage_options={"new_table_enable_stable_row_ids": "true"},
+    )
+    lance_ds = tbl.to_lance()
+    fragments = lance_ds.get_fragments()
+    assert len(fragments) > 0
+    assert fragments[0].metadata.row_id_meta is not None, (
+        "Table should have stable row IDs when enabled at table level"
+    )
+
+    # Case 2: Connection has stable row IDs, override with false at table level
+    tbl = db_with_stable.create_table(
+        "table_level_disabled_sync",
+        data=[{"id": i} for i in range(10)],
+        storage_options={"new_table_enable_stable_row_ids": "false"},
+    )
+    lance_ds = tbl.to_lance()
+    fragments = lance_ds.get_fragments()
+    assert len(fragments) > 0
+    assert fragments[0].metadata.row_id_meta is None, (
+        "Table should NOT have stable row IDs when disabled at table level"
+    )
+
+
 def test_open_table_sync(tmp_db: lancedb.DBConnection):
     tmp_db.create_table("test", data=[{"id": 0}])
     assert tmp_db.open_table("test").count_rows() == 1
@@ -748,7 +892,7 @@ def test_local_namespace_operations(tmp_path):
     db = lancedb.connect(tmp_path)
 
     # Test list_namespaces returns empty list for root namespace
-    namespaces = list(db.list_namespaces())
+    namespaces = db.list_namespaces().namespaces
     assert namespaces == []
 
     # Test list_namespaces with non-empty namespace raises NotImplementedError
@@ -756,7 +900,7 @@ def test_local_namespace_operations(tmp_path):
         NotImplementedError,
         match="Namespace operations are not supported for listing database",
     ):
-        list(db.list_namespaces(namespace=["test"]))
+        db.list_namespaces(namespace=["test"])
 
 
 def test_local_create_namespace_not_supported(tmp_path):
@@ -779,58 +923,6 @@ def test_local_drop_namespace_not_supported(tmp_path):
         match="Namespace operations are not supported for listing database",
     ):
         db.drop_namespace(["test_namespace"])
-
-
-def test_local_table_operations_with_namespace_raise_error(tmp_path):
-    """
-    Test that table operations with namespace parameter
-    raise ValueError in local mode.
-    """
-    db = lancedb.connect(tmp_path)
-
-    # Create some test data
-    data = [{"vector": [1.0, 2.0], "item": "test"}]
-    schema = pa.schema(
-        [pa.field("vector", pa.list_(pa.float32(), 2)), pa.field("item", pa.string())]
-    )
-
-    # Test create_table with namespace - should raise ValueError
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace parameter is not supported for listing database",
-    ):
-        db.create_table(
-            "test_table_with_ns", data=data, schema=schema, namespace=["test_ns"]
-        )
-
-    # Create table normally for other tests
-    db.create_table("test_table", data=data, schema=schema)
-    assert "test_table" in db.table_names()
-
-    # Test open_table with namespace - should raise ValueError
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace parameter is not supported for listing database",
-    ):
-        db.open_table("test_table", namespace=["test_ns"])
-
-    # Test table_names with namespace - should raise ValueError
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace parameter is not supported for listing database",
-    ):
-        list(db.table_names(namespace=["test_ns"]))
-
-    # Test drop_table with namespace - should raise ValueError
-    with pytest.raises(
-        NotImplementedError,
-        match="Namespace parameter is not supported for listing database",
-    ):
-        db.drop_table("test_table", namespace=["test_ns"])
-
-    # Test table_names without namespace - should work normally
-    tables_root = list(db.table_names())
-    assert "test_table" in tables_root
 
 
 def test_clone_table_latest_version(tmp_path):
