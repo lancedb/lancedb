@@ -229,6 +229,29 @@ def set_local_version():
     update_cargo_toml(line_updater)
 
 
+def update_lockfiles(version: str, fallback_to_git: bool = False):
+    """
+    Update Cargo metadata and optionally fall back to using the git tag if the
+    requested crates.io version is unavailable.
+    """
+    try:
+        print("Updating lockfiles...", file=sys.stderr, end="")
+        run_command("cargo metadata > /dev/null")
+        print(" done.", file=sys.stderr)
+    except Exception as e:
+        if fallback_to_git and "failed to select a version" in str(e):
+            print(
+                f" failed for crates.io v{version}, retrying with git tag...",
+                file=sys.stderr,
+            )
+            set_preview_version(version)
+            print("Updating lockfiles...", file=sys.stderr, end="")
+            run_command("cargo metadata > /dev/null")
+            print(" done.", file=sys.stderr)
+        else:
+            raise
+
+
 parser = argparse.ArgumentParser(description="Set the version of the Lance package.")
 parser.add_argument(
     "version",
@@ -244,6 +267,7 @@ if args.version == "stable":
         file=sys.stderr,
     )
     set_stable_version(latest_stable_version)
+    update_lockfiles(latest_stable_version)
 elif args.version == "preview":
     latest_preview_version = get_latest_preview_version()
     print(
@@ -251,8 +275,10 @@ elif args.version == "preview":
         file=sys.stderr,
     )
     set_preview_version(latest_preview_version)
+    update_lockfiles(latest_preview_version)
 elif args.version == "local":
     set_local_version()
+    update_lockfiles("local")
 else:
     # Parse the version number.
     version = args.version
@@ -262,9 +288,7 @@ else:
 
     if "beta" in version:
         set_preview_version(version)
+        update_lockfiles(version)
     else:
         set_stable_version(version)
-
-print("Updating lockfiles...", file=sys.stderr, end="")
-run_command("cargo metadata > /dev/null")
-print(" done.", file=sys.stderr)
+        update_lockfiles(version, fallback_to_git=True)
