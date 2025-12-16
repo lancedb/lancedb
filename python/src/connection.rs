@@ -325,12 +325,12 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{create_namespace_request, CreateNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_lowercase().as_str() {
-                "create" => Some(create_namespace_request::Mode::Create),
-                "exist_ok" => Some(create_namespace_request::Mode::ExistOk),
-                "overwrite" => Some(create_namespace_request::Mode::Overwrite),
-                _ => None,
+            use lance_namespace::models::CreateNamespaceRequest;
+            let mode_value = mode.map(|m| match m.to_lowercase().as_str() {
+                "create" => "Create".to_string(),
+                "exist_ok" | "existok" => "ExistOk".to_string(),
+                "overwrite" => "Overwrite".to_string(),
+                other => other.to_string(),
             });
             let request = CreateNamespaceRequest {
                 id: if namespace.is_empty() {
@@ -338,7 +338,7 @@ impl Connection {
                 } else {
                     Some(namespace)
                 },
-                mode: mode_enum,
+                mode: mode_value,
                 properties,
             };
             let response = inner.create_namespace(request).await.infer_error()?;
@@ -360,16 +360,16 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{drop_namespace_request, DropNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_uppercase().as_str() {
-                "SKIP" => Some(drop_namespace_request::Mode::Skip),
-                "FAIL" => Some(drop_namespace_request::Mode::Fail),
-                _ => None,
+            use lance_namespace::models::DropNamespaceRequest;
+            let mode_value = mode.map(|m| match m.to_uppercase().as_str() {
+                "SKIP" => "Skip".to_string(),
+                "FAIL" => "Fail".to_string(),
+                other => other.to_string(),
             });
-            let behavior_enum = behavior.and_then(|b| match b.to_uppercase().as_str() {
-                "RESTRICT" => Some(drop_namespace_request::Behavior::Restrict),
-                "CASCADE" => Some(drop_namespace_request::Behavior::Cascade),
-                _ => None,
+            let behavior_value = behavior.map(|b| match b.to_uppercase().as_str() {
+                "RESTRICT" => "Restrict".to_string(),
+                "CASCADE" => "Cascade".to_string(),
+                other => other.to_string(),
             });
             let request = DropNamespaceRequest {
                 id: if namespace.is_empty() {
@@ -377,8 +377,8 @@ impl Connection {
                 } else {
                     Some(namespace)
                 },
-                mode: mode_enum,
-                behavior: behavior_enum,
+                mode: mode_value,
+                behavior: behavior_value,
             };
             let response = inner.drop_namespace(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {
