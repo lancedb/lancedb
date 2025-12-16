@@ -189,6 +189,10 @@ pub struct RemoteDatabase<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
     table_cache: Cache<String, Arc<RemoteTable<S>>>,
     uri: String,
+    /// Headers to pass to the namespace client for authentication
+    namespace_headers: HashMap<String, String>,
+    /// TLS configuration for mTLS support
+    tls_config: Option<super::client::TlsConfig>,
 }
 
 impl RemoteDatabase {
@@ -205,7 +209,7 @@ impl RemoteDatabase {
             api_key,
             region,
             host_override,
-            client_config,
+            client_config.clone(),
             &options,
         )?;
 
@@ -214,10 +218,21 @@ impl RemoteDatabase {
             .max_capacity(10_000)
             .build();
 
+        // Build headers for namespace client
+        let mut namespace_headers = HashMap::new();
+        namespace_headers.insert("x-api-key".to_string(), api_key.to_string());
+
+        // Add extra headers from client config
+        for (key, value) in &client_config.extra_headers {
+            namespace_headers.insert(key.clone(), value.clone());
+        }
+
         Ok(Self {
             client,
             table_cache,
             uri: uri.to_owned(),
+            namespace_headers,
+            tls_config: client_config.tls_config,
         })
     }
 }
@@ -240,6 +255,8 @@ mod test_utils {
                 client,
                 table_cache: Cache::new(0),
                 uri: "http://localhost".to_string(),
+                namespace_headers: HashMap::new(),
+                tls_config: None,
             }
         }
 
@@ -248,11 +265,13 @@ mod test_utils {
             F: Fn(reqwest::Request) -> http::Response<T> + Send + Sync + 'static,
             T: Into<reqwest::Body>,
         {
-            let client = client_with_handler_and_config(handler, config);
+            let client = client_with_handler_and_config(handler, config.clone());
             Self {
                 client,
                 table_cache: Cache::new(0),
                 uri: "http://localhost".to_string(),
+                namespace_headers: config.extra_headers.clone(),
+                tls_config: config.tls_config.clone(),
             }
         }
     }
@@ -716,7 +735,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
         let req = self
             .client
-            .get(&format!("/v1/namespace/{}/describe", namespace_id));
+            .post(&format!("/v1/namespace/{}/describe", namespace_id))
+            .json(&DescribeNamespaceRequest::default());
 
         let (request_id, resp) = self.client.send(req).await?;
         let resp = self.client.check_response(&request_id, resp).await?;
@@ -726,6 +746,30 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
+        // Create a RestNamespace pointing to the same remote host with the same authentication headers
+        let mut builder = lance_namespace_impls::RestNamespaceBuilder::new(self.client.host())
+            .delimiter(&self.client.id_delimiter)
+            .headers(self.namespace_headers.clone());
+
+        // Apply mTLS configuration if present
+        if let Some(tls_config) = &self.tls_config {
+            if let Some(cert_file) = &tls_config.cert_file {
+                builder = builder.cert_file(cert_file);
+            }
+            if let Some(key_file) = &tls_config.key_file {
+                builder = builder.key_file(key_file);
+            }
+            if let Some(ssl_ca_cert) = &tls_config.ssl_ca_cert {
+                builder = builder.ssl_ca_cert(ssl_ca_cert);
+            }
+            builder = builder.assert_hostname(tls_config.assert_hostname);
+        }
+
+        let namespace = builder.build();
+        Ok(Arc::new(namespace) as Arc<dyn lance_namespace::LanceNamespace>)
     }
 }
 
@@ -1517,5 +1561,75 @@ mod tests {
         } else {
             panic!("Expected HTTP error");
         }
+    }
+
+    #[tokio::test]
+    async fn test_namespace_client() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": []}"#)
+                .unwrap()
+        });
+
+        // Get the namespace client from the connection's internal database
+        let namespace_client = conn.namespace_client().await;
+        assert!(namespace_client.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_namespace_client_with_tls_config() {
+        use crate::remote::client::TlsConfig;
+
+        let tls_config = TlsConfig {
+            cert_file: Some("/path/to/cert.pem".to_string()),
+            key_file: Some("/path/to/key.pem".to_string()),
+            ssl_ca_cert: Some("/path/to/ca.pem".to_string()),
+            assert_hostname: true,
+        };
+
+        let client_config = ClientConfig {
+            tls_config: Some(tls_config),
+            ..Default::default()
+        };
+
+        let conn = Connection::new_with_handler_and_config(
+            |_| {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tables": []}"#)
+                    .unwrap()
+            },
+            client_config,
+        );
+
+        // Get the namespace client - it should be created with the TLS config
+        let namespace_client = conn.namespace_client().await;
+        assert!(namespace_client.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_namespace_client_with_headers() {
+        let mut extra_headers = HashMap::new();
+        extra_headers.insert("X-Custom-Header".to_string(), "custom-value".to_string());
+
+        let client_config = ClientConfig {
+            extra_headers,
+            ..Default::default()
+        };
+
+        let conn = Connection::new_with_handler_and_config(
+            |_| {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tables": []}"#)
+                    .unwrap()
+            },
+            client_config,
+        );
+
+        // Get the namespace client - it should be created with the extra headers
+        let namespace_client = conn.namespace_client().await;
+        assert!(namespace_client.is_ok());
     }
 }

@@ -296,4 +296,10 @@ pub trait Database:
     /// Drop all tables in the database
     async fn drop_all_tables(&self, namespace: &[String]) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Get the underlying namespace client.
+    ///
+    /// Returns a namespace client that can be used to access the full lance-namespace API
+    /// for advanced operations.
+    async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>>;
 }
