@@ -1643,4 +1643,195 @@ mod tests {
         let namespace_client = conn.namespace_client().await;
         assert!(namespace_client.is_ok());
     }
+
+    /// Integration tests using RestAdapter to run RemoteDatabase against a real namespace server
+    mod rest_adapter_integration {
+        use super::*;
+        use lance_namespace::models::ListTablesRequest;
+        use lance_namespace_impls::{DirectoryNamespaceBuilder, RestAdapter, RestAdapterConfig};
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        /// Test fixture that manages a REST server backed by DirectoryNamespace
+        struct RestServerFixture {
+            _temp_dir: TempDir,
+            server_handle: lance_namespace_impls::RestAdapterHandle,
+            server_url: String,
+        }
+
+        impl RestServerFixture {
+            async fn new() -> Self {
+                let temp_dir = TempDir::new().unwrap();
+                let temp_path = temp_dir.path().to_str().unwrap().to_string();
+
+                // Create DirectoryNamespace backend
+                let backend = DirectoryNamespaceBuilder::new(&temp_path)
+                    .build()
+                    .await
+                    .unwrap();
+                let backend = Arc::new(backend);
+
+                // Start REST server with port 0 (OS assigns available port)
+                let config = RestAdapterConfig {
+                    port: 0,
+                    ..Default::default()
+                };
+
+                let server = RestAdapter::new(backend, config);
+                let server_handle = server.start().await.unwrap();
+
+                // Get the actual port assigned by OS
+                let actual_port = server_handle.port();
+                let server_url = format!("http://127.0.0.1:{}", actual_port);
+
+                Self {
+                    _temp_dir: temp_dir,
+                    server_handle,
+                    server_url,
+                }
+            }
+        }
+
+        impl Drop for RestServerFixture {
+            fn drop(&mut self) {
+                self.server_handle.shutdown();
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn test_remote_database_with_rest_adapter() {
+            use lance_namespace::models::CreateNamespaceRequest;
+
+            let fixture = RestServerFixture::new().await;
+
+            // Connect to the REST server using lancedb Connection
+            // Use db://dummy as URI and set actual server URL via host_override
+            let conn = ConnectBuilder::new("db://dummy")
+                .api_key("test-api-key")
+                .region("us-east-1")
+                .host_override(&fixture.server_url)
+                .execute()
+                .await
+                .unwrap();
+
+            // Create a child namespace first
+            let namespace = vec!["test_ns".to_string()];
+            conn.create_namespace(CreateNamespaceRequest {
+                id: Some(namespace.clone()),
+                mode: None,
+                properties: None,
+            })
+            .await
+            .expect("Failed to create namespace");
+
+            // Create a table in the child namespace
+            let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+            let data = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap();
+            let reader = RecordBatchIterator::new([Ok(data.clone())], schema.clone());
+
+            let table = conn
+                .create_table("test_table", reader)
+                .namespace(namespace.clone())
+                .execute()
+                .await;
+            assert!(table.is_ok(), "Failed to create table: {:?}", table.err());
+
+            // List tables in the child namespace
+            let list_response = conn
+                .list_tables(ListTablesRequest {
+                    id: Some(namespace.clone()),
+                    page_token: None,
+                    limit: None,
+                })
+                .await
+                .expect("Failed to list tables");
+            assert_eq!(list_response.tables, vec!["test_table"]);
+
+            // Get namespace client and verify it can also list tables
+            let namespace_client = conn.namespace_client().await.unwrap();
+            let list_response = namespace_client
+                .list_tables(ListTablesRequest {
+                    id: Some(namespace.clone()),
+                    page_token: None,
+                    limit: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(list_response.tables, vec!["test_table"]);
+
+            // Open the table from the child namespace
+            let opened_table = conn
+                .open_table("test_table")
+                .namespace(namespace.clone())
+                .execute()
+                .await;
+            assert!(
+                opened_table.is_ok(),
+                "Failed to open table: {:?}",
+                opened_table.err()
+            );
+            assert_eq!(opened_table.unwrap().name(), "test_table");
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn test_remote_database_with_multiple_tables() {
+            use lance_namespace::models::CreateNamespaceRequest;
+
+            let fixture = RestServerFixture::new().await;
+
+            // Connect to the REST server
+            // Use db://dummy as URI and set actual server URL via host_override
+            let conn = ConnectBuilder::new("db://dummy")
+                .api_key("test-api-key")
+                .region("us-east-1")
+                .host_override(&fixture.server_url)
+                .execute()
+                .await
+                .unwrap();
+
+            // Create a child namespace first
+            let namespace = vec!["multi_table_ns".to_string()];
+            conn.create_namespace(CreateNamespaceRequest {
+                id: Some(namespace.clone()),
+                mode: None,
+                properties: None,
+            })
+            .await
+            .expect("Failed to create namespace");
+
+            // Create multiple tables in the child namespace
+            let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+            for i in 1..=3 {
+                let data =
+                    RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![i]))])
+                        .unwrap();
+                let reader = RecordBatchIterator::new([Ok(data.clone())], schema.clone());
+
+                conn.create_table(format!("table{}", i), reader)
+                    .namespace(namespace.clone())
+                    .execute()
+                    .await
+                    .unwrap_or_else(|e| panic!("Failed to create table{}: {:?}", i, e));
+            }
+
+            // List tables in the child namespace
+            let list_response = conn
+                .list_tables(ListTablesRequest {
+                    id: Some(namespace.clone()),
+                    page_token: None,
+                    limit: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(list_response.tables.len(), 3);
+            assert!(list_response.tables.contains(&"table1".to_string()));
+            assert!(list_response.tables.contains(&"table2".to_string()));
+            assert!(list_response.tables.contains(&"table3".to_string()));
+        }
+    }
 }
