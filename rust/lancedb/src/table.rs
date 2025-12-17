@@ -29,7 +29,7 @@ use lance::dataset::{
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::index::vector::VectorIndexParams;
-use lance::io::WrappingObjectStore;
+use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
@@ -40,6 +40,7 @@ use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
+use lance_io::object_store::LanceNamespaceStorageOptionsProvider;
 use lance_namespace::models::{
     QueryTableRequest as NsQueryTableRequest, QueryTableRequestFullTextQuery,
     QueryTableRequestVector, StringFtsQuery,
@@ -1611,6 +1612,105 @@ impl NativeTable {
         self
     }
 
+    /// Opens an existing Table using a namespace client.
+    ///
+    /// This method uses `DatasetBuilder::from_namespace` to open the table, which
+    /// automatically fetches the table location and storage options from the namespace.
+    /// This eliminates the need to pre-fetch and merge storage options before opening.
+    ///
+    /// # Arguments
+    ///
+    /// * `namespace_client` - The namespace client to use for fetching table metadata
+    /// * `name` - The table name
+    /// * `namespace` - The namespace path (e.g., vec!["parent", "child"])
+    /// * `write_store_wrapper` - Optional wrapper for the object store on write path
+    /// * `params` - Optional read parameters
+    /// * `read_consistency_interval` - Optional interval for read consistency
+    /// * `server_side_query_enabled` - Whether to enable server-side query execution.
+    ///   When true, the namespace_client will be stored and queries will be executed
+    ///   on the namespace server. When false, the namespace is only used for opening
+    ///   the table, and queries are executed locally.
+    /// * `session` - Optional session for object stores and caching
+    ///
+    /// # Returns
+    ///
+    /// * A [NativeTable] object.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_from_namespace(
+        namespace_client: Arc<dyn LanceNamespace>,
+        name: &str,
+        namespace: Vec<String>,
+        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+        params: Option<ReadParams>,
+        read_consistency_interval: Option<std::time::Duration>,
+        server_side_query_enabled: bool,
+        session: Option<Arc<lance::session::Session>>,
+    ) -> Result<Self> {
+        let mut params = params.unwrap_or_default();
+
+        // Set the session in read params
+        if let Some(sess) = session {
+            params.session(sess);
+        }
+
+        // patch the params if we have a write store wrapper
+        let params = match write_store_wrapper.clone() {
+            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
+            None => params,
+        };
+
+        // Build table_id from namespace + name
+        let mut table_id = namespace.clone();
+        table_id.push(name.to_string());
+
+        // Use DatasetBuilder::from_namespace which automatically fetches location
+        // and storage options from the namespace
+        let builder = DatasetBuilder::from_namespace(
+            namespace_client.clone(),
+            table_id,
+            false, // Don't ignore namespace storage options
+        )
+        .await
+        .map_err(|e| match e {
+            lance::Error::Namespace { source, .. } => Error::Runtime {
+                message: format!("Failed to get table info from namespace: {:?}", source),
+            },
+            source => Error::Lance { source },
+        })?;
+
+        let dataset = builder
+            .with_read_params(params)
+            .load()
+            .await
+            .map_err(|e| match e {
+                lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
+                    name: name.to_string(),
+                    source: Box::new(e),
+                },
+                source => Error::Lance { source },
+            })?;
+
+        let uri = dataset.uri().to_string();
+        let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
+        let id = Self::build_id(&namespace, name);
+
+        let stored_namespace_client = if server_side_query_enabled {
+            Some(namespace_client)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            name: name.to_string(),
+            namespace,
+            id,
+            uri,
+            dataset,
+            read_consistency_interval,
+            namespace_client: stored_namespace_client,
+        })
+    }
+
     fn get_table_name(uri: &str) -> Result<String> {
         let path = Path::new(uri);
         let name = path
@@ -1720,6 +1820,102 @@ impl NativeTable {
             namespace_client,
         )
         .await
+    }
+
+    /// Creates a new Table using a namespace client for storage options.
+    ///
+    /// This method sets up a `StorageOptionsProvider` from the namespace client,
+    /// enabling automatic credential refresh for cloud storage. The namespace
+    /// is used for:
+    /// 1. Setting up storage options provider for credential vending
+    /// 2. Optionally enabling server-side query execution
+    ///
+    /// # Arguments
+    ///
+    /// * `namespace_client` - The namespace client to use for storage options
+    /// * `uri` - The URI to the table (obtained from create_empty_table response)
+    /// * `name` - The table name
+    /// * `namespace` - The namespace path (e.g., vec!["parent", "child"])
+    /// * `batches` - RecordBatch to be saved in the database
+    /// * `write_store_wrapper` - Optional wrapper for the object store on write path
+    /// * `params` - Optional write parameters
+    /// * `read_consistency_interval` - Optional interval for read consistency
+    /// * `server_side_query_enabled` - Whether to enable server-side query execution
+    ///
+    /// # Returns
+    ///
+    /// * A [NativeTable] object.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_from_namespace(
+        namespace_client: Arc<dyn LanceNamespace>,
+        uri: &str,
+        name: &str,
+        namespace: Vec<String>,
+        batches: impl StreamingWriteSource,
+        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+        params: Option<WriteParams>,
+        read_consistency_interval: Option<std::time::Duration>,
+        server_side_query_enabled: bool,
+        session: Option<Arc<lance::session::Session>>,
+    ) -> Result<Self> {
+        // Build table_id from namespace + name for the storage options provider
+        let mut table_id = namespace.clone();
+        table_id.push(name.to_string());
+
+        // Set up storage options provider from namespace
+        let storage_options_provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
+            namespace_client.clone(),
+            table_id,
+        ));
+
+        // Start with provided params or defaults
+        let mut params = params.unwrap_or_default();
+
+        // Set the session in write params
+        if let Some(sess) = session {
+            params.session = Some(sess);
+        }
+
+        // Ensure store_params exists and set the storage options provider
+        let store_params = params
+            .store_params
+            .get_or_insert_with(ObjectStoreParams::default);
+        store_params.storage_options_provider = Some(storage_options_provider);
+
+        // Patch the params if we have a write store wrapper
+        let params = match write_store_wrapper.clone() {
+            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
+            None => params,
+        };
+
+        let insert_builder = InsertBuilder::new(uri).with_params(&params);
+        let dataset = insert_builder
+            .execute_stream(batches)
+            .await
+            .map_err(|e| match e {
+                lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
+                    name: name.to_string(),
+                },
+                source => Error::Lance { source },
+            })?;
+
+        let id = Self::build_id(&namespace, name);
+
+        let stored_namespace_client = if server_side_query_enabled {
+            Some(namespace_client)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            name: name.to_string(),
+            namespace,
+            id,
+            uri: uri.to_string(),
+            dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
+            read_consistency_interval,
+            namespace_client: stored_namespace_client,
+        })
     }
 
     async fn optimize_indices(&self, options: &OptimizeOptions) -> Result<()> {
