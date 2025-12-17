@@ -1694,7 +1694,6 @@ impl NativeTable {
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
         let id = Self::build_id(&namespace, name);
 
-        // Only store namespace_client if server-side queries are enabled
         let stored_namespace_client = if server_side_query_enabled {
             Some(namespace_client)
         } else {
@@ -1902,7 +1901,6 @@ impl NativeTable {
 
         let id = Self::build_id(&namespace, name);
 
-        // Only store namespace_client if server-side queries are enabled
         let stored_namespace_client = if server_side_query_enabled {
             Some(namespace_client)
         } else {

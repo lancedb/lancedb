@@ -182,7 +182,6 @@ impl Database for LanceNamespaceDatabase {
             }
             CreateTableMode::ExistOk(_) => {
                 if describe_result.is_ok() {
-                    // Table already exists, use open_from_namespace to open it
                     let native_table = NativeTable::open_from_namespace(
                         self.namespace.clone(),
                         &request.name,
@@ -227,8 +226,6 @@ impl Database for LanceNamespaceDatabase {
                 message: "Table location is missing from create_empty_table response".to_string(),
             })?;
 
-        // Use NativeTable::create_from_namespace which sets up the storage_options_provider
-        // for automatic credential refresh from the namespace
         let native_table = NativeTable::create_from_namespace(
             self.namespace.clone(),
             &location,
@@ -247,9 +244,6 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
-        // Use NativeTable::open_from_namespace which leverages DatasetBuilder::from_namespace
-        // to automatically fetch table location and storage options from the namespace.
-        // This eliminates the need to pre-fetch and merge storage options.
         let native_table = NativeTable::open_from_namespace(
             self.namespace.clone(),
             &request.name,
