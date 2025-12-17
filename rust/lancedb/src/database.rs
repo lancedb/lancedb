@@ -296,4 +296,10 @@ pub trait Database:
     /// Drop all tables in the database
     async fn drop_all_tables(&self, namespace: &[String]) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Get the equivalent namespace client of this database
+    /// For LanceNamespaceDatabase, it is the underlying LanceNamespace.
+    /// For ListingDatabase, it is the equivalent DirectoryNamespace.
+    /// For RemoteDatabase, it is the equivalent RestNamespace.
+    async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>>;
 }

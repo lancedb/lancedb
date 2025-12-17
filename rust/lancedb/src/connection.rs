@@ -804,6 +804,14 @@ impl Connection {
         self.internal.describe_namespace(request).await
     }
 
+    /// Get the equivalent namespace client in the database of this connection.
+    /// For LanceNamespaceDatabase, it is the underlying LanceNamespace.
+    /// For ListingDatabase, it is the equivalent DirectoryNamespace.
+    /// For RemoteDatabase, it is the equivalent RestNamespace.
+    pub async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
+        self.internal.namespace_client().await
+    }
+
     /// List tables with pagination support
     pub async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         self.internal.list_tables(request).await

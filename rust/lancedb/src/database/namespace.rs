@@ -425,6 +425,10 @@ impl Database for LanceNamespaceDatabase {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>> {
+        Ok(self.namespace.clone())
+    }
 }
 
 #[cfg(test)]

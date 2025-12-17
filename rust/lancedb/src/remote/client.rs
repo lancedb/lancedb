@@ -232,6 +232,38 @@ impl HttpSend for Sender {
     }
 }
 
+/// Parsed components from a database URL (db://...)
+pub struct ParsedDbUrl {
+    pub db_name: String,
+    pub db_prefix: Option<String>,
+}
+
+/// Parse a database URL and extract the database name and optional prefix.
+///
+/// Expected format: `db://db_name` or `db://db_name/prefix`
+pub fn parse_db_url(db_url: &str) -> Result<ParsedDbUrl> {
+    let parsed_url = url::Url::parse(db_url).map_err(|err| Error::InvalidInput {
+        message: format!("db_url is not a valid URL. '{db_url}'. Error: {err}"),
+    })?;
+    debug_assert_eq!(parsed_url.scheme(), "db");
+    if !parsed_url.has_host() {
+        return Err(Error::InvalidInput {
+            message: format!("Invalid database URL (missing host) '{}'", db_url),
+        });
+    }
+    let db_name = parsed_url.host_str().unwrap().to_string();
+    let db_prefix = {
+        let prefix = parsed_url.path().trim_start_matches('/');
+        if prefix.is_empty() {
+            None
+        } else {
+            Some(prefix.to_string())
+        }
+    };
+
+    Ok(ParsedDbUrl { db_name, db_prefix })
+}
+
 impl RestfulLanceDbClient<Sender> {
     fn get_timeout(passed: Option<Duration>, env_var: &str) -> Result<Option<Duration>> {
         if let Some(passed) = passed {
@@ -250,32 +282,12 @@ impl RestfulLanceDbClient<Sender> {
     }
 
     pub fn try_new(
-        db_url: &str,
-        api_key: &str,
+        parsed_url: &ParsedDbUrl,
         region: &str,
         host_override: Option<String>,
+        default_headers: HeaderMap,
         client_config: ClientConfig,
-        options: &RemoteOptions,
     ) -> Result<Self> {
-        let parsed_url = url::Url::parse(db_url).map_err(|err| Error::InvalidInput {
-            message: format!("db_url is not a valid URL. '{db_url}'. Error: {err}"),
-        })?;
-        debug_assert_eq!(parsed_url.scheme(), "db");
-        if !parsed_url.has_host() {
-            return Err(Error::InvalidInput {
-                message: format!("Invalid database URL (missing host) '{}'", db_url),
-            });
-        }
-        let db_name = parsed_url.host_str().unwrap();
-        let db_prefix = {
-            let prefix = parsed_url.path().trim_start_matches('/');
-            if prefix.is_empty() {
-                None
-            } else {
-                Some(prefix)
-            }
-        };
-
         // Get the timeouts
         let timeout =
             Self::get_timeout(client_config.timeout_config.timeout, "LANCE_CLIENT_TIMEOUT")?;
@@ -348,15 +360,7 @@ impl RestfulLanceDbClient<Sender> {
         }
 
         let client = client_builder
-            .default_headers(Self::default_headers(
-                api_key,
-                region,
-                db_name,
-                host_override.is_some(),
-                options,
-                db_prefix,
-                &client_config,
-            )?)
+            .default_headers(default_headers)
             .user_agent(client_config.user_agent)
             .build()
             .map_err(|err| Error::Other {
@@ -366,7 +370,7 @@ impl RestfulLanceDbClient<Sender> {
 
         let host = match host_override {
             Some(host_override) => host_override,
-            None => format!("https://{}.{}.api.lancedb.com", db_name, region),
+            None => format!("https://{}.{}.api.lancedb.com", parsed_url.db_name, region),
         };
         debug!("Created client for host: {}", host);
         let retry_config = client_config.retry_config.clone().try_into()?;
@@ -389,7 +393,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         &self.host
     }
 
-    fn default_headers(
+    pub fn default_headers(
         api_key: &str,
         region: &str,
         db_name: &str,

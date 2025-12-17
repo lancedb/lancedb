@@ -1043,6 +1043,24 @@ impl Database for ListingDatabase {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
+        // Create a DirectoryNamespace pointing to the same root with the same storage options
+        let mut builder = lance_namespace_impls::DirectoryNamespaceBuilder::new(&self.uri);
+
+        // Add storage options
+        if !self.storage_options.is_empty() {
+            builder = builder.storage_options(self.storage_options.clone());
+        }
+
+        // Use the same session
+        builder = builder.session(self.session.clone());
+
+        let namespace = builder.build().await.map_err(|e| Error::Runtime {
+            message: format!("Failed to create namespace client: {}", e),
+        })?;
+        Ok(Arc::new(namespace) as Arc<dyn lance_namespace::LanceNamespace>)
+    }
 }
 
 #[cfg(test)]
@@ -2026,5 +2044,64 @@ mod tests {
 
         let db_options = ListingDatabaseOptions::parse_from_map(&options).unwrap();
         assert_eq!(db_options.new_table_config.enable_stable_row_ids, None);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_client() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create some tables first
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        db.create_table(CreateTableRequest {
+            name: "table1".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema.clone())),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        db.create_table(CreateTableRequest {
+            name: "table2".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        // Get the namespace client
+        let namespace_client = db.namespace_client().await;
+        assert!(namespace_client.is_ok());
+        let namespace_client = namespace_client.unwrap();
+
+        // Verify the namespace client can list the tables we created
+        // Use empty vec for root namespace
+        let list_result = namespace_client
+            .list_tables(lance_namespace::models::ListTablesRequest {
+                id: Some(vec![]),
+                ..Default::default()
+            })
+            .await;
+        assert!(
+            list_result.is_ok(),
+            "list_tables failed: {:?}",
+            list_result.err()
+        );
+
+        let tables = list_result.unwrap().tables;
+        assert_eq!(tables.len(), 2);
+        assert!(tables.contains(&"table1".to_string()));
+        assert!(tables.contains(&"table2".to_string()));
     }
 }
