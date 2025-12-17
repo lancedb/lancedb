@@ -204,28 +204,38 @@ impl RemoteDatabase {
         client_config: ClientConfig,
         options: RemoteOptions,
     ) -> Result<Self> {
-        let client = RestfulLanceDbClient::try_new(
-            uri,
+        let parsed = super::client::parse_db_url(uri)?;
+        let header_map = RestfulLanceDbClient::<Sender>::default_headers(
             api_key,
             region,
-            host_override,
-            client_config.clone(),
+            &parsed.db_name,
+            host_override.is_some(),
             &options,
+            parsed.db_prefix.as_deref(),
+            &client_config,
+        )?;
+
+        let namespace_headers: HashMap<String, String> = header_map
+            .iter()
+            .filter_map(|(k, v)| {
+                v.to_str()
+                    .ok()
+                    .map(|val| (k.as_str().to_string(), val.to_string()))
+            })
+            .collect();
+
+        let client = RestfulLanceDbClient::try_new(
+            &parsed,
+            region,
+            host_override,
+            header_map,
+            client_config.clone(),
         )?;
 
         let table_cache = Cache::builder()
             .time_to_live(std::time::Duration::from_secs(300))
             .max_capacity(10_000)
             .build();
-
-        // Build headers for namespace client
-        let mut namespace_headers = HashMap::new();
-        namespace_headers.insert("x-api-key".to_string(), api_key.to_string());
-
-        // Add extra headers from client config
-        for (key, value) in &client_config.extra_headers {
-            namespace_headers.insert(key.clone(), value.clone());
-        }
 
         Ok(Self {
             client,
@@ -752,6 +762,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         // Create a RestNamespace pointing to the same remote host with the same authentication headers
         let mut builder = lance_namespace_impls::RestNamespaceBuilder::new(self.client.host())
             .delimiter(&self.client.id_delimiter)
+            // TODO: support header provider
             .headers(self.namespace_headers.clone());
 
         // Apply mTLS configuration if present
