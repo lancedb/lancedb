@@ -693,7 +693,7 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    def to_polars(self, **kwargs) -> "pl.DataFrame:
+    def to_polars(self, **kwargs) -> "pl.DataFrame":
         """Return the table as a polars.DataFrame.
 
         Returns
