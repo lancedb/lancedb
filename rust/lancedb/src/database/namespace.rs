@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsProvider};
 use lance_namespace::{
     models::{
         CreateEmptyTableRequest, CreateNamespaceRequest, CreateNamespaceResponse,
@@ -19,13 +18,13 @@ use lance_namespace::{
 };
 use lance_namespace_impls::ConnectBuilder;
 
-use crate::connection::ConnectRequest;
 use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
+use crate::table::NativeTable;
 
 use super::{
-    listing::ListingDatabase, BaseTable, CloneTableRequest, CreateTableMode,
-    CreateTableRequest as DbCreateTableRequest, Database, OpenTableRequest, TableNamesRequest,
+    BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest as DbCreateTableRequest,
+    Database, OpenTableRequest, TableNamesRequest,
 };
 
 /// A database implementation that uses lance-namespace for table management
@@ -90,51 +89,6 @@ impl std::fmt::Display for LanceNamespaceDatabase {
     }
 }
 
-impl LanceNamespaceDatabase {
-    /// Create a temporary listing database for the given location
-    ///
-    /// Merges storage options with priority: connection < user < namespace
-    async fn create_listing_database(
-        &self,
-        location: &str,
-        table_id: Vec<String>,
-        user_storage_options: Option<&HashMap<String, String>>,
-        response_storage_options: Option<&HashMap<String, String>>,
-    ) -> Result<ListingDatabase> {
-        // Merge storage options: connection < user < namespace
-        let mut merged_storage_options = self.storage_options.clone();
-        if let Some(opts) = user_storage_options {
-            merged_storage_options.extend(opts.clone());
-        }
-        if let Some(opts) = response_storage_options {
-            merged_storage_options.extend(opts.clone());
-        }
-
-        let request = ConnectRequest {
-            uri: location.to_string(),
-            #[cfg(feature = "remote")]
-            client_config: Default::default(),
-            options: merged_storage_options,
-            read_consistency_interval: self.read_consistency_interval,
-            session: self.session.clone(),
-        };
-
-        let mut listing_db = ListingDatabase::connect_with_options(&request).await?;
-
-        // Create storage options provider only if namespace returned storage options
-        // (not just user-provided options)
-        if response_storage_options.is_some() {
-            let provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
-                self.namespace.clone(),
-                table_id,
-            )) as Arc<dyn StorageOptionsProvider>;
-            listing_db.storage_options_provider = Some(provider);
-        }
-
-        Ok(listing_db)
-    }
-}
-
 #[async_trait]
 impl Database for LanceNamespaceDatabase {
     fn uri(&self) -> &str {
@@ -195,14 +149,6 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
-        // Extract user-provided storage options from request
-        let user_storage_options = request
-            .write_options
-            .lance_write_params
-            .as_ref()
-            .and_then(|lwp| lwp.store_params.as_ref())
-            .and_then(|sp| sp.storage_options.as_ref());
-
         let mut table_id = request.namespace.clone();
         table_id.push(request.name.clone());
         let describe_request = DescribeTableRequest {
@@ -235,34 +181,21 @@ impl Database for LanceNamespaceDatabase {
                 }
             }
             CreateTableMode::ExistOk(_) => {
-                if let Ok(response) = describe_result {
-                    let location = response.location.ok_or_else(|| Error::Runtime {
-                        message: "Table location is missing from namespace response".to_string(),
-                    })?;
+                if describe_result.is_ok() {
+                    // Table already exists, use open_from_namespace to open it
+                    let native_table = NativeTable::open_from_namespace(
+                        self.namespace.clone(),
+                        &request.name,
+                        request.namespace.clone(),
+                        None,
+                        None,
+                        self.read_consistency_interval,
+                        self.server_side_query_enabled,
+                        self.session.clone(),
+                    )
+                    .await?;
 
-                    let listing_db = self
-                        .create_listing_database(
-                            &location,
-                            table_id.clone(),
-                            user_storage_options,
-                            response.storage_options.as_ref(),
-                        )
-                        .await?;
-
-                    let namespace_client = self
-                        .server_side_query_enabled
-                        .then(|| self.namespace.clone());
-
-                    return listing_db
-                        .open_table(OpenTableRequest {
-                            name: request.name.clone(),
-                            namespace: request.namespace.clone(),
-                            index_cache_size: None,
-                            lance_read_params: None,
-                            location: Some(location),
-                            namespace_client,
-                        })
-                        .await;
+                    return Ok(Arc::new(native_table));
                 }
             }
         }
@@ -294,82 +227,42 @@ impl Database for LanceNamespaceDatabase {
                 message: "Table location is missing from create_empty_table response".to_string(),
             })?;
 
-        let listing_db = self
-            .create_listing_database(
-                &location,
-                table_id.clone(),
-                user_storage_options,
-                create_empty_response.storage_options.as_ref(),
-            )
-            .await?;
+        // Use NativeTable::create_from_namespace which sets up the storage_options_provider
+        // for automatic credential refresh from the namespace
+        let native_table = NativeTable::create_from_namespace(
+            self.namespace.clone(),
+            &location,
+            &request.name,
+            request.namespace.clone(),
+            request.data,
+            None, // write_store_wrapper not used for namespace connections
+            request.write_options.lance_write_params,
+            self.read_consistency_interval,
+            self.server_side_query_enabled,
+            self.session.clone(),
+        )
+        .await?;
 
-        let namespace_client = self
-            .server_side_query_enabled
-            .then(|| self.namespace.clone());
-
-        let create_request = DbCreateTableRequest {
-            name: request.name,
-            namespace: request.namespace,
-            data: request.data,
-            mode: request.mode,
-            write_options: request.write_options,
-            location: Some(location),
-            namespace_client,
-        };
-
-        listing_db.create_table(create_request).await
+        Ok(Arc::new(native_table))
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
-        // Extract user-provided storage options from request
-        let user_storage_options = request
-            .lance_read_params
-            .as_ref()
-            .and_then(|lrp| lrp.store_options.as_ref())
-            .and_then(|so| so.storage_options.as_ref());
+        // Use NativeTable::open_from_namespace which leverages DatasetBuilder::from_namespace
+        // to automatically fetch table location and storage options from the namespace.
+        // This eliminates the need to pre-fetch and merge storage options.
+        let native_table = NativeTable::open_from_namespace(
+            self.namespace.clone(),
+            &request.name,
+            request.namespace.clone(),
+            None, // write_store_wrapper not used for namespace connections
+            request.lance_read_params,
+            self.read_consistency_interval,
+            self.server_side_query_enabled,
+            self.session.clone(),
+        )
+        .await?;
 
-        let mut table_id = request.namespace.clone();
-        table_id.push(request.name.clone());
-
-        let describe_request = DescribeTableRequest {
-            id: Some(table_id.clone()),
-            version: None,
-        };
-        let response = self
-            .namespace
-            .describe_table(describe_request)
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to describe table: {}", e),
-            })?;
-
-        let location = response.location.ok_or_else(|| Error::Runtime {
-            message: "Table location is missing from namespace response".to_string(),
-        })?;
-
-        let listing_db = self
-            .create_listing_database(
-                &location,
-                table_id.clone(),
-                user_storage_options,
-                response.storage_options.as_ref(),
-            )
-            .await?;
-
-        let namespace_client = self
-            .server_side_query_enabled
-            .then(|| self.namespace.clone());
-
-        let open_request = OpenTableRequest {
-            name: request.name.clone(),
-            namespace: request.namespace.clone(),
-            index_cache_size: request.index_cache_size,
-            lance_read_params: request.lance_read_params,
-            location: Some(location),
-            namespace_client,
-        };
-
-        listing_db.open_table(open_request).await
+        Ok(Arc::new(native_table))
     }
 
     async fn clone_table(&self, _request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
