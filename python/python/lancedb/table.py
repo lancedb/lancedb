@@ -684,6 +684,24 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def to_lance(self, **kwargs) -> lance.LanceDataset:
+        """Return the table as a lance.LanceDataset.
+
+        Returns
+        -------
+        lance.LanceDataset
+        """
+        raise NotImplementedError
+
+    def to_polars(self, **kwargs) -> "pl.DataFrame:
+        """Return the table as a polars.DataFrame.
+
+        Returns
+        -------
+        polars.DataFrame
+        """
+        raise NotImplementedError
+
     def create_index(
         self,
         metric="l2",
