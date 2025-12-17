@@ -804,10 +804,10 @@ impl Connection {
         self.internal.describe_namespace(request).await
     }
 
-    /// Get the underlying namespace client.
-    ///
-    /// Returns a namespace client that can be used to access the full lance-namespace API
-    /// for advanced operations.
+    /// Get the equivalent namespace client in the database of this connection.
+    /// For LanceNamespaceDatabase, it is the underlying LanceNamespace.
+    /// For ListingDatabase, it is the equivalent DirectoryNamespace.
+    /// For RemoteDatabase, it is the equivalent RestNamespace.
     pub async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
         self.internal.namespace_client().await
     }
