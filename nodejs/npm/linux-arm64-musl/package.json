@@ -1,6 +1,6 @@
 {
 	"name": "@lancedb/lancedb-linux-arm64-musl",
-	"version": "0.23.1-beta.0",
+	"version": "0.23.1-beta.1",
 	"os": ["linux"],
 	"cpu": ["arm64"],
 	"main": "lancedb.linux-arm64-musl.node",
