@@ -281,6 +281,7 @@ class HnswPq:
     m: int = 20
     ef_construction: int = 300
     target_partition_size: Optional[int] = None
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -386,6 +387,7 @@ class HnswSq:
     m: int = 20
     ef_construction: int = 300
     target_partition_size: Optional[int] = None
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -579,6 +581,7 @@ class IvfFlat:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -609,6 +612,7 @@ class IvfSq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -739,6 +743,7 @@ class IvfPq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -792,6 +797,7 @@ class IvfRq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
+    accelerator: Optional[str] = None
 
 
 __all__ = [
