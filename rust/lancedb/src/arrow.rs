@@ -10,7 +10,7 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use lance_datagen::{BatchCount, BatchGeneratorBuilder, RowCount};
 
 #[cfg(feature = "polars")]
-use {crate::polars_arrow_convertors, polars::frame::ArrowChunk, polars::prelude::DataFrame};
+use {crate::polars_arrow_convertors, polars::prelude::DataFrame};
 
 use crate::{error::Result, Error};
 
@@ -185,7 +185,7 @@ impl LanceDbDatagenExt for BatchGeneratorBuilder {
 #[cfg(feature = "polars")]
 /// An iterator of record batches formed from a Polars DataFrame.
 pub struct PolarsDataFrameRecordBatchReader {
-    chunks: std::vec::IntoIter<ArrowChunk>,
+    chunks: std::vec::IntoIter<polars_arrow::record_batch::RecordBatch>,
     arrow_schema: Arc<arrow_schema::Schema>,
 }
 
@@ -200,8 +200,8 @@ impl PolarsDataFrameRecordBatchReader {
             polars_arrow_convertors::convert_polars_df_schema_to_arrow_rb_schema(df.schema())?;
         Ok(Self {
             chunks: df
-                .iter_chunks(polars_arrow_convertors::POLARS_ARROW_FLAVOR)
-                .collect::<Vec<ArrowChunk>>()
+                .iter_chunks(polars_arrow_convertors::COMPAT_LEVEL, false)
+                .collect::<Vec<polars_arrow::record_batch::RecordBatch>>()
                 .into_iter(),
             arrow_schema,
         })
@@ -251,7 +251,7 @@ impl IntoPolars for SendableRecordBatchStream {
     async fn into_polars(mut self) -> Result<DataFrame> {
         let polars_schema =
             polars_arrow_convertors::convert_arrow_rb_schema_to_polars_df_schema(&self.schema())?;
-        let mut acc_df: DataFrame = DataFrame::from(&polars_schema);
+        let mut acc_df: DataFrame = DataFrame::empty();
         while let Some(record_batch) = self.next().await {
             let new_df = polars_arrow_convertors::convert_arrow_rb_to_polars_df(
                 &record_batch?,
@@ -269,17 +269,17 @@ mod tests {
     use crate::arrow::{
         IntoArrow, IntoPolars, PolarsDataFrameRecordBatchReader, SimpleRecordBatchStream,
     };
-    use polars::prelude::{DataFrame, NamedFrom, Series};
+    use polars::prelude::{DataFrame, IntoColumn, NamedFrom, Series};
 
     fn get_record_batch_reader_from_polars() -> Box<dyn arrow_array::RecordBatchReader + Send> {
-        let mut string_series = Series::new("string", &["ab"]);
-        let mut int_series = Series::new("int", &[1]);
-        let mut float_series = Series::new("float", &[1.0]);
+        let mut string_series = Series::new("string".into(), &["ab"]).into_column();
+        let mut int_series = Series::new("int".into(), &[1]).into_column();
+        let mut float_series = Series::new("float".into(), &[1.0]).into_column();
         let df1 = DataFrame::new(vec![string_series, int_series, float_series]).unwrap();
 
-        string_series = Series::new("string", &["bc"]);
-        int_series = Series::new("int", &[2]);
-        float_series = Series::new("float", &[2.0]);
+        string_series = Series::new("string".into(), &["bc"]).into_column();
+        int_series = Series::new("int".into(), &[2]).into_column();
+        float_series = Series::new("float".into(), &[2.0]).into_column();
         let df2 = DataFrame::new(vec![string_series, int_series, float_series]).unwrap();
 
         PolarsDataFrameRecordBatchReader::new(df1.vstack(&df2).unwrap())
@@ -301,7 +301,7 @@ mod tests {
                 .map(|field| (field.name().as_str(), field.data_type()))
                 .collect::<Vec<_>>(),
             vec![
-                ("string", &arrow_schema::DataType::LargeUtf8),
+                ("string", &arrow_schema::DataType::Utf8View),
                 ("int", &arrow_schema::DataType::Int32),
                 ("float", &arrow_schema::DataType::Float64)
             ]
@@ -332,19 +332,19 @@ mod tests {
         let df = stream.into_polars().await.unwrap();
 
         // Test number of chunks and rows
-        assert_eq!(df.n_chunks(), 2);
+        assert_eq!(df.max_n_chunks(), 2);
         assert_eq!(df.height(), 2);
 
         // Test schema conversion
         assert_eq!(
             df.schema()
-                .into_iter()
+                .iter()
                 .map(|(name, datatype)| (name.to_string(), datatype))
                 .collect::<Vec<_>>(),
             vec![
-                ("string".to_string(), polars::prelude::DataType::String),
-                ("int".to_owned(), polars::prelude::DataType::Int32),
-                ("float".to_owned(), polars::prelude::DataType::Float64)
+                ("string".to_string(), &polars::prelude::DataType::String),
+                ("int".to_owned(), &polars::prelude::DataType::Int32),
+                ("float".to_owned(), &polars::prelude::DataType::Float64)
             ]
         );
     }
