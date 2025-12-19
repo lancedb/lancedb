@@ -215,11 +215,12 @@ def test_reject_legacy_tantivy_index(table):
 
 @pytest.mark.parametrize("with_position", [True, False])
 def test_create_inverted_index(table, with_position):
-    table.create_fts_index(
-        "text",
-        with_position=with_position,
-        name="custom_fts_index",
-    )
+    with pytest.warns(DeprecationWarning, match="create_fts_index"):
+        table.create_fts_index(
+            "text",
+            with_position=with_position,
+            name="custom_fts_index",
+        )
     indices = table.list_indices()
     fts_indices = [i for i in indices if i.index_type == "FTS"]
     assert any(i.name == "custom_fts_index" for i in fts_indices)

@@ -168,11 +168,22 @@ if TYPE_CHECKING:
         VectorIndexType,
         ScalarIndexType,
         BaseTokenizerType,
+        DistanceType,
     )
 
 # Type alias for index configuration objects
 IndexConfigType = Union[
-    IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS
+    IvfFlat,
+    IvfPq,
+    IvfSq,
+    IvfRq,
+    HnswFlat,
+    HnswPq,
+    HnswSq,
+    BTree,
+    Bitmap,
+    LabelList,
+    FTS,
 ]
 
 # Known distance metrics for legacy API detection
@@ -803,24 +814,62 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    # New unified API overload
+    @overload
     def create_index(
         self,
-        column_or_metric: str = "l2",
+        column: str,
+        /,
+        *,
+        config: IndexConfigType,
+        replace: bool = ...,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
+    # Legacy API overload (deprecated)
+    @overload
+    def create_index(
+        self,
+        metric: Literal["l2", "cosine", "dot", "hamming"] = ...,
+        num_partitions: Optional[int] = ...,
+        num_sub_vectors: Optional[int] = ...,
+        vector_column_name: str = ...,
+        replace: bool = ...,
+        accelerator: Optional[str] = ...,
+        index_cache_size: Optional[int] = ...,
+        *,
+        index_type: VectorIndexType = ...,
+        wait_timeout: Optional[timedelta] = ...,
+        num_bits: int = ...,
+        max_iterations: int = ...,
+        sample_rate: int = ...,
+        m: int = ...,
+        ef_construction: int = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+        target_partition_size: Optional[int] = ...,
+    ) -> None: ...
+
+    def create_index(
+        self,
+        metric: DistanceType = "l2",
         num_partitions: Optional[int] = None,
         num_sub_vectors: Optional[int] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
-        num_bits: int = 8,
+        *,
         index_type: VectorIndexType = "IVF_PQ",
+        wait_timeout: Optional[timedelta] = None,
+        num_bits: int = 8,
         max_iterations: int = 50,
         sample_rate: int = 256,
         m: int = 20,
         ef_construction: int = 300,
-        *,
         config: Optional[IndexConfigType] = None,
-        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
         target_partition_size: Optional[int] = None,
@@ -828,25 +877,15 @@ class Table(ABC):
         """Create an index on a column.
 
         This method supports both the new unified API and the legacy API
-        for backwards compatibility.
-
-        New API (recommended)
-        ---------------------
-        Use the ``config`` parameter to specify the index type:
-
-        >>> table.create_index("vector", config=IvfPq(distance_type="l2"))
-        >>> table.create_index("category", config=BTree())
-        >>> table.create_index("content", config=FTS())
-
-        Legacy API (deprecated)
-        -----------------------
-        The old signature with ``metric`` as the first argument is deprecated:
-
-        >>> table.create_index("l2", vector_column_name="vector")  # deprecated
+        for backwards compatibility. The new API takes the column name as the
+        first positional argument and an index configuration object via
+        ``config``; the legacy API takes the distance metric as the first
+        argument plus separate ``vector_column_name`` / ``num_partitions`` /
+        etc. parameters, and emits a ``DeprecationWarning``.
 
         Parameters
         ----------
-        column_or_metric : str
+        metric : str
             For new API: the column name to index.
             For legacy API: the distance metric ("l2", "cosine", "dot", "hamming").
         config : IndexConfigType, optional
@@ -861,6 +900,22 @@ class Table(ABC):
             Custom name for the index.
         train : bool, default True
             Whether to train the index with existing data.
+
+        Examples
+        --------
+        New API (recommended):
+
+        >>> table.create_index(  # doctest: +SKIP
+        ...     "vector", config=IvfPq(distance_type="l2")
+        ... )
+        >>> table.create_index("category", config=BTree())  # doctest: +SKIP
+        >>> table.create_index("content", config=FTS())  # doctest: +SKIP
+
+        Legacy API (deprecated):
+
+        >>> table.create_index(  # doctest: +SKIP
+        ...     "l2", vector_column_name="vector"
+        ... )
         """
         raise NotImplementedError
 
@@ -2234,9 +2289,49 @@ class LanceTable(Table):
             dataset, allow_pyarrow_filter=False, batch_size=batch_size
         )
 
+    # New unified API overload
+    @overload
     def create_index(
         self,
-        column_or_metric: str = "l2",
+        column: str,
+        /,
+        *,
+        config: IndexConfigType,
+        replace: bool = ...,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
+    # Legacy API overload (deprecated)
+    @overload
+    def create_index(
+        self,
+        metric: Literal["l2", "cosine", "dot", "hamming"] = ...,
+        num_partitions: Optional[int] = ...,
+        num_sub_vectors: Optional[int] = ...,
+        vector_column_name: str = ...,
+        replace: bool = ...,
+        accelerator: Optional[str] = ...,
+        index_cache_size: Optional[int] = ...,
+        num_bits: int = ...,
+        index_type: Literal[
+            "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = ...,
+        max_iterations: int = ...,
+        sample_rate: int = ...,
+        m: int = ...,
+        ef_construction: int = ...,
+        *,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+        target_partition_size: Optional[int] = ...,
+    ) -> None: ...
+
+    def create_index(
+        self,
+        metric: str = "l2",
         num_partitions: Optional[int] = None,
         num_sub_vectors: Optional[int] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
@@ -2267,25 +2362,15 @@ class LanceTable(Table):
         """Create an index on a column.
 
         This method supports both the new unified API and the legacy API
-        for backwards compatibility.
-
-        New API (recommended)
-        ---------------------
-        Use the ``config`` parameter to specify the index type:
-
-        >>> table.create_index("vector", config=IvfPq(distance_type="l2"))
-        >>> table.create_index("category", config=BTree())
-        >>> table.create_index("content", config=FTS())
-
-        Legacy API (deprecated)
-        -----------------------
-        The old signature with ``metric`` as the first argument is deprecated:
-
-        >>> table.create_index("l2", vector_column_name="vector")  # deprecated
+        for backwards compatibility. The new API takes the column name as the
+        first positional argument and an index configuration object via
+        ``config``; the legacy API takes the distance metric as the first
+        argument plus separate ``vector_column_name`` / ``num_partitions`` /
+        etc. parameters, and emits a ``DeprecationWarning``.
 
         Parameters
         ----------
-        column_or_metric : str
+        metric : str
             For new API: the column name to index.
             For legacy API: the distance metric ("l2", "cosine", "dot", "hamming").
         config : IndexConfigType, optional
@@ -2300,10 +2385,26 @@ class LanceTable(Table):
             Custom name for the index.
         train : bool, default True
             Whether to train the index with existing data.
+
+        Examples
+        --------
+        New API (recommended):
+
+        >>> table.create_index(  # doctest: +SKIP
+        ...     "vector", config=IvfPq(distance_type="l2")
+        ... )
+        >>> table.create_index("category", config=BTree())  # doctest: +SKIP
+        >>> table.create_index("content", config=FTS())  # doctest: +SKIP
+
+        Legacy API (deprecated):
+
+        >>> table.create_index(  # doctest: +SKIP
+        ...     "l2", vector_column_name="vector"
+        ... )
         """
         # Detect whether this is a legacy API call
         is_legacy = self._is_legacy_create_index_call(
-            column_or_metric,
+            metric,
             config,
             num_partitions,
             num_sub_vectors,
@@ -2325,8 +2426,7 @@ class LanceTable(Table):
                 stacklevel=2,
             )
 
-            # Legacy API: column_or_metric is the distance metric
-            metric = column_or_metric
+            # Legacy API: first arg is the distance metric
             column = vector_column_name
 
             # Build config from legacy parameters
@@ -2363,8 +2463,8 @@ class LanceTable(Table):
                 self.checkout_latest()
                 return
         else:
-            # New API: column_or_metric is the column name
-            column = column_or_metric
+            # New API: metric is the column name
+            column = metric
 
             # Check if config has accelerator set and dispatch to pylance
             if config is not None and hasattr(config, "accelerator"):
@@ -2427,7 +2527,10 @@ class LanceTable(Table):
             return False
 
         # If old-style parameters were explicitly set, it's legacy
-        if any([num_partitions, num_sub_vectors, accelerator, index_cache_size]):
+        if any(
+            x is not None
+            for x in (num_partitions, num_sub_vectors, accelerator, index_cache_size)
+        ):
             return True
 
         # If vector_column_name differs from default, it's legacy

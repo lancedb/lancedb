@@ -5,7 +5,17 @@ from datetime import timedelta
 import deprecation
 import logging
 from functools import cached_property
-from typing import Any, Callable, Dict, Iterable, List, Optional, Union, Literal
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Union,
+    Literal,
+    overload,
+)
 import warnings
 
 from lancedb import __version__
@@ -229,53 +239,92 @@ class RemoteTable(Table):
             )
         )
 
+    # New unified API overload
+    @overload
     def create_index(
         self,
-        column_or_metric: str = "l2",
-        num_partitions: Optional[int] = None,
-        num_sub_vectors: Optional[int] = None,
-        vector_column_name: str = VECTOR_COLUMN_NAME,
-        replace: Optional[bool] = None,
-        accelerator: Optional[str] = None,
-        index_cache_size: Optional[int] = None,
-        num_bits: int = 8,
+        column: str,
+        /,
+        *,
+        config: IndexConfigType,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
+    # Legacy API overload (deprecated)
+    @overload
+    def create_index(
+        self,
+        metric: Literal["l2", "cosine", "dot", "hamming"] = ...,
+        vector_column_name: str = ...,
+        index_cache_size: Optional[int] = ...,
+        num_partitions: Optional[int] = ...,
+        num_sub_vectors: Optional[int] = ...,
+        replace: Optional[bool] = ...,
+        accelerator: Optional[str] = ...,
         index_type: Literal[
             "VECTOR", "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
-        ] = "IVF_PQ",
+        ] = ...,
+        wait_timeout: Optional[timedelta] = ...,
         *,
-        config: Optional[IndexConfigType] = None,
+        num_bits: int = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
+    def create_index(
+        self,
+        metric: str = "l2",
+        vector_column_name: str = VECTOR_COLUMN_NAME,
+        index_cache_size: Optional[int] = None,
+        num_partitions: Optional[int] = None,
+        num_sub_vectors: Optional[int] = None,
+        replace: Optional[bool] = None,
+        accelerator: Optional[str] = None,
+        index_type="vector",
         wait_timeout: Optional[timedelta] = None,
+        *,
+        num_bits: int = 8,
+        config: Optional[IndexConfigType] = None,
         name: Optional[str] = None,
         train: bool = True,
     ):
         """Create an index on a column.
 
         This method supports both the new unified API and the legacy API
-        for backwards compatibility.
+        for backwards compatibility. The new API takes the column name as the
+        first positional argument and an index configuration object via
+        ``config``; the legacy API takes the distance metric as the first
+        argument plus separate ``vector_column_name`` / ``num_partitions`` /
+        etc. parameters, and emits a ``DeprecationWarning``.
 
-        New API (recommended)
-        ---------------------
-        Use the ``config`` parameter to specify the index type:
+        Examples
+        --------
+        New API (recommended):
 
-        >>> table.create_index("vector", config=IvfPq(distance_type="l2"))
-        >>> table.create_index("category", config=BTree())
-        >>> table.create_index("content", config=FTS())
+        >>> table.create_index(  # doctest: +SKIP
+        ...     "vector", config=IvfPq(distance_type="l2")
+        ... )
+        >>> table.create_index("category", config=BTree())  # doctest: +SKIP
+        >>> table.create_index("content", config=FTS())  # doctest: +SKIP
 
-        Legacy API (deprecated)
-        -----------------------
-        The old signature with ``metric`` as the first argument is deprecated:
+        Legacy API (deprecated):
 
-        >>> table.create_index("l2", vector_column_name="vector")  # deprecated
+        >>> table.create_index(  # doctest: +SKIP
+        ...     "l2", vector_column_name="vector"
+        ... )
         """
         # Detect whether this is a legacy API call
         is_legacy = self._is_legacy_create_index_call(
-            column_or_metric,
+            metric,
             config,
             num_partitions,
             num_sub_vectors,
             vector_column_name,
             accelerator,
             index_cache_size,
+            replace,
         )
 
         if is_legacy:
@@ -291,18 +340,17 @@ class RemoteTable(Table):
                 stacklevel=2,
             )
 
-            metric = column_or_metric
             column = vector_column_name
 
             if accelerator is not None:
                 logging.warning(
-                    "GPU accelerator is not yet supported on LanceDB cloud. "
-                    "If you have 100M+ vectors to index, "
+                    "GPU accelerator is not yet supported on LanceDB cloud."
+                    "If you have 100M+ vectors to index,"
                     "please contact us at contact@lancedb.com"
                 )
             if replace is not None:
                 logging.warning(
-                    "replace is not supported on LanceDB cloud. "
+                    "replace is not supported on LanceDB cloud."
                     "Existing indexes will always be replaced."
                 )
 
@@ -324,25 +372,23 @@ class RemoteTable(Table):
                 config = IvfSq(distance_type=metric, num_partitions=num_partitions)
             elif idx_type == "IVF_HNSW_PQ":
                 raise ValueError(
-                    "IVF_HNSW_PQ is not supported on LanceDB cloud. "
+                    "IVF_HNSW_PQ is not supported on LanceDB cloud."
                     "Please use IVF_HNSW_SQ instead."
                 )
             elif idx_type == "IVF_HNSW_SQ":
                 config = HnswSq(distance_type=metric, num_partitions=num_partitions)
             elif idx_type == "IVF_HNSW_FLAT":
-                config = HnswFlat(
-                    distance_type=metric, num_partitions=num_partitions
-                )
+                config = HnswFlat(distance_type=metric, num_partitions=num_partitions)
             elif idx_type == "IVF_FLAT":
                 config = IvfFlat(distance_type=metric, num_partitions=num_partitions)
             else:
                 raise ValueError(
-                    f"Unknown vector index type: {idx_type}. Valid options are "
-                    "'IVF_FLAT', 'IVF_PQ', 'IVF_RQ', 'IVF_SQ', "
-                    "'IVF_HNSW_PQ', 'IVF_HNSW_SQ', 'IVF_HNSW_FLAT'"
+                    f"Unknown vector index type: {idx_type}. Valid options are"
+                    " 'IVF_FLAT', 'IVF_PQ', 'IVF_RQ', 'IVF_SQ',"
+                    " 'IVF_HNSW_PQ', 'IVF_HNSW_SQ', 'IVF_HNSW_FLAT'"
                 )
         else:
-            column = column_or_metric
+            column = metric
 
         LOOP.run(
             self._table.create_index(
@@ -363,11 +409,21 @@ class RemoteTable(Table):
         vector_column_name: str,
         accelerator: Optional[str],
         index_cache_size: Optional[int],
+        replace: Optional[bool],
     ) -> bool:
         """Detect if this is a legacy create_index call."""
         if config is not None:
             return False
-        if any([num_partitions, num_sub_vectors, accelerator, index_cache_size]):
+        if any(
+            x is not None
+            for x in (
+                num_partitions,
+                num_sub_vectors,
+                accelerator,
+                index_cache_size,
+                replace,
+            )
+        ):
             return True
         if vector_column_name != VECTOR_COLUMN_NAME:
             return True
