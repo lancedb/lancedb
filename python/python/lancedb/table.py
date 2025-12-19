@@ -1676,9 +1676,9 @@ class Table(ABC):
         return _table_uri(self._conn.uri, self.name)
 
     def _get_fts_index_path(self) -> Tuple[str, pa_fs.FileSystem, bool]:
-        from .remote.table import RemoteTable
-
-        if isinstance(self, RemoteTable) or get_uri_scheme(self._dataset_uri) != "file":
+        # Check if this is a cloud table using is_cloud property if available
+        is_cloud = getattr(self, "is_cloud", False)
+        if is_cloud or get_uri_scheme(self._dataset_uri) != "file":
             return ("", None, False)
         path = join_uri(self._dataset_uri, "_indices", "fts")
         fs, path = fs_from_uri(path)
@@ -1749,6 +1749,9 @@ class LanceTable(Table):
         self._conn = connection
         self._namespace = namespace
         self._location = location  # Store location for use in _dataset_path
+        # Store connection metadata for cloud compatibility
+        self._conn_uri = connection._conn.uri
+        self._db_name: Optional[str] = None  # Only set for cloud tables
         if _async is not None:
             self._table = _async
         else:
@@ -1762,6 +1765,63 @@ class LanceTable(Table):
                     location=location,
                 )
             )
+
+    @classmethod
+    def _from_async(
+        cls,
+        table: AsyncTable,
+        conn_uri: str,
+        *,
+        db_name: Optional[str] = None,
+        namespace: Optional[List[str]] = None,
+    ) -> "LanceTable":
+        """Create a LanceTable from an AsyncTable and connection metadata.
+
+        This is used internally to create tables for both local and cloud backends.
+
+        Parameters
+        ----------
+        table : AsyncTable
+            The async table to wrap.
+        conn_uri : str
+            The connection URI (used for is_cloud detection).
+        db_name : str, optional
+            The database name (for cloud tables).
+        namespace : List[str], optional
+            The namespace path of the table.
+
+        Returns
+        -------
+        LanceTable
+            A new LanceTable instance.
+        """
+        instance = cls.__new__(cls)
+        instance._table = table
+        instance._conn_uri = conn_uri
+        instance._db_name = db_name
+        instance._namespace = namespace or []
+        instance._location = None
+        instance._conn = None  # No connection reference for cloud tables
+        return instance
+
+    @property
+    def is_cloud(self) -> bool:
+        """Return True if this table is connected to LanceDB Cloud."""
+        return self._conn_uri.startswith("db://")
+
+    @cached_property
+    def _dataset_uri(self) -> str:
+        """Override to use stored URI instead of connection reference."""
+        return _table_uri(self._conn_uri, self.name)
+
+    def _get_fts_index_path(self) -> Tuple[str, pa_fs.FileSystem, bool]:
+        """Override to use is_cloud instead of isinstance check."""
+        if self.is_cloud or get_uri_scheme(self._dataset_uri) != "file":
+            return ("", None, False)
+        path = join_uri(self._dataset_uri, "_indices", "fts")
+        fs, path = fs_from_uri(path)
+        index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
+        return (path, fs, index_exists)
 
     @property
     def name(self) -> str:
@@ -1832,10 +1892,14 @@ class LanceTable(Table):
         # use that location directly instead of constructing from base URI
         if self._location is not None:
             return self._location
-        return _table_path(self._conn.uri, self.name)
+        return _table_path(self._conn_uri, self.name)
 
     def to_lance(self, **kwargs) -> lance.LanceDataset:
         """Return the LanceDataset backing this table."""
+        if self.is_cloud:
+            raise NotImplementedError(
+                "to_lance() is not yet supported on LanceDB cloud."
+            )
         try:
             import lance
         except ImportError:
@@ -1844,10 +1908,11 @@ class LanceTable(Table):
                 "Please install with `pip install pylance`."
             )
 
+        storage_options = self._conn.storage_options if self._conn else None
         return lance.dataset(
             self._dataset_path,
             version=self.version,
-            storage_options=self._conn.storage_options,
+            storage_options=storage_options,
             **kwargs,
         )
 
@@ -2013,12 +2078,17 @@ class LanceTable(Table):
         return LOOP.run(self._table.count_rows(filter))
 
     def __repr__(self) -> str:
+        if self.is_cloud:
+            return f"Table({self._db_name}.{self.name})"
         val = f"{self.__class__.__name__}(name={self.name!r}, version={self.version}"
-        if self._conn.read_consistency_interval is not None:
+        if self._conn is not None and self._conn.read_consistency_interval is not None:
             val += ", read_consistency_interval={!r}".format(
                 self._conn.read_consistency_interval
             )
-        val += f", _conn={self._conn!r})"
+        if self._conn is not None:
+            val += f", _conn={self._conn!r})"
+        else:
+            val += ")"
         return val
 
     def __str__(self) -> str:
@@ -2035,6 +2105,10 @@ class LanceTable(Table):
         -------
         pd.DataFrame
         """
+        if self.is_cloud:
+            raise NotImplementedError(
+                "to_pandas() is not yet supported on LanceDB cloud."
+            )
         return self.to_arrow().to_pandas()
 
     def to_arrow(self) -> pa.Table:
@@ -2043,6 +2117,10 @@ class LanceTable(Table):
         Returns
         -------
         pa.Table"""
+        if self.is_cloud:
+            raise NotImplementedError(
+                "to_arrow() is not yet supported on LanceDB cloud."
+            )
         return LOOP.run(self._table.to_arrow())
 
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
@@ -2065,6 +2143,10 @@ class LanceTable(Table):
         -------
         pl.LazyFrame
         """
+        if self.is_cloud:
+            raise NotImplementedError(
+                "to_polars() is not yet supported on LanceDB cloud."
+            )
         from lancedb.integrations.pyarrow import PyarrowDatasetAdapter
 
         dataset = PyarrowDatasetAdapter(self)
@@ -2090,11 +2172,39 @@ class LanceTable(Table):
         m: int = 20,
         ef_construction: int = 300,
         *,
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
         """Create an index on the table."""
+        import logging
+
+        # Cloud-specific warnings and restrictions
+        if self.is_cloud:
+            if num_sub_vectors is not None:
+                logging.warning(
+                    "num_sub_vectors is not supported on LanceDB cloud. "
+                    "This parameter will be tuned automatically."
+                )
+            if accelerator is not None:
+                logging.warning(
+                    "GPU accelerator is not yet supported on LanceDB cloud. "
+                    "If you have 100M+ vectors to index, "
+                    "please contact us at contact@lancedb.com"
+                )
+                # For cloud, we don't use the accelerator path (no pylance)
+                accelerator = None
+            if replace is not None and replace is not True:
+                logging.warning(
+                    "replace is not supported on LanceDB cloud. "
+                    "Existing indexes will always be replaced."
+                )
+            if index_type == "IVF_HNSW_PQ":
+                raise ValueError(
+                    "IVF_HNSW_PQ is not supported on LanceDB cloud. "
+                    "Please use IVF_HNSW_SQ instead."
+                )
         if accelerator is not None:
             # accelerator is only supported through pylance.
             self.to_lance().create_index(
@@ -2178,6 +2288,7 @@ class LanceTable(Table):
                 vector_column_name,
                 replace=replace,
                 config=config,
+                wait_timeout=wait_timeout,
                 name=name,
                 train=train,
             )
@@ -2224,6 +2335,7 @@ class LanceTable(Table):
         *,
         replace: bool = True,
         index_type: ScalarIndexType = "BTREE",
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
         if index_type == "BTREE":
@@ -2235,7 +2347,13 @@ class LanceTable(Table):
         else:
             raise ValueError(f"Unknown index type {index_type}")
         return LOOP.run(
-            self._table.create_index(column, replace=replace, config=config, name=name)
+            self._table.create_index(
+                column,
+                replace=replace,
+                config=config,
+                wait_timeout=wait_timeout,
+                name=name,
+            )
         )
 
     def create_fts_index(
@@ -2259,6 +2377,7 @@ class LanceTable(Table):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
         if not use_tantivy:
@@ -2297,6 +2416,7 @@ class LanceTable(Table):
                     field_names,
                     replace=replace,
                     config=config,
+                    wait_timeout=wait_timeout,
                     name=name,
                 )
             )
@@ -2523,6 +2643,7 @@ class LanceTable(Table):
         query_type: Literal["vector"] = "vector",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceVectorQueryBuilder: ...
 
     @overload
@@ -2533,6 +2654,7 @@ class LanceTable(Table):
         query_type: Literal["fts"] = "fts",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceFtsQueryBuilder: ...
 
     @overload
@@ -2545,6 +2667,7 @@ class LanceTable(Table):
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceHybridQueryBuilder: ...
 
     @overload
@@ -2555,6 +2678,7 @@ class LanceTable(Table):
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceEmptyQueryBuilder: ...
 
     def search(
@@ -2566,6 +2690,7 @@ class LanceTable(Table):
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -2624,6 +2749,9 @@ class LanceTable(Table):
             The column(s) to search in for full-text search.
             If None then the search is performed on all indexed columns.
             For now, only one column can be searched at a time.
+        fast_search: bool, default False
+            If True, skip loading the index into memory and use a fast search.
+            This is useful for one-off queries on LanceDB Cloud.
 
         Returns
         -------
@@ -2635,12 +2763,15 @@ class LanceTable(Table):
         """
         if isinstance(query, FullTextQuery):
             query_type = "fts"
-        vector_column_name = infer_vector_column_name(
-            schema=self.schema,
-            query_type=query_type,
-            query=query,
-            vector_column_name=vector_column_name,
-        )
+        # For cloud tables, skip vector column inference - the server handles it
+        # For local tables, infer the vector column from the schema
+        if not self.is_cloud:
+            vector_column_name = infer_vector_column_name(
+                schema=self.schema,
+                query_type=query_type,
+                query=query,
+                vector_column_name=vector_column_name,
+            )
 
         return LanceQueryBuilder.create(
             self,
@@ -2649,6 +2780,7 @@ class LanceTable(Table):
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
             fts_columns=fts_columns or [],
+            fast_search=fast_search,
         )
 
     @classmethod
@@ -2730,6 +2862,9 @@ class LanceTable(Table):
         self._conn = db
         self._namespace = namespace
         self._location = location
+        # Store connection metadata for cloud compatibility
+        self._conn_uri = db._conn.uri
+        self._db_name = None  # Only set for cloud tables
 
         if data_storage_version is not None:
             warnings.warn(
@@ -2901,6 +3036,12 @@ class LanceTable(Table):
             The stats of the cleanup operation, including how many bytes were
             freed.
         """
+        if self.is_cloud:
+            warnings.warn(
+                "cleanup_old_versions() is a no-op on LanceDB Cloud. "
+                "Tables are automatically cleaned up and optimized."
+            )
+            return None
         return self.to_lance().cleanup_old_versions(
             older_than, delete_unverified=delete_unverified
         )
@@ -2921,6 +3062,12 @@ class LanceTable(Table):
          (see Lance documentation for more details) For most cases, the default
         should be fine.
         """
+        if self.is_cloud:
+            warnings.warn(
+                "compact_files() is a no-op on LanceDB Cloud. "
+                "Tables are automatically compacted and optimized."
+            )
+            return None
         stats = self.to_lance().optimize.compact_files(*args, **kwargs)
         self.checkout_latest()
         return stats
@@ -2975,6 +3122,12 @@ class LanceTable(Table):
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
+        if self.is_cloud:
+            warnings.warn(
+                "optimize() is a no-op on LanceDB Cloud. "
+                "Indices are optimized automatically."
+            )
+            return
         LOOP.run(
             self._table.optimize(
                 cleanup_older_than=cleanup_older_than,
@@ -3027,6 +3180,10 @@ class LanceTable(Table):
         bool
             True if the table is using the new v2 manifest paths, False otherwise.
         """
+        if self.is_cloud:
+            raise NotImplementedError(
+                "uses_v2_manifest_paths() is not supported on the LanceDB Cloud"
+            )
         return LOOP.run(self._table.uses_v2_manifest_paths())
 
     def migrate_v2_manifest_paths(self):
@@ -3047,6 +3204,10 @@ class LanceTable(Table):
         [LanceTable.uses_v2_manifest_paths][lancedb.table.LanceTable.uses_v2_manifest_paths]
         to check if the table is already using the new path style.
         """
+        if self.is_cloud:
+            raise NotImplementedError(
+                "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
+            )
         LOOP.run(self._table.migrate_v2_manifest_paths())
 
     def replace_field_metadata(self, field_name: str, new_metadata: Dict[str, str]):

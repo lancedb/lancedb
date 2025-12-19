@@ -704,7 +704,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_bits=4,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     # Test with target_partition_size
@@ -724,7 +729,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         target_partition_size=8192,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     # target_partition_size has a default value,
@@ -743,7 +753,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_bits=4,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -754,7 +769,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
     )
     expected_config = HnswPq(distance_type="dot")
     mock_create_index.assert_called_with(
-        "my_vector", replace=False, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=False,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -769,7 +789,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
     )
     mock_create_index.assert_called_with(
-        "my_vector", replace=True, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
 
@@ -793,6 +818,7 @@ def test_create_index_name_and_train_parameters(
         "vector",
         replace=True,
         config=expected_config,
+        wait_timeout=None,
         name="my_custom_index",
         train=True,
     )
@@ -800,13 +826,23 @@ def test_create_index_name_and_train_parameters(
     # Test with train=False
     table.create_index(vector_column_name="vector", train=False)
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=False
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=False,
     )
 
     # Test with both name and train
     table.create_index(vector_column_name="vector", name="my_index_name", train=True)
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name="my_index_name", train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name="my_index_name",
+        train=True,
     )
 
 

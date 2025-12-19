@@ -313,7 +313,7 @@ class RemoteDBConnection(DBConnection):
         -------
         A LanceTable object representing the table.
         """
-        from .table import RemoteTable
+        from ..table import LanceTable
 
         if namespace is None:
             namespace = []
@@ -324,7 +324,9 @@ class RemoteDBConnection(DBConnection):
             )
 
         table = LOOP.run(self._conn.open_table(name, namespace=namespace))
-        return RemoteTable(table, self.db_name)
+        return LanceTable._from_async(
+            table, self._conn.uri, db_name=self.db_name, namespace=namespace
+        )
 
     def clone_table(
         self,
@@ -357,9 +359,9 @@ class RemoteDBConnection(DBConnection):
 
         Returns
         -------
-        A RemoteTable object representing the cloned table.
+        A LanceTable object representing the cloned table.
         """
-        from .table import RemoteTable
+        from ..table import LanceTable
 
         if target_namespace is None:
             target_namespace = []
@@ -373,7 +375,9 @@ class RemoteDBConnection(DBConnection):
                 is_shallow=is_shallow,
             )
         )
-        return RemoteTable(table, self.db_name)
+        return LanceTable._from_async(
+            table, self._conn.uri, db_name=self.db_name, namespace=target_namespace
+        )
 
     @override
     def create_table(
@@ -493,7 +497,7 @@ class RemoteDBConnection(DBConnection):
                 "for this feature."
             )
 
-        from .table import RemoteTable
+        from ..table import LanceTable
 
         table = LOOP.run(
             self._conn.create_table(
@@ -506,7 +510,9 @@ class RemoteDBConnection(DBConnection):
                 fill_value=fill_value,
             )
         )
-        return RemoteTable(table, self.db_name)
+        return LanceTable._from_async(
+            table, self._conn.uri, db_name=self.db_name, namespace=namespace
+        )
 
     @override
     def drop_table(self, name: str, namespace: Optional[List[str]] = None):
