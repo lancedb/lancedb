@@ -2,10 +2,13 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from datetime import timedelta
+import deprecation
 import logging
 from functools import cached_property
-from typing import Dict, Iterable, List, Optional, Union, Literal
+from typing import Dict, Iterable, List, Optional, Union, Literal, overload
 import warnings
+
+from lancedb import __version__
 
 from lancedb._lancedb import (
     AddColumnsResult,
@@ -18,8 +21,18 @@ from lancedb._lancedb import (
     UpdateResult,
 )
 from lancedb.embeddings.base import EmbeddingFunctionConfig
-from lancedb.index import FTS, BTree, Bitmap, HnswSq, IvfFlat, IvfPq, IvfSq, LabelList
+from lancedb.index import (
+    FTS,
+    BTree,
+    Bitmap,
+    HnswSq,
+    IvfFlat,
+    IvfPq,
+    IvfSq,
+    LabelList,
+)
 from lancedb.remote.db import LOOP
+from lancedb.table import IndexConfigType, KNOWN_METRICS
 import pyarrow as pa
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -108,6 +121,11 @@ class RemoteTable(Table):
         """List all the stats of a specified index"""
         return LOOP.run(self._table.index_stats(index_uuid))
 
+    @deprecation.deprecated(
+        deprecated_in="0.25.0",
+        current_version=__version__,
+        details="Use create_index() with config=BTree()/Bitmap()/LabelList() instead.",
+    )
     def create_scalar_index(
         self,
         column: str,
@@ -117,7 +135,12 @@ class RemoteTable(Table):
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
-        """Creates a scalar index
+        """Creates a scalar index.
+
+        .. deprecated:: 0.25.0
+            Use :meth:`create_index` with a BTree, Bitmap, or LabelList config instead.
+            Example: ``table.create_index("column", config=BTree())``
+
         Parameters
         ----------
         column : str
@@ -148,6 +171,11 @@ class RemoteTable(Table):
             )
         )
 
+    @deprecation.deprecated(
+        deprecated_in="0.25.0",
+        current_version=__version__,
+        details="Use create_index() with config=FTS() instead.",
+    )
     def create_fts_index(
         self,
         column: str,
@@ -168,6 +196,12 @@ class RemoteTable(Table):
         prefix_only: bool = False,
         name: Optional[str] = None,
     ):
+        """Create a full-text search index on a column.
+
+        .. deprecated:: 0.25.0
+            Use :meth:`create_index` with an FTS config instead.
+            Example: ``table.create_index("text_column", config=FTS())``
+        """
         config = FTS(
             with_position=with_position,
             base_tokenizer=base_tokenizer,
@@ -191,106 +225,178 @@ class RemoteTable(Table):
             )
         )
 
+    # New unified API overload
+    @overload
     def create_index(
         self,
-        metric="l2",
+        column: str,
+        *,
+        config: IndexConfigType,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
+    # Legacy API overload (deprecated)
+    @overload
+    def create_index(
+        self,
+        metric: Literal["l2", "cosine", "dot", "hamming"] = ...,
+        vector_column_name: str = ...,
+        index_cache_size: Optional[int] = ...,
+        num_partitions: Optional[int] = ...,
+        num_sub_vectors: Optional[int] = ...,
+        replace: Optional[bool] = ...,
+        accelerator: Optional[str] = ...,
+        index_type: Literal[
+            "VECTOR", "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = ...,
+        wait_timeout: Optional[timedelta] = ...,
+        *,
+        num_bits: int = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
+    def create_index(
+        self,
+        column_or_metric: str = "l2",
         vector_column_name: str = VECTOR_COLUMN_NAME,
         index_cache_size: Optional[int] = None,
         num_partitions: Optional[int] = None,
         num_sub_vectors: Optional[int] = None,
         replace: Optional[bool] = None,
         accelerator: Optional[str] = None,
-        index_type="vector",
+        index_type: Literal[
+            "VECTOR", "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = "IVF_PQ",
         wait_timeout: Optional[timedelta] = None,
         *,
         num_bits: int = 8,
+        config: Optional[IndexConfigType] = None,
         name: Optional[str] = None,
         train: bool = True,
     ):
-        """Create an index on the table.
-        Currently, the only parameters that matter are
-        the metric and the vector column name.
+        """Create an index on a column.
 
-        Parameters
-        ----------
-        metric : str
-            The metric to use for the index. Default is "l2".
-        vector_column_name : str
-            The name of the vector column. Default is "vector".
+        This method supports both the new unified API and the legacy API
+        for backwards compatibility.
 
-        Examples
-        --------
-        >>> import lancedb
-        >>> import uuid
-        >>> from lancedb.schema import vector
-        >>> db = lancedb.connect("db://...", api_key="...", # doctest: +SKIP
-        ...                      region="...") # doctest: +SKIP
-        >>> table_name = uuid.uuid4().hex
-        >>> schema = pa.schema(
-        ...     [
-        ...             pa.field("id", pa.uint32(), False),
-        ...            pa.field("vector", vector(128), False),
-        ...             pa.field("s", pa.string(), False),
-        ...     ]
-        ... )
-        >>> table = db.create_table( # doctest: +SKIP
-        ...     table_name, # doctest: +SKIP
-        ...     schema=schema, # doctest: +SKIP
-        ... )
-        >>> table.create_index("l2", "vector") # doctest: +SKIP
+        New API (recommended)
+        ---------------------
+        Use the ``config`` parameter to specify the index type:
+
+        >>> table.create_index("vector", config=IvfPq(distance_type="l2"))
+        >>> table.create_index("category", config=BTree())
+        >>> table.create_index("content", config=FTS())
+
+        Legacy API (deprecated)
+        -----------------------
+        The old signature with ``metric`` as the first argument is deprecated:
+
+        >>> table.create_index("l2", vector_column_name="vector")  # deprecated
         """
+        # Detect whether this is a legacy API call
+        is_legacy = self._is_legacy_create_index_call(
+            column_or_metric,
+            config,
+            num_partitions,
+            num_sub_vectors,
+            vector_column_name,
+            accelerator,
+            index_cache_size,
+        )
 
-        if num_sub_vectors is not None:
-            logging.warning(
-                "num_sub_vectors is not supported on LanceDB cloud."
-                "This parameter will be tuned automatically."
-            )
-        if accelerator is not None:
-            logging.warning(
-                "GPU accelerator is not yet supported on LanceDB cloud."
-                "If you have 100M+ vectors to index,"
-                "please contact us at contact@lancedb.com"
-            )
-        if replace is not None:
-            logging.warning(
-                "replace is not supported on LanceDB cloud."
-                "Existing indexes will always be replaced."
+        if is_legacy:
+            warnings.warn(
+                "The create_index() API with metric/num_partitions parameters is "
+                "deprecated and will be removed in a future version. "
+                "Please migrate to the new unified API:\n"
+                "  # Old (deprecated):\n"
+                "  table.create_index('l2', vector_column_name='my_vector')\n"
+                "  # New (recommended):\n"
+                "  table.create_index('my_vector', config=IvfPq(distance_type='l2'))",
+                DeprecationWarning,
+                stacklevel=2,
             )
 
-        index_type = index_type.upper()
-        if index_type == "VECTOR" or index_type == "IVF_PQ":
-            config = IvfPq(
-                distance_type=metric,
-                num_partitions=num_partitions,
-                num_sub_vectors=num_sub_vectors,
-                num_bits=num_bits,
-            )
-        elif index_type == "IVF_SQ":
-            config = IvfSq(distance_type=metric, num_partitions=num_partitions)
-        elif index_type == "IVF_HNSW_PQ":
-            raise ValueError(
-                "IVF_HNSW_PQ is not supported on LanceDB cloud."
-                "Please use IVF_HNSW_SQ instead."
-            )
-        elif index_type == "IVF_HNSW_SQ":
-            config = HnswSq(distance_type=metric, num_partitions=num_partitions)
-        elif index_type == "IVF_FLAT":
-            config = IvfFlat(distance_type=metric, num_partitions=num_partitions)
+            metric = column_or_metric
+            column = vector_column_name
+
+            if num_sub_vectors is not None:
+                logging.warning(
+                    "num_sub_vectors is not supported on LanceDB cloud. "
+                    "This parameter will be tuned automatically."
+                )
+            if accelerator is not None:
+                logging.warning(
+                    "GPU accelerator is not yet supported on LanceDB cloud. "
+                    "If you have 100M+ vectors to index, "
+                    "please contact us at contact@lancedb.com"
+                )
+            if replace is not None:
+                logging.warning(
+                    "replace is not supported on LanceDB cloud. "
+                    "Existing indexes will always be replaced."
+                )
+
+            idx_type = index_type.upper()
+            if idx_type == "VECTOR" or idx_type == "IVF_PQ":
+                config = IvfPq(
+                    distance_type=metric,
+                    num_partitions=num_partitions,
+                    num_sub_vectors=num_sub_vectors,
+                    num_bits=num_bits,
+                )
+            elif idx_type == "IVF_SQ":
+                config = IvfSq(distance_type=metric, num_partitions=num_partitions)
+            elif idx_type == "IVF_HNSW_PQ":
+                raise ValueError(
+                    "IVF_HNSW_PQ is not supported on LanceDB cloud. "
+                    "Please use IVF_HNSW_SQ instead."
+                )
+            elif idx_type == "IVF_HNSW_SQ":
+                config = HnswSq(distance_type=metric, num_partitions=num_partitions)
+            elif idx_type == "IVF_FLAT":
+                config = IvfFlat(distance_type=metric, num_partitions=num_partitions)
+            else:
+                raise ValueError(
+                    f"Unknown vector index type: {idx_type}. Valid options are "
+                    "'IVF_FLAT', 'IVF_SQ', 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
+                )
         else:
-            raise ValueError(
-                f"Unknown vector index type: {index_type}. Valid options are"
-                " 'IVF_FLAT', 'IVF_SQ', 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
-            )
+            column = column_or_metric
 
         LOOP.run(
             self._table.create_index(
-                vector_column_name,
+                column,
                 config=config,
                 wait_timeout=wait_timeout,
                 name=name,
                 train=train,
             )
         )
+
+    def _is_legacy_create_index_call(
+        self,
+        first_arg: str,
+        config: Optional[IndexConfigType],
+        num_partitions: Optional[int],
+        num_sub_vectors: Optional[int],
+        vector_column_name: str,
+        accelerator: Optional[str],
+        index_cache_size: Optional[int],
+    ) -> bool:
+        """Detect if this is a legacy create_index call."""
+        if config is not None:
+            return False
+        if any([num_partitions, num_sub_vectors, accelerator, index_cache_size]):
+            return True
+        if vector_column_name != VECTOR_COLUMN_NAME:
+            return True
+        if first_arg.lower() in KNOWN_METRICS:
+            return True
+        return False
 
     def add(
         self,
