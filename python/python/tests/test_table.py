@@ -32,7 +32,7 @@ def test_basic(mem_db: DBConnection):
     table = mem_db.create_table("test", data=data)
 
     assert table.name == "test"
-    assert "LanceTable(name='test', version=1, _conn=LanceDBConnection(" in repr(table)
+    assert "Table(name='test', version=1, _conn=LanceDBConnection(" in repr(table)
     expected_schema = pa.schema(
         {
             "vector": pa.list_(pa.float32(), 2),

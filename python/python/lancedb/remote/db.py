@@ -311,9 +311,9 @@ class RemoteDBConnection(DBConnection):
 
         Returns
         -------
-        A LanceTable object representing the table.
+        A Table object representing the table.
         """
-        from ..table import LanceTable
+        from ..table import Table
 
         if namespace is None:
             namespace = []
@@ -324,7 +324,7 @@ class RemoteDBConnection(DBConnection):
             )
 
         table = LOOP.run(self._conn.open_table(name, namespace=namespace))
-        return LanceTable._from_async(
+        return Table._from_async(
             table, self._conn.uri, db_name=self.db_name, namespace=namespace
         )
 
@@ -359,9 +359,9 @@ class RemoteDBConnection(DBConnection):
 
         Returns
         -------
-        A LanceTable object representing the cloned table.
+        A Table object representing the cloned table.
         """
-        from ..table import LanceTable
+        from ..table import Table
 
         if target_namespace is None:
             target_namespace = []
@@ -375,7 +375,7 @@ class RemoteDBConnection(DBConnection):
                 is_shallow=is_shallow,
             )
         )
-        return LanceTable._from_async(
+        return Table._from_async(
             table, self._conn.uri, db_name=self.db_name, namespace=target_namespace
         )
 
@@ -424,7 +424,7 @@ class RemoteDBConnection(DBConnection):
 
         Returns
         -------
-        LanceTable
+        Table
             A reference to the newly created table.
 
         !!! note
@@ -443,7 +443,7 @@ class RemoteDBConnection(DBConnection):
         >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
         ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
         >>> db.create_table("my_table", data) # doctest: +SKIP
-        LanceTable(my_table)
+        Table(my_table)
 
         You can also pass a pandas DataFrame:
 
@@ -454,7 +454,7 @@ class RemoteDBConnection(DBConnection):
         ...    "long": [-122.7, -74.1]
         ... })
         >>> db.create_table("table2", data) # doctest: +SKIP
-        LanceTable(table2)
+        Table(table2)
 
         >>> custom_schema = pa.schema([
         ...   pa.field("vector", pa.list_(pa.float32(), 2)),
@@ -462,7 +462,7 @@ class RemoteDBConnection(DBConnection):
         ...   pa.field("long", pa.float32())
         ... ])
         >>> db.create_table("table3", data, schema = custom_schema) # doctest: +SKIP
-        LanceTable(table3)
+        Table(table3)
 
         It is also possible to create an table from `[Iterable[pa.RecordBatch]]`:
 
@@ -484,7 +484,7 @@ class RemoteDBConnection(DBConnection):
         ...     pa.field("price", pa.float32()),
         ... ])
         >>> db.create_table("table4", make_batches(), schema=schema) # doctest: +SKIP
-        LanceTable(table4)
+        Table(table4)
 
         """
         if namespace is None:
@@ -497,7 +497,7 @@ class RemoteDBConnection(DBConnection):
                 "for this feature."
             )
 
-        from ..table import LanceTable
+        from ..table import Table
 
         table = LOOP.run(
             self._conn.create_table(
@@ -510,7 +510,7 @@ class RemoteDBConnection(DBConnection):
                 fill_value=fill_value,
             )
         )
-        return LanceTable._from_async(
+        return Table._from_async(
             table, self._conn.uri, db_name=self.db_name, namespace=namespace
         )
 

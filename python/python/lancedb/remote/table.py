@@ -4,14 +4,14 @@
 """
 Backwards compatibility alias for RemoteTable.
 
-RemoteTable is now consolidated with LanceTable. Cloud tables are created
-using LanceTable._from_async() and detected via the is_cloud property.
+RemoteTable is now consolidated with Table. Cloud tables are created
+using Table._from_async() and detected via the is_cloud property.
 """
 
-from ..table import LanceTable
+from ..table import Table
 
-# RemoteTable is now an alias for LanceTable
+# RemoteTable is now an alias for Table
 # Cloud vs local behavior is determined by the is_cloud property
-RemoteTable = LanceTable
+RemoteTable = Table
 
 __all__ = ["RemoteTable"]
