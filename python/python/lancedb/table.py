@@ -709,6 +709,43 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    # New unified API overload
+    @overload
+    def create_index(
+        self,
+        column: str,
+        *,
+        config: IndexConfigType,
+        replace: bool = ...,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
+    # Legacy API overload (deprecated)
+    @overload
+    def create_index(
+        self,
+        metric: Literal["l2", "cosine", "dot", "hamming"] = ...,
+        num_partitions: Optional[int] = ...,
+        num_sub_vectors: Optional[int] = ...,
+        vector_column_name: str = ...,
+        replace: bool = ...,
+        accelerator: Optional[str] = ...,
+        index_cache_size: Optional[int] = ...,
+        *,
+        index_type: VectorIndexType = ...,
+        wait_timeout: Optional[timedelta] = ...,
+        num_bits: int = ...,
+        max_iterations: int = ...,
+        sample_rate: int = ...,
+        m: int = ...,
+        ef_construction: int = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+        target_partition_size: Optional[int] = ...,
+    ) -> None: ...
+
     def create_index(
         self,
         column_or_metric: str = "l2",
@@ -718,15 +755,15 @@ class Table(ABC):
         replace: bool = True,
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
-        num_bits: int = 8,
+        *,
         index_type: VectorIndexType = "IVF_PQ",
+        wait_timeout: Optional[timedelta] = None,
+        num_bits: int = 8,
         max_iterations: int = 50,
         sample_rate: int = 256,
         m: int = 20,
         ef_construction: int = 300,
-        *,
         config: Optional[IndexConfigType] = None,
-        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
         target_partition_size: Optional[int] = None,
@@ -2079,6 +2116,45 @@ class LanceTable(Table):
         return pl.scan_pyarrow_dataset(
             dataset, allow_pyarrow_filter=False, batch_size=batch_size
         )
+
+    # New unified API overload
+    @overload
+    def create_index(
+        self,
+        column: str,
+        *,
+        config: IndexConfigType,
+        replace: bool = ...,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
+    # Legacy API overload (deprecated)
+    @overload
+    def create_index(
+        self,
+        metric: Literal["l2", "cosine", "dot", "hamming"] = ...,
+        num_partitions: Optional[int] = ...,
+        num_sub_vectors: Optional[int] = ...,
+        vector_column_name: str = ...,
+        replace: bool = ...,
+        accelerator: Optional[str] = ...,
+        index_cache_size: Optional[int] = ...,
+        num_bits: int = ...,
+        index_type: Literal[
+            "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = ...,
+        max_iterations: int = ...,
+        sample_rate: int = ...,
+        m: int = ...,
+        ef_construction: int = ...,
+        *,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+        target_partition_size: Optional[int] = ...,
+    ) -> None: ...
 
     def create_index(
         self,

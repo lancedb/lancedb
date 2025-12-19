@@ -5,7 +5,7 @@ from datetime import timedelta
 import deprecation
 import logging
 from functools import cached_property
-from typing import Dict, Iterable, List, Optional, Union, Literal
+from typing import Dict, Iterable, List, Optional, Union, Literal, overload
 import warnings
 
 from lancedb import __version__
@@ -225,22 +225,55 @@ class RemoteTable(Table):
             )
         )
 
+    # New unified API overload
+    @overload
+    def create_index(
+        self,
+        column: str,
+        *,
+        config: IndexConfigType,
+        wait_timeout: Optional[timedelta] = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
+    # Legacy API overload (deprecated)
+    @overload
+    def create_index(
+        self,
+        metric: Literal["l2", "cosine", "dot", "hamming"] = ...,
+        vector_column_name: str = ...,
+        index_cache_size: Optional[int] = ...,
+        num_partitions: Optional[int] = ...,
+        num_sub_vectors: Optional[int] = ...,
+        replace: Optional[bool] = ...,
+        accelerator: Optional[str] = ...,
+        index_type: Literal[
+            "VECTOR", "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = ...,
+        wait_timeout: Optional[timedelta] = ...,
+        *,
+        num_bits: int = ...,
+        name: Optional[str] = ...,
+        train: bool = ...,
+    ) -> None: ...
+
     def create_index(
         self,
         column_or_metric: str = "l2",
+        vector_column_name: str = VECTOR_COLUMN_NAME,
+        index_cache_size: Optional[int] = None,
         num_partitions: Optional[int] = None,
         num_sub_vectors: Optional[int] = None,
-        vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: Optional[bool] = None,
         accelerator: Optional[str] = None,
-        index_cache_size: Optional[int] = None,
-        num_bits: int = 8,
         index_type: Literal[
             "VECTOR", "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
         ] = "IVF_PQ",
-        *,
-        config: Optional[IndexConfigType] = None,
         wait_timeout: Optional[timedelta] = None,
+        *,
+        num_bits: int = 8,
+        config: Optional[IndexConfigType] = None,
         name: Optional[str] = None,
         train: bool = True,
     ):
