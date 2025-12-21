@@ -615,6 +615,57 @@ def test_voyageai_multimodal_embedding_text_function():
 
 @pytest.mark.slow
 @pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_multimodal_35_embedding_function():
+    """Test voyage-multimodal-3.5 model with text input."""
+    voyageai = (
+        get_registry()
+        .get("voyageai")
+        .create(name="voyage-multimodal-3.5", max_retries=0)
+    )
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test_multimodal_35", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
+    assert voyageai.ndims() == 1024
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_multimodal_35_flexible_dimensions():
+    """Test voyage-multimodal-3.5 model with custom output dimension."""
+    voyageai = (
+        get_registry()
+        .get("voyageai")
+        .create(name="voyage-multimodal-3.5", output_dimension=512, max_retries=0)
+    )
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    assert voyageai.ndims() == 512
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test_multimodal_35_dim", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == 512
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
     importlib.util.find_spec("colpali_engine") is None,
     reason="colpali_engine not installed",
 )

@@ -3,11 +3,25 @@
 VoyageAI embeddings can also be used to embed both text and image data, only some of the models support image data and you can check the list
 under [https://docs.voyageai.com/docs/multimodal-embeddings](https://docs.voyageai.com/docs/multimodal-embeddings)
 
+Supported multimodal models:
+
+- `voyage-multimodal-3` - 1024 dimensions (text + images)
+- `voyage-multimodal-3.5` - Flexible dimensions (256, 512, 1024 default, 2048). Supports text, images, and video.
+
+### Video Support (voyage-multimodal-3.5)
+
+The `voyage-multimodal-3.5` model supports video input through:
+- Video URLs (`.mp4`, `.webm`, `.mov`, `.avi`, `.mkv`, `.m4v`, `.gif`)
+- Video file paths
+
+Constraints: Max 20MB video size.
+
 Supported parameters (to be passed in `create` method) are:
 
 | Parameter | Type | Default Value           | Description                               |
 |---|---|-------------------------|-------------------------------------------|
 | `name` | `str` | `"voyage-multimodal-3"` | The model ID of the VoyageAI model to use |
+| `output_dimension` | `int` | `None` | Output dimension for voyage-multimodal-3.5. Valid: 256, 512, 1024, 2048 |
 
 Usage Example:
 
