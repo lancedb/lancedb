@@ -119,6 +119,8 @@ def sanitize_multimodal_input(inputs: Union[TEXT, IMAGES]) -> List[Any]:
     PIL = attempt_import_or_raise("PIL", "pillow")
     if isinstance(inputs, (str, bytes, Path, PIL.Image.Image)):
         inputs = [inputs]
+    elif isinstance(inputs, list):
+        pass  # Already a list, use as-is
     elif isinstance(inputs, pa.Array):
         inputs = inputs.to_pylist()
     elif isinstance(inputs, pa.ChunkedArray):
