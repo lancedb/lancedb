@@ -615,6 +615,133 @@ def test_voyageai_multimodal_embedding_text_function():
 
 @pytest.mark.slow
 @pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_multimodal_35_embedding_function():
+    """Test voyage-multimodal-3.5 model with text input."""
+    voyageai = (
+        get_registry()
+        .get("voyageai")
+        .create(name="voyage-multimodal-3.5", max_retries=0)
+    )
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test_multimodal_35", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
+    assert voyageai.ndims() == 1024
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_multimodal_35_flexible_dimensions():
+    """Test voyage-multimodal-3.5 model with custom output dimension."""
+    voyageai = (
+        get_registry()
+        .get("voyageai")
+        .create(name="voyage-multimodal-3.5", output_dimension=512, max_retries=0)
+    )
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    assert voyageai.ndims() == 512
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test_multimodal_35_dim", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == 512
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_multimodal_35_image_embedding():
+    """Test voyage-multimodal-3.5 model with image input."""
+    voyageai = (
+        get_registry()
+        .get("voyageai")
+        .create(name="voyage-multimodal-3.5", max_retries=0)
+    )
+
+    class Images(LanceModel):
+        label: str
+        image_uri: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    db = lancedb.connect("~/lancedb")
+    table = db.create_table(
+        "test_multimodal_35_images", schema=Images, mode="overwrite"
+    )
+    labels = ["cat", "dog"]
+    uris = [
+        "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
+        "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",
+    ]
+    table.add(pd.DataFrame({"label": labels, "image_uri": uris}))
+    assert len(table.to_pandas()["vector"][0]) == voyageai.ndims()
+    assert voyageai.ndims() == 1024
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+@pytest.mark.parametrize("dimension", [256, 512, 1024, 2048])
+def test_voyageai_multimodal_35_all_dimensions(dimension):
+    """Test voyage-multimodal-3.5 model with all valid output dimensions."""
+    voyageai = (
+        get_registry()
+        .get("voyageai")
+        .create(name="voyage-multimodal-3.5", output_dimension=dimension, max_retries=0)
+    )
+
+    assert voyageai.ndims() == dimension
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table(
+        f"test_multimodal_35_dim_{dimension}", schema=TextModel, mode="overwrite"
+    )
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == dimension
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_multimodal_35_invalid_dimension():
+    """Test voyage-multimodal-3.5 model raises error for invalid output dimension."""
+    with pytest.raises(ValueError, match="Invalid output_dimension"):
+        voyageai = (
+            get_registry()
+            .get("voyageai")
+            .create(name="voyage-multimodal-3.5", output_dimension=999, max_retries=0)
+        )
+        # ndims() is where the validation happens
+        voyageai.ndims()
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
     importlib.util.find_spec("colpali_engine") is None,
     reason="colpali_engine not installed",
 )
