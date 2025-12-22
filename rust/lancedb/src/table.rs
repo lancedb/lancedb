@@ -42,8 +42,8 @@ use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
 use lance_io::object_store::LanceNamespaceStorageOptionsProvider;
 use lance_namespace::models::{
-    QueryTableRequest as NsQueryTableRequest, QueryTableRequestFullTextQuery,
-    QueryTableRequestVector, StringFtsQuery,
+    QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
+    QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery,
 };
 use lance_namespace::LanceNamespace;
 use lance_table::format::Manifest;
@@ -2348,7 +2348,10 @@ impl NativeTable {
                 // Convert select to columns list
                 let columns = match &vq.base.select {
                     Select::All => None,
-                    Select::Columns(cols) => Some(cols.clone()),
+                    Select::Columns(cols) => Some(Box::new(QueryTableRequestColumns {
+                        column_names: Some(cols.clone()),
+                        column_aliases: None,
+                    })),
                     Select::Dynamic(_) => {
                         return Err(Error::NotSupported {
                             message:
@@ -2421,7 +2424,10 @@ impl NativeTable {
 
                 let columns = match &q.select {
                     Select::All => None,
-                    Select::Columns(cols) => Some(cols.clone()),
+                    Select::Columns(cols) => Some(Box::new(QueryTableRequestColumns {
+                        column_names: Some(cols.clone()),
+                        column_aliases: None,
+                    })),
                     Select::Dynamic(_) => {
                         return Err(Error::NotSupported {
                             message: "Dynamic columns are not supported for server-side query"
@@ -5146,7 +5152,13 @@ mod tests {
         assert_eq!(ns_request.k, 10);
         assert_eq!(ns_request.offset, Some(5));
         assert_eq!(ns_request.filter, Some("id > 0".to_string()));
-        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        assert_eq!(
+            ns_request
+                .columns
+                .as_ref()
+                .and_then(|c| c.column_names.clone()),
+            Some(vec!["id".to_string()])
+        );
         assert_eq!(ns_request.vector_column, Some("vector".to_string()));
         assert_eq!(ns_request.distance_type, Some("l2".to_string()));
         assert!(ns_request.vector.single_vector.is_some());
@@ -5187,7 +5199,13 @@ mod tests {
         assert_eq!(ns_request.k, 20);
         assert_eq!(ns_request.offset, Some(5));
         assert_eq!(ns_request.filter, Some("id > 5".to_string()));
-        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        assert_eq!(
+            ns_request
+                .columns
+                .as_ref()
+                .and_then(|c| c.column_names.clone()),
+            Some(vec!["id".to_string()])
+        );
         assert_eq!(ns_request.with_row_id, Some(true));
         assert_eq!(ns_request.bypass_vector_index, Some(true));
         assert!(ns_request.vector_column.is_none()); // No vector column for plain queries
