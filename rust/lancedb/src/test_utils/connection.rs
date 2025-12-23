@@ -111,7 +111,7 @@ async fn new_remote_connection(script_path: &str) -> Result<TestConnection> {
     };
     let stdout = BufReader::new(process.child.stdout.take().unwrap());
     let (port_sender, mut port_receiver) = mpsc::channel(5);
-    let _ = spawn_stdout_reader(stdout, port_sender).await;
+    let _reader = spawn_stdout_reader(stdout, port_sender).await;
     let port = match port_receiver.recv().await {
         None => bail!("Unable to determine the port number used by the phalanx process we spawned, because the reader thread was closed too soon."),
         Some(Err(err)) => bail!("Unable to determine the port number used by the phalanx process we spawned, because of an error, {}", err),
