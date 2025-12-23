@@ -4,11 +4,11 @@
 //! Functions for testing connections.
 
 use regex::Regex;
-use tokio::sync::mpsc;
 use std::env;
+use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStdout, Command};
-use std::process::Stdio;
+use tokio::sync::mpsc;
 
 use crate::{connect, Connection};
 use anyhow::{anyhow, bail, Result};
@@ -42,7 +42,7 @@ pub async fn new_test_connection() -> Result<TestConnection> {
 
 async fn spawn_stdout_reader(
     mut stdout: BufReader<ChildStdout>,
-    port_sender: mpsc::Sender<anyhow::Result<String>>
+    port_sender: mpsc::Sender<anyhow::Result<String>>,
 ) -> tokio::task::JoinHandle<()> {
     let print_stdout = env::var("PRINT_LANCEDB_TEST_CONNECTION_SCRIPT_OUTPUT").is_ok();
     tokio::spawn(async move {
@@ -52,13 +52,21 @@ async fn spawn_stdout_reader(
             line.clear();
             let result = stdout.read_line(&mut line).await;
             if let Err(err) = result {
-                port_sender.send(Err(anyhow!(
-                    "error while reading from process output: {}",
-                    err
-                ))).await.unwrap();
+                port_sender
+                    .send(Err(anyhow!(
+                        "error while reading from process output: {}",
+                        err
+                    )))
+                    .await
+                    .unwrap();
                 return;
             } else if result.unwrap() == 0 {
-                port_sender.send(Err(anyhow!(" hit EOF before reading port from process output."))).await.unwrap();
+                port_sender
+                    .send(Err(anyhow!(
+                        " hit EOF before reading port from process output."
+                    )))
+                    .await
+                    .unwrap();
                 return;
             }
             if re.is_match(&line) {
