@@ -16,7 +16,7 @@ check_command_exists() {
 }
 
 if [[ ! -e ./lancedb ]]; then
-    if [[ -v SOPHON_READ_TOKEN ]]; then
+    if [[ x${SOPHON_READ_TOKEN} != "x" ]]; then
         INPUT="lancedb-linux-x64"
         gh release \
             --repo lancedb/lancedb \

@@ -1325,25 +1325,27 @@ mod tests {
 
     #[tokio::test]
     async fn test_table_names() {
-        let tmp_dir = tempdir().unwrap();
+        let tc = new_test_connection().await.unwrap();
+        let db = tc.connection;
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
         let mut names = Vec::with_capacity(100);
         for _ in 0..100 {
-            let mut name = uuid::Uuid::new_v4().to_string();
+            let name = uuid::Uuid::new_v4().to_string();
             names.push(name.clone());
-            name.push_str(".lance");
-            create_dir_all(tmp_dir.path().join(&name)).unwrap();
+            db.create_empty_table(name, schema.clone())
+                .execute()
+                .await
+                .unwrap();
         }
         names.sort();
-
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri).execute().await.unwrap();
-        let tables = db.table_names().execute().await.unwrap();
+        let tables = db.table_names().limit(100).execute().await.unwrap();
 
         assert_eq!(tables, names);
 
         let tables = db
             .table_names()
             .start_after(&names[30])
+            .limit(100)
             .execute()
             .await
             .unwrap();
