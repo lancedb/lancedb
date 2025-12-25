@@ -210,10 +210,8 @@ class DBConnection(EnforceOverrides):
         page_token: str, optional
             The token to use for pagination. If not present, start from the beginning.
             Typically, this token is last table name from the previous page.
-            Only supported by LanceDb Cloud.
         limit: int, default 10
             The size of the page to return.
-            Only supported by LanceDb Cloud.
 
         Returns
         -------
