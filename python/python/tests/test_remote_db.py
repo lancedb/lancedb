@@ -521,7 +521,8 @@ def query_test_table(query_handler, *, server_version=Version("0.1.0")):
             request.send_header("Content-Type", "application/json")
             request.send_header("phalanx-version", str(server_version))
             request.end_headers()
-            request.wfile.write(b"{}")
+            # Return a valid table description with required fields
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
         elif request.path == "/v1/table/test/query/":
             content_len = int(request.headers.get("Content-Length"))
             body = request.rfile.read(content_len)
@@ -542,7 +543,7 @@ def query_test_table(query_handler, *, server_version=Version("0.1.0")):
     with mock_lancedb_connection(handler) as db:
         assert repr(db) == "RemoteConnect(name=dev)"
         table = db.open_table("test")
-        assert repr(table) == "RemoteTable(dev.test)"
+        assert repr(table) == "Table(dev.test)"
         yield table
 
 

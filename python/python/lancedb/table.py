@@ -7,7 +7,6 @@ import asyncio
 import inspect
 import deprecation
 import warnings
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cached_property
@@ -102,14 +101,12 @@ if TYPE_CHECKING:
         UpdateResult,
     )
     from .index import IndexConfig
-    import pandas
     import PIL
     from .types import (
         QueryType,
         OnBadVectorsType,
         AddMode,
         CreateMode,
-        VectorIndexType,
         ScalarIndexType,
         BaseTokenizerType,
         DistanceType,
@@ -554,9 +551,22 @@ def _table_uri(base: str, table_name: str) -> str:
     return join_uri(base, f"{table_name}.lance")
 
 
-class Table(ABC):
+class Table:
     """
     A Table is a collection of Records in a LanceDB Database.
+
+    This class handles both local and cloud (LanceDB Cloud) tables. The behavior
+    is determined by the connection URI - cloud tables use ``db://`` URIs.
+
+    Tables can be opened in two modes: standard and time-travel.
+
+    Standard mode is the default. In this mode, the table is mutable and tracks
+    the latest version of the table. The level of read consistency is controlled
+    by the `read_consistency_interval` parameter on the connection.
+
+    Time-travel mode is activated by specifying a version number. In this mode,
+    the table is immutable and fixed to a specific version. This is useful for
+    querying historical versions of the table.
 
     Examples
     --------
@@ -592,1146 +602,6 @@ class Table(ABC):
     [Table.create_index][lancedb.table.Table.create_index].
     """
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """The name of this Table"""
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def version(self) -> int:
-        """The version of this Table"""
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def schema(self) -> pa.Schema:
-        """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
-        of this Table
-
-        """
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def tags(self) -> Tags:
-        """Tag management for the table.
-
-        Similar to Git, tags are a way to add metadata to a specific version of the
-        table.
-
-        .. warning::
-
-            Tagged versions are exempted from the :py:meth:`cleanup_old_versions()`
-            process.
-
-            To remove a version that has been tagged, you must first
-            :py:meth:`~Tags.delete` the associated tag.
-
-        Examples
-        --------
-
-        .. code-block:: python
-
-            table = db.open_table("my_table")
-            table.tags.create("v2-prod-20250203", 10)
-
-            tags = table.tags.list()
-
-        """
-        raise NotImplementedError
-
-    def __len__(self) -> int:
-        """The number of rows in this Table"""
-        return self.count_rows(None)
-
-    @property
-    @abstractmethod
-    def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
-        """
-        Get a mapping from vector column name to it's configured embedding function.
-        """
-
-    @abstractmethod
-    def count_rows(self, filter: Optional[str] = None) -> int:
-        """
-        Count the number of rows in the table.
-
-        Parameters
-        ----------
-        filter: str, optional
-            A SQL where clause to filter the rows to count.
-        """
-        raise NotImplementedError
-
-    def to_pandas(self) -> "pandas.DataFrame":
-        """Return the table as a pandas DataFrame.
-
-        Returns
-        -------
-        pd.DataFrame
-        """
-        return self.to_arrow().to_pandas()
-
-    @abstractmethod
-    def to_arrow(self) -> pa.Table:
-        """Return the table as a pyarrow Table.
-
-        Returns
-        -------
-        pa.Table
-        """
-        raise NotImplementedError
-
-    def to_lance(self, **kwargs) -> lance.LanceDataset:
-        """Return the table as a lance.LanceDataset.
-
-        Returns
-        -------
-        lance.LanceDataset
-        """
-        raise NotImplementedError
-
-    def to_polars(self, **kwargs) -> "pl.DataFrame":
-        """Return the table as a polars.DataFrame.
-
-        Returns
-        -------
-        polars.DataFrame
-        """
-        raise NotImplementedError
-
-    def create_index(
-        self,
-        metric="l2",
-        num_partitions=256,
-        num_sub_vectors=96,
-        vector_column_name: str = VECTOR_COLUMN_NAME,
-        replace: bool = True,
-        accelerator: Optional[str] = None,
-        index_cache_size: Optional[int] = None,
-        *,
-        index_type: VectorIndexType = "IVF_PQ",
-        wait_timeout: Optional[timedelta] = None,
-        num_bits: int = 8,
-        max_iterations: int = 50,
-        sample_rate: int = 256,
-        m: int = 20,
-        ef_construction: int = 300,
-        name: Optional[str] = None,
-        train: bool = True,
-        target_partition_size: Optional[int] = None,
-    ):
-        """Create an index on the table.
-
-        Parameters
-        ----------
-        metric: str, default "l2"
-            The distance metric to use when creating the index.
-            Valid values are "l2", "cosine", "dot", or "hamming".
-            l2 is euclidean distance.
-            Hamming is available only for binary vectors.
-        num_partitions: int, default 256
-            The number of IVF partitions to use when creating the index.
-            Default is 256.
-        num_sub_vectors: int, default 96
-            The number of PQ sub-vectors to use when creating the index.
-            Default is 96.
-        vector_column_name: str, default "vector"
-            The vector column name to create the index.
-        replace: bool, default True
-            - If True, replace the existing index if it exists.
-
-            - If False, raise an error if duplicate index exists.
-        accelerator: str, default None
-            If set, use the given accelerator to create the index.
-            Only support "cuda" for now.
-        index_cache_size : int, optional
-            The size of the index cache in number of entries. Default value is 256.
-        num_bits: int
-            The number of bits to encode sub-vectors. Only used with the IVF_PQ index.
-            Only 4 and 8 are supported.
-        wait_timeout: timedelta, optional
-            The timeout to wait if indexing is asynchronous.
-        name: str, optional
-            The name of the index. If not provided, a default name will be generated.
-        train: bool, default True
-            Whether to train the index with existing data. Vector indices always train
-            with existing data.
-        """
-        raise NotImplementedError
-
-    def drop_index(self, name: str) -> None:
-        """
-        Drop an index from the table.
-
-        Parameters
-        ----------
-        name: str
-            The name of the index to drop.
-
-        Notes
-        -----
-        This does not delete the index from disk, it just removes it from the table.
-        To delete the index, run [optimize][lancedb.table.Table.optimize]
-        after dropping the index.
-
-        Use [list_indices][lancedb.table.Table.list_indices] to find the names of
-        the indices.
-        """
-        raise NotImplementedError
-
-    def wait_for_index(
-        self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
-    ) -> None:
-        """
-        Wait for indexing to complete for the given index names.
-        This will poll the table until all the indices are fully indexed,
-        or raise a timeout exception if the timeout is reached.
-
-        Parameters
-        ----------
-        index_names: str
-            The name of the indices to poll
-        timeout: timedelta
-            Timeout to wait for asynchronous indexing. The default is 5 minutes.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def stats(self) -> TableStatistics:
-        """
-        Retrieve table and fragment statistics.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def create_scalar_index(
-        self,
-        column: str,
-        *,
-        replace: bool = True,
-        index_type: ScalarIndexType = "BTREE",
-        wait_timeout: Optional[timedelta] = None,
-        name: Optional[str] = None,
-    ):
-        """Create a scalar index on a column.
-
-        Parameters
-        ----------
-        column : str
-            The column to be indexed.  Must be a boolean, integer, float,
-            or string column.
-        replace : bool, default True
-            Replace the existing index if it exists.
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"], default "BTREE"
-            The type of index to create.
-        wait_timeout: timedelta, optional
-            The timeout to wait if indexing is asynchronous.
-        name: str, optional
-            The name of the index. If not provided, a default name will be generated.
-        Examples
-        --------
-
-        Scalar indices, like vector indices, can be used to speed up scans.  A scalar
-        index can speed up scans that contain filter expressions on the indexed column.
-        For example, the following scan will be faster if the column ``my_col`` has
-        a scalar index:
-
-        >>> import lancedb # doctest: +SKIP
-        >>> db = lancedb.connect("/data/lance") # doctest: +SKIP
-        >>> img_table = db.open_table("images") # doctest: +SKIP
-        >>> my_df = img_table.search().where("my_col = 7", # doctest: +SKIP
-        ...                                  prefilter=True).to_pandas()
-
-        Scalar indices can also speed up scans containing a vector search and a
-        prefilter:
-
-        >>> import lancedb # doctest: +SKIP
-        >>> db = lancedb.connect("/data/lance") # doctest: +SKIP
-        >>> img_table = db.open_table("images") # doctest: +SKIP
-        >>> img_table.search([1, 2, 3, 4], vector_column_name="vector") # doctest: +SKIP
-        ...     .where("my_col != 7", prefilter=True)
-        ...     .to_pandas()
-
-        Scalar indices can only speed up scans for basic filters using
-        equality, comparison, range (e.g. ``my_col BETWEEN 0 AND 100``), and set
-        membership (e.g. `my_col IN (0, 1, 2)`)
-
-        Scalar indices can be used if the filter contains multiple indexed columns and
-        the filter criteria are AND'd or OR'd together
-        (e.g. ``my_col < 0 AND other_col> 100``)
-
-        Scalar indices may be used if the filter contains non-indexed columns but,
-        depending on the structure of the filter, they may not be usable.  For example,
-        if the column ``not_indexed`` does not have a scalar index then the filter
-        ``my_col = 0 OR not_indexed = 1`` will not be able to use any scalar index on
-        ``my_col``.
-        """
-        raise NotImplementedError
-
-    def create_fts_index(
-        self,
-        field_names: Union[str, List[str]],
-        *,
-        ordering_field_names: Optional[Union[str, List[str]]] = None,
-        replace: bool = False,
-        writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
-        use_tantivy: bool = False,
-        tokenizer_name: Optional[str] = None,
-        with_position: bool = False,
-        # tokenizer configs:
-        base_tokenizer: BaseTokenizerType = "simple",
-        language: str = "English",
-        max_token_length: Optional[int] = 40,
-        lower_case: bool = True,
-        stem: bool = True,
-        remove_stop_words: bool = True,
-        ascii_folding: bool = True,
-        ngram_min_length: int = 3,
-        ngram_max_length: int = 3,
-        prefix_only: bool = False,
-        wait_timeout: Optional[timedelta] = None,
-        name: Optional[str] = None,
-    ):
-        """Create a full-text search index on the table.
-
-        Warning - this API is highly experimental and is highly likely to change
-        in the future.
-
-        Parameters
-        ----------
-        field_names: str or list of str
-            The name(s) of the field to index.
-            can be only str if use_tantivy=True for now.
-        replace: bool, default False
-            If True, replace the existing index if it exists. Note that this is
-            not yet an atomic operation; the index will be temporarily
-            unavailable while the new index is being created.
-        writer_heap_size: int, default 1GB
-            Only available with use_tantivy=True
-        ordering_field_names:
-            A list of unsigned type fields to index to optionally order
-            results on at search time.
-            only available with use_tantivy=True
-        tokenizer_name: str, default "default"
-            The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
-            language code followed by "_stem". So for english it would be "en_stem".
-            For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
-        use_tantivy: bool, default False
-            If True, use the legacy full-text search implementation based on tantivy.
-            If False, use the new full-text search implementation based on lance-index.
-        with_position: bool, default False
-            Only available with use_tantivy=False
-            If False, do not store the positions of the terms in the text.
-            This can reduce the size of the index and improve indexing speed.
-            But it will raise an exception for phrase queries.
-        base_tokenizer : str, default "simple"
-            The base tokenizer to use for tokenization. Options are:
-            - "simple": Splits text by whitespace and punctuation.
-            - "whitespace": Split text by whitespace, but not punctuation.
-            - "raw": No tokenization. The entire text is treated as a single token.
-            - "ngram": N-Gram tokenizer.
-        language : str, default "English"
-            The language to use for tokenization.
-        max_token_length : int, default 40
-            The maximum token length to index. Tokens longer than this length will be
-            ignored.
-        lower_case : bool, default True
-            Whether to convert the token to lower case. This makes queries
-            case-insensitive.
-        stem : bool, default True
-            Whether to stem the token. Stemming reduces words to their root form.
-            For example, in English "running" and "runs" would both be reduced to "run".
-        remove_stop_words : bool, default True
-            Whether to remove stop words. Stop words are common words that are often
-            removed from text before indexing. For example, in English "the" and "and".
-        ascii_folding : bool, default True
-            Whether to fold ASCII characters. This converts accented characters to
-            their ASCII equivalent. For example, "café" would be converted to "cafe".
-        ngram_min_length: int, default 3
-            The minimum length of an n-gram.
-        ngram_max_length: int, default 3
-            The maximum length of an n-gram.
-        prefix_only: bool, default False
-            Whether to only index the prefix of the token for ngram tokenizer.
-        wait_timeout: timedelta, optional
-            The timeout to wait if indexing is asynchronous.
-        name: str, optional
-            The name of the index. If not provided, a default name will be generated.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def add(
-        self,
-        data: DATA,
-        mode: AddMode = "append",
-        on_bad_vectors: OnBadVectorsType = "error",
-        fill_value: float = 0.0,
-    ) -> AddResult:
-        """Add more data to the [Table](Table).
-
-        Parameters
-        ----------
-        data: DATA
-            The data to insert into the table. Acceptable types are:
-
-            - list-of-dict
-
-            - pandas.DataFrame
-
-            - pyarrow.Table or pyarrow.RecordBatch
-        mode: str
-            The mode to use when writing the data. Valid values are
-            "append" and "overwrite".
-        on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
-        fill_value: float, default 0.
-            The value to use when filling vectors. Only used if on_bad_vectors="fill".
-
-        Returns
-        -------
-        AddResult
-            An object containing the new version number of the table after adding data.
-        """
-        raise NotImplementedError
-
-    def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
-        """
-        Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
-        that can be used to create a "merge insert" operation
-
-        This operation can add rows, update rows, and remove rows all in a single
-        transaction. It is a very generic tool that can be used to create
-        behaviors like "insert if not exists", "update or insert (i.e. upsert)",
-        or even replace a portion of existing data with new data (e.g. replace
-        all data where month="january")
-
-        The merge insert operation works by combining new data from a
-        **source table** with existing data in a **target table** by using a
-        join.  There are three categories of records.
-
-        "Matched" records are records that exist in both the source table and
-        the target table. "Not matched" records exist only in the source table
-        (e.g. these are new data) "Not matched by source" records exist only
-        in the target table (this is old data)
-
-        The builder returned by this method can be used to customize what
-        should happen for each category of data.
-
-        Please note that the data may appear to be reordered as part of this
-        operation.  This is because updated rows will be deleted from the
-        dataset and then reinserted at the end with the new values.
-
-        Parameters
-        ----------
-
-        on: Union[str, Iterable[str]]
-            A column (or columns) to join on.  This is how records from the
-            source table and target table are matched.  Typically this is some
-            kind of key or id column.
-
-        Examples
-        --------
-        >>> import lancedb
-        >>> data = pa.table({"a": [2, 1, 3], "b": ["a", "b", "c"]})
-        >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", data)
-        >>> new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
-        >>> # Perform a "upsert" operation
-        >>> res = table.merge_insert("a")     \\
-        ...      .when_matched_update_all()     \\
-        ...      .when_not_matched_insert_all() \\
-        ...      .execute(new_data)
-        >>> res
-        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1)
-        >>> # The order of new rows is non-deterministic since we use
-        >>> # a hash-join as part of this operation and so we sort here
-        >>> table.to_arrow().sort_by("a").to_pandas()
-           a  b
-        0  1  b
-        1  2  x
-        2  3  y
-        3  4  z
-        """  # noqa: E501
-        on = [on] if isinstance(on, str) else list(iter(on))
-
-        return LanceMergeInsertBuilder(self, on)
-
-    @abstractmethod
-    def search(
-        self,
-        query: Optional[
-            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
-        ] = None,
-        vector_column_name: Optional[str] = None,
-        query_type: QueryType = "auto",
-        ordering_field_name: Optional[str] = None,
-        fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceQueryBuilder:
-        """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
-        and [full-text search][experimental-full-text-search].
-
-        All query options are defined in
-        [LanceQueryBuilder][lancedb.query.LanceQueryBuilder].
-
-        Examples
-        --------
-        >>> import lancedb
-        >>> db = lancedb.connect("./.lancedb")
-        >>> data = [
-        ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
-        ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
-        ...    {"original_width": 3000, "caption": "test", "vector": [0.3, 6.2, 2.6]}
-        ... ]
-        >>> table = db.create_table("my_table", data)
-        >>> query = [0.4, 1.4, 2.4]
-        >>> (table.search(query)
-        ...     .where("original_width > 1000", prefilter=True)
-        ...     .select(["caption", "original_width", "vector"])
-        ...     .limit(2)
-        ...     .to_pandas())
-          caption  original_width           vector  _distance
-        0     foo            2000  [0.5, 3.4, 1.3]   5.220000
-        1    test            3000  [0.3, 6.2, 2.6]  23.089996
-
-        Parameters
-        ----------
-        query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
-
-            - *default None*.
-            Acceptable types are: list, np.ndarray, PIL.Image.Image
-
-            - If None then the select/where/limit clauses are applied to filter
-            the table
-        vector_column_name: str, optional
-            The name of the vector column to search.
-
-            The vector column needs to be a pyarrow fixed size list type
-
-            - If not specified then the vector column is inferred from
-            the table schema
-
-            - If the table has multiple vector columns then the *vector_column_name*
-            needs to be specified. Otherwise, an error is raised.
-        query_type: str
-            *default "auto"*.
-            Acceptable types are: "vector", "fts", "hybrid", or "auto"
-
-            - If "auto" then the query type is inferred from the query;
-
-                - If `query` is a list/np.ndarray then the query type is
-                "vector";
-
-                - If `query` is a PIL.Image.Image then either do vector search,
-                or raise an error if no corresponding embedding function is found.
-
-            - If `query` is a string, then the query type is "vector" if the
-            table has embedding functions else the query type is "fts"
-
-        Returns
-        -------
-        LanceQueryBuilder
-            A query builder object representing the query.
-            Once executed, the query returns
-
-            - selected columns
-
-            - the vector
-
-            - and also the "_distance" column which is the distance between the query
-            vector and the returned vector.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def take_offsets(
-        self, offsets: list[int], *, with_row_id: bool = False
-    ) -> LanceTakeQueryBuilder:
-        """
-        Take a list of offsets from the table.
-
-        Offsets are 0-indexed and relative to the current version of the table.  Offsets
-        are not stable.  A row with an offset of N may have a different offset in a
-        different version of the table (e.g. if an earlier row is deleted).
-
-        Offsets are mostly useful for sampling as the set of all valid offsets is easily
-        known in advance to be [0, len(table)).
-
-        No guarantees are made regarding the order in which results are returned.  If
-        you desire an output order that matches the order of the given offsets, you will
-        need to add the row offset column to the output and align it yourself.
-
-        Parameters
-        ----------
-        offsets: list[int]
-            The offsets to take.
-
-        Returns
-        -------
-        pa.RecordBatch
-            A record batch containing the rows at the given offsets.
-        """
-
-    def __getitems__(self, offsets: list[int]) -> pa.RecordBatch:
-        """
-        Take a list of offsets from the table and return as a record batch.
-
-        This method uses the `take_offsets` method to take the rows.  However, it
-        aligns the offsets to the passed in offsets.  This means the return type
-        is a record batch (and so users should take care not to pass in too many
-        offsets)
-
-        Note: this method is primarily intended to fulfill the Dataset contract
-        for pytorch.
-
-        Parameters
-        ----------
-        offsets: list[int]
-            The offsets to take.
-
-        Returns
-        -------
-        pa.RecordBatch
-            A record batch containing the rows at the given offsets.
-        """
-        # We don't know the order of the results at all.  So we calculate a permutation
-        # for ordering the given offsets.  Then we load the data with the _rowoffset
-        # column.  Then we sort by _rowoffset and apply the inverse of the permutation
-        # that we calculated.
-        #
-        # Note: this is potentially a lot of memory copy if we're operating on large
-        # batches :(
-        num_offsets = len(offsets)
-        indices = list(range(num_offsets))
-        permutation = sorted(indices, key=lambda idx: offsets[idx])
-        permutation_inv = [0] * num_offsets
-        for i in range(num_offsets):
-            permutation_inv[permutation[i]] = i
-
-        columns = self.schema.names
-        columns.append("_rowoffset")
-        tbl = (
-            self.take_offsets(offsets)
-            .select(columns)
-            .to_arrow()
-            .sort_by("_rowoffset")
-            .take(permutation_inv)
-            .combine_chunks()
-            .drop_columns(["_rowoffset"])
-        )
-
-        return tbl
-
-    @abstractmethod
-    def take_row_ids(
-        self, row_ids: list[int], *, with_row_id: bool = False
-    ) -> LanceTakeQueryBuilder:
-        """
-        Take a list of row ids from the table.
-
-        Row ids are not stable and are relative to the current version of the table.
-        They can change due to compaction and updates.
-
-        No guarantees are made regarding the order in which results are returned.  If
-        you desire an output order that matches the order of the given ids, you will
-        need to add the row id column to the output and align it yourself.
-
-        Unlike offsets, row ids are not 0-indexed and no assumptions should be made
-        about the possible range of row ids.  In order to use this method you must
-        first obtain the row ids by scanning or searching the table.
-
-        Even so, row ids are more stable than offsets and can be useful in some
-        situations.
-
-        There is an ongoing effort to make row ids stable which is tracked at
-        https://github.com/lancedb/lancedb/issues/1120
-
-        Parameters
-        ----------
-        row_ids: list[int]
-            The row ids to take.
-
-        Returns
-        -------
-        AsyncTakeQuery
-            A query object that can be executed to get the rows.
-        """
-
-    @abstractmethod
-    def _execute_query(
-        self,
-        query: Query,
-        *,
-        batch_size: Optional[int] = None,
-        timeout: Optional[timedelta] = None,
-    ) -> pa.RecordBatchReader: ...
-
-    @abstractmethod
-    def _explain_plan(self, query: Query, verbose: Optional[bool] = False) -> str: ...
-
-    @abstractmethod
-    def _analyze_plan(self, query: Query) -> str: ...
-
-    @abstractmethod
-    def _output_schema(self, query: Query) -> pa.Schema: ...
-
-    @abstractmethod
-    def _do_merge(
-        self,
-        merge: LanceMergeInsertBuilder,
-        new_data: DATA,
-        on_bad_vectors: OnBadVectorsType,
-        fill_value: float,
-    ) -> MergeResult: ...
-
-    @abstractmethod
-    def delete(self, where: str) -> DeleteResult:
-        """Delete rows from the table.
-
-        This can be used to delete a single row, many rows, all rows, or
-        sometimes no rows (if your predicate matches nothing).
-
-        Parameters
-        ----------
-        where: str
-            The SQL where clause to use when deleting rows.
-
-            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
-
-            The filter must not be empty, or it will error.
-
-        Returns
-        -------
-        DeleteResult
-            An object containing the new version number of the table after deletion.
-
-        Examples
-        --------
-        >>> import lancedb
-        >>> data = [
-        ...    {"x": 1, "vector": [1.0, 2]},
-        ...    {"x": 2, "vector": [3.0, 4]},
-        ...    {"x": 3, "vector": [5.0, 6]}
-        ... ]
-        >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", data)
-        >>> table.to_pandas()
-           x      vector
-        0  1  [1.0, 2.0]
-        1  2  [3.0, 4.0]
-        2  3  [5.0, 6.0]
-        >>> table.delete("x = 2")
-        DeleteResult(version=2)
-        >>> table.to_pandas()
-           x      vector
-        0  1  [1.0, 2.0]
-        1  3  [5.0, 6.0]
-
-        If you have a list of values to delete, you can combine them into a
-        stringified list and use the `IN` operator:
-
-        >>> to_remove = [1, 5]
-        >>> to_remove = ", ".join([str(v) for v in to_remove])
-        >>> to_remove
-        '1, 5'
-        >>> table.delete(f"x IN ({to_remove})")
-        DeleteResult(version=3)
-        >>> table.to_pandas()
-           x      vector
-        0  3  [5.0, 6.0]
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def update(
-        self,
-        where: Optional[str] = None,
-        values: Optional[dict] = None,
-        *,
-        values_sql: Optional[Dict[str, str]] = None,
-    ) -> UpdateResult:
-        """
-        This can be used to update zero to all rows depending on how many
-        rows match the where clause. If no where clause is provided, then
-        all rows will be updated.
-
-        Either `values` or `values_sql` must be provided. You cannot provide
-        both.
-
-        Parameters
-        ----------
-        where: str, optional
-            The SQL where clause to use when updating rows. For example, 'x = 2'
-            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
-        values: dict, optional
-            The values to update. The keys are the column names and the values
-            are the values to set.
-        values_sql: dict, optional
-            The values to update, expressed as SQL expression strings. These can
-            reference existing columns. For example, {"x": "x + 1"} will increment
-            the x column by 1.
-
-        Returns
-        -------
-        UpdateResult
-            - rows_updated: The number of rows that were updated
-            - version: The new version number of the table after the update
-
-        Examples
-        --------
-        >>> import lancedb
-        >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1.0, 2], [3, 4], [5, 6]]})
-        >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", data)
-        >>> table.to_pandas()
-           x      vector
-        0  1  [1.0, 2.0]
-        1  2  [3.0, 4.0]
-        2  3  [5.0, 6.0]
-        >>> table.update(where="x = 2", values={"vector": [10.0, 10]})
-        UpdateResult(rows_updated=1, version=2)
-        >>> table.to_pandas()
-           x        vector
-        0  1    [1.0, 2.0]
-        1  3    [5.0, 6.0]
-        2  2  [10.0, 10.0]
-        >>> table.update(values_sql={"x": "x + 1"})
-        UpdateResult(rows_updated=3, version=3)
-        >>> table.to_pandas()
-           x        vector
-        0  2    [1.0, 2.0]
-        1  4    [5.0, 6.0]
-        2  3  [10.0, 10.0]
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def cleanup_old_versions(
-        self,
-        older_than: Optional[timedelta] = None,
-        *,
-        delete_unverified: bool = False,
-    ) -> "CleanupStats":
-        """
-        Clean up old versions of the table, freeing disk space.
-
-        Parameters
-        ----------
-        older_than: timedelta, default None
-            The minimum age of the version to delete. If None, then this defaults
-            to two weeks.
-        delete_unverified: bool, default False
-            Because they may be part of an in-progress transaction, files newer
-            than 7 days old are not deleted by default. If you are sure that
-            there are no in-progress transactions, then you can set this to True
-            to delete all files older than `older_than`.
-
-        Returns
-        -------
-        CleanupStats
-            The stats of the cleanup operation, including how many bytes were
-            freed.
-
-        See Also
-        --------
-        [Table.optimize][lancedb.table.Table.optimize]: A more comprehensive
-            optimization operation that includes cleanup as well as other operations.
-
-        Notes
-        -----
-        This function is not available in LanceDb Cloud (since LanceDB
-        Cloud manages cleanup for you automatically)
-        """
-
-    @abstractmethod
-    def compact_files(self, *args, **kwargs):
-        """
-        Run the compaction process on the table.
-        This can be run after making several small appends to optimize the table
-        for faster reads.
-
-        Arguments are passed onto Lance's
-        [compact_files][lance.dataset.DatasetOptimizer.compact_files].
-        For most cases, the default should be fine.
-
-        See Also
-        --------
-        [Table.optimize][lancedb.table.Table.optimize]: A more comprehensive
-            optimization operation that includes cleanup as well as other operations.
-
-        Notes
-        -----
-        This function is not available in LanceDB Cloud (since LanceDB
-        Cloud manages compaction for you automatically)
-        """
-
-    @abstractmethod
-    def optimize(
-        self,
-        *,
-        cleanup_older_than: Optional[timedelta] = None,
-        delete_unverified: bool = False,
-        retrain: bool = False,
-    ):
-        """
-        Optimize the on-disk data and indices for better performance.
-
-        Modeled after ``VACUUM`` in PostgreSQL.
-
-        Optimization covers three operations:
-
-         * Compaction: Merges small files into larger ones
-         * Prune: Removes old versions of the dataset
-         * Index: Optimizes the indices, adding new data to existing indices
-
-        Parameters
-        ----------
-        cleanup_older_than: timedelta, optional default 7 days
-            All files belonging to versions older than this will be removed.  Set
-            to 0 days to remove all versions except the latest.  The latest version
-            is never removed.
-        delete_unverified: bool, default False
-            Files leftover from a failed transaction may appear to be part of an
-            in-progress operation (e.g. appending new data) and these files will not
-            be deleted unless they are at least 7 days old. If delete_unverified is True
-            then these files will be deleted regardless of their age.
-        retrain: bool, default False
-            This parameter is no longer used and is deprecated.
-
-        Experimental API
-        ----------------
-
-        The optimization process is undergoing active development and may change.
-        Our goal with these changes is to improve the performance of optimization and
-        reduce the complexity.
-
-        That being said, it is essential today to run optimize if you want the best
-        performance.  It should be stable and safe to use in production, but it our
-        hope that the API may be simplified (or not even need to be called) in the
-        future.
-
-        The frequency an application shoudl call optimize is based on the frequency of
-        data modifications.  If data is frequently added, deleted, or updated then
-        optimize should be run frequently.  A good rule of thumb is to run optimize if
-        you have added or modified 100,000 or more records or run more than 20 data
-        modification operations.
-        """
-
-    @abstractmethod
-    def list_indices(self) -> Iterable[IndexConfig]:
-        """
-        List all indices that have been created with
-        [Table.create_index][lancedb.table.Table.create_index]
-        """
-
-    @abstractmethod
-    def index_stats(self, index_name: str) -> Optional[IndexStatistics]:
-        """
-        Retrieve statistics about an index
-
-        Parameters
-        ----------
-        index_name: str
-            The name of the index to retrieve statistics for
-
-        Returns
-        -------
-        IndexStatistics or None
-            The statistics about the index. Returns None if the index does not exist.
-        """
-
-    @abstractmethod
-    def add_columns(
-        self, transforms: Dict[str, str] | pa.Field | List[pa.Field] | pa.Schema
-    ):
-        """
-        Add new columns with defined values.
-
-        Parameters
-        ----------
-        transforms: Dict[str, str], pa.Field, List[pa.Field], pa.Schema
-            A map of column name to a SQL expression to use to calculate the
-            value of the new column. These expressions will be evaluated for
-            each row in the table, and can reference existing columns.
-            Alternatively, a pyarrow Field or Schema can be provided to add
-            new columns with the specified data types. The new columns will
-            be initialized with null values.
-
-        Returns
-        -------
-        AddColumnsResult
-            version: the new version number of the table after adding columns.
-        """
-
-    @abstractmethod
-    def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
-        """
-        Alter column names and nullability.
-
-        Parameters
-        ----------
-        alterations : Iterable[Dict[str, Any]]
-            A sequence of dictionaries, each with the following keys:
-            - "path": str
-                The column path to alter. For a top-level column, this is the name.
-                For a nested column, this is the dot-separated path, e.g. "a.b.c".
-            - "rename": str, optional
-                The new name of the column. If not specified, the column name is
-                not changed.
-            - "data_type": pyarrow.DataType, optional
-               The new data type of the column. Existing values will be casted
-               to this type. If not specified, the column data type is not changed.
-            - "nullable": bool, optional
-                Whether the column should be nullable. If not specified, the column
-                nullability is not changed. Only non-nullable columns can be changed
-                to nullable. Currently, you cannot change a nullable column to
-                non-nullable.
-
-        Returns
-        -------
-        AlterColumnsResult
-            version: the new version number of the table after the alteration.
-        """
-
-    @abstractmethod
-    def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
-        """
-        Drop columns from the table.
-
-        Parameters
-        ----------
-        columns : Iterable[str]
-            The names of the columns to drop.
-
-        Returns
-        -------
-        DropColumnsResult
-            version: the new version number of the table dropping the columns.
-        """
-
-    @abstractmethod
-    def checkout(self, version: Union[int, str]):
-        """
-        Checks out a specific version of the Table
-
-        Any read operation on the table will now access the data at the checked out
-        version. As a consequence, calling this method will disable any read consistency
-        interval that was previously set.
-
-        This is a read-only operation that turns the table into a sort of "view"
-        or "detached head".  Other table instances will not be affected.  To make the
-        change permanent you can use the `[Self::restore]` method.
-
-        Any operation that modifies the table will fail while the table is in a checked
-        out state.
-
-        Parameters
-        ----------
-        version: int | str,
-            The version to check out. A version number (`int`) or a tag
-            (`str`) can be provided.
-
-        To return the table to a normal state use `[Self::checkout_latest]`
-        """
-
-    @abstractmethod
-    def checkout_latest(self):
-        """
-        Ensures the table is pointing at the latest version
-
-        This can be used to manually update a table when the read_consistency_interval
-        is None
-        It can also be used to undo a `[Self::checkout]` operation
-        """
-
-    @abstractmethod
-    def restore(self, version: Optional[Union[int, str]] = None):
-        """Restore a version of the table. This is an in-place operation.
-
-        This creates a new version where the data is equivalent to the
-        specified previous version. Data is not copied (as of python-v0.2.1).
-
-        Parameters
-        ----------
-        version : int or str, default None
-            The version number or version tag to restore.
-            If unspecified then restores the currently checked out version.
-            If the currently checked out version is the
-            latest version then this is a no-op.
-        """
-
-    @abstractmethod
-    def list_versions(self) -> List[Dict[str, Any]]:
-        """List all versions of the table"""
-
-    @cached_property
-    def _dataset_uri(self) -> str:
-        return _table_uri(self._conn.uri, self.name)
-
-    def _get_fts_index_path(self) -> Tuple[str, pa_fs.FileSystem, bool]:
-        from .remote.table import RemoteTable
-
-        if isinstance(self, RemoteTable) or get_uri_scheme(self._dataset_uri) != "file":
-            return ("", None, False)
-        path = join_uri(self._dataset_uri, "_indices", "fts")
-        fs, path = fs_from_uri(path)
-        index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
-        return (path, fs, index_exists)
-
-    @abstractmethod
-    def uses_v2_manifest_paths(self) -> bool:
-        """
-        Check if the table is using the new v2 manifest paths.
-
-        Returns
-        -------
-        bool
-            True if the table is using the new v2 manifest paths, False otherwise.
-        """
-
-    @abstractmethod
-    def migrate_v2_manifest_paths(self):
-        """
-        Migrate the manifest paths to the new format.
-
-        This will update the manifest to use the new v2 format for paths.
-
-        This function is idempotent, and can be run multiple times without
-        changing the state of the object store.
-
-        !!! danger
-
-            This should not be run while other concurrent operations are happening.
-            And it should also run until completion before resuming other operations.
-
-        You can use
-        [Table.uses_v2_manifest_paths][lancedb.table.Table.uses_v2_manifest_paths]
-        to check if the table is already using the new path style.
-        """
-
-
-class LanceTable(Table):
-    """
-    A table in a LanceDB database.
-
-    This can be opened in two modes: standard and time-travel.
-
-    Standard mode is the default. In this mode, the table is mutable and tracks
-    the latest version of the table. The level of read consistency is controlled
-    by the `read_consistency_interval` parameter on the connection.
-
-    Time-travel mode is activated by specifying a version number. In this mode,
-    the table is immutable and fixed to a specific version. This is useful for
-    querying historical versions of the table.
-    """
-
     def __init__(
         self,
         connection: "LanceDBConnection",
@@ -1749,6 +619,9 @@ class LanceTable(Table):
         self._conn = connection
         self._namespace = namespace
         self._location = location  # Store location for use in _dataset_path
+        # Store connection metadata for cloud compatibility
+        self._conn_uri = connection._conn.uri
+        self._db_name: Optional[str] = None  # Only set for cloud tables
         if _async is not None:
             self._table = _async
         else:
@@ -1762,6 +635,63 @@ class LanceTable(Table):
                     location=location,
                 )
             )
+
+    @classmethod
+    def _from_async(
+        cls,
+        table: AsyncTable,
+        conn_uri: str,
+        *,
+        db_name: Optional[str] = None,
+        namespace: Optional[List[str]] = None,
+    ) -> "LanceTable":
+        """Create a LanceTable from an AsyncTable and connection metadata.
+
+        This is used internally to create tables for both local and cloud backends.
+
+        Parameters
+        ----------
+        table : AsyncTable
+            The async table to wrap.
+        conn_uri : str
+            The connection URI (used for is_cloud detection).
+        db_name : str, optional
+            The database name (for cloud tables).
+        namespace : List[str], optional
+            The namespace path of the table.
+
+        Returns
+        -------
+        LanceTable
+            A new LanceTable instance.
+        """
+        instance = cls.__new__(cls)
+        instance._table = table
+        instance._conn_uri = conn_uri
+        instance._db_name = db_name
+        instance._namespace = namespace or []
+        instance._location = None
+        instance._conn = None  # No connection reference for cloud tables
+        return instance
+
+    @property
+    def is_cloud(self) -> bool:
+        """Return True if this table is connected to LanceDB Cloud."""
+        return self._conn_uri.startswith("db://")
+
+    @cached_property
+    def _dataset_uri(self) -> str:
+        """Override to use stored URI instead of connection reference."""
+        return _table_uri(self._conn_uri, self.name)
+
+    def _get_fts_index_path(self) -> Tuple[str, pa_fs.FileSystem, bool]:
+        """Override to use is_cloud instead of isinstance check."""
+        if self.is_cloud or get_uri_scheme(self._dataset_uri) != "file":
+            return ("", None, False)
+        path = join_uri(self._dataset_uri, "_indices", "fts")
+        fs, path = fs_from_uri(path)
+        index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
+        return (path, fs, index_exists)
 
     @property
     def name(self) -> str:
@@ -1832,10 +762,14 @@ class LanceTable(Table):
         # use that location directly instead of constructing from base URI
         if self._location is not None:
             return self._location
-        return _table_path(self._conn.uri, self.name)
+        return _table_path(self._conn_uri, self.name)
 
     def to_lance(self, **kwargs) -> lance.LanceDataset:
         """Return the LanceDataset backing this table."""
+        if self.is_cloud:
+            raise NotImplementedError(
+                "to_lance() is not yet supported on LanceDB cloud."
+            )
         try:
             import lance
         except ImportError:
@@ -1844,10 +778,11 @@ class LanceTable(Table):
                 "Please install with `pip install pylance`."
             )
 
+        storage_options = self._conn.storage_options if self._conn else None
         return lance.dataset(
             self._dataset_path,
             version=self.version,
-            storage_options=self._conn.storage_options,
+            storage_options=storage_options,
             **kwargs,
         )
 
@@ -2012,13 +947,22 @@ class LanceTable(Table):
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))
 
+    def __len__(self) -> int:
+        """The number of rows in this Table"""
+        return self.count_rows(None)
+
     def __repr__(self) -> str:
+        if self.is_cloud:
+            return f"Table({self._db_name}.{self.name})"
         val = f"{self.__class__.__name__}(name={self.name!r}, version={self.version}"
-        if self._conn.read_consistency_interval is not None:
+        if self._conn is not None and self._conn.read_consistency_interval is not None:
             val += ", read_consistency_interval={!r}".format(
                 self._conn.read_consistency_interval
             )
-        val += f", _conn={self._conn!r})"
+        if self._conn is not None:
+            val += f", _conn={self._conn!r})"
+        else:
+            val += ")"
         return val
 
     def __str__(self) -> str:
@@ -2035,6 +979,10 @@ class LanceTable(Table):
         -------
         pd.DataFrame
         """
+        if self.is_cloud:
+            raise NotImplementedError(
+                "to_pandas() is not yet supported on LanceDB cloud."
+            )
         return self.to_arrow().to_pandas()
 
     def to_arrow(self) -> pa.Table:
@@ -2043,6 +991,10 @@ class LanceTable(Table):
         Returns
         -------
         pa.Table"""
+        if self.is_cloud:
+            raise NotImplementedError(
+                "to_arrow() is not yet supported on LanceDB cloud."
+            )
         return LOOP.run(self._table.to_arrow())
 
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
@@ -2065,6 +1017,10 @@ class LanceTable(Table):
         -------
         pl.LazyFrame
         """
+        if self.is_cloud:
+            raise NotImplementedError(
+                "to_polars() is not yet supported on LanceDB cloud."
+            )
         from lancedb.integrations.pyarrow import PyarrowDatasetAdapter
 
         dataset = PyarrowDatasetAdapter(self)
@@ -2090,11 +1046,39 @@ class LanceTable(Table):
         m: int = 20,
         ef_construction: int = 300,
         *,
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
         target_partition_size: Optional[int] = None,
     ):
         """Create an index on the table."""
+        import logging
+
+        # Cloud-specific warnings and restrictions
+        if self.is_cloud:
+            if num_sub_vectors is not None:
+                logging.warning(
+                    "num_sub_vectors is not supported on LanceDB cloud. "
+                    "This parameter will be tuned automatically."
+                )
+            if accelerator is not None:
+                logging.warning(
+                    "GPU accelerator is not yet supported on LanceDB cloud. "
+                    "If you have 100M+ vectors to index, "
+                    "please contact us at contact@lancedb.com"
+                )
+                # For cloud, we don't use the accelerator path (no pylance)
+                accelerator = None
+            if replace is not None and replace is not True:
+                logging.warning(
+                    "replace is not supported on LanceDB cloud. "
+                    "Existing indexes will always be replaced."
+                )
+            if index_type == "IVF_HNSW_PQ":
+                raise ValueError(
+                    "IVF_HNSW_PQ is not supported on LanceDB cloud. "
+                    "Please use IVF_HNSW_SQ instead."
+                )
         if accelerator is not None:
             # accelerator is only supported through pylance.
             self.to_lance().create_index(
@@ -2178,6 +1162,7 @@ class LanceTable(Table):
                 vector_column_name,
                 replace=replace,
                 config=config,
+                wait_timeout=wait_timeout,
                 name=name,
                 train=train,
             )
@@ -2224,6 +1209,7 @@ class LanceTable(Table):
         *,
         replace: bool = True,
         index_type: ScalarIndexType = "BTREE",
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
         if index_type == "BTREE":
@@ -2235,7 +1221,13 @@ class LanceTable(Table):
         else:
             raise ValueError(f"Unknown index type {index_type}")
         return LOOP.run(
-            self._table.create_index(column, replace=replace, config=config, name=name)
+            self._table.create_index(
+                column,
+                replace=replace,
+                config=config,
+                wait_timeout=wait_timeout,
+                name=name,
+            )
         )
 
     def create_fts_index(
@@ -2259,6 +1251,7 @@ class LanceTable(Table):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
         if not use_tantivy:
@@ -2297,6 +1290,7 @@ class LanceTable(Table):
                     field_names,
                     replace=replace,
                     config=config,
+                    wait_timeout=wait_timeout,
                     name=name,
                 )
             )
@@ -2500,6 +1494,68 @@ class LanceTable(Table):
         )
         self.checkout_latest()
 
+    def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
+        """
+        Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
+        that can be used to create a "merge insert" operation
+
+        This operation can add rows, update rows, and remove rows all in a single
+        transaction. It is a very generic tool that can be used to create
+        behaviors like "insert if not exists", "update or insert (i.e. upsert)",
+        or even replace a portion of existing data with new data (e.g. replace
+        all data where month="january")
+
+        The merge insert operation works by combining new data from a
+        **source table** with existing data in a **target table** by using a
+        join.  There are three categories of records.
+
+        "Matched" records are records that exist in both the source table and
+        the target table. "Not matched" records exist only in the source table
+        (e.g. these are new data) "Not matched by source" records exist only
+        in the target table (this is old data)
+
+        The builder returned by this method can be used to customize what
+        should happen for each category of data.
+
+        Please note that the data may appear to be reordered as part of this
+        operation.  This is because updated rows will be deleted from the
+        dataset and then reinserted at the end with the new values.
+
+        Parameters
+        ----------
+
+        on: Union[str, Iterable[str]]
+            A column (or columns) to join on.  This is how records from the
+            source table and target table are matched.  Typically this is some
+            kind of key or id column.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> data = pa.table({"a": [2, 1, 3], "b": ["a", "b", "c"]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
+        >>> # Perform a "upsert" operation
+        >>> res = table.merge_insert("a")     \\
+        ...      .when_matched_update_all()     \\
+        ...      .when_not_matched_insert_all() \\
+        ...      .execute(new_data)
+        >>> res
+        MergeResult(version=2, ...)
+        >>> # The order of new rows is non-deterministic since we use
+        >>> # a hash-join as part of this operation and so we sort here
+        >>> table.to_arrow().sort_by("a").to_pandas()
+           a  b
+        0  1  b
+        1  2  x
+        2  3  y
+        3  4  z
+        """  # noqa: E501
+        on = [on] if isinstance(on, str) else list(iter(on))
+
+        return LanceMergeInsertBuilder(self, on)
+
     @cached_property
     def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
         """
@@ -2523,6 +1579,7 @@ class LanceTable(Table):
         query_type: Literal["vector"] = "vector",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceVectorQueryBuilder: ...
 
     @overload
@@ -2533,6 +1590,7 @@ class LanceTable(Table):
         query_type: Literal["fts"] = "fts",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceFtsQueryBuilder: ...
 
     @overload
@@ -2545,6 +1603,7 @@ class LanceTable(Table):
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceHybridQueryBuilder: ...
 
     @overload
@@ -2555,6 +1614,7 @@ class LanceTable(Table):
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceEmptyQueryBuilder: ...
 
     def search(
@@ -2566,6 +1626,7 @@ class LanceTable(Table):
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -2624,6 +1685,9 @@ class LanceTable(Table):
             The column(s) to search in for full-text search.
             If None then the search is performed on all indexed columns.
             For now, only one column can be searched at a time.
+        fast_search: bool, default False
+            If True, skip loading the index into memory and use a fast search.
+            This is useful for one-off queries on LanceDB Cloud.
 
         Returns
         -------
@@ -2635,12 +1699,15 @@ class LanceTable(Table):
         """
         if isinstance(query, FullTextQuery):
             query_type = "fts"
-        vector_column_name = infer_vector_column_name(
-            schema=self.schema,
-            query_type=query_type,
-            query=query,
-            vector_column_name=vector_column_name,
-        )
+        # For cloud tables, skip vector column inference - the server handles it
+        # For local tables, infer the vector column from the schema
+        if not self.is_cloud:
+            vector_column_name = infer_vector_column_name(
+                schema=self.schema,
+                query_type=query_type,
+                query=query,
+                vector_column_name=vector_column_name,
+            )
 
         return LanceQueryBuilder.create(
             self,
@@ -2649,6 +1716,7 @@ class LanceTable(Table):
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
             fts_columns=fts_columns or [],
+            fast_search=fast_search,
         )
 
     @classmethod
@@ -2730,6 +1798,9 @@ class LanceTable(Table):
         self._conn = db
         self._namespace = namespace
         self._location = location
+        # Store connection metadata for cloud compatibility
+        self._conn_uri = db._conn.uri
+        self._db_name = None  # Only set for cloud tables
 
         if data_storage_version is not None:
             warnings.warn(
@@ -2901,6 +1972,12 @@ class LanceTable(Table):
             The stats of the cleanup operation, including how many bytes were
             freed.
         """
+        if self.is_cloud:
+            warnings.warn(
+                "cleanup_old_versions() is a no-op on LanceDB Cloud. "
+                "Tables are automatically cleaned up and optimized."
+            )
+            return None
         return self.to_lance().cleanup_old_versions(
             older_than, delete_unverified=delete_unverified
         )
@@ -2921,6 +1998,12 @@ class LanceTable(Table):
          (see Lance documentation for more details) For most cases, the default
         should be fine.
         """
+        if self.is_cloud:
+            warnings.warn(
+                "compact_files() is a no-op on LanceDB Cloud. "
+                "Tables are automatically compacted and optimized."
+            )
+            return None
         stats = self.to_lance().optimize.compact_files(*args, **kwargs)
         self.checkout_latest()
         return stats
@@ -2975,6 +2058,12 @@ class LanceTable(Table):
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
+        if self.is_cloud:
+            warnings.warn(
+                "optimize() is a no-op on LanceDB Cloud. "
+                "Indices are optimized automatically."
+            )
+            return
         LOOP.run(
             self._table.optimize(
                 cleanup_older_than=cleanup_older_than,
@@ -3027,6 +2116,10 @@ class LanceTable(Table):
         bool
             True if the table is using the new v2 manifest paths, False otherwise.
         """
+        if self.is_cloud:
+            raise NotImplementedError(
+                "uses_v2_manifest_paths() is not supported on the LanceDB Cloud"
+            )
         return LOOP.run(self._table.uses_v2_manifest_paths())
 
     def migrate_v2_manifest_paths(self):
@@ -3047,6 +2140,10 @@ class LanceTable(Table):
         [LanceTable.uses_v2_manifest_paths][lancedb.table.LanceTable.uses_v2_manifest_paths]
         to check if the table is already using the new path style.
         """
+        if self.is_cloud:
+            raise NotImplementedError(
+                "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
+            )
         LOOP.run(self._table.migrate_v2_manifest_paths())
 
     def replace_field_metadata(self, field_name: str, new_metadata: Dict[str, str]):
@@ -4811,3 +3908,7 @@ class AsyncTags:
             The new table version to tag.
         """
         await self._table.tags.update(tag, version)
+
+
+# Backwards compatibility alias
+LanceTable = Table
