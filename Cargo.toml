@@ -15,20 +15,20 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=1.0.1-beta.1", default-features = false, "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=1.0.1-beta.1", "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=1.0.1-beta.1", "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=1.0.1-beta.1", "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=1.0.1-beta.1", default-features = false, "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=1.0.1-beta.1", "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=1.0.1-beta.1", "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=1.0.1-beta.1", "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=1.0.1-beta.1", default-features = false, "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=1.0.1-beta.1", "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=1.0.1-beta.1", "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=1.0.1-beta.1", "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=1.0.1-beta.1", "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=1.0.1-beta.1", "tag" = "v1.0.1-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=1.0.1", default-features = false }
+lance-core = "=1.0.1"
+lance-datagen = "=1.0.1"
+lance-file = "=1.0.1"
+lance-io = { "version" = "=1.0.1", default-features = false }
+lance-index = "=1.0.1"
+lance-linalg = "=1.0.1"
+lance-namespace = "=1.0.1"
+lance-namespace-impls = { "version" = "=1.0.1", default-features = false }
+lance-table = "=1.0.1"
+lance-testing = "=1.0.1"
+lance-datafusion = "=1.0.1"
+lance-encoding = "=1.0.1"
+lance-arrow = "=1.0.1"
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "56.2", optional = false }
