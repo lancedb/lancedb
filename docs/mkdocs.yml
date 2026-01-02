@@ -11,7 +11,7 @@ watch:
 theme:
   name: "material"
   logo: assets/logo.png
-  favicon: assets/logo.png
+  favicon: assets/favicon.ico
   palette:
     # Palette toggle for light mode
     - scheme: lancedb
@@ -32,8 +32,6 @@ theme:
     - content.tooltips
     - toc.follow
     - navigation.top
-    - navigation.tabs
-    - navigation.tabs.sticky
     - navigation.footer
     - navigation.tracking
     - navigation.instant
@@ -115,12 +113,13 @@ markdown_extensions:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - markdown.extensions.toc:
-      baselevel: 1
-      permalink: ""
+      toc_depth: 3
+      permalink: true
+      permalink_title: Anchor link to this section
 
 nav:
-  - API reference:
-      - Overview: index.md
+  - Documentation:
+      - SDK Reference: index.md
       - Python: python/python.md
       - Javascript/TypeScript: js/globals.md
       - Java: java/java.md
