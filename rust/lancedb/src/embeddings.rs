@@ -120,8 +120,13 @@ impl MemoryRegistry {
 }
 
 /// A record batch reader that has embeddings applied to it
-/// This is a wrapper around another record batch reader that applies an embedding function
-/// when reading from the record batch
+///
+/// This is a wrapper around another record batch reader that applies embedding functions
+/// when reading from the record batch.
+///
+/// When multiple embedding functions are defined, they are computed in parallel using
+/// scoped threads to improve performance. For a single embedding function, computation
+/// is done inline without threading overhead.
 pub struct WithEmbeddings<R: RecordBatchReader> {
     inner: R,
     embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
@@ -235,6 +240,48 @@ impl<R: RecordBatchReader> WithEmbeddings<R> {
             column_definitions,
         })
     }
+
+    fn compute_embeddings_parallel(&self, batch: &RecordBatch) -> Result<Vec<Arc<dyn Array>>> {
+        if self.embeddings.len() == 1 {
+            let (fld, func) = &self.embeddings[0];
+            let src_column =
+                batch
+                    .column_by_name(&fld.source_column)
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: format!("Source column '{}' not found", fld.source_column),
+                    })?;
+            return Ok(vec![func.compute_source_embeddings(src_column.clone())?]);
+        }
+
+        // Parallel path: multiple embeddings
+        std::thread::scope(|s| {
+            let handles: Vec<_> = self
+                .embeddings
+                .iter()
+                .map(|(fld, func)| {
+                    let src_column = batch.column_by_name(&fld.source_column).ok_or_else(|| {
+                        Error::InvalidInput {
+                            message: format!("Source column '{}' not found", fld.source_column),
+                        }
+                    })?;
+
+                    let handle =
+                        s.spawn(move || func.compute_source_embeddings(src_column.clone()));
+
+                    Ok(handle)
+                })
+                .collect::<Result<_>>()?;
+
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join().map_err(|e| Error::Runtime {
+                        message: format!("Thread panicked during embedding computation: {:?}", e),
+                    })?
+                })
+                .collect()
+        })
+    }
 }
 
 impl<R: RecordBatchReader> Iterator for MaybeEmbedded<R> {
@@ -262,19 +309,19 @@ impl<R: RecordBatchReader> Iterator for WithEmbeddings<R> {
     fn next(&mut self) -> Option<Self::Item> {
         let batch = self.inner.next()?;
         match batch {
-            Ok(mut batch) => {
-                // todo: parallelize this
-                for (fld, func) in self.embeddings.iter() {
-                    let src_column = batch.column_by_name(&fld.source_column).unwrap();
-                    let embedding = match func.compute_source_embeddings(src_column.clone()) {
-                        Ok(embedding) => embedding,
-                        Err(e) => {
-                            return Some(Err(arrow_schema::ArrowError::ComputeError(format!(
-                                "Error computing embedding: {}",
-                                e
-                            ))))
-                        }
-                    };
+            Ok(batch) => {
+                let embeddings = match self.compute_embeddings_parallel(&batch) {
+                    Ok(emb) => emb,
+                    Err(e) => {
+                        return Some(Err(arrow_schema::ArrowError::ComputeError(format!(
+                            "Error computing embedding: {}",
+                            e
+                        ))))
+                    }
+                };
+
+                let mut batch = batch;
+                for ((fld, _), embedding) in self.embeddings.iter().zip(embeddings.iter()) {
                     let dst_field_name = fld
                         .dest_column
                         .clone()
@@ -286,7 +333,7 @@ impl<R: RecordBatchReader> Iterator for WithEmbeddings<R> {
                         embedding.nulls().is_some(),
                     );
 
-                    match batch.try_with_column(dst_field.clone(), embedding) {
+                    match batch.try_with_column(dst_field.clone(), embedding.clone()) {
                         Ok(b) => batch = b,
                         Err(e) => return Some(Err(e)),
                     };
