@@ -275,7 +275,12 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
         return pa.timestamp("us", tz=tz)
     elif getattr(py_type, "__origin__", None) in (list, tuple):
         child = py_type.__args__[0]
-        return pa.list_(_pydantic_type_to_arrow_type(child, field))
+        # Check if child is a Pydantic model (class that inherits from BaseModel)
+        if inspect.isclass(child) and issubclass(child, pydantic.BaseModel):
+            # Convert Pydantic model to struct type
+            fields = _pydantic_model_to_fields(child)
+            return pa.list_(pa.struct(fields))
+        return pa.list_(_py_type_to_arrow_type(child, field))
     raise TypeError(
         f"Converting Pydantic type to Arrow Type: unsupported type {py_type}."
     )
@@ -319,7 +324,12 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
 
         if origin is list:
             child = args[0]
-            return pa.list_(_pydantic_type_to_arrow_type(child, field))
+            # Check if child is a Pydantic model (class that inherits from BaseModel)
+            if inspect.isclass(child) and issubclass(child, pydantic.BaseModel):
+                # Convert Pydantic model to struct type
+                fields = _pydantic_model_to_fields(child)
+                return pa.list_(pa.struct(fields))
+            return pa.list_(_py_type_to_arrow_type(child, field))
         elif origin == Union:
             if len(args) == 2 and args[1] is type(None):
                 return _pydantic_type_to_arrow_type(args[0], field)
