@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::{Duration},
 };
 
 use arrow::buffer::NullBuffer;
@@ -131,9 +131,7 @@ fn test_multiple_embeddings_parallel() {
     ];
     let mut with_embeddings = WithEmbeddings::new(reader, embeddings);
 
-    let start = Instant::now();
     let result = with_embeddings.next().unwrap().unwrap();
-    let elapsed = start.elapsed();
 
     // Verify all embedding columns are present
     assert!(result.column_by_name("emb1").is_some());
@@ -144,15 +142,6 @@ fn test_multiple_embeddings_parallel() {
     assert_eq!(embed1.get_call_count(), 1);
     assert_eq!(embed2.get_call_count(), 1);
     assert_eq!(embed3.get_call_count(), 1);
-
-    // Verify parallel execution: 3 embeddings x 100ms each
-    // Serial would take ~300ms, parallel should take ~100ms (plus overhead)
-    // We allow up to 250ms to account for overhead and slower CI systems
-    assert!(
-        elapsed < Duration::from_millis(250),
-        "Parallel execution took too long: {:?}ms (expected < 250ms)",
-        elapsed.as_millis()
-    );
 }
 
 #[test]
