@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
-    time::{Duration},
+    time::Duration,
 };
 
 use arrow::buffer::NullBuffer;
