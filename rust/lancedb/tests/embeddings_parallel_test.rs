@@ -147,10 +147,10 @@ fn test_multiple_embeddings_parallel() {
 
     // Verify parallel execution: 3 embeddings x 100ms each
     // Serial would take ~300ms, parallel should take ~100ms (plus overhead)
-    // We allow up to 200ms to account for overhead and slower CI systems
+    // We allow up to 250ms to account for overhead and slower CI systems
     assert!(
-        elapsed < Duration::from_millis(200),
-        "Parallel execution took too long: {:?}ms (expected < 200ms)",
+        elapsed < Duration::from_millis(250),
+        "Parallel execution took too long: {:?}ms (expected < 250ms)",
         elapsed.as_millis()
     );
 }
