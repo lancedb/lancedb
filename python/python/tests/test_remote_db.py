@@ -193,7 +193,6 @@ def test_create_table_exist_ok_invalid_mode_sync():
         with pytest.raises(
             ValueError, match=re.escape("exist_ok to True")
         ):
-            print(f"DEBUG2: type of db is {type(db)}")
             db.create_table("test", [{"id": 1}], exist_ok=True, mode="overwrite")
 
 

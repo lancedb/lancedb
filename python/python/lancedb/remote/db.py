@@ -493,7 +493,7 @@ class RemoteDBConnection(DBConnection):
         if exist_ok:
             if mode is not None:
                 if mode != "exist_ok":
-                    raise ValueError(f"You cannot a mode argument of {mode} when setting exist_ok to True.")
+                    raise ValueError(f"You cannot set a mode argument of {mode} when setting exist_ok to True.")
             else:
                 mode = "exist_ok"
         if namespace is None:
