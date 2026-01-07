@@ -168,6 +168,42 @@ def test_table_len_sync():
         assert len(table) == 1
 
 
+def test_create_table_exist_ok():
+    def handler(request):
+        if request.path == "/v1/table/test/create/?mode=exist_ok":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}], exist_ok=True)
+        assert table is not None
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}], mode="create", exist_ok=True)
+        assert table is not None
+
+
+def test_create_table_exist_ok_with_mode_overwrite():
+    def handler(request):
+        if request.path == "/v1/table/test/create/?mode=overwrite":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}], mode="overwrite", exist_ok=True)
+        assert table is not None
+
+
 @pytest.mark.asyncio
 async def test_http_error():
     request_id_holder = {"request_id": None}
