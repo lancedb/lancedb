@@ -384,6 +384,7 @@ class RemoteDBConnection(DBConnection):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         mode: Optional[str] = None,
+        exist_ok: bool = False,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         namespace: Optional[List[str]] = None,
@@ -412,6 +413,12 @@ class RemoteDBConnection(DBConnection):
             - pyarrow.Schema
 
             - [LanceModel][lancedb.pydantic.LanceModel]
+        mode: str, default "create"
+            The mode to use when creating the table.
+            Can be either "create", "overwrite", or "exist_ok".
+        exist_ok: bool, default False
+            If True, return the existing table if it already exists. This
+            is equivalent to using mode="exist_ok".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill".
@@ -483,6 +490,12 @@ class RemoteDBConnection(DBConnection):
         LanceTable(table4)
 
         """
+        if exist_ok:
+            if mode is not None:
+                if mode != "exist_ok":
+                    raise ValueError(f"You cannot a mode argument of {mode} when setting exist_ok to True.")
+            else:
+                mode = "exist_ok"
         if namespace is None:
             namespace = []
         validate_table_name(name)

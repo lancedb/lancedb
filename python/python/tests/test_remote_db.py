@@ -15,6 +15,7 @@ from packaging.version import Version
 import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.remote import ClientConfig
+from lancedb.remote.db import RemoteDBConnection
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
 import pyarrow as pa
@@ -166,6 +167,34 @@ def test_table_len_sync():
     with mock_lancedb_connection(handler) as db:
         table = db.create_table("test", [{"id": 1}])
         assert len(table) == 1
+
+
+def test_create_table_exist_ok_sync():
+    def handler(request):
+        if request.path == "/v1/table/test/create/?mode=exist_ok":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}], exist_ok=True)
+        assert table is not None
+
+
+def test_create_table_exist_ok_invalid_mode_sync():
+    def handler(request):
+        raise AssertionError("Unexpected request")
+
+    with mock_lancedb_connection(handler) as db:
+        with pytest.raises(
+            ValueError, match=re.escape("exist_ok to True")
+        ):
+            print(f"DEBUG2: type of db is {type(db)}")
+            db.create_table("test", [{"id": 1}], exist_ok=True, mode="overwrite")
 
 
 @pytest.mark.asyncio
