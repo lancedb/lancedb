@@ -417,8 +417,8 @@ class RemoteDBConnection(DBConnection):
             The mode to use when creating the table.
             Can be either "create", "overwrite", or "exist_ok".
         exist_ok: bool, default False
-            If True, return the existing table if it already exists. This
-            is equivalent to using mode="exist_ok".
+            If exist_ok is True, and mode is None or "create", mode will be changed
+            to "exist_ok".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill".
@@ -491,12 +491,9 @@ class RemoteDBConnection(DBConnection):
 
         """
         if exist_ok:
-            if mode is not None and mode != "exist_ok":
-                raise ValueError(
-                    f"You cannot set a mode argument of {mode} when setting "
-                    "exist_ok to True."
-                )
-            else:
+            if mode == "create":
+                mode = "exist_ok"
+            elif not mode:
                 mode = "exist_ok"
         if namespace is None:
             namespace = []
