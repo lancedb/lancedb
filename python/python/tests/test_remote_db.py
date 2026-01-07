@@ -190,9 +190,7 @@ def test_create_table_exist_ok_invalid_mode_sync():
         raise AssertionError("Unexpected request")
 
     with mock_lancedb_connection(handler) as db:
-        with pytest.raises(
-            ValueError, match=re.escape("exist_ok to True")
-        ):
+        with pytest.raises(ValueError, match=re.escape("exist_ok to True")):
             db.create_table("test", [{"id": 1}], exist_ok=True, mode="overwrite")
 
 
