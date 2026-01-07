@@ -15,7 +15,6 @@ from packaging.version import Version
 import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.remote import ClientConfig
-from lancedb.remote.db import RemoteDBConnection
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
 import pyarrow as pa
