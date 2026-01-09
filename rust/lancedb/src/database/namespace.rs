@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lance_namespace::{
     models::{
-        CreateEmptyTableRequest, CreateNamespaceRequest, CreateNamespaceResponse,
+        CreateNamespaceRequest, CreateNamespaceResponse, DeclareTableRequest,
         DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
         DropNamespaceRequest, DropNamespaceResponse, DropTableRequest, ListNamespacesRequest,
         ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
@@ -137,6 +137,7 @@ impl Database for LanceNamespaceDatabase {
             id: Some(request.namespace),
             page_token: request.start_after,
             limit: request.limit.map(|l| l as i32),
+            ..Default::default()
         };
 
         let response = self.namespace.list_tables(ns_request).await?;
@@ -154,6 +155,7 @@ impl Database for LanceNamespaceDatabase {
         let describe_request = DescribeTableRequest {
             id: Some(table_id.clone()),
             version: None,
+            ..Default::default()
         };
 
         let describe_result = self.namespace.describe_table(describe_request).await;
@@ -171,6 +173,7 @@ impl Database for LanceNamespaceDatabase {
                     // Drop the existing table - must succeed
                     let drop_request = DropTableRequest {
                         id: Some(table_id.clone()),
+                        ..Default::default()
                     };
                     self.namespace
                         .drop_table(drop_request)
@@ -202,29 +205,24 @@ impl Database for LanceNamespaceDatabase {
         let mut table_id = request.namespace.clone();
         table_id.push(request.name.clone());
 
-        let create_empty_request = CreateEmptyTableRequest {
+        let declare_request = DeclareTableRequest {
             id: Some(table_id.clone()),
             location: None,
-            properties: if self.storage_options.is_empty() {
-                None
-            } else {
-                Some(self.storage_options.clone())
-            },
+            vend_credentials: None,
+            ..Default::default()
         };
 
-        let create_empty_response = self
+        let declare_response = self
             .namespace
-            .create_empty_table(create_empty_request)
+            .declare_table(declare_request)
             .await
             .map_err(|e| Error::Runtime {
-                message: format!("Failed to create empty table: {}", e),
+                message: format!("Failed to declare table: {}", e),
             })?;
 
-        let location = create_empty_response
-            .location
-            .ok_or_else(|| Error::Runtime {
-                message: "Table location is missing from create_empty_table response".to_string(),
-            })?;
+        let location = declare_response.location.ok_or_else(|| Error::Runtime {
+            message: "Table location is missing from declare_table response".to_string(),
+        })?;
 
         let native_table = NativeTable::create_from_namespace(
             self.namespace.clone(),
@@ -281,7 +279,10 @@ impl Database for LanceNamespaceDatabase {
         let mut table_id = namespace.to_vec();
         table_id.push(name.to_string());
 
-        let drop_request = DropTableRequest { id: Some(table_id) };
+        let drop_request = DropTableRequest {
+            id: Some(table_id),
+            ..Default::default()
+        };
         self.namespace
             .drop_table(drop_request)
             .await
@@ -438,6 +439,7 @@ mod tests {
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
+            ..Default::default()
         })
         .await
         .expect("Failed to create namespace");
@@ -499,6 +501,7 @@ mod tests {
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
+            ..Default::default()
         })
         .await
         .expect("Failed to create namespace");
@@ -563,6 +566,7 @@ mod tests {
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
+            ..Default::default()
         })
         .await
         .expect("Failed to create namespace");
@@ -647,6 +651,7 @@ mod tests {
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
+            ..Default::default()
         })
         .await
         .expect("Failed to create namespace");
@@ -703,6 +708,7 @@ mod tests {
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
+            ..Default::default()
         })
         .await
         .expect("Failed to create namespace");
@@ -784,6 +790,7 @@ mod tests {
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
+            ..Default::default()
         })
         .await
         .expect("Failed to create namespace");
@@ -818,6 +825,7 @@ mod tests {
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
+            ..Default::default()
         })
         .await
         .expect("Failed to create namespace");
