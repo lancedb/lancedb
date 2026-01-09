@@ -17,7 +17,7 @@ use pyo3::types::PyDict;
 /// Internal wrapper around a Python object implementing StorageOptionsProvider
 pub struct PyStorageOptionsProvider {
     /// The Python object implementing fetch_storage_options()
-    inner: PyObject,
+    inner: Py<PyAny>,
 }
 
 impl Clone for PyStorageOptionsProvider {
@@ -29,7 +29,7 @@ impl Clone for PyStorageOptionsProvider {
 }
 
 impl PyStorageOptionsProvider {
-    pub fn new(obj: PyObject) -> PyResult<Self> {
+    pub fn new(obj: Py<PyAny>) -> PyResult<Self> {
         Python::with_gil(|py| {
             // Verify the object has a fetch_storage_options method
             if !obj.bind(py).hasattr("fetch_storage_options")? {
@@ -143,7 +143,7 @@ impl std::fmt::Debug for PyStorageOptionsProviderWrapper {
 /// This is the main entry point for converting Python StorageOptionsProvider objects
 /// to Rust trait objects that can be used by the Lance ecosystem.
 pub fn py_object_to_storage_options_provider(
-    py_obj: PyObject,
+    py_obj: Py<PyAny>,
 ) -> PyResult<Arc<dyn StorageOptionsProvider>> {
     let py_provider = PyStorageOptionsProvider::new(py_obj)?;
     Ok(Arc::new(PyStorageOptionsProviderWrapper::new(py_provider)))

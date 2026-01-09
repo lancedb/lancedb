@@ -287,7 +287,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.schema().await.infer_error()?;
-            Python::with_gil(|py| schema.to_pyarrow(py))
+            Python::with_gil(|py| schema.to_pyarrow(py).map(|bound| bound.unbind()))
         })
     }
 

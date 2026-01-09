@@ -12,7 +12,7 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
     types::{PyDict, PyDictMethods},
-    Bound, FromPyObject, Py, PyAny, PyObject, PyRef, PyResult, Python,
+    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -114,7 +114,7 @@ impl Connection {
         data: Bound<'_, PyAny>,
         namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
-        storage_options_provider: Option<PyObject>,
+        storage_options_provider: Option<Py<PyAny>>,
         location: Option<String>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
@@ -152,7 +152,7 @@ impl Connection {
         schema: Bound<'_, PyAny>,
         namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
-        storage_options_provider: Option<PyObject>,
+        storage_options_provider: Option<Py<PyAny>>,
         location: Option<String>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
@@ -187,7 +187,7 @@ impl Connection {
         name: String,
         namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
-        storage_options_provider: Option<PyObject>,
+        storage_options_provider: Option<Py<PyAny>>,
         index_cache_size: Option<u32>,
         location: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
@@ -304,6 +304,7 @@ impl Connection {
                 },
                 page_token,
                 limit: limit.map(|l| l as i32),
+                ..Default::default()
             };
             let response = inner.list_namespaces(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {
@@ -325,12 +326,12 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{create_namespace_request, CreateNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_lowercase().as_str() {
-                "create" => Some(create_namespace_request::Mode::Create),
-                "exist_ok" => Some(create_namespace_request::Mode::ExistOk),
-                "overwrite" => Some(create_namespace_request::Mode::Overwrite),
-                _ => None,
+            use lance_namespace::models::CreateNamespaceRequest;
+            let mode_enum = mode.map(|m| match m.to_lowercase().as_str() {
+                "create" => "Create".to_string(),
+                "exist_ok" => "ExistOk".to_string(),
+                "overwrite" => "Overwrite".to_string(),
+                other => other.to_string(),
             });
             let request = CreateNamespaceRequest {
                 id: if namespace.is_empty() {
@@ -340,6 +341,7 @@ impl Connection {
                 },
                 mode: mode_enum,
                 properties,
+                ..Default::default()
             };
             let response = inner.create_namespace(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {
@@ -360,16 +362,16 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{drop_namespace_request, DropNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_uppercase().as_str() {
-                "SKIP" => Some(drop_namespace_request::Mode::Skip),
-                "FAIL" => Some(drop_namespace_request::Mode::Fail),
-                _ => None,
+            use lance_namespace::models::DropNamespaceRequest;
+            let mode_enum = mode.map(|m| match m.to_uppercase().as_str() {
+                "SKIP" => "Skip".to_string(),
+                "FAIL" => "Fail".to_string(),
+                other => other.to_string(),
             });
-            let behavior_enum = behavior.and_then(|b| match b.to_uppercase().as_str() {
-                "RESTRICT" => Some(drop_namespace_request::Behavior::Restrict),
-                "CASCADE" => Some(drop_namespace_request::Behavior::Cascade),
-                _ => None,
+            let behavior_enum = behavior.map(|b| match b.to_uppercase().as_str() {
+                "RESTRICT" => "Restrict".to_string(),
+                "CASCADE" => "Cascade".to_string(),
+                other => other.to_string(),
             });
             let request = DropNamespaceRequest {
                 id: if namespace.is_empty() {
@@ -379,6 +381,7 @@ impl Connection {
                 },
                 mode: mode_enum,
                 behavior: behavior_enum,
+                ..Default::default()
             };
             let response = inner.drop_namespace(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {
@@ -405,6 +408,7 @@ impl Connection {
                 } else {
                     Some(namespace)
                 },
+                ..Default::default()
             };
             let response = inner.describe_namespace(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {
@@ -434,6 +438,7 @@ impl Connection {
                 },
                 page_token,
                 limit: limit.map(|l| l as i32),
+                ..Default::default()
             };
             let response = inner.list_tables(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {

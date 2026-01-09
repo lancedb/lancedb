@@ -1720,6 +1720,7 @@ mod tests {
                 id: Some(namespace.clone()),
                 mode: None,
                 properties: None,
+                ..Default::default()
             })
             .await
             .expect("Failed to create namespace");
@@ -1746,6 +1747,7 @@ mod tests {
                     id: Some(namespace.clone()),
                     page_token: None,
                     limit: None,
+                    ..Default::default()
                 })
                 .await
                 .expect("Failed to list tables");
@@ -1758,6 +1760,7 @@ mod tests {
                     id: Some(namespace.clone()),
                     page_token: None,
                     limit: None,
+                    ..Default::default()
                 })
                 .await
                 .unwrap();
@@ -1799,6 +1802,7 @@ mod tests {
                 id: Some(namespace.clone()),
                 mode: None,
                 properties: None,
+                ..Default::default()
             })
             .await
             .expect("Failed to create namespace");
@@ -1825,6 +1829,7 @@ mod tests {
                     id: Some(namespace.clone()),
                     page_token: None,
                     limit: None,
+                    ..Default::default()
                 })
                 .await
                 .unwrap();

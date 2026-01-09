@@ -42,8 +42,8 @@ use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
 use lance_io::object_store::LanceNamespaceStorageOptionsProvider;
 use lance_namespace::models::{
-    QueryTableRequest as NsQueryTableRequest, QueryTableRequestFullTextQuery,
-    QueryTableRequestVector, StringFtsQuery,
+    QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
+    QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery,
 };
 use lance_namespace::LanceNamespace;
 use lance_table::format::Manifest;
@@ -1424,7 +1424,7 @@ impl Table {
             })
             .collect::<Vec<_>>();
 
-        let unioned = Arc::new(UnionExec::new(projected_plans));
+        let unioned = UnionExec::try_new(projected_plans).unwrap();
         // We require 1 partition in the final output
         let repartitioned = RepartitionExec::try_new(
             unioned,
@@ -2332,6 +2332,18 @@ impl NativeTable {
         }
     }
 
+    /// Convert selected columns into the namespace request format.
+    fn namespace_columns(&self, columns: &[String]) -> Option<Box<QueryTableRequestColumns>> {
+        if columns.is_empty() {
+            None
+        } else {
+            Some(Box::new(QueryTableRequestColumns {
+                column_names: Some(columns.to_vec()),
+                column_aliases: None,
+            }))
+        }
+    }
+
     /// Convert an AnyQuery to the namespace QueryTableRequest format.
     fn convert_to_namespace_query(&self, query: &AnyQuery) -> Result<NsQueryTableRequest> {
         match query {
@@ -2348,7 +2360,7 @@ impl NativeTable {
                 // Convert select to columns list
                 let columns = match &vq.base.select {
                     Select::All => None,
-                    Select::Columns(cols) => Some(cols.clone()),
+                    Select::Columns(cols) => self.namespace_columns(cols),
                     Select::Dynamic(_) => {
                         return Err(Error::NotSupported {
                             message:
@@ -2383,6 +2395,8 @@ impl NativeTable {
                 });
 
                 Ok(NsQueryTableRequest {
+                    identity: None,
+                    context: None,
                     id: None, // Will be set in namespace_query
                     k: vq.base.limit.unwrap_or(10) as i32,
                     vector: Box::new(vector),
@@ -2421,7 +2435,7 @@ impl NativeTable {
 
                 let columns = match &q.select {
                     Select::All => None,
-                    Select::Columns(cols) => Some(cols.clone()),
+                    Select::Columns(cols) => self.namespace_columns(cols),
                     Select::Dynamic(_) => {
                         return Err(Error::NotSupported {
                             message: "Dynamic columns are not supported for server-side query"
@@ -2453,6 +2467,8 @@ impl NativeTable {
                 });
 
                 Ok(NsQueryTableRequest {
+                    identity: None,
+                    context: None,
                     id: None, // Will be set by caller
                     vector,
                     k: q.limit.unwrap_or(10) as i32,
@@ -5146,7 +5162,13 @@ mod tests {
         assert_eq!(ns_request.k, 10);
         assert_eq!(ns_request.offset, Some(5));
         assert_eq!(ns_request.filter, Some("id > 0".to_string()));
-        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        let column_names = ns_request
+            .columns
+            .as_ref()
+            .and_then(|c| c.column_names.as_ref())
+            .cloned()
+            .unwrap();
+        assert_eq!(column_names, vec!["id".to_string()]);
         assert_eq!(ns_request.vector_column, Some("vector".to_string()));
         assert_eq!(ns_request.distance_type, Some("l2".to_string()));
         assert!(ns_request.vector.single_vector.is_some());
@@ -5187,7 +5209,13 @@ mod tests {
         assert_eq!(ns_request.k, 20);
         assert_eq!(ns_request.offset, Some(5));
         assert_eq!(ns_request.filter, Some("id > 5".to_string()));
-        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        let column_names = ns_request
+            .columns
+            .as_ref()
+            .and_then(|c| c.column_names.as_ref())
+            .cloned()
+            .unwrap();
+        assert_eq!(column_names, vec!["id".to_string()]);
         assert_eq!(ns_request.with_row_id, Some(true));
         assert_eq!(ns_request.bypass_vector_index, Some(true));
         assert!(ns_request.vector_column.is_none()); // No vector column for plain queries

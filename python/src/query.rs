@@ -216,7 +216,7 @@ impl<'py> IntoPyObject<'py> for PyQueryVectors {
         let py_objs = self
             .0
             .into_iter()
-            .map(|v| v.to_data().into_pyarrow(py))
+            .map(|v| v.to_data().into_pyarrow(py).map(|bound| bound.unbind()))
             .collect::<Result<Vec<_>, _>>()?;
         PyList::new(py, py_objs)
     }
@@ -453,7 +453,7 @@ impl Query {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            Python::with_gil(|py| schema.to_pyarrow(py))
+            Python::with_gil(|py| schema.to_pyarrow(py).map(|bound| bound.unbind()))
         })
     }
 
@@ -532,7 +532,7 @@ impl TakeQuery {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            Python::with_gil(|py| schema.to_pyarrow(py))
+            Python::with_gil(|py| schema.to_pyarrow(py).map(|bound| bound.unbind()))
         })
     }
 
@@ -627,7 +627,7 @@ impl FTSQuery {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            Python::with_gil(|py| schema.to_pyarrow(py))
+            Python::with_gil(|py| schema.to_pyarrow(py).map(|bound| bound.unbind()))
         })
     }
 
@@ -806,7 +806,7 @@ impl VectorQuery {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            Python::with_gil(|py| schema.to_pyarrow(py))
+            Python::with_gil(|py| schema.to_pyarrow(py).map(|bound| bound.unbind()))
         })
     }
 
