@@ -8,10 +8,9 @@ use datafusion_execution::{disk_manager::DiskManagerBuilder, runtime_env::Runtim
 use datafusion_expr::col;
 use futures::TryStreamExt;
 use lance_core::ROW_ID;
-use lance_datafusion::exec::SessionContextExt;
 
 use crate::{
-    arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream},
+    arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     connect,
     database::{CreateTableData, CreateTableRequest, Database},
     dataloader::permutation::{
@@ -178,12 +177,17 @@ impl PermutationBuilder {
                 .build_arc()
                 .unwrap(),
         );
-        let df = ctx
-            .read_one_shot(data.into_df_stream())
+        let batches = data
             .map_err(|e| Error::Other {
                 message: format!("Failed to setup sort by split id: {}", e),
                 source: Some(e.into()),
-            })?;
+            })
+            .try_collect::<Vec<_>>()
+            .await?;
+        let df = ctx.read_batches(batches).map_err(|e| Error::Other {
+            message: format!("Failed to setup sort by split id: {}", e),
+            source: Some(e.into()),
+        })?;
         let df_stream = df
             .sort_by(vec![col(SPLIT_ID_COLUMN)])
             .map_err(|e| Error::Other {

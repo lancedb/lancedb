@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
@@ -281,7 +282,7 @@ impl PyPermutationReader {
         let reader = slf.reader.clone();
         future_into_py(slf.py(), async move {
             let schema = reader.output_schema(selection).await.infer_error()?;
-            Python::with_gil(|py| schema.to_pyarrow(py))
+            Python::with_gil(|py| schema.to_pyarrow(py).map(|b| b.unbind()))
         })
     }
 

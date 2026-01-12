@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
@@ -10,8 +11,7 @@ use arrow::{
 use futures::stream::StreamExt;
 use lancedb::arrow::SendableRecordBatchStream;
 use pyo3::{
-    exceptions::PyStopAsyncIteration, pyclass, pymethods, Bound, PyAny, PyObject, PyRef, PyResult,
-    Python,
+    exceptions::PyStopAsyncIteration, pyclass, pymethods, Bound, Py, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -36,8 +36,11 @@ impl RecordBatchStream {
 #[pymethods]
 impl RecordBatchStream {
     #[getter]
-    pub fn schema(&self, py: Python) -> PyResult<PyObject> {
-        (*self.schema).clone().into_pyarrow(py)
+    pub fn schema(&self, py: Python) -> PyResult<Py<PyAny>> {
+        (*self.schema)
+            .clone()
+            .into_pyarrow(py)
+            .map(|bound| bound.unbind())
     }
 
     pub fn __aiter__(self_: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -53,7 +56,12 @@ impl RecordBatchStream {
                 .next()
                 .await
                 .ok_or_else(|| PyStopAsyncIteration::new_err(""))?;
-            Python::with_gil(|py| inner_next.infer_error()?.to_pyarrow(py))
+            Python::with_gil(|py| {
+                inner_next
+                    .infer_error()?
+                    .to_pyarrow(py)
+                    .map(|bound| bound.unbind())
+            })
         })
     }
 }
