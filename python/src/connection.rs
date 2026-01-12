@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
@@ -304,6 +305,7 @@ impl Connection {
                 },
                 page_token,
                 limit: limit.map(|l| l as i32),
+                ..Default::default()
             };
             let response = inner.list_namespaces(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {
@@ -325,21 +327,16 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{create_namespace_request, CreateNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_lowercase().as_str() {
-                "create" => Some(create_namespace_request::Mode::Create),
-                "exist_ok" => Some(create_namespace_request::Mode::ExistOk),
-                "overwrite" => Some(create_namespace_request::Mode::Overwrite),
-                _ => None,
-            });
+            use lance_namespace::models::CreateNamespaceRequest;
             let request = CreateNamespaceRequest {
                 id: if namespace.is_empty() {
                     None
                 } else {
                     Some(namespace)
                 },
-                mode: mode_enum,
+                mode,
                 properties,
+                ..Default::default()
             };
             let response = inner.create_namespace(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {
@@ -360,25 +357,16 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{drop_namespace_request, DropNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_uppercase().as_str() {
-                "SKIP" => Some(drop_namespace_request::Mode::Skip),
-                "FAIL" => Some(drop_namespace_request::Mode::Fail),
-                _ => None,
-            });
-            let behavior_enum = behavior.and_then(|b| match b.to_uppercase().as_str() {
-                "RESTRICT" => Some(drop_namespace_request::Behavior::Restrict),
-                "CASCADE" => Some(drop_namespace_request::Behavior::Cascade),
-                _ => None,
-            });
+            use lance_namespace::models::DropNamespaceRequest;
             let request = DropNamespaceRequest {
                 id: if namespace.is_empty() {
                     None
                 } else {
                     Some(namespace)
                 },
-                mode: mode_enum,
-                behavior: behavior_enum,
+                mode,
+                behavior,
+                ..Default::default()
             };
             let response = inner.drop_namespace(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {
@@ -405,6 +393,7 @@ impl Connection {
                 } else {
                     Some(namespace)
                 },
+                ..Default::default()
             };
             let response = inner.describe_namespace(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {
@@ -434,6 +423,7 @@ impl Connection {
                 },
                 page_token,
                 limit: limit.map(|l| l as i32),
+                ..Default::default()
             };
             let response = inner.list_tables(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {

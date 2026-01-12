@@ -42,8 +42,8 @@ use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
 use lance_io::object_store::LanceNamespaceStorageOptionsProvider;
 use lance_namespace::models::{
-    QueryTableRequest as NsQueryTableRequest, QueryTableRequestFullTextQuery,
-    QueryTableRequestVector, StringFtsQuery,
+    QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
+    QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery,
 };
 use lance_namespace::LanceNamespace;
 use lance_table::format::Manifest;
@@ -1411,26 +1411,35 @@ impl Table {
         let projected_plans = plans
             .into_iter()
             .enumerate()
-            .map(|(plan_i, plan)| {
-                let query_index = datafusion_common::ScalarValue::Int32(Some(plan_i as i32));
-                let query_index_expr =
-                    datafusion_physical_plan::expressions::Literal::new(query_index);
-                let query_index_expr =
-                    Arc::new(query_index_expr) as Arc<dyn datafusion_physical_plan::PhysicalExpr>;
-                let mut projections = vec![(query_index_expr, "query_index".to_string())];
-                projections.extend_from_slice(&project_all_columns);
-                let projection = ProjectionExec::try_new(projections, plan).unwrap();
-                Arc::new(projection) as Arc<dyn datafusion_physical_plan::ExecutionPlan>
-            })
-            .collect::<Vec<_>>();
+            .map(
+                |(plan_i, plan)| -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
+                    let query_index = datafusion_common::ScalarValue::Int32(Some(plan_i as i32));
+                    let query_index_expr =
+                        datafusion_physical_plan::expressions::Literal::new(query_index);
+                    let query_index_expr = Arc::new(query_index_expr)
+                        as Arc<dyn datafusion_physical_plan::PhysicalExpr>;
+                    let mut projections = vec![(query_index_expr, "query_index".to_string())];
+                    projections.extend_from_slice(&project_all_columns);
+                    let projection =
+                        ProjectionExec::try_new(projections, plan).map_err(|e| Error::Runtime {
+                            message: format!("Failed to build projection plan: {e}"),
+                        })?;
+                    Ok(Arc::new(projection) as Arc<dyn datafusion_physical_plan::ExecutionPlan>)
+                },
+            )
+            .collect::<Result<Vec<_>>>()?;
 
-        let unioned = Arc::new(UnionExec::new(projected_plans));
+        let unioned = UnionExec::try_new(projected_plans).map_err(|e| Error::Runtime {
+            message: format!("Failed to union query plans: {e}"),
+        })?;
         // We require 1 partition in the final output
         let repartitioned = RepartitionExec::try_new(
             unioned,
             datafusion_physical_plan::Partitioning::RoundRobinBatch(1),
         )
-        .unwrap();
+        .map_err(|e| Error::Runtime {
+            message: format!("Failed to repartition query plans: {e}"),
+        })?;
         Ok(Arc::new(repartitioned))
     }
 
@@ -2334,6 +2343,23 @@ impl NativeTable {
 
     /// Convert an AnyQuery to the namespace QueryTableRequest format.
     fn convert_to_namespace_query(&self, query: &AnyQuery) -> Result<NsQueryTableRequest> {
+        let to_namespace_columns =
+            |select: &Select| -> Result<Option<Box<QueryTableRequestColumns>>> {
+                match select {
+                    Select::All => Ok(None),
+                    Select::Columns(cols) => {
+                        let mut columns = QueryTableRequestColumns::new();
+                        columns.column_names = Some(cols.clone());
+                        Ok(Some(Box::new(columns)))
+                    }
+                    Select::Dynamic(_) => Err(Error::NotSupported {
+                        message:
+                            "Dynamic column selection is not supported for server-side queries"
+                                .to_string(),
+                    }),
+                }
+            };
+
         match query {
             AnyQuery::VectorQuery(vq) => {
                 // Extract the query vector(s)
@@ -2345,25 +2371,14 @@ impl NativeTable {
                     None => None,
                 };
 
-                // Convert select to columns list
-                let columns = match &vq.base.select {
-                    Select::All => None,
-                    Select::Columns(cols) => Some(cols.clone()),
-                    Select::Dynamic(_) => {
-                        return Err(Error::NotSupported {
-                            message:
-                                "Dynamic column selection is not supported for server-side queries"
-                                    .to_string(),
-                        });
-                    }
-                };
-
                 // Check for unsupported features
                 if vq.base.reranker.is_some() {
                     return Err(Error::NotSupported {
                         message: "Reranker is not supported for server-side queries".to_string(),
                     });
                 }
+
+                let columns = to_namespace_columns(&vq.base.select)?;
 
                 // Convert FTS query if present
                 let full_text_query = vq.base.full_text_search.as_ref().map(|fts| {
@@ -2402,6 +2417,7 @@ impl NativeTable {
                     bypass_vector_index: Some(!vq.use_index),
                     full_text_query,
                     version: None,
+                    ..Default::default()
                 })
             }
             AnyQuery::Query(q) => {
@@ -2419,16 +2435,7 @@ impl NativeTable {
                     .map(|f| self.filter_to_sql(f))
                     .transpose()?;
 
-                let columns = match &q.select {
-                    Select::All => None,
-                    Select::Columns(cols) => Some(cols.clone()),
-                    Select::Dynamic(_) => {
-                        return Err(Error::NotSupported {
-                            message: "Dynamic columns are not supported for server-side query"
-                                .to_string(),
-                        });
-                    }
-                };
+                let columns = to_namespace_columns(&q.select)?;
 
                 // Handle full text search if present
                 let full_text_query = q.full_text_search.as_ref().map(|fts| {
@@ -2472,6 +2479,7 @@ impl NativeTable {
                     fast_search: None,
                     lower_bound: None,
                     upper_bound: None,
+                    ..Default::default()
                 })
             }
         }
@@ -5146,7 +5154,13 @@ mod tests {
         assert_eq!(ns_request.k, 10);
         assert_eq!(ns_request.offset, Some(5));
         assert_eq!(ns_request.filter, Some("id > 0".to_string()));
-        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        assert_eq!(
+            ns_request
+                .columns
+                .as_ref()
+                .and_then(|cols| cols.column_names.clone()),
+            Some(vec!["id".to_string()])
+        );
         assert_eq!(ns_request.vector_column, Some("vector".to_string()));
         assert_eq!(ns_request.distance_type, Some("l2".to_string()));
         assert!(ns_request.vector.single_vector.is_some());
@@ -5187,7 +5201,13 @@ mod tests {
         assert_eq!(ns_request.k, 20);
         assert_eq!(ns_request.offset, Some(5));
         assert_eq!(ns_request.filter, Some("id > 5".to_string()));
-        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        assert_eq!(
+            ns_request
+                .columns
+                .as_ref()
+                .and_then(|cols| cols.column_names.clone()),
+            Some(vec!["id".to_string()])
+        );
         assert_eq!(ns_request.with_row_id, Some(true));
         assert_eq!(ns_request.bypass_vector_index, Some(true));
         assert!(ns_request.vector_column.is_none()); // No vector column for plain queries
