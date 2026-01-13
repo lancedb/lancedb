@@ -36,6 +36,6 @@ aws-lc-rs = "=1.13.0"
 napi-build = "2.1"
 
 [features]
-default = ["remote", "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss"]
+default = ["remote", "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss", "lancedb/huggingface"]
 fp16kernels = ["lancedb/fp16kernels"]
 remote = ["lancedb/remote"]
