@@ -153,3 +153,6 @@ name = "ivf_pq"
 [[example]]
 name = "hybrid_search"
 required-features = ["sentence-transformers"]
+
+[package.metadata.docs.rs]
+all-features = true
