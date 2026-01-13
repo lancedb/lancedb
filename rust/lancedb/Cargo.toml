@@ -104,7 +104,11 @@ test-log = "0.2"
 
 
 [features]
+<<<<<<< Updated upstream
 default = ["aws", "gcs", "azure", "dynamodb", "oss", "huggingface"]
+=======
+default = []
+>>>>>>> Stashed changes
 aws = ["lance/aws", "lance-io/aws", "lance-namespace-impls/dir-aws"]
 oss = ["lance/oss", "lance-io/oss", "lance-namespace-impls/dir-oss"]
 gcs = ["lance/gcp", "lance-io/gcp", "lance-namespace-impls/dir-gcp"]

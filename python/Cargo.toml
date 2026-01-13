@@ -38,6 +38,6 @@ pyo3-build-config = { version = "0.25", features = [
 ] }
 
 [features]
-default = ["remote", "lancedb/default"]
+default = ["remote",  "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss"]
 fp16kernels = ["lancedb/fp16kernels"]
 remote = ["lancedb/remote"]
