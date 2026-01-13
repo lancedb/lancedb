@@ -104,11 +104,16 @@ test-log = "0.2"
 
 
 [features]
-default = ["aws", "gcs", "azure", "dynamodb", "oss"]
+default = ["aws", "gcs", "azure", "dynamodb", "oss", "huggingface"]
 aws = ["lance/aws", "lance-io/aws", "lance-namespace-impls/dir-aws"]
 oss = ["lance/oss", "lance-io/oss", "lance-namespace-impls/dir-oss"]
 gcs = ["lance/gcp", "lance-io/gcp", "lance-namespace-impls/dir-gcp"]
 azure = ["lance/azure", "lance-io/azure", "lance-namespace-impls/dir-azure"]
+huggingface = [
+    "lance/huggingface",
+    "lance-io/huggingface",
+    "lance-namespace-impls/dir-huggingface",
+]
 dynamodb = ["lance/dynamodb", "aws"]
 remote = ["dep:reqwest", "dep:http", "lance-namespace-impls/rest", "lance-namespace-impls/rest-adapter"]
 fp16kernels = ["lance-linalg/fp16kernels"]
