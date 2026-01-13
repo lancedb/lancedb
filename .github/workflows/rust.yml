@@ -167,13 +167,13 @@ jobs:
       - name: Build
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo build --profile ci --features remote --tests --locked --target ${{ matrix.target }}
+          cargo build --profile ci --features aws,remote --tests --locked --target ${{ matrix.target }}
       - name: Run tests
         # Can only run tests when target matches host
         if: ${{ matrix.target == 'x86_64-pc-windows-msvc' }}
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo test --profile ci --features remote --locked
+          cargo test --profile ci --features aws,remote --locked
 
   msrv:
     # Check the minimum supported Rust version
