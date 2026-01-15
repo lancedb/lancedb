@@ -12,6 +12,7 @@ pub struct PyHeaderProvider {
 
 impl Clone for PyHeaderProvider {
     fn clone(&self) -> Self {
+        #[allow(deprecated)]
         Python::with_gil(|py| Self {
             provider: self.provider.clone_ref(py),
         })
@@ -25,6 +26,7 @@ impl PyHeaderProvider {
 
     /// Get headers from the Python provider (internal implementation)
     fn get_headers_internal(&self) -> Result<HashMap<String, String>, String> {
+        #[allow(deprecated)]
         Python::with_gil(|py| {
             // Call the get_headers method
             let result = self.provider.call_method0(py, "get_headers");

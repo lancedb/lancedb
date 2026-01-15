@@ -40,31 +40,34 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     request_id,
                     source,
                     status_code,
-                } => Python::with_gil(|py| {
-                    let message = err.to_string();
-                    let http_err_cls = py
-                        .import(intern!(py, "lancedb.remote.errors"))?
-                        .getattr(intern!(py, "HttpError"))?;
-                    let err = http_err_cls.call1((
-                        message,
-                        request_id,
-                        status_code.map(|s| s.as_u16()),
-                    ))?;
-
-                    if let Some(cause) = source.source() {
-                        // The HTTP error already includes the first cause. But
-                        // we can add the rest of the chain if there is any more.
-                        let cause_err = http_from_rust_error(
-                            py,
-                            cause,
+                } => {
+                    #[allow(deprecated)]
+                    Python::with_gil(|py| {
+                        let message = err.to_string();
+                        let http_err_cls = py
+                            .import(intern!(py, "lancedb.remote.errors"))?
+                            .getattr(intern!(py, "HttpError"))?;
+                        let err = http_err_cls.call1((
+                            message,
                             request_id,
                             status_code.map(|s| s.as_u16()),
-                        )?;
-                        err.setattr(intern!(py, "__cause__"), cause_err)?;
-                    }
+                        ))?;
 
-                    Err(PyErr::from_value(err))
-                }),
+                        if let Some(cause) = source.source() {
+                            // The HTTP error already includes the first cause. But
+                            // we can add the rest of the chain if there is any more.
+                            let cause_err = http_from_rust_error(
+                                py,
+                                cause,
+                                request_id,
+                                status_code.map(|s| s.as_u16()),
+                            )?;
+                            err.setattr(intern!(py, "__cause__"), cause_err)?;
+                        }
+
+                        Err(PyErr::from_value(err))
+                    })
+                }
                 LanceError::Retry {
                     request_id,
                     request_failures,
@@ -75,33 +78,37 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     max_read_failures,
                     source,
                     status_code,
-                } => Python::with_gil(|py| {
-                    let cause_err = http_from_rust_error(
-                        py,
-                        source.as_ref(),
-                        request_id,
-                        status_code.map(|s| s.as_u16()),
-                    )?;
+                } =>
+                {
+                    #[allow(deprecated)]
+                    Python::with_gil(|py| {
+                        let cause_err = http_from_rust_error(
+                            py,
+                            source.as_ref(),
+                            request_id,
+                            status_code.map(|s| s.as_u16()),
+                        )?;
 
-                    let message = err.to_string();
-                    let retry_error_cls = py
-                        .import(intern!(py, "lancedb.remote.errors"))?
-                        .getattr("RetryError")?;
-                    let err = retry_error_cls.call1((
-                        message,
-                        request_id,
-                        *request_failures,
-                        *connect_failures,
-                        *read_failures,
-                        *max_request_failures,
-                        *max_connect_failures,
-                        *max_read_failures,
-                        status_code.map(|s| s.as_u16()),
-                    ))?;
+                        let message = err.to_string();
+                        let retry_error_cls = py
+                            .import(intern!(py, "lancedb.remote.errors"))?
+                            .getattr("RetryError")?;
+                        let err = retry_error_cls.call1((
+                            message,
+                            request_id,
+                            *request_failures,
+                            *connect_failures,
+                            *read_failures,
+                            *max_request_failures,
+                            *max_connect_failures,
+                            *max_read_failures,
+                            status_code.map(|s| s.as_u16()),
+                        ))?;
 
-                    err.setattr(intern!(py, "__cause__"), cause_err)?;
-                    Err(PyErr::from_value(err))
-                }),
+                        err.setattr(intern!(py, "__cause__"), cause_err)?;
+                        Err(PyErr::from_value(err))
+                    })
+                }
                 _ => self.runtime_error(),
             },
         }
