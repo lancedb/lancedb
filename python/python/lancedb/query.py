@@ -970,9 +970,11 @@ class LanceQueryBuilder(ABC):
                 FilterExec: elapsed=..., _distance@2 IS NOT NULL, metrics=[...]
                   SortExec: elapsed=..., TopK(fetch=10), expr=[...],
                   preserve_partitioning=[...],
-                  metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., row_replacements=...]
+                  metrics=[output_rows=..., elapsed_compute=...,
+                  output_bytes=..., row_replacements=...]
                     KNNVectorDistance: elapsed=..., metric=l2,
-                    metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=...]
+                    metrics=[output_rows=..., elapsed_compute=...,
+                    output_bytes=..., output_batches=...]
                       LanceRead: elapsed=..., uri=..., projection=[vector],
                       num_fragments=..., range_before=None, range_after=None,
                       row_id=true, row_addr=false,
