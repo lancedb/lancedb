@@ -22,7 +22,12 @@ class BackgroundEventLoop:
         self.thread.start()
 
     def run(self, future):
-        return asyncio.run_coroutine_threadsafe(future, self.loop).result()
+        concurrent_future = asyncio.run_coroutine_threadsafe(future, self.loop)
+        try:
+            return concurrent_future.result()
+        except BaseException:
+            concurrent_future.cancel()
+            raise
 
 
 LOOP = BackgroundEventLoop()
