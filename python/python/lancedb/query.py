@@ -968,14 +968,17 @@ class LanceQueryBuilder(ABC):
                 FilterExec: elapsed=..., _distance@2 IS NOT NULL, metrics=[...]
                   SortExec: elapsed=..., TopK(fetch=10), expr=[...],
                   preserve_partitioning=[...],
-                  metrics=[output_rows=..., elapsed_compute=..., row_replacements=...]
+                  metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., row_replacements=...]
                     KNNVectorDistance: elapsed=..., metric=l2,
-                    metrics=[output_rows=..., elapsed_compute=..., output_batches=...],
+                    metrics=[output_rows=..., elapsed_compute=..., output_bytes=..., output_batches=...],
                     cumulative_cpu=...
                       LanceRead: elapsed=..., uri=..., projection=[vector],
-                      num_fragments=..., row_id=...,
-                      metrics=[output_rows=..., elapsed_compute=...,
-                      bytes_read=..., iops=..., requests=...], cumulative_cpu=...
+                      num_fragments=..., range_before=None, range_after=None,
+                      row_id=true, row_addr=false,
+                      full_filter=--, refine_filter=--,
+                      metrics=[output_rows=..., elapsed_compute=..., output_bytes=...,
+                      fragments_scanned=..., ranges_scanned=1, rows_scanned=1,
+                      bytes_read=..., iops=..., requests=..., task_wait_time=...], cumulative_cpu=...
 
         Returns
         -------
