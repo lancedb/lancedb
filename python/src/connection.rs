@@ -12,7 +12,7 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
     types::{PyDict, PyDictMethods},
-    Bound, FromPyObject, Py, PyAny, PyObject, PyRef, PyResult, Python,
+    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -114,7 +114,7 @@ impl Connection {
         data: Bound<'_, PyAny>,
         namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
-        storage_options_provider: Option<PyObject>,
+        storage_options_provider: Option<Py<PyAny>>,
         location: Option<String>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
@@ -152,7 +152,7 @@ impl Connection {
         schema: Bound<'_, PyAny>,
         namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
-        storage_options_provider: Option<PyObject>,
+        storage_options_provider: Option<Py<PyAny>>,
         location: Option<String>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
@@ -187,7 +187,7 @@ impl Connection {
         name: String,
         namespace: Vec<String>,
         storage_options: Option<HashMap<String, String>>,
-        storage_options_provider: Option<PyObject>,
+        storage_options_provider: Option<Py<PyAny>>,
         index_cache_size: Option<u32>,
         location: Option<String>,
     ) -> PyResult<Bound<'_, PyAny>> {
@@ -297,6 +297,8 @@ impl Connection {
         future_into_py(py, async move {
             use lance_namespace::models::ListNamespacesRequest;
             let request = ListNamespacesRequest {
+                identity: None,
+                context: None,
                 id: if namespace.is_empty() {
                     None
                 } else {
@@ -306,7 +308,7 @@ impl Connection {
                 limit: limit.map(|l| l as i32),
             };
             let response = inner.list_namespaces(request).await.infer_error()?;
-            Python::with_gil(|py| -> PyResult<Py<PyDict>> {
+            Python::attach(|py| -> PyResult<Py<PyDict>> {
                 let dict = PyDict::new(py);
                 dict.set_item("namespaces", response.namespaces)?;
                 dict.set_item("page_token", response.page_token)?;
@@ -325,24 +327,26 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{create_namespace_request, CreateNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_lowercase().as_str() {
-                "create" => Some(create_namespace_request::Mode::Create),
-                "exist_ok" => Some(create_namespace_request::Mode::ExistOk),
-                "overwrite" => Some(create_namespace_request::Mode::Overwrite),
+            use lance_namespace::models::CreateNamespaceRequest;
+            let mode_value = mode.and_then(|m| match m.to_lowercase().as_str() {
+                "create" => Some("Create".to_string()),
+                "exist_ok" => Some("ExistOk".to_string()),
+                "overwrite" => Some("Overwrite".to_string()),
                 _ => None,
             });
             let request = CreateNamespaceRequest {
+                identity: None,
+                context: None,
                 id: if namespace.is_empty() {
                     None
                 } else {
                     Some(namespace)
                 },
-                mode: mode_enum,
+                mode: mode_value,
                 properties,
             };
             let response = inner.create_namespace(request).await.infer_error()?;
-            Python::with_gil(|py| -> PyResult<Py<PyDict>> {
+            Python::attach(|py| -> PyResult<Py<PyDict>> {
                 let dict = PyDict::new(py);
                 dict.set_item("properties", response.properties)?;
                 Ok(dict.unbind())
@@ -360,28 +364,30 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{drop_namespace_request, DropNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_uppercase().as_str() {
-                "SKIP" => Some(drop_namespace_request::Mode::Skip),
-                "FAIL" => Some(drop_namespace_request::Mode::Fail),
+            use lance_namespace::models::DropNamespaceRequest;
+            let mode_value = mode.and_then(|m| match m.to_uppercase().as_str() {
+                "SKIP" => Some("Skip".to_string()),
+                "FAIL" => Some("Fail".to_string()),
                 _ => None,
             });
-            let behavior_enum = behavior.and_then(|b| match b.to_uppercase().as_str() {
-                "RESTRICT" => Some(drop_namespace_request::Behavior::Restrict),
-                "CASCADE" => Some(drop_namespace_request::Behavior::Cascade),
+            let behavior_value = behavior.and_then(|b| match b.to_uppercase().as_str() {
+                "RESTRICT" => Some("Restrict".to_string()),
+                "CASCADE" => Some("Cascade".to_string()),
                 _ => None,
             });
             let request = DropNamespaceRequest {
+                identity: None,
+                context: None,
                 id: if namespace.is_empty() {
                     None
                 } else {
                     Some(namespace)
                 },
-                mode: mode_enum,
-                behavior: behavior_enum,
+                mode: mode_value,
+                behavior: behavior_value,
             };
             let response = inner.drop_namespace(request).await.infer_error()?;
-            Python::with_gil(|py| -> PyResult<Py<PyDict>> {
+            Python::attach(|py| -> PyResult<Py<PyDict>> {
                 let dict = PyDict::new(py);
                 dict.set_item("properties", response.properties)?;
                 dict.set_item("transaction_id", response.transaction_id)?;
@@ -400,6 +406,8 @@ impl Connection {
         future_into_py(py, async move {
             use lance_namespace::models::DescribeNamespaceRequest;
             let request = DescribeNamespaceRequest {
+                identity: None,
+                context: None,
                 id: if namespace.is_empty() {
                     None
                 } else {
@@ -407,7 +415,7 @@ impl Connection {
                 },
             };
             let response = inner.describe_namespace(request).await.infer_error()?;
-            Python::with_gil(|py| -> PyResult<Py<PyDict>> {
+            Python::attach(|py| -> PyResult<Py<PyDict>> {
                 let dict = PyDict::new(py);
                 dict.set_item("properties", response.properties)?;
                 Ok(dict.unbind())
@@ -427,6 +435,8 @@ impl Connection {
         future_into_py(py, async move {
             use lance_namespace::models::ListTablesRequest;
             let request = ListTablesRequest {
+                identity: None,
+                context: None,
                 id: if namespace.is_empty() {
                     None
                 } else {
@@ -436,7 +446,7 @@ impl Connection {
                 limit: limit.map(|l| l as i32),
             };
             let response = inner.list_tables(request).await.infer_error()?;
-            Python::with_gil(|py| -> PyResult<Py<PyDict>> {
+            Python::attach(|py| -> PyResult<Py<PyDict>> {
                 let dict = PyDict::new(py);
                 dict.set_item("tables", response.tables)?;
                 dict.set_item("page_token", response.page_token)?;
