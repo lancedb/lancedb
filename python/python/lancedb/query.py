@@ -966,10 +966,16 @@ class LanceQueryBuilder(ABC):
             ProjectionExec: elapsed=..., expr=[...], metrics=[...]
               GlobalLimitExec: elapsed=..., skip=0, fetch=10, metrics=[...]
                 FilterExec: elapsed=..., _distance@2 IS NOT NULL, metrics=[...]
-                  SortExec: elapsed=..., TopK(fetch=10), expr=[...], preserve_partitioning=[...], metrics=[...]
-                    KNNVectorDistance: elapsed=..., metric=l2, metrics=[...]
-                      LanceRead: elapsed=..., uri=..., projection=[vector], num_fragments=..., row_id=..., metrics=[...]
-        <BLANKLINE>
+                  SortExec: elapsed=..., TopK(fetch=10), expr=[...],
+                  preserve_partitioning=[...],
+                  metrics=[output_rows=..., elapsed_compute=..., row_replacements=...]
+                    KNNVectorDistance: elapsed=..., metric=l2,
+                    metrics=[output_rows=..., elapsed_compute=..., output_batches=...],
+                    cumulative_cpu=...
+                      LanceRead: elapsed=..., uri=..., projection=[vector],
+                      num_fragments=..., row_id=...,
+                      metrics=[output_rows=..., elapsed_compute=...,
+                      bytes_read=..., iops=..., requests=...], cumulative_cpu=...
 
         Returns
         -------
