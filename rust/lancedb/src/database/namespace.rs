@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lance_namespace::{
     models::{
-        CreateEmptyTableRequest, CreateNamespaceRequest, CreateNamespaceResponse,
+        CreateNamespaceRequest, CreateNamespaceResponse, DeclareTableRequest,
         DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
         DropNamespaceRequest, DropNamespaceResponse, DropTableRequest, ListNamespacesRequest,
         ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
@@ -134,6 +134,8 @@ impl Database for LanceNamespaceDatabase {
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let ns_request = ListTablesRequest {
+            identity: None,
+            context: None,
             id: Some(request.namespace),
             page_token: request.start_after,
             limit: request.limit.map(|l| l as i32),
@@ -152,8 +154,13 @@ impl Database for LanceNamespaceDatabase {
         let mut table_id = request.namespace.clone();
         table_id.push(request.name.clone());
         let describe_request = DescribeTableRequest {
+            identity: None,
+            context: None,
             id: Some(table_id.clone()),
             version: None,
+            with_table_uri: None,
+            load_detailed_metadata: None,
+            vend_credentials: None,
         };
 
         let describe_result = self.namespace.describe_table(describe_request).await;
@@ -170,6 +177,8 @@ impl Database for LanceNamespaceDatabase {
                 if describe_result.is_ok() {
                     // Drop the existing table - must succeed
                     let drop_request = DropTableRequest {
+                        identity: None,
+                        context: None,
                         id: Some(table_id.clone()),
                     };
                     self.namespace
@@ -202,22 +211,24 @@ impl Database for LanceNamespaceDatabase {
         let mut table_id = request.namespace.clone();
         table_id.push(request.name.clone());
 
-        let create_empty_request = CreateEmptyTableRequest {
+        let create_empty_request = DeclareTableRequest {
+            identity: None,
+            context: None,
             id: Some(table_id.clone()),
             location: None,
-            properties: if self.storage_options.is_empty() {
+            vend_credentials: if self.storage_options.is_empty() {
                 None
             } else {
-                Some(self.storage_options.clone())
+                Some(true)
             },
         };
 
         let create_empty_response = self
             .namespace
-            .create_empty_table(create_empty_request)
+            .declare_table(create_empty_request)
             .await
             .map_err(|e| Error::Runtime {
-                message: format!("Failed to create empty table: {}", e),
+                message: format!("Failed to declare table: {}", e),
             })?;
 
         let location = create_empty_response
@@ -281,7 +292,11 @@ impl Database for LanceNamespaceDatabase {
         let mut table_id = namespace.to_vec();
         table_id.push(name.to_string());
 
-        let drop_request = DropTableRequest { id: Some(table_id) };
+        let drop_request = DropTableRequest {
+            identity: None,
+            context: None,
+            id: Some(table_id),
+        };
         self.namespace
             .drop_table(drop_request)
             .await
@@ -435,6 +450,8 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
+            identity: None,
+            context: None,
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
@@ -496,6 +513,8 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
+            identity: None,
+            context: None,
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
@@ -560,6 +579,8 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
+            identity: None,
+            context: None,
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
@@ -644,6 +665,8 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
+            identity: None,
+            context: None,
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
@@ -700,6 +723,8 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
+            identity: None,
+            context: None,
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
@@ -781,6 +806,8 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
+            identity: None,
+            context: None,
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
@@ -815,6 +842,8 @@ mod tests {
 
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
+            identity: None,
+            context: None,
             id: Some(vec!["test_ns".into()]),
             mode: None,
             properties: None,
