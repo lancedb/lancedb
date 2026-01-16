@@ -208,18 +208,20 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub fn take_row_ids(&self, row_ids: Vec<i64>) -> napi::Result<TakeQuery> {
+    pub fn take_row_ids(&self, row_ids: Vec<BigInt>) -> napi::Result<TakeQuery> {
         Ok(TakeQuery::new(
             self.inner_ref()?.take_row_ids(
                 row_ids
                     .into_iter()
-                    .map(|o| {
-                        u64::try_from(o).map_err(|e| {
-                            napi::Error::from_reason(format!(
-                                "Failed to convert row id to u64: {}",
-                                e
+                    .map(|id| {
+                        let (negative, value) = id.get_u64();
+                        if negative {
+                            Err(napi::Error::from_reason(
+                                "Row id cannot be negative".to_string(),
                             ))
-                        })
+                        } else {
+                            Ok(value)
+                        }
                     })
                     .collect::<Result<Vec<_>>>()?,
             ),
