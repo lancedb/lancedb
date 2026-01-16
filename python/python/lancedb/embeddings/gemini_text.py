@@ -10,6 +10,7 @@ import numpy as np
 
 from lancedb.pydantic import PYDANTIC_VERSION
 
+from .. import __version__
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
 from .registry import register
@@ -115,22 +116,29 @@ class GeminiText(TextEmbeddingFunction):
             The texts to embed
         """
         if (
-            kwargs.get("task_type") == "retrieval_document"
+            kwargs.get("task_type", "").lower() == "retrieval_document"
         ):  # Provide a title to use existing API design
             title = "Embedding of a document"
             kwargs["title"] = title
 
-        return [
-            self.client.embed_content(model=self.name, content=text, **kwargs)[
-                "embedding"
-            ]
-            for text in texts
-        ]
+        all_embeds = self.client.models.embed_content(
+            model=self.name, contents=texts, config=kwargs
+        ).embeddings
+        return [np.array(e.values) for e in all_embeds]
 
     @cached_property
     def client(self):
-        genai = attempt_import_or_raise("google.generativeai", "google.generativeai")
+        genai = attempt_import_or_raise("google.genai", "google-genai")
 
-        if not os.environ.get("GOOGLE_API_KEY"):
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
             api_key_not_found_help("google")
-        return genai
+        return genai.Client(
+            api_key=api_key,
+            http_options={
+                "headers": {
+                    # Include header as per goo.gle/gemini-partners
+                    "x-goog-api-client": f"lancedb/{__version__}",
+                }
+            }
+        )
