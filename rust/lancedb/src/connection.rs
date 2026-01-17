@@ -892,6 +892,10 @@ pub struct ConnectBuilder {
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
 }
 
+const ENV_VARS_TO_STORAGE_OPTS: [(&str, &str); 1] = [
+    ("AZURE_STORAGE_ACCOUNT_NAME", "azure_storage_account_name"),
+];
+
 impl ConnectBuilder {
     /// Create a new [`ConnectOptions`] with the given database URI.
     pub fn new(uri: &str) -> Self {
@@ -1076,10 +1080,26 @@ impl ConnectBuilder {
     }
 
     #[cfg(feature = "remote")]
+    fn apply_env_defaults(
+        env_var_to_remote_storage_option: &[(&str, &str)],
+        options: &mut HashMap<String, String>,
+    ) {
+        for (env_key, opt_key) in env_var_to_remote_storage_option {
+            if let Ok(env_value) = std::env::var(env_key) {
+                if !options.contains_key(*opt_key) {
+                    options.insert((*opt_key).to_string(), env_value);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "remote")]
     fn execute_remote(self) -> Result<Connection> {
         use crate::remote::db::RemoteDatabaseOptions;
 
-        let options = RemoteDatabaseOptions::parse_from_map(&self.request.options)?;
+        let mut merged_options = self.request.options.clone();
+        Self::apply_env_defaults(&ENV_VARS_TO_STORAGE_OPTS, &mut merged_options);
+        let options = RemoteDatabaseOptions::parse_from_map(&merged_options)?;
 
         let region = options.region.ok_or_else(|| Error::InvalidInput {
             message: "A region is required when connecting to LanceDb Cloud".to_string(),
@@ -1322,6 +1342,23 @@ mod tests {
     async fn test_connect() {
         let tc = new_test_connection().await.unwrap();
         assert_eq!(tc.connection.uri(), tc.uri);
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_apply_env_defaults() {
+        let env_key = "TEST_APPLY_ENV_DEFAULTS_ENVIRONMENT_VARIABLE_ENV_KEY";
+        let env_val = "TEST_APPLY_ENV_DEFAULTS_ENVIRONMENT_VARIABLE_ENV_VAL";
+        let opts_key = "test_apply_env_defaults_environment_variable_opts_key";
+        std::env::set_var(env_key, env_val);
+
+        let mut options = HashMap::new();
+        ConnectBuilder::apply_env_defaults(&[(env_key, opts_key)], &mut options);
+        assert_eq!(Some(&env_val.to_string()), options.get(opts_key));
+
+        options.insert(opts_key.to_string(), "EXPLICIT-VALUE".to_string());
+        ConnectBuilder::apply_env_defaults(&[(env_key, opts_key)], &mut options);
+        assert_eq!(Some(&"EXPLICIT-VALUE".to_string()), options.get(opts_key));
     }
 
     #[cfg(not(windows))]
