@@ -866,6 +866,7 @@ pub struct ConnectRequest {
 pub struct ConnectBuilder {
     request: ConnectRequest,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    _env_var_to_remote_storage_option: Vec<(&'static str, &'static str)>,
 }
 
 impl ConnectBuilder {
@@ -881,6 +882,10 @@ impl ConnectBuilder {
                 session: None,
             },
             embedding_registry: None,
+            _env_var_to_remote_storage_option: vec![
+                ("AZURE_STORAGE_ACCOUNT_NAME", "azure_storage_account_name"),
+                ("AZURE_STORAGE_ACCOUNT_KEY", "azure_storage_account_key"),
+            ]
         }
     }
 
@@ -1052,10 +1057,23 @@ impl ConnectBuilder {
     }
 
     #[cfg(feature = "remote")]
+    fn apply_env_defaults(env_var_to_remote_storage_option: &Vec<(&'static str, &'static str)>, options: &mut HashMap<String, String>) {
+        for (env_key, opt_key) in env_var_to_remote_storage_option {
+            if let Ok(env_value) = std::env::var(env_key) {
+                if !options.contains_key(*opt_key) {
+                    options.insert((*opt_key).to_string(), env_value);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "remote")]
     fn execute_remote(self) -> Result<Connection> {
         use crate::remote::db::RemoteDatabaseOptions;
 
-        let options = RemoteDatabaseOptions::parse_from_map(&self.request.options)?;
+        let mut merged_options = self.request.options.clone();
+        Self::apply_env_defaults(&self._env_var_to_remote_storage_option, &mut merged_options);
+        let options = RemoteDatabaseOptions::parse_from_map(&merged_options)?;
 
         let region = options.region.ok_or_else(|| Error::InvalidInput {
             message: "A region is required when connecting to LanceDb Cloud".to_string(),
@@ -1300,6 +1318,39 @@ mod tests {
     async fn test_connect() {
         let tc = new_test_connection().await.unwrap();
         assert_eq!(tc.connection.uri(), tc.uri);
+    }
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_apply_env_defaults() {
+        struct EnvVarGuard {
+            key: &'static str,
+            original: Option<String>,
+        }
+
+        impl Drop for EnvVarGuard {
+            fn drop(&mut self) {
+                match &self.original {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+
+        let env_key = "MY_TEST_ENV_VAR";
+        let opt_key = "my_test_option";
+        let original = std::env::var(env_key).ok();
+        let _guard = EnvVarGuard { key: env_key, original };
+
+        std::env::set_var(env_key, "env-value");
+
+        let mut options = HashMap::new();
+        ConnectBuilder::apply_env_defaults(&vec![(env_key, opt_key)], &mut options);
+        assert_eq!(options.get(opt_key), Some(&"env-value".to_string()));
+
+        options.insert(opt_key.to_string(), "explicit-value".to_string());
+        ConnectBuilder::apply_env_defaults(&vec![(env_key, opt_key)], &mut options);
+        assert_eq!(options.get(opt_key), Some(&"explicit-value".to_string()));
     }
 
     #[cfg(not(windows))]
