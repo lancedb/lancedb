@@ -346,10 +346,14 @@ export abstract class Table {
 
   /**
    * Create a query that returns a subset of the rows in the table.
-   * @param rowIds The row ids of the rows to return (as bigint, matching _rowid from withRowId()).
+   * @param rowIds The row ids of the rows to return.
+   *
+   * Row ids returned by `withRowId()` are `bigint`, so `bigint[]` is supported.
+   * For convenience / backwards compatibility, `number[]` is also accepted (for
+   * small row ids that fit in a safe integer).
    * @returns A builder that can be used to parameterize the query.
    */
-  abstract takeRowIds(rowIds: bigint[]): TakeQuery;
+  abstract takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery;
 
   /**
    * Create a search query to find the nearest neighbors
@@ -686,8 +690,24 @@ export class LocalTable extends Table {
     return new TakeQuery(this.inner.takeOffsets(offsets));
   }
 
-  takeRowIds(rowIds: bigint[]): TakeQuery {
-    return new TakeQuery(this.inner.takeRowIds(rowIds));
+  takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery {
+    const ids = rowIds.map((id) => {
+      if (typeof id === "bigint") {
+        return id;
+      }
+      if (!Number.isInteger(id)) {
+        throw new Error("Row id must be an integer (or bigint)");
+      }
+      if (id < 0) {
+        throw new Error("Row id cannot be negative");
+      }
+      if (!Number.isSafeInteger(id)) {
+        throw new Error("Row id is too large for number; use bigint instead");
+      }
+      return BigInt(id);
+    });
+
+    return new TakeQuery(this.inner.takeRowIds(ids));
   }
 
   query(): Query {
