@@ -3405,7 +3405,9 @@ mod tests {
 
             http::Response::builder()
                 .status(200)
-                .body(r#"{"version": 1, "schema": {"fields": []}, "location": "gs://bucket/table"}"#)
+                .body(
+                    r#"{"version": 1, "schema": {"fields": []}, "location": "gs://bucket/table"}"#,
+                )
                 .unwrap()
         });
 
