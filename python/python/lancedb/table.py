@@ -534,6 +534,36 @@ def _append_vector_columns(
     return pa.RecordBatchReader.from_batches(schema, gen())
 
 
+class EmbeddingUdfConfig:
+    __slots__ = ("source_column", "vector_column", "ndims", "handler")
+
+    def __init__(self, source_column: str, vector_column: str, ndims: int, handler):
+        self.source_column = source_column
+        self.vector_column = vector_column
+        self.ndims = ndims
+        self.handler = handler
+
+
+def make_embedding_udf_handler(
+    function, ndims: int, vector_column: str, source_column: str
+):
+    if ndims > 2**31 - 1:
+        raise ValueError("ndims exceeds i32::MAX")
+    dtype = pa.list_(pa.float32(), ndims)
+    schema = pa.schema([pa.field(vector_column, dtype, nullable=True)])
+
+    def handler(batch):
+        source_idx = batch.schema.get_field_index(source_column)
+        if source_idx < 0:
+            raise ValueError(f"Missing source column '{source_column}' in batch")
+        source = batch.column(source_idx)
+        embedded = function.compute_source_embeddings_with_retry(source)
+        vector_array = pa.array(embedded, type=dtype)
+        return pa.RecordBatch.from_arrays([vector_array], schema=schema)
+
+    return handler
+
+
 def _table_path(base: str, table_name: str) -> str:
     """
     Get a table path that can be used in PyArrow FS.
@@ -1549,7 +1579,12 @@ class Table(ABC):
 
     @abstractmethod
     def add_columns(
-        self, transforms: Dict[str, str] | pa.Field | List[pa.Field] | pa.Schema
+        self,
+        transforms: Dict[str, str]
+        | pa.Field
+        | List[pa.Field]
+        | pa.Schema
+        | EmbeddingFunctionConfig,
     ):
         """
         Add new columns with defined values.
@@ -3006,7 +3041,12 @@ class LanceTable(Table):
         return LOOP.run(self._table.index_stats(index_name))
 
     def add_columns(
-        self, transforms: Dict[str, str] | pa.field | List[pa.field] | pa.Schema
+        self,
+        transforms: Dict[str, str]
+        | pa.field
+        | List[pa.field]
+        | pa.Schema
+        | EmbeddingFunctionConfig,
     ) -> AddColumnsResult:
         return LOOP.run(self._table.add_columns(transforms))
 
@@ -4197,7 +4237,12 @@ class AsyncTable:
         return await self._inner.update(updates_sql, where)
 
     async def add_columns(
-        self, transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema
+        self,
+        transforms: dict[str, str]
+        | pa.field
+        | List[pa.field]
+        | pa.Schema
+        | EmbeddingFunctionConfig,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -4225,8 +4270,52 @@ class AsyncTable:
             transforms = pa.schema(transforms)
         if isinstance(transforms, pa.Schema):
             return await self._inner.add_columns_with_schema(transforms)
+        elif isinstance(transforms, EmbeddingFunctionConfig):
+            await self.update_embedding_function_metadata(transforms)
+            ndims = transforms.function.ndims()
+            handler = make_embedding_udf_handler(
+                transforms.function,
+                ndims,
+                transforms.vector_column,
+                transforms.source_column,
+            )
+            udf_conf = EmbeddingUdfConfig(
+                source_column=transforms.source_column,
+                vector_column=transforms.vector_column,
+                ndims=ndims,
+                handler=handler,
+            )
+            result = await self._inner.add_columns_with_embedding_function(udf_conf)
+
+            return result
         else:
             return await self._inner.add_columns(list(transforms.items()))
+
+    async def update_embedding_function_metadata(
+        self, config: EmbeddingFunctionConfig
+    ) -> None:
+        registry = EmbeddingFunctionRegistry.get_instance()
+        schema = await self.schema()
+        existing = registry.parse_functions(schema.metadata)
+        if config.vector_column in existing:
+            raise ValueError(
+                "Embedding function metadata already exists for vector column "
+                f"'{config.vector_column}'. Modifying existing embedding functions "
+                "is not supported."
+            )
+        schema_metadata = registry.get_table_metadata(
+            list(existing.values()) + [config]
+        )
+        if not schema_metadata:
+            return
+        schema_metadata_pairs = [
+            (
+                k.decode("utf-8") if isinstance(k, bytes) else str(k),
+                v.decode("utf-8") if isinstance(v, bytes) else str(v),
+            )
+            for k, v in schema_metadata.items()
+        ]
+        await self._inner.update_schema_metadata(schema_metadata_pairs)
 
     async def alter_columns(
         self, *alterations: Iterable[dict[str, Any]]

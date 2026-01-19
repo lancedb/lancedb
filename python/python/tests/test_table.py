@@ -1678,6 +1678,45 @@ def test_add_columns(mem_db: DBConnection):
     assert table.schema.field("null_int").type == pa.int64()
 
 
+@pytest.mark.slow
+def test_add_columns_embedding_function_config_sentence_transformers(
+    tmp_db: DBConnection,
+):
+    pytest.importorskip("sentence_transformers")
+
+    data = pa.table({"text": ["hello world", "goodbye world"]})
+    table = tmp_db.create_table("my_table", data=data)
+
+    assert "vector" not in table.schema.names
+
+    registry = EmbeddingFunctionRegistry.get_instance()
+    func = registry.get("sentence-transformers").create(max_retries=0)
+    conf = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="vector",
+        function=func,
+    )
+    table.add_columns(conf)
+
+    assert "vector" in table.schema.names
+
+    expected_vectors = func.compute_source_embeddings(["hello world", "goodbye world"])
+    actual_vectors = table.to_arrow()["vector"].to_pylist()
+    assert all(
+        np.allclose(np.array(actual), np.array(expected))
+        for actual, expected in zip(actual_vectors, expected_vectors)
+    )
+
+    parsed = registry.parse_functions(table.schema.metadata)
+    assert parsed["vector"].source_column == "text"
+
+    query_str = "hello world"
+    query_vector = func.compute_query_embeddings(query_str)[0]
+    expected = table.search(query_vector).limit(1).to_arrow()
+    actual = table.search(query_str).limit(1).to_arrow()
+    assert actual == expected
+
+
 @pytest.mark.asyncio
 async def test_add_columns_async(mem_db_async: AsyncConnection):
     data = pa.table({"id": [0, 1]})

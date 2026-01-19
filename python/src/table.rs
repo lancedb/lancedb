@@ -2,17 +2,22 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 use std::{collections::HashMap, sync::Arc};
 
+/// A function that maps a RecordBatch to another RecordBatch with error handling
+type RecordBatchMapper = Box<dyn Fn(&RecordBatch) -> Result<RecordBatch, lance::Error> + Send + Sync>;
+
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
     index::{extract_index_params, IndexConfig},
     query::{Query, TakeQuery},
 };
+use arrow::record_batch::RecordBatch;
 use arrow::{
     datatypes::{DataType, Schema},
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
+use lance::dataset::BatchUDF;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions,
     Table as LanceDbTable,
@@ -744,6 +749,86 @@ impl Table {
         })
     }
 
+    pub fn add_columns_with_embedding_function<'a>(
+        self_: PyRef<'a, Self>,
+        conf: Bound<'a, PyAny>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let conf = conf.unbind();
+
+        future_into_py(self_.py(), async move {
+            let conf: EmbeddingFunctionConfig = Python::with_gil(|py| conf.bind(py).extract())?;
+            let source_column = conf.source_column;
+            let vector_column = conf.vector_column;
+            let ndims = conf.ndims;
+            let handler = conf.handler;
+
+            let ndims_i32 = i32::try_from(ndims)
+                .map_err(|_| PyValueError::new_err("ndims exceeds i32::MAX"))?;
+            let vector_data_type = DataType::FixedSizeList(
+                Arc::new(arrow::datatypes::Field::new(
+                    "item",
+                    DataType::Float32,
+                    true,
+                )),
+                ndims_i32,
+            );
+            let vector_field =
+                arrow::datatypes::Field::new(vector_column.clone(), vector_data_type, true);
+
+            let output_schema = Arc::new(Schema::new(vec![vector_field.clone()]));
+
+            let mapper: RecordBatchMapper =
+                Box::new(move |batch: &RecordBatch| {
+                let out_batch = Python::with_gil(|py| {
+                    let batch_py = batch.to_pyarrow(py)?;
+                    let batch_py = handler.bind(py).call1((batch_py,))?;
+                    let out_batch = RecordBatch::from_pyarrow_bound(&batch_py)?;
+                    Ok::<_, pyo3::PyErr>(out_batch)
+                })
+                .map_err(|e| lance::Error::invalid_input(format!("{e}"), snafu::location!()))?;
+                Ok(out_batch)
+            });
+
+            let batch_udf = BatchUDF {
+                mapper,
+                output_schema,
+                result_checkpoint: None,
+            };
+
+            let transform = NewColumnTransform::BatchUDF(batch_udf);
+            let result = inner
+                .add_columns(transform, Some(vec![source_column]))
+                .await
+                .infer_error()?;
+            Ok(AddColumnsResult::from(result))
+        })
+    }
+
+    pub fn update_schema_metadata<'a>(
+        self_: PyRef<'a, Self>,
+        schema_metadata_pairs: Vec<(String, String)>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+
+        future_into_py(self_.py(), async move {
+            let dataset = inner
+                .dataset()
+                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?;
+            let mut dataset = dataset.get_mut().await.infer_error()?;
+
+            let mut manifest = (*dataset.manifest).clone();
+            let metadata: HashMap<String, String> = schema_metadata_pairs.into_iter().collect();
+            let new_schema = lance_core::datatypes::Schema {
+                fields: manifest.schema.fields.clone(),
+                metadata,
+            };
+            manifest.schema = new_schema;
+            dataset.manifest = Arc::new(manifest);
+            Ok(())
+        })
+    }
+
     pub fn alter_columns<'a>(
         self_: PyRef<'a, Self>,
         alterations: Vec<Bound<PyDict>>,
@@ -825,6 +910,29 @@ impl Table {
                 .infer_error()?;
 
             Ok(())
+        })
+    }
+}
+
+struct EmbeddingFunctionConfig {
+    source_column: String,
+    vector_column: String,
+    ndims: usize,
+    handler: pyo3::Py<PyAny>,
+}
+
+impl<'py> FromPyObject<'py> for EmbeddingFunctionConfig {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        let source_column: String = ob.getattr("source_column")?.extract()?;
+        let vector_column: String = ob.getattr("vector_column")?.extract()?;
+        let handler: pyo3::Py<PyAny> = ob.getattr("handler")?.unbind();
+        let ndims: usize = ob.getattr("ndims")?.extract()?;
+
+        Ok(Self {
+            source_column,
+            vector_column,
+            ndims,
+            handler,
         })
     }
 }
