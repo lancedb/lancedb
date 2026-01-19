@@ -655,6 +655,14 @@ class RemoteTable(Table):
     def stats(self):
         return LOOP.run(self._table.stats())
 
+    @property
+    def uri(self) -> str:
+        """The table URI (storage location).
+
+        For remote tables, this fetches the location from the server via describe.
+        """
+        return LOOP.run(self._table.uri())
+
     def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
         return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
 

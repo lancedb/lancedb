@@ -3606,6 +3606,20 @@ class AsyncTable:
         """
         return await self._inner.stats()
 
+    async def uri(self) -> str:
+        """
+        Get the table URI (storage location).
+
+        For remote tables, this fetches the location from the server via describe.
+        For local tables, this returns the dataset URI.
+
+        Returns
+        -------
+        str
+            The full storage location of the table (e.g., S3/GCS path).
+        """
+        return await self._inner.uri()
+
     async def add(
         self,
         data: DATA,
