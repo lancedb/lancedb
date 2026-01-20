@@ -52,6 +52,10 @@ pub struct ClientConfig {
     pub tls_config: Option<TlsConfig>,
     /// Provider for custom headers to be added to each request
     pub header_provider: Option<Arc<dyn HeaderProvider>>,
+    /// Maximum size in bytes for serializing Arrow data in chunks.
+    /// When a RecordBatch exceeds this size, it will be split into smaller chunks.
+    /// Defaults to 100MB (100 * 1024 * 1024 bytes).
+    pub chunk_size_bytes: Option<usize>,
 }
 
 impl std::fmt::Debug for ClientConfig {
@@ -67,6 +71,7 @@ impl std::fmt::Debug for ClientConfig {
                 "header_provider",
                 &self.header_provider.as_ref().map(|_| "Some(...)"),
             )
+            .field("chunk_size_bytes", &self.chunk_size_bytes)
             .finish()
     }
 }
@@ -81,6 +86,7 @@ impl Default for ClientConfig {
             id_delimiter: None,
             tls_config: None,
             header_provider: None,
+            chunk_size_bytes: None, // Will use default 100MB when None
         }
     }
 }
@@ -194,6 +200,7 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     pub(crate) sender: S,
     pub(crate) id_delimiter: String,
     pub(crate) header_provider: Option<Arc<dyn HeaderProvider>>,
+    pub(crate) chunk_size_bytes: usize,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
@@ -207,6 +214,7 @@ impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
                 "header_provider",
                 &self.header_provider.as_ref().map(|_| "Some(...)"),
             )
+            .field("chunk_size_bytes", &self.chunk_size_bytes)
             .finish()
     }
 }
@@ -374,6 +382,7 @@ impl RestfulLanceDbClient<Sender> {
         };
         debug!("Created client for host: {}", host);
         let retry_config = client_config.retry_config.clone().try_into()?;
+        let chunk_size_bytes = client_config.chunk_size_bytes.unwrap_or(100 * 1024 * 1024); // Default 100MB
         Ok(Self {
             client,
             host,
@@ -384,6 +393,7 @@ impl RestfulLanceDbClient<Sender> {
                 .clone()
                 .unwrap_or("$".to_string()),
             header_provider: client_config.header_provider,
+            chunk_size_bytes,
         })
     }
 }
@@ -751,6 +761,7 @@ pub mod test_utils {
             },
             id_delimiter: "$".to_string(),
             header_provider: None,
+            chunk_size_bytes: 100 * 1024 * 1024, // Default 100MB
         }
     }
 
@@ -775,6 +786,7 @@ pub mod test_utils {
             },
             id_delimiter: config.id_delimiter.unwrap_or_else(|| "$".to_string()),
             header_provider: config.header_provider,
+            chunk_size_bytes: config.chunk_size_bytes.unwrap_or(100 * 1024 * 1024), // Default 100MB
         }
     }
 }
@@ -940,6 +952,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            chunk_size_bytes: 100 * 1024 * 1024, // Default 100MB
         };
 
         // Apply dynamic headers
@@ -975,6 +988,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            chunk_size_bytes: 100 * 1024 * 1024, // Default 100MB
         };
 
         // Apply dynamic headers
@@ -1012,6 +1026,7 @@ mod tests {
             sender: Sender,
             id_delimiter: "+".to_string(),
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            chunk_size_bytes: 100 * 1024 * 1024, // Default 100MB
         };
 
         // Header provider errors should fail the request
@@ -1025,5 +1040,21 @@ mod tests {
             }
             _ => panic!("Expected Runtime error"),
         }
+    }
+
+    #[test]
+    fn test_client_config_with_chunk_size() {
+        let client_config = ClientConfig {
+            chunk_size_bytes: Some(50 * 1024 * 1024), // 50MB
+            ..Default::default()
+        };
+
+        assert_eq!(client_config.chunk_size_bytes, Some(50 * 1024 * 1024));
+    }
+
+    #[test]
+    fn test_client_config_chunk_size_default() {
+        let client_config = ClientConfig::default();
+        assert_eq!(client_config.chunk_size_bytes, None);
     }
 }
