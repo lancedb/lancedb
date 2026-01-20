@@ -50,7 +50,8 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .ascii_folding(params.ascii_folding)
                     .ngram_min_length(params.ngram_min_length)
                     .ngram_max_length(params.ngram_max_length)
-                    .ngram_prefix_only(params.prefix_only);
+                    .ngram_prefix_only(params.prefix_only)
+                    .skip_merge(params.skip_merge);
                 Ok(LanceDbIndex::FTS(inner_opts))
             },
             "IvfFlat" => {
@@ -179,6 +180,7 @@ struct FtsParams {
     ngram_min_length: u32,
     ngram_max_length: u32,
     prefix_only: bool,
+    skip_merge: bool,
 }
 
 #[derive(FromPyObject)]

@@ -157,6 +157,7 @@ impl Index {
         ngram_min_length: Option<u32>,
         ngram_max_length: Option<u32>,
         prefix_only: Option<bool>,
+        skip_merge: Option<bool>,
     ) -> Self {
         let mut opts = FtsIndexBuilder::default();
         if let Some(with_position) = with_position {
@@ -191,6 +192,9 @@ impl Index {
         }
         if let Some(prefix_only) = prefix_only {
             opts = opts.ngram_prefix_only(prefix_only);
+        }
+        if let Some(skip_merge) = skip_merge {
+            opts = opts.skip_merge(skip_merge);
         }
 
         Self {

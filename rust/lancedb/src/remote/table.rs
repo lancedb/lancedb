@@ -2624,6 +2624,11 @@ mod tests {
                 serde_json::to_value(InvertedIndexParams::default()).unwrap(),
                 Index::FTS(Default::default()),
             ),
+            (
+                "FTS",
+                serde_json::to_value(InvertedIndexParams::default().skip_merge(true)).unwrap(),
+                Index::FTS(InvertedIndexParams::default().skip_merge(true)),
+            ),
         ];
 
         for (index_type, expected_body, index) in cases {

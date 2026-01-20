@@ -127,6 +127,9 @@ class FTS:
     ascii_folding : bool, default True
         Whether to fold ASCII characters. This converts accented characters to
         their ASCII equivalent. For example, "café" would be converted to "cafe".
+    skip_merge : bool, default False
+        Whether to skip the partition merge stage after indexing. This can be
+        useful for distributed indexing where merges are handled separately.
     """
 
     with_position: bool = False
@@ -140,6 +143,7 @@ class FTS:
     ngram_min_length: int = 3
     ngram_max_length: int = 3
     prefix_only: bool = False
+    skip_merge: bool = False
 
 
 @dataclass

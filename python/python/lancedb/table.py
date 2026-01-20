@@ -892,6 +892,7 @@ class Table(ABC):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        skip_merge: bool = False,
         wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
@@ -956,6 +957,9 @@ class Table(ABC):
             The maximum length of an n-gram.
         prefix_only: bool, default False
             Whether to only index the prefix of the token for ngram tokenizer.
+        skip_merge: bool, default False
+            Only available with use_tantivy=False.
+            If True, skip the partition merge stage after indexing.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
         name: str, optional
@@ -2259,6 +2263,7 @@ class LanceTable(Table):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        skip_merge: bool = False,
         name: Optional[str] = None,
     ):
         if not use_tantivy:
@@ -2281,6 +2286,8 @@ class LanceTable(Table):
                 }
             else:
                 tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
+
+            tokenizer_configs["skip_merge"] = skip_merge
 
             config = FTS(
                 **tokenizer_configs,

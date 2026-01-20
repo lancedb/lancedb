@@ -558,6 +558,12 @@ export interface FtsOptions {
    * whether to only index the prefix of the token for ngram tokenizer
    */
   prefixOnly?: boolean;
+
+  /**
+   * Whether to skip the partition merge stage after indexing.
+   * Useful for distributed indexing where merges are handled separately.
+   */
+  skipMerge?: boolean;
 }
 
 export class Index {
@@ -726,6 +732,7 @@ export class Index {
         options?.ngramMinLength,
         options?.ngramMaxLength,
         options?.prefixOnly,
+        options?.skipMerge,
       ),
     );
   }

@@ -53,5 +53,8 @@ pub struct LabelListIndexBuilder {}
 
 pub use lance_index::scalar::inverted::query::*;
 pub use lance_index::scalar::FullTextSearchQuery;
+/// Builder for full text search (FTS) index parameters.
+///
+/// Use [`FtsIndexBuilder::skip_merge`] to skip the partition merge stage after indexing.
 pub use lance_index::scalar::InvertedIndexParams as FtsIndexBuilder;
 pub use lance_index::scalar::InvertedIndexParams;

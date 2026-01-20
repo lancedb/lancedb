@@ -405,7 +405,10 @@ def test_table_create_indices():
 
         # Test create_fts_index with custom name
         table.create_fts_index(
-            "text", wait_timeout=timedelta(seconds=2), name="custom_fts_idx"
+            "text",
+            wait_timeout=timedelta(seconds=2),
+            name="custom_fts_idx",
+            skip_merge=True,
         )
 
         # Test create_index with custom name
@@ -427,6 +430,7 @@ def test_table_create_indices():
         fts_req = received_requests[1]
         assert "name" in fts_req
         assert fts_req["name"] == "custom_fts_idx"
+        assert fts_req["skip_merge"] is True
 
         # Check vector index request has custom name
         vector_req = received_requests[2]

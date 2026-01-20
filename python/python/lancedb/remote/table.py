@@ -176,6 +176,7 @@ class RemoteTable(Table):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        skip_merge: bool = False,
         name: Optional[str] = None,
     ):
         config = FTS(
@@ -190,6 +191,7 @@ class RemoteTable(Table):
             ngram_min_length=ngram_min_length,
             ngram_max_length=ngram_max_length,
             prefix_only=prefix_only,
+            skip_merge=skip_merge,
         )
         LOOP.run(
             self._table.create_index(
