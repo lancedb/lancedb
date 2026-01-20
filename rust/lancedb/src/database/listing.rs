@@ -1076,13 +1076,13 @@ impl Database for ListingDatabase {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use super::*;
     use crate::connection::ConnectRequest;
     use crate::database::{CreateTableData, CreateTableMode, CreateTableRequest, WriteOptions};
     use crate::table::{Table, TableDefinition};
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
@@ -2061,7 +2061,7 @@ mod tests {
     #[tokio::test]
     async fn test_table_uri() {
         let (_tempdir, db) = setup_database().await;
-        
+
         let mut pb = PathBuf::new();
         pb.push(db.uri.clone());
         pb.push("test.lance");
