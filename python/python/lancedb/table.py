@@ -2218,6 +2218,9 @@ class LanceTable(Table):
     def stats(self) -> TableStatistics:
         return LOOP.run(self._table.stats())
 
+    def uri(self) -> str:
+        return LOOP.run(self._table.uri())
+
     def create_scalar_index(
         self,
         column: str,
