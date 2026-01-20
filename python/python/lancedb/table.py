@@ -2218,6 +2218,7 @@ class LanceTable(Table):
     def stats(self) -> TableStatistics:
         return LOOP.run(self._table.stats())
 
+    @property
     def uri(self) -> str:
         return LOOP.run(self._table.uri())
 

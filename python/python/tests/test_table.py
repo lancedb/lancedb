@@ -1972,4 +1972,4 @@ def test_add_table_with_empty_embeddings(tmp_path):
 def test_table_uri(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("my_table", data=[{"x": 0}])
-    assert table.uri == tmp_path / "my_table.lance"
+    assert table.uri == str(tmp_path / "my_table.lance")
