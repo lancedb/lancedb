@@ -1968,6 +1968,7 @@ def test_add_table_with_empty_embeddings(tmp_path):
     )
     assert table.count_rows() == 1
 
+
 def test_table_uri(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("my_table", data=[{"x": 0}])
