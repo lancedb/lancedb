@@ -40,7 +40,7 @@ use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
-use lance_io::object_store::LanceNamespaceStorageOptionsProvider;
+use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
 use lance_namespace::models::{
     QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
     QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery,
@@ -1667,18 +1667,14 @@ impl NativeTable {
 
         // Use DatasetBuilder::from_namespace which automatically fetches location
         // and storage options from the namespace
-        let builder = DatasetBuilder::from_namespace(
-            namespace_client.clone(),
-            table_id,
-            false, // Don't ignore namespace storage options
-        )
-        .await
-        .map_err(|e| match e {
-            lance::Error::Namespace { source, .. } => Error::Runtime {
-                message: format!("Failed to get table info from namespace: {:?}", source),
-            },
-            source => Error::Lance { source },
-        })?;
+        let builder = DatasetBuilder::from_namespace(namespace_client.clone(), table_id)
+            .await
+            .map_err(|e| match e {
+                lance::Error::Namespace { source, .. } => Error::Runtime {
+                    message: format!("Failed to get table info from namespace: {:?}", source),
+                },
+                source => Error::Lance { source },
+            })?;
 
         let dataset = builder
             .with_read_params(params)
@@ -1882,7 +1878,9 @@ impl NativeTable {
         let store_params = params
             .store_params
             .get_or_insert_with(ObjectStoreParams::default);
-        store_params.storage_options_provider = Some(storage_options_provider);
+        store_params.storage_options_accessor = Some(Arc::new(
+            StorageOptionsAccessor::with_provider(storage_options_provider),
+        ));
 
         // Patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
@@ -3243,7 +3241,7 @@ impl BaseTable for NativeTable {
             .get()
             .await
             .ok()
-            .and_then(|dataset| dataset.storage_options().cloned())
+            .and_then(|dataset| dataset.initial_storage_options().cloned())
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {

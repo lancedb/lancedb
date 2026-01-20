@@ -12,7 +12,7 @@ use lance::dataset::{builder::DatasetBuilder, ReadParams, WriteMode};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
-use lance_io::object_store::StorageOptionsProvider;
+use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
@@ -278,6 +278,26 @@ const LANCE_EXTENSION: &str = "lance";
 const ENGINE: &str = "engine";
 const MIRRORED_STORE: &str = "mirroredStore";
 
+fn build_storage_options_accessor(
+    storage_options: HashMap<String, String>,
+    provider: Option<Arc<dyn StorageOptionsProvider>>,
+) -> Option<Arc<StorageOptionsAccessor>> {
+    if storage_options.is_empty() && provider.is_none() {
+        return None;
+    }
+    let accessor = match provider {
+        Some(provider) => {
+            if storage_options.is_empty() {
+                StorageOptionsAccessor::with_provider(provider)
+            } else {
+                StorageOptionsAccessor::with_initial_and_provider(storage_options, provider)
+            }
+        }
+        None => StorageOptionsAccessor::with_static_options(storage_options),
+    };
+    Some(Arc::new(accessor))
+}
+
 /// A connection to LanceDB
 impl ListingDatabase {
     /// Connect to a listing database
@@ -356,7 +376,10 @@ impl ListingDatabase {
                     .clone()
                     .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
                 let os_params = ObjectStoreParams {
-                    storage_options: Some(options.storage_options.clone()),
+                    storage_options_accessor: build_storage_options_accessor(
+                        options.storage_options.clone(),
+                        None,
+                    ),
                     ..Default::default()
                 };
                 let (object_store, base_path) = ObjectStore::from_uri_and_params(
@@ -481,7 +504,10 @@ impl ListingDatabase {
 
     async fn drop_tables(&self, names: Vec<String>) -> Result<()> {
         let object_store_params = ObjectStoreParams {
-            storage_options: Some(self.storage_options.clone()),
+            storage_options_accessor: build_storage_options_accessor(
+                self.storage_options.clone(),
+                self.storage_options_provider.clone(),
+            ),
             ..Default::default()
         };
         let mut uri = self.uri.clone();
@@ -530,7 +556,7 @@ impl ListingDatabase {
             .lance_write_params
             .as_ref()
             .and_then(|p| p.store_params.as_ref())
-            .and_then(|sp| sp.storage_options.as_ref());
+            .and_then(|sp| sp.storage_options());
 
         let storage_version_override = storage_options
             .and_then(|opts| opts.get(OPT_NEW_TABLE_STORAGE_VERSION))
@@ -581,21 +607,22 @@ impl ListingDatabase {
         // will cause a new connection to be created, and that connection will
         // be dropped from the cache when python GCs the table object, which
         // confounds reuse across tables.
-        if !self.storage_options.is_empty() {
-            let storage_options = write_params
+        if !self.storage_options.is_empty() || self.storage_options_provider.is_some() {
+            let store_params = write_params
                 .store_params
-                .get_or_insert_with(Default::default)
-                .storage_options
                 .get_or_insert_with(Default::default);
-            self.inherit_storage_options(storage_options);
-        }
-
-        // Set storage options provider if available
-        if self.storage_options_provider.is_some() {
-            write_params
-                .store_params
-                .get_or_insert_with(Default::default)
-                .storage_options_provider = self.storage_options_provider.clone();
+            let mut storage_options = store_params.storage_options().cloned().unwrap_or_default();
+            if !self.storage_options.is_empty() {
+                self.inherit_storage_options(&mut storage_options);
+            }
+            let provider = self.storage_options_provider.clone().or_else(|| {
+                store_params
+                    .storage_options_accessor
+                    .as_ref()
+                    .and_then(|accessor| accessor.provider().cloned())
+            });
+            store_params.storage_options_accessor =
+                build_storage_options_accessor(storage_options, provider);
         }
 
         write_params.data_storage_version = self
@@ -881,7 +908,10 @@ impl Database for ListingDatabase {
         validate_table_name(&request.target_table_name)?;
 
         let storage_params = ObjectStoreParams {
-            storage_options: Some(self.storage_options.clone()),
+            storage_options_accessor: build_storage_options_accessor(
+                self.storage_options.clone(),
+                self.storage_options_provider.clone(),
+            ),
             ..Default::default()
         };
         let read_params = ReadParams {
@@ -945,25 +975,24 @@ impl Database for ListingDatabase {
         // will cause a new connection to be created, and that connection will
         // be dropped from the cache when python GCs the table object, which
         // confounds reuse across tables.
-        if !self.storage_options.is_empty() {
-            let storage_options = request
+        if !self.storage_options.is_empty() || self.storage_options_provider.is_some() {
+            let store_params = request
                 .lance_read_params
                 .get_or_insert_with(Default::default)
                 .store_options
-                .get_or_insert_with(Default::default)
-                .storage_options
                 .get_or_insert_with(Default::default);
-            self.inherit_storage_options(storage_options);
-        }
-
-        // Set storage options provider if available
-        if self.storage_options_provider.is_some() {
-            request
-                .lance_read_params
-                .get_or_insert_with(Default::default)
-                .store_options
-                .get_or_insert_with(Default::default)
-                .storage_options_provider = self.storage_options_provider.clone();
+            let mut storage_options = store_params.storage_options().cloned().unwrap_or_default();
+            if !self.storage_options.is_empty() {
+                self.inherit_storage_options(&mut storage_options);
+            }
+            let provider = self.storage_options_provider.clone().or_else(|| {
+                store_params
+                    .storage_options_accessor
+                    .as_ref()
+                    .and_then(|accessor| accessor.provider().cloned())
+            });
+            store_params.storage_options_accessor =
+                build_storage_options_accessor(storage_options, provider);
         }
 
         // Some ReadParams are exposed in the OpenTableBuilder, but we also
@@ -1869,7 +1898,7 @@ mod tests {
         let write_options = WriteOptions {
             lance_write_params: Some(lance::dataset::WriteParams {
                 store_params: Some(lance::io::ObjectStoreParams {
-                    storage_options: Some(storage_options),
+                    storage_options_accessor: build_storage_options_accessor(storage_options, None),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1943,7 +1972,7 @@ mod tests {
         let write_options = WriteOptions {
             lance_write_params: Some(lance::dataset::WriteParams {
                 store_params: Some(lance::io::ObjectStoreParams {
-                    storage_options: Some(storage_options),
+                    storage_options_accessor: build_storage_options_accessor(storage_options, None),
                     ..Default::default()
                 }),
                 ..Default::default()
