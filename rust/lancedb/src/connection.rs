@@ -1526,10 +1526,8 @@ mod tests {
 
     #[tokio::test]
     async fn drop_table() {
-        let tmp_dir = tempdir().unwrap();
-
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri).execute().await.unwrap();
+        let tc = new_test_connection().await.unwrap();
+        let db = tc.connection;
 
         // drop non-exist table
         assert!(matches!(
@@ -1537,7 +1535,11 @@ mod tests {
             Err(crate::Error::TableNotFound { .. }),
         ));
 
-        create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        db.create_empty_table("table1", schema.clone())
+            .execute()
+            .await
+            .unwrap();
         db.drop_table("table1", &[]).await.unwrap();
 
         let tables = db.table_names().execute().await.unwrap();
