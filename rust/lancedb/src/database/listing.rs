@@ -463,9 +463,20 @@ impl ListingDatabase {
         validate_table_name(name)?;
 
         let mut uri = self.uri.clone();
-        // If the URI does not end with a slash, add one
-        if !uri.ends_with('/') {
-            uri.push('/');
+        // If the URI does not end with a path separator, add one
+        // Use forward slash for URIs (http://, s3://, gs://, file://, etc.)
+        // Use platform-specific separator for local paths without scheme
+        let has_scheme = uri.contains("://");
+        let ends_with_separator = uri.ends_with('/') || uri.ends_with('\\');
+
+        if !ends_with_separator {
+            if has_scheme {
+                // URIs always use forward slash
+                uri.push('/');
+            } else {
+                // Local path without scheme - use platform separator
+                uri.push(std::path::MAIN_SEPARATOR);
+            }
         }
         // Append the table name with the lance file extension
         uri.push_str(&format!("{}.{}", name, LANCE_FILE_EXTENSION));
@@ -1071,6 +1082,7 @@ mod tests {
     use crate::table::{Table, TableDefinition};
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
@@ -2044,6 +2056,19 @@ mod tests {
 
         let db_options = ListingDatabaseOptions::parse_from_map(&options).unwrap();
         assert_eq!(db_options.new_table_config.enable_stable_row_ids, None);
+    }
+
+    #[tokio::test]
+    async fn test_table_uri() {
+        let (_tempdir, db) = setup_database().await;
+
+        let mut pb = PathBuf::new();
+        pb.push(db.uri.clone());
+        pb.push("test.lance");
+
+        let expected = pb.to_str().unwrap();
+        let uri = db.table_uri("test").ok().unwrap();
+        assert_eq!(uri, expected);
     }
 
     #[tokio::test]

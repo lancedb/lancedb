@@ -204,6 +204,7 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     server_version: ServerVersion,
 
     version: RwLock<Option<u64>>,
+    location: RwLock<Option<String>>,
 }
 
 impl<S: HttpSend> RemoteTable<S> {
@@ -221,6 +222,7 @@ impl<S: HttpSend> RemoteTable<S> {
             identifier,
             server_version,
             version: RwLock::new(None),
+            location: RwLock::new(None),
         }
     }
 
@@ -639,6 +641,7 @@ impl<S: HttpSend> RemoteTable<S> {
 struct TableDescription {
     version: u64,
     schema: JsonSchema,
+    location: Option<String>,
 }
 
 impl<S: HttpSend> std::fmt::Display for RemoteTable<S> {
@@ -667,6 +670,7 @@ mod test_utils {
                 identifier: name,
                 server_version: version.map(ServerVersion).unwrap_or_default(),
                 version: RwLock::new(None),
+                location: RwLock::new(None),
             }
         }
     }
@@ -1461,8 +1465,28 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             message: "table_definition is not supported on LanceDB cloud.".into(),
         })
     }
-    fn dataset_uri(&self) -> &str {
-        "NOT_SUPPORTED"
+    async fn uri(&self) -> Result<String> {
+        // Check if we already have the location cached
+        {
+            let location = self.location.read().await;
+            if let Some(ref loc) = *location {
+                return Ok(loc.clone());
+            }
+        }
+
+        // Fetch from server via describe
+        let description = self.describe().await?;
+        let location = description.location.ok_or_else(|| Error::NotSupported {
+            message: "Table URI not supported by the server".into(),
+        })?;
+
+        // Cache the location for future use
+        {
+            let mut cached_location = self.location.write().await;
+            *cached_location = Some(location.clone());
+        }
+
+        Ok(location)
     }
 
     async fn storage_options(&self) -> Option<HashMap<String, String>> {
@@ -3331,5 +3355,70 @@ mod tests {
 
         let result = table.drop_columns(&["old_col1", "old_col2"]).await.unwrap();
         assert_eq!(result.version, 5);
+    }
+
+    #[tokio::test]
+    async fn test_uri() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 1, "schema": {"fields": []}, "location": "s3://bucket/path/to/table"}"#)
+                .unwrap()
+        });
+
+        let uri = table.uri().await.unwrap();
+        assert_eq!(uri, "s3://bucket/path/to/table");
+    }
+
+    #[tokio::test]
+    async fn test_uri_missing_location() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+
+            // Server returns response without location field
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 1, "schema": {"fields": []}}"#)
+                .unwrap()
+        });
+
+        let result = table.uri().await;
+        assert!(result.is_err());
+        assert!(matches!(&result, Err(Error::NotSupported { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_uri_caching() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version": 1, "schema": {"fields": []}, "location": "gs://bucket/table"}"#,
+                )
+                .unwrap()
+        });
+
+        // First call should fetch from server
+        let uri1 = table.uri().await.unwrap();
+        assert_eq!(uri1, "gs://bucket/table");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second call should use cached value
+        let uri2 = table.uri().await.unwrap();
+        assert_eq!(uri2, "gs://bucket/table");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, no new call
     }
 }

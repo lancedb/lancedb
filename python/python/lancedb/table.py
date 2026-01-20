@@ -2218,6 +2218,10 @@ class LanceTable(Table):
     def stats(self) -> TableStatistics:
         return LOOP.run(self._table.stats())
 
+    @property
+    def uri(self) -> str:
+        return LOOP.run(self._table.uri())
+
     def create_scalar_index(
         self,
         column: str,
@@ -3605,6 +3609,20 @@ class AsyncTable:
         Retrieve table and fragment statistics.
         """
         return await self._inner.stats()
+
+    async def uri(self) -> str:
+        """
+        Get the table URI (storage location).
+
+        For remote tables, this fetches the location from the server via describe.
+        For local tables, this returns the dataset URI.
+
+        Returns
+        -------
+        str
+            The full storage location of the table (e.g., S3/GCS path).
+        """
+        return await self._inner.uri()
 
     async def add(
         self,

@@ -608,8 +608,8 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn list_versions(&self) -> Result<Vec<Version>>;
     /// Get the table definition.
     async fn table_definition(&self) -> Result<TableDefinition>;
-    /// Get the table URI
-    fn dataset_uri(&self) -> &str;
+    /// Get the table URI (storage location)
+    async fn uri(&self) -> Result<String>;
     /// Get the storage options used when opening this table, if any.
     async fn storage_options(&self) -> Option<HashMap<String, String>>;
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
@@ -1317,11 +1317,12 @@ impl Table {
         self.inner.list_indices().await
     }
 
-    /// Get the underlying dataset URI
+    /// Get the table URI (storage location)
     ///
-    /// Warning: This is an internal API and the return value is subject to change.
-    pub fn dataset_uri(&self) -> &str {
-        self.inner.dataset_uri()
+    /// Returns the full storage location of the table (e.g., S3/GCS path).
+    /// For remote tables, this fetches the location from the server via describe.
+    pub async fn uri(&self) -> Result<String> {
+        self.inner.uri().await
     }
 
     /// Get the storage options used when opening this table, if any.
@@ -3234,8 +3235,8 @@ impl BaseTable for NativeTable {
         Ok(results.into_iter().flatten().collect())
     }
 
-    fn dataset_uri(&self) -> &str {
-        self.uri.as_str()
+    async fn uri(&self) -> Result<String> {
+        Ok(self.uri.clone())
     }
 
     async fn storage_options(&self) -> Option<HashMap<String, String>> {
