@@ -1476,7 +1476,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         // Fetch from server via describe
         let description = self.describe().await?;
-        let location = description.location.ok_or_else(|| Error::Runtime {
+        let location = description.location.ok_or_else(|| Error::NotSupported {
             message: "Table URI not supported by the server".into(),
         })?;
 
@@ -3388,7 +3388,7 @@ mod tests {
 
         let result = table.uri().await;
         assert!(result.is_err());
-        assert!(matches!(&result, Err(Error::Runtime { .. })));
+        assert!(matches!(&result, Err(Error::NotSupported { .. })));
     }
 
     #[tokio::test]
