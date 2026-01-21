@@ -24,6 +24,12 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::stream;
 use lance::dataset::ReadParams;
 use lance_datafusion::utils::StreamingWriteSource;
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
+    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+};
+use lance_namespace::LanceNamespace;
 
 use crate::arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt};
 use crate::error::Result;
@@ -36,32 +42,7 @@ pub trait DatabaseOptions {
     fn serialize_into_map(&self, map: &mut HashMap<String, String>);
 }
 
-/// A request to list namespaces in the database
-#[derive(Clone, Debug, Default)]
-pub struct ListNamespacesRequest {
-    /// The parent namespace to list namespaces in. Empty list represents root namespace.
-    pub namespace: Vec<String>,
-    /// If present, only return names that come lexicographically after the supplied value.
-    pub page_token: Option<String>,
-    /// The maximum number of namespace names to return
-    pub limit: Option<u32>,
-}
-
-/// A request to create a namespace
-#[derive(Clone, Debug)]
-pub struct CreateNamespaceRequest {
-    /// The namespace identifier to create
-    pub namespace: Vec<String>,
-}
-
-/// A request to drop a namespace
-#[derive(Clone, Debug)]
-pub struct DropNamespaceRequest {
-    /// The namespace identifier to drop
-    pub namespace: Vec<String>,
-}
-
-/// A request to list names of tables in the database
+/// A request to list names of tables in the database (deprecated, use ListTablesRequest)
 #[derive(Clone, Debug, Default)]
 pub struct TableNamesRequest {
     /// The namespace to list tables in. Empty list represents root namespace.
@@ -77,7 +58,7 @@ pub struct TableNamesRequest {
 }
 
 /// A request to open a table
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OpenTableRequest {
     pub name: String,
     /// The namespace to open the table from. Empty list represents root namespace.
@@ -87,6 +68,22 @@ pub struct OpenTableRequest {
     /// Optional custom location for the table. If not provided, the database will
     /// derive a location based on its URI and the table name.
     pub location: Option<String>,
+    /// Optional namespace client for server-side query execution.
+    /// When set, queries will be executed on the namespace server instead of locally.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
+}
+
+impl std::fmt::Debug for OpenTableRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenTableRequest")
+            .field("name", &self.name)
+            .field("namespace", &self.namespace)
+            .field("index_cache_size", &self.index_cache_size)
+            .field("lance_read_params", &self.lance_read_params)
+            .field("location", &self.location)
+            .field("namespace_client", &self.namespace_client)
+            .finish()
+    }
 }
 
 pub type TableBuilderCallback = Box<dyn FnOnce(OpenTableRequest) -> OpenTableRequest + Send>;
@@ -170,6 +167,9 @@ pub struct CreateTableRequest {
     /// Optional custom location for the table. If not provided, the database will
     /// derive a location based on its URI and the table name.
     pub location: Option<String>,
+    /// Optional namespace client for server-side query execution.
+    /// When set, queries will be executed on the namespace server instead of locally.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
 }
 
 impl CreateTableRequest {
@@ -181,6 +181,7 @@ impl CreateTableRequest {
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
             location: None,
+            namespace_client: None,
         }
     }
 }
@@ -247,13 +248,30 @@ pub trait Database:
     /// Get the read consistency of the database
     async fn read_consistency(&self) -> Result<ReadConsistency>;
     /// List immediate child namespace names in the given namespace
-    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>>;
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse>;
     /// Create a new namespace
-    async fn create_namespace(&self, request: CreateNamespaceRequest) -> Result<()>;
+    async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse>;
     /// Drop a namespace
-    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<()>;
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse>;
+    /// Describe a namespace (get its properties)
+    async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse>;
     /// List the names of tables in the database
+    ///
+    /// # Deprecated
+    /// Use `list_tables` instead for pagination support
+    #[deprecated(note = "Use list_tables instead")]
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>>;
+    /// List tables in the database with pagination support
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse>;
     /// Create a table in the database
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Clone a table in the database.
@@ -278,4 +296,10 @@ pub trait Database:
     /// Drop all tables in the database
     async fn drop_all_tables(&self, namespace: &[String]) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Get the equivalent namespace client of this database
+    /// For LanceNamespaceDatabase, it is the underlying LanceNamespace.
+    /// For ListingDatabase, it is the equivalent DirectoryNamespace.
+    /// For RemoteDatabase, it is the equivalent RestNamespace.
+    async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>>;
 }

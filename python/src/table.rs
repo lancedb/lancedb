@@ -21,7 +21,7 @@ use pyo3::{
     exceptions::{PyKeyError, PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
-    Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
+    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -287,7 +287,12 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.schema().await.infer_error()?;
-            Python::with_gil(|py| schema.to_pyarrow(py))
+            #[allow(deprecated)]
+            let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
+                let bound = schema.to_pyarrow(py)?;
+                Ok(bound.unbind())
+            })?;
+            Ok(py_obj)
         })
     }
 
@@ -437,6 +442,7 @@ impl Table {
         future_into_py(self_.py(), async move {
             let stats = inner.index_stats(&index_name).await.infer_error()?;
             if let Some(stats) = stats {
+                #[allow(deprecated)]
                 Python::with_gil(|py| {
                     let dict = PyDict::new(py);
                     dict.set_item("num_indexed_rows", stats.num_indexed_rows)?;
@@ -467,6 +473,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let stats = inner.stats().await.infer_error()?;
+            #[allow(deprecated)]
             Python::with_gil(|py| {
                 let dict = PyDict::new(py);
                 dict.set_item("total_bytes", stats.total_bytes)?;
@@ -497,6 +504,11 @@ impl Table {
         })
     }
 
+    pub fn uri(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move { inner.uri().await.infer_error() })
+    }
+
     pub fn __repr__(&self) -> String {
         match &self.inner {
             None => format!("ClosedTable({})", self.name),
@@ -516,6 +528,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let versions = inner.list_versions().await.infer_error()?;
+            #[allow(deprecated)]
             let versions_as_dict = Python::with_gil(|py| {
                 versions
                     .iter()
@@ -867,6 +880,7 @@ impl Tags {
             let tags = inner.tags().await.infer_error()?;
             let res = tags.list().await.infer_error()?;
 
+            #[allow(deprecated)]
             Python::with_gil(|py| {
                 let py_dict = PyDict::new(py);
                 for (key, contents) in res {

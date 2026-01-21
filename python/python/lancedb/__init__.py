@@ -13,6 +13,7 @@ __version__ = importlib.metadata.version("lancedb")
 
 from ._lancedb import connect as lancedb_connect
 from .common import URI, sanitize_uri
+from urllib.parse import urlparse
 from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .io import StorageOptionsProvider
 from .remote import ClientConfig
@@ -26,6 +27,39 @@ from .namespace import (
     LanceNamespaceDBConnection,
     AsyncLanceNamespaceDBConnection,
 )
+
+
+def _check_s3_bucket_with_dots(
+    uri: str, storage_options: Optional[Dict[str, str]]
+) -> None:
+    """
+    Check if an S3 URI has a bucket name containing dots and warn if no region
+    is specified. S3 buckets with dots cannot use virtual-hosted-style URLs,
+    which breaks automatic region detection.
+
+    See: https://github.com/lancedb/lancedb/issues/1898
+    """
+    if not isinstance(uri, str) or not uri.startswith("s3://"):
+        return
+
+    parsed = urlparse(uri)
+    bucket = parsed.netloc
+
+    if "." not in bucket:
+        return
+
+    # Check if region is provided in storage_options
+    region_keys = {"region", "aws_region"}
+    has_region = storage_options and any(k in storage_options for k in region_keys)
+
+    if not has_region:
+        raise ValueError(
+            f"S3 bucket name '{bucket}' contains dots, which prevents automatic "
+            f"region detection. Please specify the region explicitly via "
+            f"storage_options={{'region': '<your-region>'}} or "
+            f"storage_options={{'aws_region': '<your-region>'}}. "
+            f"See https://github.com/lancedb/lancedb/issues/1898 for details."
+        )
 
 
 def connect(
@@ -121,9 +155,11 @@ def connect(
             storage_options=storage_options,
             **kwargs,
         )
+    _check_s3_bucket_with_dots(str(uri), storage_options)
 
     if kwargs:
         raise ValueError(f"Unknown keyword arguments: {kwargs}")
+
     return LanceDBConnection(
         uri,
         read_consistency_interval=read_consistency_interval,
@@ -210,6 +246,8 @@ async def connect_async(
 
     if isinstance(client_config, dict):
         client_config = ClientConfig(**client_config)
+
+    _check_s3_bucket_with_dots(str(uri), storage_options)
 
     return AsyncConnection(
         await lancedb_connect(

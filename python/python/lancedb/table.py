@@ -50,15 +50,16 @@ from .dependencies import (
 )
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .index import (
-    FTS,
-    Bitmap,
     BTree,
-    HnswPq,
-    HnswSq,
     IvfFlat,
     IvfPq,
+    IvfSq,
+    Bitmap,
     IvfRq,
     LabelList,
+    HnswPq,
+    HnswSq,
+    FTS,
     lang_mapping,
 )
 from .merge import LanceMergeInsertBuilder
@@ -687,6 +688,24 @@ class Table(ABC):
         Returns
         -------
         pa.Table
+        """
+        raise NotImplementedError
+
+    def to_lance(self, **kwargs) -> lance.LanceDataset:
+        """Return the table as a lance.LanceDataset.
+
+        Returns
+        -------
+        lance.LanceDataset
+        """
+        raise NotImplementedError
+
+    def to_polars(self, **kwargs) -> "pl.DataFrame":
+        """Return the table as a polars.DataFrame.
+
+        Returns
+        -------
+        polars.DataFrame
         """
         raise NotImplementedError
 
@@ -2071,7 +2090,7 @@ class LanceTable(Table):
         index_cache_size: Optional[int] = None,
         num_bits: int = 8,
         index_type: Literal[
-            "IVF_FLAT", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+            "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
         ] = "IVF_PQ",
         max_iterations: int = 50,
         sample_rate: int = 256,
@@ -2103,6 +2122,14 @@ class LanceTable(Table):
             return
         elif index_type == "IVF_FLAT":
             config = IvfFlat(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
+            )
+        elif index_type == "IVF_SQ":
+            config = IvfSq(
                 distance_type=metric,
                 num_partitions=num_partitions,
                 max_iterations=max_iterations,
@@ -2197,6 +2224,10 @@ class LanceTable(Table):
 
     def stats(self) -> TableStatistics:
         return LOOP.run(self._table.stats())
+
+    @property
+    def uri(self) -> str:
+        return LOOP.run(self._table.uri())
 
     def create_scalar_index(
         self,
@@ -3207,7 +3238,27 @@ def _infer_target_schema(
             if pa.types.is_floating(field.type.value_type):
                 target_type = pa.list_(pa.float32(), dim)
             elif pa.types.is_integer(field.type.value_type):
-                target_type = pa.list_(pa.uint8(), dim)
+                values = peeked.column(i)
+
+                if isinstance(values, pa.ChunkedArray):
+                    values = values.combine_chunks()
+
+                flattened = values.flatten()
+                valid_count = pc.count(flattened, mode="only_valid").as_py()
+
+                if valid_count == 0:
+                    target_type = pa.list_(pa.uint8(), dim)
+                else:
+                    min_max = pc.min_max(flattened)
+                    min_value = min_max["min"].as_py()
+                    max_value = min_max["max"].as_py()
+
+                    if (min_value is not None and min_value < 0) or (
+                        max_value is not None and max_value > 255
+                    ):
+                        target_type = pa.list_(pa.float32(), dim)
+                    else:
+                        target_type = pa.list_(pa.uint8(), dim)
             else:
                 continue  # Skip non-numeric types
 
@@ -3474,11 +3525,22 @@ class AsyncTable:
         if config is not None:
             if not isinstance(
                 config,
-                (IvfFlat, IvfPq, IvfRq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS),
+                (
+                    IvfFlat,
+                    IvfSq,
+                    IvfPq,
+                    IvfRq,
+                    HnswPq,
+                    HnswSq,
+                    BTree,
+                    Bitmap,
+                    LabelList,
+                    FTS,
+                ),
             ):
                 raise TypeError(
-                    "config must be an instance of IvfPq, IvfRq, HnswPq, HnswSq, BTree,"
-                    " Bitmap, LabelList, or FTS, but got " + str(type(config))
+                    "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
+                    " BTree, Bitmap, LabelList, or FTS, but got " + str(type(config))
                 )
         try:
             await self._inner.create_index(
@@ -3555,6 +3617,20 @@ class AsyncTable:
         Retrieve table and fragment statistics.
         """
         return await self._inner.stats()
+
+    async def uri(self) -> str:
+        """
+        Get the table URI (storage location).
+
+        For remote tables, this fetches the location from the server via describe.
+        For local tables, this returns the dataset URI.
+
+        Returns
+        -------
+        str
+            The full storage location of the table (e.g., S3/GCS path).
+        """
+        return await self._inner.uri()
 
     async def add(
         self,

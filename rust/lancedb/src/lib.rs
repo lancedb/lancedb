@@ -25,13 +25,14 @@
 //!
 //! ## Crate Features
 //!
-//! ### Experimental Features
-//!
-//! These features are not enabled by default.  They are experimental or in-development features that
-//! are not yet ready to be released.
-//!
-//! - `remote` - Enable remote client to connect to LanceDB cloud.  This is not yet fully implemented
-//!   and should not be enabled.
+//! - `aws` - Enable AWS S3 object store support.
+//! - `dynamodb` - Enable DynamoDB manifest store support.
+//! - `azure` - Enable Azure Blob Storage object store support.
+//! - `gcs` - Enable Google Cloud Storage object store support.
+//! - `oss` - Enable Alibaba Cloud OSS object store support.
+//! - `remote` - Enable remote client to connect to LanceDB cloud.
+//! - `huggingface` - Enable HuggingFace Hub integration for loading datasets from the Hub.
+//! - `fp16kernels` - Enable FP16 kernels for faster vector search on CPU.
 //!
 //! ### Quick Start
 //!
@@ -53,6 +54,8 @@
 //! You can also use [`ConnectOptions`] to configure the connection to the database.
 //!
 //! ```rust
+//! # #[cfg(feature = "aws")]
+//! # {
 //! use object_store::aws::AwsCredential;
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = lancedb::connect("data/sample-lancedb")
@@ -65,6 +68,7 @@
 //!     .await
 //!     .unwrap();
 //! # });
+//! # }
 //! ```
 //!
 //! LanceDB uses [arrow-rs](https://github.com/apache/arrow-rs) to define schema, data types and array itself.

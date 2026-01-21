@@ -19,7 +19,7 @@ use pyo3::{
     exceptions::PyRuntimeError,
     pyclass, pymethods,
     types::{PyAnyMethods, PyDict, PyDictMethods, PyType},
-    Bound, PyAny, PyRef, PyRefMut, PyResult, Python,
+    Bound, Py, PyAny, PyRef, PyRefMut, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -281,7 +281,12 @@ impl PyPermutationReader {
         let reader = slf.reader.clone();
         future_into_py(slf.py(), async move {
             let schema = reader.output_schema(selection).await.infer_error()?;
-            Python::with_gil(|py| schema.to_pyarrow(py))
+            #[allow(deprecated)]
+            let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
+                let bound = schema.to_pyarrow(py)?;
+                Ok(bound.unbind())
+            })?;
+            Ok(py_obj)
         })
     }
 

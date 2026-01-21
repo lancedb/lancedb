@@ -88,7 +88,7 @@ jobs:
         npm install -g @napi-rs/cli
     - name: Build
       run: |
-        npm ci
+        npm ci --include=optional
         npm run build:debug -- --profile ci
         npm run tsc
     - name: Setup localstack
@@ -146,7 +146,7 @@ jobs:
         npm install -g @napi-rs/cli
     - name: Build
       run: |
-        npm ci
+        npm ci --include=optional
         npm run build:debug -- --profile ci
         npm run tsc
     - name: Test

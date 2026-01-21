@@ -24,10 +24,15 @@ use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
+    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+};
+
 use super::{
-    BaseTable, CloneTableRequest, CreateNamespaceRequest, CreateTableMode, CreateTableRequest,
-    Database, DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
-    TableNamesRequest,
+    BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
+    OpenTableRequest, TableNamesRequest,
 };
 
 /// File extension to indicate a lance table
@@ -35,6 +40,7 @@ pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 pub const OPT_NEW_TABLE_STORAGE_VERSION: &str = "new_table_data_storage_version";
 pub const OPT_NEW_TABLE_V2_MANIFEST_PATHS: &str = "new_table_enable_v2_manifest_paths";
+pub const OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS: &str = "new_table_enable_stable_row_ids";
 
 /// Controls how new tables should be created
 #[derive(Clone, Debug, Default)]
@@ -48,6 +54,12 @@ pub struct NewTableConfig {
     /// V2 manifest paths are more efficient than V2 manifest paths but are not
     /// supported by old clients.
     pub enable_v2_manifest_paths: Option<bool>,
+    /// Whether to enable stable row IDs for new tables
+    ///
+    /// When enabled, row IDs remain stable after compaction, update, delete,
+    /// and merges. This is useful for materialized views and other use cases
+    /// that need to track source rows across these operations.
+    pub enable_stable_row_ids: Option<bool>,
 }
 
 /// Options specific to the listing database
@@ -87,6 +99,14 @@ impl ListingDatabaseOptions {
                     })
                 })
                 .transpose()?,
+            enable_stable_row_ids: map
+                .get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS)
+                .map(|s| {
+                    s.parse::<bool>().map_err(|_| Error::InvalidInput {
+                        message: format!("enable_stable_row_ids must be a boolean, received {}", s),
+                    })
+                })
+                .transpose()?,
         };
         // We just assume that any options that are not new table config options are storage options
         let storage_options = map
@@ -94,6 +114,7 @@ impl ListingDatabaseOptions {
             .filter(|(key, _)| {
                 key.as_str() != OPT_NEW_TABLE_STORAGE_VERSION
                     && key.as_str() != OPT_NEW_TABLE_V2_MANIFEST_PATHS
+                    && key.as_str() != OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS
             })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
@@ -116,6 +137,12 @@ impl DatabaseOptions for ListingDatabaseOptions {
             map.insert(
                 OPT_NEW_TABLE_V2_MANIFEST_PATHS.to_string(),
                 enable_v2_manifest_paths.to_string(),
+            );
+        }
+        if let Some(enable_stable_row_ids) = self.new_table_config.enable_stable_row_ids {
+            map.insert(
+                OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                enable_stable_row_ids.to_string(),
             );
         }
     }
@@ -436,9 +463,20 @@ impl ListingDatabase {
         validate_table_name(name)?;
 
         let mut uri = self.uri.clone();
-        // If the URI does not end with a slash, add one
-        if !uri.ends_with('/') {
-            uri.push('/');
+        // If the URI does not end with a path separator, add one
+        // Use forward slash for URIs (http://, s3://, gs://, file://, etc.)
+        // Use platform-specific separator for local paths without scheme
+        let has_scheme = uri.contains("://");
+        let ends_with_separator = uri.ends_with('/') || uri.ends_with('\\');
+
+        if !ends_with_separator {
+            if has_scheme {
+                // URIs always use forward slash
+                uri.push('/');
+            } else {
+                // Local path without scheme - use platform separator
+                uri.push(std::path::MAIN_SEPARATOR);
+            }
         }
         // Append the table name with the lance file extension
         uri.push_str(&format!("{}.{}", name, LANCE_FILE_EXTENSION));
@@ -497,7 +535,7 @@ impl ListingDatabase {
     fn extract_storage_overrides(
         &self,
         request: &CreateTableRequest,
-    ) -> Result<(Option<LanceFileVersion>, Option<bool>)> {
+    ) -> Result<(Option<LanceFileVersion>, Option<bool>, Option<bool>)> {
         let storage_options = request
             .write_options
             .lance_write_params
@@ -518,7 +556,19 @@ impl ListingDatabase {
                 message: "enable_v2_manifest_paths must be a boolean".to_string(),
             })?;
 
-        Ok((storage_version_override, v2_manifest_override))
+        let stable_row_ids_override = storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS))
+            .map(|s| s.parse::<bool>())
+            .transpose()
+            .map_err(|_| Error::InvalidInput {
+                message: "enable_stable_row_ids must be a boolean".to_string(),
+            })?;
+
+        Ok((
+            storage_version_override,
+            v2_manifest_override,
+            stable_row_ids_override,
+        ))
     }
 
     /// Prepare write parameters for table creation
@@ -527,6 +577,7 @@ impl ListingDatabase {
         request: &CreateTableRequest,
         storage_version_override: Option<LanceFileVersion>,
         v2_manifest_override: Option<bool>,
+        stable_row_ids_override: Option<bool>,
     ) -> lance::dataset::WriteParams {
         let mut write_params = request
             .write_options
@@ -571,6 +622,13 @@ impl ListingDatabase {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
 
+        // Apply enable_stable_row_ids: table-level override takes precedence over connection config
+        if let Some(enable_stable_row_ids) =
+            stable_row_ids_override.or(self.new_table_config.enable_stable_row_ids)
+        {
+            write_params.enable_stable_row_ids = enable_stable_row_ids;
+        }
+
         if matches!(&request.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;
         }
@@ -599,6 +657,7 @@ impl ListingDatabase {
                     index_cache_size: None,
                     lance_read_params: None,
                     location: None,
+                    namespace_client: None,
                 };
                 let req = (callback)(req);
                 let table = self.open_table(req).await?;
@@ -620,14 +679,20 @@ impl ListingDatabase {
 
 #[async_trait::async_trait]
 impl Database for ListingDatabase {
-    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>> {
-        if !request.namespace.is_empty() {
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
+        if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
             return Err(Error::NotSupported {
                 message: "Namespace operations are not supported for listing database".into(),
             });
         }
 
-        Ok(Vec::new())
+        Ok(ListNamespacesResponse {
+            namespaces: Vec::new(),
+            page_token: None,
+        })
     }
 
     fn uri(&self) -> &str {
@@ -646,13 +711,28 @@ impl Database for ListingDatabase {
         }
     }
 
-    async fn create_namespace(&self, _request: CreateNamespaceRequest) -> Result<()> {
+    async fn create_namespace(
+        &self,
+        _request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
         Err(Error::NotSupported {
             message: "Namespace operations are not supported for listing database".into(),
         })
     }
 
-    async fn drop_namespace(&self, _request: DropNamespaceRequest) -> Result<()> {
+    async fn drop_namespace(
+        &self,
+        _request: DropNamespaceRequest,
+    ) -> Result<DropNamespaceResponse> {
+        Err(Error::NotSupported {
+            message: "Namespace operations are not supported for listing database".into(),
+        })
+    }
+
+    async fn describe_namespace(
+        &self,
+        _request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse> {
         Err(Error::NotSupported {
             message: "Namespace operations are not supported for listing database".into(),
         })
@@ -693,6 +773,57 @@ impl Database for ListingDatabase {
         Ok(f)
     }
 
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
+            return Err(Error::NotSupported {
+                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+            });
+        }
+        let mut f = self
+            .object_store
+            .read_dir(self.base_path.clone())
+            .await?
+            .iter()
+            .map(Path::new)
+            .filter(|path| {
+                let is_lance = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e == LANCE_EXTENSION);
+                is_lance.unwrap_or(false)
+            })
+            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
+            .collect::<Vec<String>>();
+        f.sort();
+
+        // Handle pagination with page_token
+        if let Some(ref page_token) = request.page_token {
+            let index = f
+                .iter()
+                .position(|name| name.as_str() > page_token.as_str())
+                .unwrap_or(f.len());
+            f.drain(0..index);
+        }
+
+        // Determine if there's a next page
+        let next_page_token = if let Some(limit) = request.limit {
+            if f.len() > limit as usize {
+                let token = f[limit as usize].clone();
+                f.truncate(limit as usize);
+                Some(token)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Ok(ListTablesResponse {
+            tables: f,
+            page_token: next_page_token,
+        })
+    }
+
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         // When namespace is not empty, location must be provided
         if !request.namespace.is_empty() && request.location.is_none() {
@@ -706,11 +837,15 @@ impl Database for ListingDatabase {
             .clone()
             .unwrap_or_else(|| self.table_uri(&request.name).unwrap());
 
-        let (storage_version_override, v2_manifest_override) =
+        let (storage_version_override, v2_manifest_override, stable_row_ids_override) =
             self.extract_storage_overrides(&request)?;
 
-        let write_params =
-            self.prepare_write_params(&request, storage_version_override, v2_manifest_override);
+        let write_params = self.prepare_write_params(
+            &request,
+            storage_version_override,
+            v2_manifest_override,
+            stable_row_ids_override,
+        );
 
         let data_schema = request.data.arrow_schema();
 
@@ -722,6 +857,7 @@ impl Database for ListingDatabase {
             self.store_wrapper.clone(),
             Some(write_params),
             self.read_consistency_interval,
+            request.namespace_client,
         )
         .await
         {
@@ -793,6 +929,7 @@ impl Database for ListingDatabase {
             self.store_wrapper.clone(),
             None,
             self.read_consistency_interval,
+            None,
         )
         .await?;
 
@@ -864,6 +1001,7 @@ impl Database for ListingDatabase {
                 self.store_wrapper.clone(),
                 Some(read_params),
                 self.read_consistency_interval,
+                request.namespace_client,
             )
             .await?,
         );
@@ -901,6 +1039,7 @@ impl Database for ListingDatabase {
         self.drop_tables(vec![name.to_string()]).await
     }
 
+    #[allow(deprecated)]
     async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
         // Check if namespace parameter is provided
         if !namespace.is_empty() {
@@ -915,16 +1054,35 @@ impl Database for ListingDatabase {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
+    async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
+        // Create a DirectoryNamespace pointing to the same root with the same storage options
+        let mut builder = lance_namespace_impls::DirectoryNamespaceBuilder::new(&self.uri);
+
+        // Add storage options
+        if !self.storage_options.is_empty() {
+            builder = builder.storage_options(self.storage_options.clone());
+        }
+
+        // Use the same session
+        builder = builder.session(self.session.clone());
+
+        let namespace = builder.build().await.map_err(|e| Error::Runtime {
+            message: format!("Failed to create namespace client: {}", e),
+        })?;
+        Ok(Arc::new(namespace) as Arc<dyn lance_namespace::LanceNamespace>)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::connection::ConnectRequest;
-    use crate::database::{CreateTableData, CreateTableMode, CreateTableRequest};
+    use crate::database::{CreateTableData, CreateTableMode, CreateTableRequest, WriteOptions};
     use crate::table::{Table, TableDefinition};
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
@@ -965,6 +1123,7 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -986,6 +1145,7 @@ mod tests {
             .unwrap();
 
         // Verify both tables exist
+        #[allow(deprecated)]
         let table_names = db.table_names(TableNamesRequest::default()).await.unwrap();
         assert!(table_names.contains(&"source_table".to_string()));
         assert!(table_names.contains(&"cloned_table".to_string()));
@@ -1029,6 +1189,7 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1087,6 +1248,7 @@ mod tests {
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
+            namespace_client: None,
         })
         .await
         .unwrap();
@@ -1122,6 +1284,7 @@ mod tests {
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
+            namespace_client: None,
         })
         .await
         .unwrap();
@@ -1161,6 +1324,7 @@ mod tests {
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
+            namespace_client: None,
         })
         .await
         .unwrap();
@@ -1200,6 +1364,7 @@ mod tests {
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
+            namespace_client: None,
         })
         .await
         .unwrap();
@@ -1254,6 +1419,7 @@ mod tests {
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
+            namespace_client: None,
         })
         .await
         .unwrap();
@@ -1311,6 +1477,7 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1396,6 +1563,7 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1482,6 +1650,7 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1575,6 +1744,7 @@ mod tests {
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1620,5 +1790,343 @@ mod tests {
 
         // Cloned table should have all 8 rows from the latest version
         assert_eq!(cloned_table.count_rows(None).await.unwrap(), 8);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_with_stable_row_ids_connection_level() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with stable row IDs enabled at connection level
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        // Verify the config was parsed correctly
+        assert_eq!(db.new_table_config.enable_stable_row_ids, Some(true));
+
+        // Create a table - it should inherit the stable row IDs setting
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "test_stable".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify table was created successfully
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_with_stable_row_ids_table_level() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Verify connection has no stable row IDs config
+        assert_eq!(db.new_table_config.enable_stable_row_ids, None);
+
+        // Create a table with stable row IDs enabled at table level via storage_options
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        let mut storage_options = HashMap::new();
+        storage_options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        let write_options = WriteOptions {
+            lance_write_params: Some(lance::dataset::WriteParams {
+                store_params: Some(lance::io::ObjectStoreParams {
+                    storage_options: Some(storage_options),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "test_stable_table_level".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options,
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify table was created successfully
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_stable_row_ids_table_overrides_connection() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with stable row IDs enabled at connection level
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        assert_eq!(db.new_table_config.enable_stable_row_ids, Some(true));
+
+        // Create table with stable row IDs disabled at table level (overrides connection)
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema.clone(),
+        ));
+
+        let mut storage_options = HashMap::new();
+        storage_options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "false".to_string(),
+        );
+
+        let write_options = WriteOptions {
+            lance_write_params: Some(lance::dataset::WriteParams {
+                store_params: Some(lance::io::ObjectStoreParams {
+                    storage_options: Some(storage_options),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "test_override".to_string(),
+                namespace: vec![],
+                data: CreateTableData::Data(reader),
+                mode: CreateTableMode::Create,
+                write_options,
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify table was created successfully
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_stable_row_ids_invalid_value() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Try to create database with invalid stable row IDs value
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "not_a_boolean".to_string(),
+        );
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let result = ListingDatabase::connect_with_options(&request).await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidInput { message } if message.contains("enable_stable_row_ids must be a boolean")
+        ));
+    }
+
+    #[test]
+    fn test_stable_row_ids_config_serialization() {
+        // Test that ListingDatabaseOptions correctly serializes stable_row_ids
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        // Parse the options
+        let db_options = ListingDatabaseOptions::parse_from_map(&options).unwrap();
+        assert_eq!(
+            db_options.new_table_config.enable_stable_row_ids,
+            Some(true)
+        );
+
+        // Serialize back to map
+        let mut serialized = HashMap::new();
+        db_options.serialize_into_map(&mut serialized);
+
+        assert_eq!(
+            serialized.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_stable_row_ids_config_parse_false() {
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "false".to_string(),
+        );
+
+        let db_options = ListingDatabaseOptions::parse_from_map(&options).unwrap();
+        assert_eq!(
+            db_options.new_table_config.enable_stable_row_ids,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_stable_row_ids_config_not_set() {
+        let options = HashMap::new();
+
+        let db_options = ListingDatabaseOptions::parse_from_map(&options).unwrap();
+        assert_eq!(db_options.new_table_config.enable_stable_row_ids, None);
+    }
+
+    #[tokio::test]
+    async fn test_table_uri() {
+        let (_tempdir, db) = setup_database().await;
+
+        let mut pb = PathBuf::new();
+        pb.push(db.uri.clone());
+        pb.push("test.lance");
+
+        let expected = pb.to_str().unwrap();
+        let uri = db.table_uri("test").ok().unwrap();
+        assert_eq!(uri, expected);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_client() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create some tables first
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        db.create_table(CreateTableRequest {
+            name: "table1".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema.clone())),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        db.create_table(CreateTableRequest {
+            name: "table2".to_string(),
+            namespace: vec![],
+            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        // Get the namespace client
+        let namespace_client = db.namespace_client().await;
+        assert!(namespace_client.is_ok());
+        let namespace_client = namespace_client.unwrap();
+
+        // Verify the namespace client can list the tables we created
+        // Use empty vec for root namespace
+        let list_result = namespace_client
+            .list_tables(lance_namespace::models::ListTablesRequest {
+                id: Some(vec![]),
+                ..Default::default()
+            })
+            .await;
+        assert!(
+            list_result.is_ok(),
+            "list_tables failed: {:?}",
+            list_result.err()
+        );
+
+        let tables = list_result.unwrap().tables;
+        assert_eq!(tables.len(), 2);
+        assert!(tables.contains(&"table1".to_string()));
+        assert!(tables.contains(&"table2".to_string()));
     }
 }

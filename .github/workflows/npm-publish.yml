@@ -97,12 +97,6 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          - target: x86_64-apple-darwin
-            host: macos-latest
-            features: ","
-            pre_build: |-
-                brew install protobuf
-                rustup target add x86_64-apple-darwin
           - target: aarch64-apple-darwin
             host: macos-latest
             features: fp16kernels

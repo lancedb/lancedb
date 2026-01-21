@@ -1,7 +1,7 @@
 [package]
 name = "lancedb-nodejs"
 edition.workspace = true
-version = "0.22.4-beta.2"
+version = "0.24.0-beta.0"
 license.workspace = true
 description.workspace = true
 repository.workspace = true
@@ -36,6 +36,6 @@ aws-lc-rs = "=1.13.0"
 napi-build = "2.1"
 
 [features]
-default = ["remote", "lancedb/default"]
+default = ["remote", "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss", "lancedb/huggingface"]
 fp16kernels = ["lancedb/fp16kernels"]
 remote = ["lancedb/remote"]

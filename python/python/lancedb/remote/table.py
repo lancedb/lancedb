@@ -19,12 +19,22 @@ from lancedb._lancedb import (
     MergeResult,
     UpdateResult,
 )
+from lancedb.embeddings.base import EmbeddingFunctionConfig
+from lancedb.index import (
+    FTS,
+    BTree,
+    Bitmap,
+    HnswSq,
+    IvfFlat,
+    IvfPq,
+    IvfRq,
+    IvfSq,
+    LabelList,
+)
+from lancedb.remote.db import LOOP
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.embeddings import EmbeddingFunctionRegistry
-from lancedb.embeddings.base import EmbeddingFunctionConfig
-from lancedb.index import FTS, Bitmap, BTree, HnswSq, IvfFlat, IvfPq, LabelList
 from lancedb.merge import LanceMergeInsertBuilder
-from lancedb.remote.db import LOOP
 
 from ..query import (
     FullTextQuery,
@@ -271,6 +281,14 @@ class RemoteTable(Table):
                 num_sub_vectors=num_sub_vectors,
                 num_bits=num_bits,
             )
+        elif index_type == "IVF_RQ":
+            config = IvfRq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                num_bits=num_bits,
+            )
+        elif index_type == "IVF_SQ":
+            config = IvfSq(distance_type=metric, num_partitions=num_partitions)
         elif index_type == "IVF_HNSW_PQ":
             raise ValueError(
                 "IVF_HNSW_PQ is not supported on LanceDB cloud."
@@ -283,7 +301,8 @@ class RemoteTable(Table):
         else:
             raise ValueError(
                 f"Unknown vector index type: {index_type}. Valid options are"
-                " 'IVF_FLAT', 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
+                " 'IVF_FLAT', 'IVF_PQ', 'IVF_RQ', 'IVF_SQ',"
+                " 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
             )
 
         LOOP.run(
@@ -651,6 +670,14 @@ class RemoteTable(Table):
 
     def stats(self):
         return LOOP.run(self._table.stats())
+
+    @property
+    def uri(self) -> str:
+        """The table URI (storage location).
+
+        For remote tables, this fetches the location from the server via describe.
+        """
+        return LOOP.run(self._table.uri())
 
     def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
         return LanceTakeQueryBuilder(self._table.take_offsets(offsets))

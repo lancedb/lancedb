@@ -3,9 +3,29 @@ from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
 
 import pyarrow as pa
 
-from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from .index import (
+    BTree,
+    IvfFlat,
+    IvfPq,
+    IvfSq,
+    Bitmap,
+    LabelList,
+    HnswPq,
+    HnswSq,
+    FTS,
+)
 from .io import StorageOptionsProvider
+from lance_namespace import (
+    ListNamespacesResponse,
+    CreateNamespaceResponse,
+    DropNamespaceResponse,
+    DescribeNamespaceResponse,
+    ListTablesResponse,
+)
 from .remote import ClientConfig
+
+IvfHnswPq: type[HnswPq] = HnswPq
+IvfHnswSq: type[HnswSq] = HnswSq
 
 class Session:
     def __init__(
@@ -26,18 +46,38 @@ class Connection(object):
     async def close(self): ...
     async def list_namespaces(
         self,
-        namespace: Optional[List[str]],
-        page_token: Optional[str],
-        limit: Optional[int],
-    ) -> List[str]: ...
-    async def create_namespace(self, namespace: List[str]) -> None: ...
-    async def drop_namespace(self, namespace: List[str]) -> None: ...
+        namespace: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListNamespacesResponse: ...
+    async def create_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[str] = None,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> CreateNamespaceResponse: ...
+    async def drop_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[str] = None,
+        behavior: Optional[str] = None,
+    ) -> DropNamespaceResponse: ...
+    async def describe_namespace(
+        self,
+        namespace: List[str],
+    ) -> DescribeNamespaceResponse: ...
+    async def list_tables(
+        self,
+        namespace: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListTablesResponse: ...
     async def table_names(
         self,
         namespace: Optional[List[str]],
         start_after: Optional[str],
         limit: Optional[int],
-    ) -> list[str]: ...
+    ) -> list[str]: ...  # Deprecated: Use list_tables instead
     async def create_table(
         self,
         name: str,
@@ -104,7 +144,17 @@ class Table:
     async def create_index(
         self,
         column: str,
-        index: Union[IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS],
+        index: Union[
+            IvfFlat,
+            IvfSq,
+            IvfPq,
+            HnswPq,
+            HnswSq,
+            BTree,
+            Bitmap,
+            LabelList,
+            FTS,
+        ],
         replace: Optional[bool],
         wait_timeout: Optional[object],
         *,
@@ -129,6 +179,7 @@ class Table:
         cleanup_since_ms: Optional[int] = None,
         delete_unverified: Optional[bool] = None,
     ) -> OptimizeStats: ...
+    async def uri(self) -> str: ...
     @property
     def tags(self) -> Tags: ...
     def query(self) -> Query: ...

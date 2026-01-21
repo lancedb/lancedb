@@ -7,10 +7,11 @@
 For LanceDB Cloud, use the simplified builder API:
 
 ```java
-import com.lancedb.lance.namespace.LanceRestNamespace;
+import com.lancedb.LanceDbNamespaceClientBuilder;
+import org.lance.namespace.LanceNamespace;
 
 // If your DB url is db://example-db, then your database here is example-db
-LanceRestNamespace namespace = LanceDBRestNamespaces.builder()
+LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
     .apiKey("your_lancedb_cloud_api_key")
     .database("your_database_name")
     .build();
@@ -18,13 +19,13 @@ LanceRestNamespace namespace = LanceDBRestNamespaces.builder()
 
 ### LanceDB Enterprise
 
-For Enterprise deployments, use your VPC endpoint:
+For Enterprise deployments, use your custom endpoint:
 
 ```java
-LanceRestNamespace namespace = LanceDBRestNamespaces.builder()
+LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
     .apiKey("your_lancedb_enterprise_api_key")
-    .database("your-top-dir") // Your top level folder under your cloud bucket, e.g. s3://your-bucket/your-top-dir/
-    .hostOverride("http://<vpc_endpoint_dns_name>:80")
+    .database("your_database_name")
+    .endpoint("<your_enterprise_endpoint>")
     .build();
 ```
 
@@ -33,5 +34,11 @@ LanceRestNamespace namespace = LanceDBRestNamespaces.builder()
 Build:
 
 ```shell
-./mvnw install
+./mvnw install -pl lancedb-core -am
+```
+
+Run tests:
+
+```shell
+./mvnw test -pl lancedb-core
 ```

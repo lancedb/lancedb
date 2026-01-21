@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.22.4-beta.2"
+current_version = "0.24.0-beta.0"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
@@ -72,3 +72,9 @@ search = "\nversion = \"{current_version}\""
 filename = "nodejs/Cargo.toml"
 replace = "\nversion = \"{new_version}\""
 search = "\nversion = \"{current_version}\""
+
+# Java documentation
+[[tool.bumpversion.files]]
+filename = "docs/src/java/java.md"
+replace = "<version>{new_version}</version>"
+search = "<version>{current_version}</version>"
