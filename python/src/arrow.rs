@@ -36,10 +36,7 @@ impl RecordBatchStream {
 impl RecordBatchStream {
     #[getter]
     pub fn schema(&self, py: Python) -> PyResult<Py<PyAny>> {
-        (*self.schema)
-            .clone()
-            .into_pyarrow(py)
-            .map(|obj| obj.unbind())
+        (*self.schema).clone().into_pyarrow(py)
     }
 
     pub fn __aiter__(self_: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -57,8 +54,7 @@ impl RecordBatchStream {
                 .ok_or_else(|| PyStopAsyncIteration::new_err(""))?;
             #[allow(deprecated)]
             let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-                let bound = inner_next.infer_error()?.to_pyarrow(py)?;
-                Ok(bound.unbind())
+                inner_next.infer_error()?.to_pyarrow(py)
             })?;
             Ok(py_obj)
         })

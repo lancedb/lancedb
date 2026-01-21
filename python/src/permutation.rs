@@ -282,10 +282,8 @@ impl PyPermutationReader {
         future_into_py(slf.py(), async move {
             let schema = reader.output_schema(selection).await.infer_error()?;
             #[allow(deprecated)]
-            let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-                let bound = schema.to_pyarrow(py)?;
-                Ok(bound.unbind())
-            })?;
+            let py_obj: Py<PyAny> =
+                Python::with_gil(|py| -> PyResult<Py<PyAny>> { schema.to_pyarrow(py) })?;
             Ok(py_obj)
         })
     }

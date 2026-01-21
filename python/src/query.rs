@@ -455,10 +455,8 @@ impl Query {
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
             #[allow(deprecated)]
-            let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-                let bound = schema.to_pyarrow(py)?;
-                Ok(bound.unbind())
-            })?;
+            let py_obj: Py<PyAny> =
+                Python::with_gil(|py| -> PyResult<Py<PyAny>> { schema.to_pyarrow(py) })?;
             Ok(py_obj)
         })
     }
@@ -539,10 +537,8 @@ impl TakeQuery {
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
             #[allow(deprecated)]
-            let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-                let bound = schema.to_pyarrow(py)?;
-                Ok(bound.unbind())
-            })?;
+            let py_obj: Py<PyAny> =
+                Python::with_gil(|py| -> PyResult<Py<PyAny>> { schema.to_pyarrow(py) })?;
             Ok(py_obj)
         })
     }
@@ -639,10 +635,8 @@ impl FTSQuery {
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
             #[allow(deprecated)]
-            let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-                let bound = schema.to_pyarrow(py)?;
-                Ok(bound.unbind())
-            })?;
+            let py_obj: Py<PyAny> =
+                Python::with_gil(|py| -> PyResult<Py<PyAny>> { schema.to_pyarrow(py) })?;
             Ok(py_obj)
         })
     }
@@ -823,10 +817,8 @@ impl VectorQuery {
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
             #[allow(deprecated)]
-            let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-                let bound = schema.to_pyarrow(py)?;
-                Ok(bound.unbind())
-            })?;
+            let py_obj: Py<PyAny> =
+                Python::with_gil(|py| -> PyResult<Py<PyAny>> { schema.to_pyarrow(py) })?;
             Ok(py_obj)
         })
     }
