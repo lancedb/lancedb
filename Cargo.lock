@@ -4964,6 +4964,7 @@ dependencies = [
  "moka",
  "num-traits",
  "object_store",
+ "parking_lot",
  "pin-project",
  "polars",
  "polars-arrow",

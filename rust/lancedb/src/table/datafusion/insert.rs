@@ -5,26 +5,29 @@
 
 use std::{
     any::Any,
+    fmt,
     sync::{Arc, Mutex},
 };
 
-use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
+use arrow_array::{ArrayRef, RecordBatch, RecordBatchReader, UInt64Array};
 use arrow_schema::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_plan::{
-    stream::RecordBatchStreamAdapter, DisplayAs, DisplayFormatType, ExecutionPlan,
-    ExecutionPlanProperties, Partitioning, PlanProperties,
+    memory::LazyBatchGenerator, memory::LazyMemoryExec, stream::RecordBatchStreamAdapter,
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
+    PlanProperties,
 };
 use futures::{stream, StreamExt};
 use lance::{
     dataset::{
         transaction::{Operation, Transaction},
-        CommitBuilder, InsertBuilder, WriteMode, WriteParams,
+        CommitBuilder, InsertBuilder, WriteParams,
     },
     Dataset,
 };
+use lance_table::format::Fragment;
 
 use crate::table::dataset::DatasetConsistencyWrapper;
 
@@ -37,6 +40,7 @@ pub struct InsertExec {
     ds_wrapper: DatasetConsistencyWrapper,
     dataset: Arc<Dataset>,
     input: Arc<dyn ExecutionPlan>,
+    write_params: WriteParams,
     properties: PlanProperties,
     transactions: Arc<Mutex<Vec<Transaction>>>,
 }
@@ -45,13 +49,15 @@ impl InsertExec {
     /// Create a new InsertExec.
     ///
     /// # Arguments
-    /// * `dataset` - The dataset wrapper to insert into
+    /// * `ds_wrapper` - The dataset wrapper to insert into
+    /// * `dataset` - The current dataset snapshot
     /// * `input` - The input execution plan providing data to insert
-    /// * `overwrite` - If true, overwrite existing data; if false, append
+    /// * `write_params` - Write parameters including mode (Append/Overwrite)
     pub fn new(
         ds_wrapper: DatasetConsistencyWrapper,
         dataset: Arc<Dataset>,
         input: Arc<dyn ExecutionPlan>,
+        write_params: WriteParams,
     ) -> Self {
         let num_partitions = input.output_partitioning().partition_count();
         let output_schema = make_count_schema();
@@ -66,6 +72,7 @@ impl InsertExec {
             ds_wrapper,
             dataset,
             input,
+            write_params,
             properties,
             transactions: Arc::new(Mutex::new(Vec::with_capacity(num_partitions))),
         }
@@ -116,6 +123,7 @@ impl ExecutionPlan for InsertExec {
             self.ds_wrapper.clone(),
             self.dataset.clone(),
             children[0].clone(),
+            self.write_params.clone(),
         )))
     }
 
@@ -137,24 +145,15 @@ impl ExecutionPlan for InsertExec {
         let output_schema = make_count_schema();
         let transactions = self.transactions.clone();
         let num_partitions = self.input.output_partitioning().partition_count();
+        let write_params = self.write_params.clone();
 
         let fut = async move {
             let transaction = InsertBuilder::new(dataset.clone())
-                .with_params(&WriteParams {
-                    mode: WriteMode::Append,
-                    ..Default::default()
-                })
+                .with_params(&write_params)
                 .execute_uncommitted_stream(input_stream)
                 .await?;
 
-            let num_rows = if let Operation::Append { fragments } = &transaction.operation {
-                fragments
-                    .iter()
-                    .map(|f| f.num_rows().unwrap_or_default() as u64)
-                    .sum()
-            } else {
-                0
-            };
+            let num_rows = count_rows_from_operation(&transaction.operation);
 
             let to_commit = {
                 // Don't hold the lock over an await point.
@@ -169,10 +168,24 @@ impl ExecutionPlan for InsertExec {
 
             if let Some(transactions) = to_commit {
                 // We are the last writer, so we can commit the transactions
-                let ds = CommitBuilder::new(dataset)
-                    .execute_batch(transactions)
-                    .await?;
-                dataset_wrapper.set_latest(ds.dataset).await;
+                let is_overwrite = transactions
+                    .iter()
+                    .any(|t| matches!(t.operation, Operation::Overwrite { .. }));
+
+                let new_dataset = if is_overwrite {
+                    // Overwrite requires merging into a single transaction and using execute()
+                    let merged = merge_overwrite_transactions(transactions);
+                    CommitBuilder::new(dataset)
+                        .execute(merged.into_iter().next().unwrap())
+                        .await?
+                } else {
+                    // Append transactions can be committed as a batch
+                    CommitBuilder::new(dataset)
+                        .execute_batch(transactions)
+                        .await?
+                        .dataset
+                };
+                dataset_wrapper.set_latest(new_dataset).await;
             }
 
             // Return a single batch with the count for this partition
@@ -188,6 +201,112 @@ impl ExecutionPlan for InsertExec {
 
         Ok(Box::pin(stream))
     }
+}
+
+/// Count rows from an operation's fragments.
+fn count_rows_from_operation(operation: &Operation) -> u64 {
+    match operation {
+        Operation::Append { fragments } | Operation::Overwrite { fragments, .. } => fragments
+            .iter()
+            .map(|f| f.num_rows().unwrap_or_default() as u64)
+            .sum(),
+        _ => 0,
+    }
+}
+
+/// Merge multiple Overwrite transactions into a single transaction.
+///
+/// When multiple partitions each produce an Overwrite operation, we need to
+/// combine all their fragments into a single Overwrite to commit atomically.
+/// For Append operations, transactions can be committed as a batch directly.
+fn merge_overwrite_transactions(mut transactions: Vec<Transaction>) -> Vec<Transaction> {
+    if transactions.is_empty() {
+        return transactions;
+    }
+
+    // Check if all transactions are Overwrite operations
+    let all_overwrites = transactions
+        .iter()
+        .all(|t| matches!(t.operation, Operation::Overwrite { .. }));
+
+    if !all_overwrites {
+        return transactions;
+    }
+
+    // Single transaction doesn't need merging
+    if transactions.len() == 1 {
+        return transactions;
+    }
+
+    // Collect all fragments from the other transactions
+    let mut all_extra_fragments: Vec<Fragment> = Vec::new();
+    for txn in transactions.iter().skip(1) {
+        if let Operation::Overwrite { fragments, .. } = &txn.operation {
+            all_extra_fragments.extend(fragments.iter().cloned());
+        }
+    }
+
+    // Merge into the first transaction
+    if let Some(first_txn) = transactions.first_mut() {
+        if let Operation::Overwrite { fragments, .. } = &mut first_txn.operation {
+            fragments.extend(all_extra_fragments);
+        }
+    }
+
+    // Return just the first transaction with all fragments merged
+    transactions.truncate(1);
+    transactions
+}
+
+/// A lazy batch generator that wraps a RecordBatchReader.
+struct RecordBatchReaderGenerator {
+    reader: Mutex<Box<dyn RecordBatchReader + Send>>,
+    schema: SchemaRef,
+}
+
+impl fmt::Debug for RecordBatchReaderGenerator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecordBatchReaderGenerator")
+            .field("schema", &self.schema)
+            .finish()
+    }
+}
+
+impl fmt::Display for RecordBatchReaderGenerator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RecordBatchReaderGenerator")
+    }
+}
+
+impl LazyBatchGenerator for RecordBatchReaderGenerator {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn generate_next_batch(&mut self) -> DataFusionResult<Option<RecordBatch>> {
+        let mut reader = self.reader.lock().unwrap();
+        match reader.next() {
+            Some(Ok(batch)) => Ok(Some(batch)),
+            Some(Err(e)) => Err(DataFusionError::ArrowError(Box::new(e), None)),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Convert a RecordBatchReader into a DataFusion ExecutionPlan.
+///
+/// This wraps the reader in a LazyMemoryExec that will produce batches on demand.
+pub fn reader_to_execution_plan(data: Box<dyn RecordBatchReader + Send>) -> Arc<dyn ExecutionPlan> {
+    use parking_lot::RwLock;
+
+    let schema = data.schema();
+    let generator = RecordBatchReaderGenerator {
+        reader: Mutex::new(data),
+        schema: schema.clone(),
+    };
+    let generators: Vec<Arc<RwLock<dyn LazyBatchGenerator>>> =
+        vec![Arc::new(RwLock::new(generator))];
+    Arc::new(LazyMemoryExec::try_new(schema, generators).unwrap())
 }
 
 #[cfg(test)]

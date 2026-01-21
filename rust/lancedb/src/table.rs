@@ -624,14 +624,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
 
     /// Create an execution plan for inserting data into this table.
     ///
-    /// Returns `None` if the table doesn't support DataFusion inserts (e.g., remote tables).
+    /// Returns an error if the table doesn't support DataFusion inserts (e.g., remote tables).
     ///
     /// # Arguments
     /// * `input` - The input execution plan providing data to insert
-    /// * `overwrite` - If true, overwrite existing data; if false, append
+    /// * `write_params` - Write parameters including mode (Append/Overwrite)
     async fn create_insert_exec(
         &self,
         _input: Arc<dyn ExecutionPlan>,
+        _write_params: WriteParams,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Err(Error::NotSupported {
             message: "create_insert_exec not implemented".to_string(),
@@ -2762,6 +2763,11 @@ impl BaseTable for NativeTable {
         add: AddDataBuilder<NoData>,
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<AddResult> {
+        use datafusion_execution::TaskContext;
+
+        // Ensure the dataset is in latest mode (not checked out to a specific version)
+        self.dataset.ensure_mutable().await?;
+
         let data = Box::new(MaybeEmbedded::try_new(
             data,
             self.table_definition().await?,
@@ -2776,16 +2782,29 @@ impl BaseTable for NativeTable {
             ..Default::default()
         });
 
-        let dataset = {
-            // Limited scope for the mutable borrow of self.dataset avoids deadlock.
-            let ds = self.dataset.get_mut().await?;
-            InsertBuilder::new(Arc::new(ds.clone()))
-                .with_params(&lance_params)
-                .execute_stream(data)
-                .await?
-        };
-        let version = dataset.manifest().version;
-        self.dataset.set_latest(dataset).await;
+        // Convert RecordBatchReader to ExecutionPlan
+        let input_plan = self::datafusion::insert::reader_to_execution_plan(data);
+
+        // Create InsertExec
+        let insert_exec = self.create_insert_exec(input_plan, lance_params).await?;
+
+        // Execute the plan
+        let task_ctx = Arc::new(TaskContext::default());
+        let mut stream = insert_exec
+            .execute(0, task_ctx)
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to execute insert: {}", e),
+            })?;
+
+        // Collect results - the InsertExec will update the dataset internally
+        while let Some(batch) = stream.next().await {
+            batch.map_err(|e| Error::Runtime {
+                message: format!("Insert execution failed: {}", e),
+            })?;
+        }
+
+        // Get the version from the updated dataset
+        let version = self.dataset.get().await?.manifest().version;
         Ok(AddResult { version })
     }
 
@@ -3380,11 +3399,13 @@ impl BaseTable for NativeTable {
     async fn create_insert_exec(
         &self,
         input: Arc<dyn ExecutionPlan>,
+        write_params: WriteParams,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(self::datafusion::insert::InsertExec::new(
             self.dataset.clone(),
             Arc::new(self.dataset.get().await?.clone()),
             input,
+            write_params,
         )))
     }
 }

@@ -61,6 +61,7 @@ url = "2"
 num-traits = "0.2"
 regex = "1.12"
 lazy_static = "1"
+parking_lot = "0.12"
 semver = "1.0.25"
 chrono = "0.4"
 

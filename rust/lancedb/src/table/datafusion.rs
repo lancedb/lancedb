@@ -258,15 +258,26 @@ impl TableProvider for BaseTableAdapter {
         input: Arc<dyn ExecutionPlan>,
         insert_op: InsertOp,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        if !matches!(insert_op, InsertOp::Append) {
-            return Err(DataFusionError::NotImplemented(
-                "Only Append insert operation is supported".to_string(),
-            ));
-        }
+        use lance::dataset::{WriteMode, WriteParams};
+
+        let write_mode = match insert_op {
+            InsertOp::Append => WriteMode::Append,
+            InsertOp::Overwrite => WriteMode::Overwrite,
+            InsertOp::Replace => {
+                return Err(DataFusionError::NotImplemented(
+                    "Replace insert operation is not supported".to_string(),
+                ))
+            }
+        };
+
+        let write_params = WriteParams {
+            mode: write_mode,
+            ..Default::default()
+        };
 
         Ok(self
             .table
-            .create_insert_exec(input)
+            .create_insert_exec(input, write_params)
             .await
             .map_err(|err| DataFusionError::External(err.into()))?)
     }
