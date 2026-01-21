@@ -1277,8 +1277,6 @@ mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::create_dir_all;
-
     use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, QueryExecutionOptions};
@@ -1526,18 +1524,27 @@ mod tests {
 
     #[tokio::test]
     async fn drop_table() {
-        let tmp_dir = tempdir().unwrap();
+        let tc = new_test_connection().await.unwrap();
+        let db = tc.connection;
 
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri).execute().await.unwrap();
+        if tc.is_remote {
+            // All the typical endpoints such as s3:///, file-object-store:///, etc. treat drop_table
+            // as idempotent.
+            assert!(db.drop_table("invalid_table", &[]).await.is_ok());
+        } else {
+            // The behavior of drop_table when using a file:/// endpoint differs from all other
+            // object providers, in that it returns an error when deleting a non-existent table.
+            assert!(matches!(
+                db.drop_table("invalid_table", &[]).await,
+                Err(crate::Error::TableNotFound { .. }),
+            ));
+        }
 
-        // drop non-exist table
-        assert!(matches!(
-            db.drop_table("invalid_table", &[]).await,
-            Err(crate::Error::TableNotFound { .. }),
-        ));
-
-        create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        db.create_empty_table("table1", schema.clone())
+            .execute()
+            .await
+            .unwrap();
         db.drop_table("table1", &[]).await.unwrap();
 
         let tables = db.table_names().execute().await.unwrap();
