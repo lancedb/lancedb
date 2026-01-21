@@ -75,6 +75,13 @@ jobs:
           VERSION="${VERSION#v}"
           BRANCH_NAME="codex/update-lance-${VERSION//[^a-zA-Z0-9]/-}"
 
+          # Use "chore" for beta/rc versions, "feat" for stable releases
+          if [[ "${VERSION}" == *beta* ]] || [[ "${VERSION}" == *rc* ]]; then
+            COMMIT_TYPE="chore"
+          else
+            COMMIT_TYPE="feat"
+          fi
+
           cat <<EOF >/tmp/codex-prompt.txt
           You are running inside the lancedb repository on a GitHub Actions runner. Update the Lance dependency to version ${VERSION} and prepare a pull request for maintainers to review.
 
@@ -84,10 +91,10 @@ jobs:
           3. After clippy succeeds, run "cargo fmt --all" to format the workspace.
           4. Ensure the repository is clean except for intentional changes. Inspect "git status --short" and "git diff" to confirm the dependency update and any required fixes.
           5. Create and switch to a new branch named "${BRANCH_NAME}" (replace any duplicated hyphens if necessary).
-          6. Stage all relevant files with "git add -A". Commit using the message "chore: update lance dependency to v${VERSION}".
+          6. Stage all relevant files with "git add -A". Commit using the message "${COMMIT_TYPE}: update lance dependency to v${VERSION}".
           7. Push the branch to origin. If the branch already exists, force-push your changes.
           8. env "GH_TOKEN" is available, use "gh" tools for github related operations like creating pull request.
-          9. Create a pull request targeting "main" with title "chore: update lance dependency to v${VERSION}". In the body, summarize the dependency bump, clippy/fmt verification, and link the triggering tag (${TAG}).
+          9. Create a pull request targeting "main" with title "${COMMIT_TYPE}: update lance dependency to v${VERSION}". First, write the PR body to /tmp/pr-body.md using a heredoc (cat <<'EOF' > /tmp/pr-body.md). The body should summarize the dependency bump, clippy/fmt verification, and link the triggering tag (${TAG}). Then run "gh pr create --body-file /tmp/pr-body.md".
           10. After creating the PR, display the PR URL, "git status --short", and a concise summary of the commands run and their results.
 
           Constraints:
