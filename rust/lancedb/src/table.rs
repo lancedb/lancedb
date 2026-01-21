@@ -58,7 +58,7 @@ use std::sync::Arc;
 use crate::arrow::IntoArrow;
 use crate::connection::NoData;
 use crate::database::Database;
-use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
+use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry, WithEmbeddings};
 use crate::error::{Error, Result};
 use crate::index::vector::VectorIndex;
 use crate::index::IndexStatistics;
@@ -3122,6 +3122,26 @@ impl BaseTable for NativeTable {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
+        // Wrap new_data with embedding computation if registry is provided
+        let new_data: Box<dyn RecordBatchReader + Send> =
+            if let Some(registry) = &params.embedding_registry {
+                let schema = self.schema().await?;
+                let metadata = schema.metadata();
+                let embeddings = if !metadata.is_empty() {
+                    registry.parse_metadata_embeddings(metadata)?
+                } else {
+                    Vec::new()
+                };
+
+                if embeddings.is_empty() {
+                    new_data
+                } else {
+                    Box::new(WithEmbeddings::new(new_data, embeddings))
+                }
+            } else {
+                new_data
+            };
+
         let dataset = Arc::new(self.dataset.get().await?.clone());
         let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
         match (

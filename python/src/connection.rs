@@ -3,7 +3,10 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
+use arrow::{
+    array::RecordBatchReader, datatypes::Schema, ffi_stream::ArrowArrayStreamReader,
+    pyarrow::FromPyArrow,
+};
 use lancedb::{
     connection::Connection as LanceConnection,
     database::{CreateTableMode, Database, ReadConsistency},
@@ -17,7 +20,8 @@ use pyo3::{
 use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{
-    error::PythonErrorExt, storage_options::py_object_to_storage_options_provider, table::Table,
+    embedding::PyEmbeddingRegistry, error::PythonErrorExt,
+    storage_options::py_object_to_storage_options_provider, table::Table,
 };
 
 #[pyclass]
@@ -106,7 +110,7 @@ impl Connection {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (name, mode, data, namespace=vec![], storage_options=None, storage_options_provider=None, location=None))]
+    #[pyo3(signature = (name, mode, data, namespace=vec![], storage_options=None, storage_options_provider=None, location=None, embedding_registry=None))]
     pub fn create_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -116,6 +120,7 @@ impl Connection {
         storage_options: Option<HashMap<String, String>>,
         storage_options_provider: Option<Py<PyAny>>,
         location: Option<String>,
+        embedding_registry: Option<PyRef<'_, PyEmbeddingRegistry>>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -123,7 +128,32 @@ impl Connection {
 
         let batches = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
 
+        // Get schema metadata for embedding parsing if registry is provided
+        let embeddings = if let Some(registry) = &embedding_registry {
+            let schema = batches.schema();
+            let metadata: std::collections::HashMap<String, String> = schema
+                .metadata()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+
+            if metadata.is_empty() {
+                Vec::new()
+            } else {
+                registry.parse_metadata(&metadata).map_err(|e| {
+                    PyValueError::new_err(format!("Failed to parse embeddings: {}", e))
+                })?
+            }
+        } else {
+            Vec::new()
+        };
+
         let mut builder = inner.create_table(name, batches).mode(mode);
+
+        // Add embeddings if any were parsed from metadata
+        if !embeddings.is_empty() {
+            builder = builder.add_parsed_embeddings(embeddings);
+        }
 
         builder = builder.namespace(namespace);
         if let Some(storage_options) = storage_options {

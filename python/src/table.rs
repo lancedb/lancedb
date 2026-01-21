@@ -687,10 +687,12 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (data, parameters, embedding_registry=None))]
     pub fn execute_merge_insert<'a>(
         self_: PyRef<'a, Self>,
         data: Bound<'a, PyAny>,
         parameters: MergeInsertParams,
+        embedding_registry: Option<PyRef<'_, PyEmbeddingRegistry>>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let batches: ArrowArrayStreamReader = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
         let on = parameters.on.iter().map(|s| s.as_str()).collect::<Vec<_>>();
@@ -712,7 +714,15 @@ impl Table {
             builder.use_index(use_index);
         }
 
+        // Clone registry for async block if provided
+        let registry: Option<Arc<dyn EmbeddingRegistry>> =
+            embedding_registry.map(|r| Arc::new((*r).clone()) as Arc<dyn EmbeddingRegistry>);
+
         future_into_py(self_.py(), async move {
+            let mut builder = builder;
+            if let Some(reg) = registry {
+                builder.embedding_registry(reg);
+            }
             let res = builder.execute(Box::new(batches)).await.infer_error()?;
             Ok(MergeResult::from(res))
         })

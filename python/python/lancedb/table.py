@@ -487,6 +487,53 @@ def sanitize_create_table(
     return data, schema
 
 
+def sanitize_create_table_without_embeddings(
+    data,
+    schema: Union[pa.Schema, LanceModel],
+    metadata=None,
+    on_bad_vectors: OnBadVectorsType = "error",
+    fill_value: float = 0.0,
+):
+    """
+    Sanitize data for create_table without computing embeddings in Python.
+    Rust will compute embeddings via the registry callback.
+    """
+    if inspect.isclass(schema) and issubclass(schema, LanceModel):
+        # convert LanceModel to pyarrow schema
+        schema: pa.Schema = schema.to_arrow_schema()
+
+    if data is not None:
+        if metadata is None and schema is not None:
+            metadata = schema.metadata
+        # Use _sanitize_data_without_embeddings instead of _sanitize_data
+        data = _sanitize_data_without_embeddings(
+            data,
+            schema,
+            metadata=metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+        schema = data.schema
+    else:
+        if schema is not None:
+            data = pa.Table.from_pylist([], schema)
+    if schema is None:
+        if data is None:
+            raise ValueError("Either data or schema must be provided")
+        elif hasattr(data, "schema"):
+            schema = data.schema
+
+    if metadata:
+        schema = schema.with_metadata(metadata)
+        # Need to apply metadata to the data as well
+        if isinstance(data, pa.Table):
+            data = data.replace_schema_metadata(metadata)
+        elif isinstance(data, pa.RecordBatchReader):
+            data = pa.RecordBatchReader.from_batches(schema, data)
+
+    return data, schema
+
+
 def _schema_from_hf(data, schema) -> pa.Schema:
     """
     Extract pyarrow schema from HuggingFace DatasetDict
@@ -3699,43 +3746,23 @@ class AsyncTable:
         if fill_value is None:
             fill_value = 0.0
 
-        # Check if there are embedding functions in the schema metadata
+        from ._lancedb import PyEmbeddingRegistry
+
+        rust_registry = PyEmbeddingRegistry.from_singleton()
         metadata = schema.metadata or {}
-        has_embeddings = b"embedding_functions" in metadata
 
-        if has_embeddings:
-            # Pass registry to Rust - it will parse metadata and compute embeddings
-            from ._lancedb import PyEmbeddingRegistry
+        data = _sanitize_data_without_embeddings(
+            data,
+            schema,
+            metadata=metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+            allow_subschema=True,
+        )
+        if isinstance(data, pa.Table):
+            data = data.to_reader()
 
-            rust_registry = PyEmbeddingRegistry.from_singleton()
-
-            # Sanitize data WITHOUT computing embeddings in Python
-            data = _sanitize_data_without_embeddings(
-                data,
-                schema,
-                metadata=metadata,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-                allow_subschema=True,
-            )
-            if isinstance(data, pa.Table):
-                data = data.to_reader()
-
-            return await self._inner.add(data, mode or "append", rust_registry)
-        else:
-            # No embeddings - use existing path
-            data = _sanitize_data(
-                data,
-                schema,
-                metadata=metadata,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-                allow_subschema=True,
-            )
-            if isinstance(data, pa.Table):
-                data = data.to_reader()
-
-            return await self._inner.add(data, mode or "append")
+        return await self._inner.add(data, mode or "append", rust_registry)
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """
@@ -4142,16 +4169,23 @@ class AsyncTable:
             on_bad_vectors = "error"
         if fill_value is None:
             fill_value = 0.0
-        data = _sanitize_data(
+
+        from ._lancedb import PyEmbeddingRegistry
+
+        rust_registry = PyEmbeddingRegistry.from_singleton()
+        metadata = schema.metadata or {}
+
+        data = _sanitize_data_without_embeddings(
             new_data,
             schema,
-            metadata=schema.metadata,
+            metadata=metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
             allow_subschema=True,
         )
         if isinstance(data, pa.Table):
             data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
+
         return await self._inner.execute_merge_insert(
             data,
             dict(
@@ -4164,6 +4198,7 @@ class AsyncTable:
                 timeout=merge._timeout,
                 use_index=merge._use_index,
             ),
+            rust_registry,
         )
 
     async def delete(self, where: str) -> DeleteResult:

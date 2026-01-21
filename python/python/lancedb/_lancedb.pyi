@@ -87,6 +87,7 @@ class Connection(object):
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         location: Optional[str] = None,
+        embedding_registry: Optional[PyEmbeddingRegistry] = None,
     ) -> Table: ...
     async def create_empty_table(
         self,

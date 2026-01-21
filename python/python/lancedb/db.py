@@ -37,6 +37,7 @@ from .table import (
     LanceTable,
     Table,
     sanitize_create_table,
+    sanitize_create_table_without_embeddings,
 )
 from .util import (
     get_uri_scheme,
@@ -1496,11 +1497,6 @@ class AsyncConnection(object):
         if fill_value is None:
             fill_value = 0.0
 
-        data, schema = sanitize_create_table(
-            data, schema, metadata, on_bad_vectors, fill_value
-        )
-        validate_schema(schema)
-
         if exist_ok is None:
             exist_ok = False
         if mode is None:
@@ -1508,22 +1504,39 @@ class AsyncConnection(object):
         if mode == "create" and exist_ok:
             mode = "exist_ok"
 
-        if data is None:
-            new_table = await self._inner.create_empty_table(
-                name,
-                mode,
-                schema,
-                namespace=namespace,
-                storage_options=storage_options,
-                storage_options_provider=storage_options_provider,
-                location=location,
+        if data is not None:
+            # Always use registry for embedding computation in Rust
+            from ._lancedb import PyEmbeddingRegistry
+
+            rust_registry = PyEmbeddingRegistry.from_singleton()
+
+            data, schema = sanitize_create_table_without_embeddings(
+                data, schema, metadata, on_bad_vectors, fill_value
             )
-        else:
+            validate_schema(schema)
+
             data = data_to_reader(data, schema)
             new_table = await self._inner.create_table(
                 name,
                 mode,
                 data,
+                namespace=namespace,
+                storage_options=storage_options,
+                storage_options_provider=storage_options_provider,
+                location=location,
+                embedding_registry=rust_registry,
+            )
+        else:
+            # Empty table - no embeddings to compute
+            data, schema = sanitize_create_table(
+                data, schema, metadata, on_bad_vectors, fill_value
+            )
+            validate_schema(schema)
+
+            new_table = await self._inner.create_empty_table(
+                name,
+                mode,
+                schema,
                 namespace=namespace,
                 storage_options=storage_options,
                 storage_options_provider=storage_options_provider,

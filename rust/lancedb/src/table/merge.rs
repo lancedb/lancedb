@@ -5,6 +5,7 @@ use std::{sync::Arc, time::Duration};
 
 use arrow_array::RecordBatchReader;
 
+use crate::embeddings::EmbeddingRegistry;
 use crate::Result;
 
 use super::{BaseTable, MergeResult};
@@ -23,6 +24,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete_filt: Option<String>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) use_index: bool,
+    pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
 }
 
 impl MergeInsertBuilder {
@@ -37,7 +39,17 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
             use_index: true,
+            embedding_registry: None,
         }
+    }
+
+    /// Set the embedding registry for computing embeddings on new data.
+    ///
+    /// When set, the registry will be used to parse schema metadata and
+    /// compute embeddings for the new data before the merge operation.
+    pub fn embedding_registry(&mut self, registry: Arc<dyn EmbeddingRegistry>) -> &mut Self {
+        self.embedding_registry = Some(registry);
+        self
     }
 
     /// Rows that exist in both the source table (new data) and

@@ -304,6 +304,19 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
         Ok(self)
     }
 
+    /// Add pre-parsed embeddings directly to the table.
+    ///
+    /// This is used when embeddings have been parsed from schema metadata
+    /// (e.g., from Python's embedding_functions metadata format) rather than
+    /// looked up by name from the registry.
+    pub fn add_parsed_embeddings(
+        mut self,
+        embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
+    ) -> Self {
+        self.embeddings.extend(embeddings);
+        self
+    }
+
     /// Set whether to use V2 manifest paths for the table. (default: false)
     ///
     /// These paths provide more efficient opening of tables with many
