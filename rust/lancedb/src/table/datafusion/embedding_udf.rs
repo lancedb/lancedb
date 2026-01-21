@@ -167,8 +167,19 @@ pub fn build_embedding_projection(
         })
         .collect();
 
-    // Add embedding columns
+    // Add embedding columns (skip if destination column already exists)
     for (def, func) in embeddings {
+        let dest_name = def
+            .dest_column
+            .clone()
+            .unwrap_or_else(|| format!("{}_embedding", &def.source_column));
+
+        // Skip if the destination column already exists in the input schema
+        // This happens when data already has the embedding column computed
+        if input_schema.index_of(&dest_name).is_ok() {
+            continue;
+        }
+
         let source_col_idx =
             input_schema
                 .index_of(&def.source_column)
@@ -178,11 +189,6 @@ pub fn build_embedding_projection(
                         def.source_column, e
                     ),
                 })?;
-
-        let dest_name = def
-            .dest_column
-            .clone()
-            .unwrap_or_else(|| format!("{}_embedding", &def.source_column));
 
         // Create the source column expression
         let source_expr: Arc<dyn PhysicalExpr> =

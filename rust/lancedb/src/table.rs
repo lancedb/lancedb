@@ -313,6 +313,15 @@ impl<T: IntoArrow> AddDataBuilder<T> {
         self
     }
 
+    /// Set the embedding registry to use for computing embeddings.
+    ///
+    /// This allows passing a custom registry that can look up embedding functions
+    /// by name. If not set, the table's default embedding registry is used.
+    pub fn embedding_registry(mut self, registry: Arc<dyn EmbeddingRegistry>) -> Self {
+        self.embedding_registry = Some(registry);
+        self
+    }
+
     pub async fn execute(self) -> Result<AddResult> {
         let parent = self.parent.clone();
         let data = self.data.into_arrow()?;
@@ -2690,6 +2699,7 @@ impl NativeTable {
         let table_def = self.table_definition().await?;
         let mut embeddings = Vec::new();
 
+        // First try to get embeddings from column definitions (Rust-native tables)
         for cd in table_def.column_definitions.iter() {
             if let ColumnKind::Embedding(def) = &cd.kind {
                 let func = registry.get(&def.embedding_name).ok_or_else(|| {
@@ -2702,6 +2712,17 @@ impl NativeTable {
                     }
                 })?;
                 embeddings.push((def.clone(), func));
+            }
+        }
+
+        // If no column definitions, try to parse schema metadata (Python-style tables)
+        // The registry may support parsing metadata formats like Python's "embedding_functions" JSON
+        if embeddings.is_empty() {
+            let schema = self.schema().await?;
+            let metadata = schema.metadata();
+            if !metadata.is_empty() {
+                // The registry may support parsing metadata formats like Python's "embedding_functions"
+                embeddings = registry.parse_metadata_embeddings(metadata)?;
             }
         }
 

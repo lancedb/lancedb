@@ -4,6 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     connection::Connection,
+    embedding::PyEmbeddingRegistry,
     error::PythonErrorExt,
     index::{extract_index_params, IndexConfig},
     query::{Query, TakeQuery},
@@ -13,6 +14,7 @@ use arrow::{
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
+use lancedb::embeddings::EmbeddingRegistry;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions,
     Table as LanceDbTable,
@@ -296,10 +298,12 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (data, mode, embedding_registry=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: Bound<'_, PyAny>,
         mode: String,
+        embedding_registry: Option<PyRef<'_, PyEmbeddingRegistry>>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let batches = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
         let mut op = self_.inner_ref()?.add(batches);
@@ -311,7 +315,15 @@ impl Table {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
         }
 
+        // Clone registry for the async block if provided
+        let registry: Option<Arc<dyn EmbeddingRegistry>> =
+            embedding_registry.map(|r| Arc::new((*r).clone()) as Arc<dyn EmbeddingRegistry>);
+
         future_into_py(self_.py(), async move {
+            let mut op = op;
+            if let Some(reg) = registry {
+                op = op.embedding_registry(reg);
+            }
             let result = op.execute().await.infer_error()?;
             Ok(AddResult::from(result))
         })

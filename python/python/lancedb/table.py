@@ -284,6 +284,45 @@ def _sanitize_data(
     return reader
 
 
+def _sanitize_data_without_embeddings(
+    data: "DATA",
+    target_schema: Optional[pa.Schema] = None,
+    metadata: Optional[dict] = None,
+    on_bad_vectors: OnBadVectorsType = "error",
+    fill_value: float = 0.0,
+    *,
+    allow_subschema: bool = False,
+) -> pa.RecordBatchReader:
+    """
+    Sanitize data without computing embeddings.
+
+    This is used when Rust will compute embeddings via the registry callback.
+    Same as _sanitize_data but skips _append_vector_columns().
+    """
+    reader = _into_pyarrow_reader(data, target_schema)
+
+    # Skip _append_vector_columns - Rust handles embeddings via registry callback
+
+    reader = _handle_bad_vectors(
+        reader,
+        on_bad_vectors=on_bad_vectors,
+        fill_value=fill_value,
+    )
+
+    if target_schema is None:
+        target_schema, reader = _infer_target_schema(reader)
+
+    if metadata:
+        new_metadata = dict(target_schema.metadata or {})
+        new_metadata.update(metadata)
+        target_schema = target_schema.with_metadata(new_metadata)
+
+    _validate_schema(target_schema)
+    reader = _cast_to_target_schema(reader, target_schema, allow_subschema)
+
+    return reader
+
+
 def _cast_to_target_schema(
     reader: pa.RecordBatchReader,
     target_schema: pa.Schema,
@@ -3659,18 +3698,44 @@ class AsyncTable:
             on_bad_vectors = "error"
         if fill_value is None:
             fill_value = 0.0
-        data = _sanitize_data(
-            data,
-            schema,
-            metadata=schema.metadata,
-            on_bad_vectors=on_bad_vectors,
-            fill_value=fill_value,
-            allow_subschema=True,
-        )
-        if isinstance(data, pa.Table):
-            data = data.to_reader()
 
-        return await self._inner.add(data, mode or "append")
+        # Check if there are embedding functions in the schema metadata
+        metadata = schema.metadata or {}
+        has_embeddings = b"embedding_functions" in metadata
+
+        if has_embeddings:
+            # Pass registry to Rust - it will parse metadata and compute embeddings
+            from ._lancedb import PyEmbeddingRegistry
+
+            rust_registry = PyEmbeddingRegistry.from_singleton()
+
+            # Sanitize data WITHOUT computing embeddings in Python
+            data = _sanitize_data_without_embeddings(
+                data,
+                schema,
+                metadata=metadata,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                allow_subschema=True,
+            )
+            if isinstance(data, pa.Table):
+                data = data.to_reader()
+
+            return await self._inner.add(data, mode or "append", rust_registry)
+        else:
+            # No embeddings - use existing path
+            data = _sanitize_data(
+                data,
+                schema,
+                metadata=metadata,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                allow_subschema=True,
+            )
+            if isinstance(data, pa.Table):
+                data = data.to_reader()
+
+            return await self._inner.add(data, mode or "append")
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """

@@ -85,6 +85,25 @@ pub trait EmbeddingRegistry: Send + Sync + std::fmt::Debug {
     fn register(&self, name: &str, function: Arc<dyn EmbeddingFunction>) -> Result<()>;
     /// Get an embedding function by name
     fn get(&self, name: &str) -> Option<Arc<dyn EmbeddingFunction>>;
+
+    /// Parse schema metadata and return embedding definitions with their functions.
+    ///
+    /// This is used by Python bindings to parse the `embedding_functions` metadata format.
+    /// The default implementation returns an empty Vec, as most registries don't support
+    /// metadata parsing (they require explicit column definitions).
+    ///
+    /// # Arguments
+    /// * `metadata` - Schema metadata as key-value pairs (typically from PyArrow schema)
+    ///
+    /// # Returns
+    /// A vector of (EmbeddingDefinition, EmbeddingFunction) pairs representing the
+    /// configured embedding columns.
+    fn parse_metadata_embeddings(
+        &self,
+        _metadata: &HashMap<String, String>,
+    ) -> Result<Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>> {
+        Ok(Vec::new())
+    }
 }
 
 /// A [`EmbeddingRegistry`] that uses in-memory [`HashMap`]s
