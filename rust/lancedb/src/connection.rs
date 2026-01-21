@@ -9,6 +9,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatchReader;
 use arrow_schema::{Field, SchemaRef};
 use lance::dataset::ReadParams;
+use lance::io::ObjectStoreParams;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
     DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
@@ -39,7 +40,64 @@ use crate::Table;
 pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
-use lance_io::object_store::StorageOptionsProvider;
+use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
+
+fn merge_storage_options(
+    store_params: &mut ObjectStoreParams,
+    pairs: impl IntoIterator<Item = (String, String)>,
+) {
+    let mut storage_options = store_params.storage_options().cloned().unwrap_or_default();
+    for (key, value) in pairs {
+        storage_options.insert(key, value);
+    }
+    store_params.storage_options_accessor = Some(Arc::new(
+        StorageOptionsAccessor::with_static_options(storage_options),
+    ));
+}
+
+fn apply_storage_options_provider(
+    store_params: &mut ObjectStoreParams,
+    provider: Option<Arc<dyn StorageOptionsProvider>>,
+) {
+    let Some(provider) = provider else {
+        return;
+    };
+    let storage_options = store_params.storage_options().cloned().unwrap_or_default();
+    let accessor = if storage_options.is_empty() {
+        StorageOptionsAccessor::with_provider(provider)
+    } else {
+        StorageOptionsAccessor::with_initial_and_provider(storage_options, provider)
+    };
+    store_params.storage_options_accessor = Some(Arc::new(accessor));
+}
+
+fn apply_storage_options_provider_to_write_options(
+    write_options: &mut WriteOptions,
+    provider: Option<Arc<dyn StorageOptionsProvider>>,
+) {
+    let Some(provider) = provider else {
+        return;
+    };
+    let store_params = write_options
+        .lance_write_params
+        .get_or_insert_with(Default::default)
+        .store_params
+        .get_or_insert_with(Default::default);
+    apply_storage_options_provider(store_params, Some(provider));
+}
+
+fn apply_storage_options_provider_to_read_params(
+    read_params: &mut ReadParams,
+    provider: Option<Arc<dyn StorageOptionsProvider>>,
+) {
+    let Some(provider) = provider else {
+        return;
+    };
+    let store_params = read_params
+        .store_options
+        .get_or_insert_with(Default::default);
+    apply_storage_options_provider(store_params, Some(provider));
+}
 
 /// A builder for configuring a [`Connection::table_names`] operation
 pub struct TableNamesBuilder {
@@ -106,6 +164,7 @@ pub struct CreateTableBuilder<const HAS_DATA: bool> {
     embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
     request: CreateTableRequest,
+    storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
     // This is a bit clumsy but we defer errors until `execute` is called
     // to maintain backwards compatibility
     data: CreateTableBuilderInitialData,
@@ -128,6 +187,7 @@ impl CreateTableBuilder<true> {
             ),
             embeddings: Vec::new(),
             embedding_registry,
+            storage_options_provider: None,
             data: CreateTableBuilderInitialData::Iterator(data.into_arrow()),
         }
     }
@@ -147,6 +207,7 @@ impl CreateTableBuilder<true> {
             ),
             embeddings: Vec::new(),
             embedding_registry,
+            storage_options_provider: None,
             data: CreateTableBuilderInitialData::Stream(data.into_arrow()),
         }
     }
@@ -168,20 +229,30 @@ impl CreateTableBuilder<true> {
             match self.data {
                 CreateTableBuilderInitialData::Iterator(maybe_iter) => {
                     let data = maybe_iter?;
-                    Ok(CreateTableRequest {
+                    let mut request = CreateTableRequest {
                         data: CreateTableData::Data(data),
                         ..self.request
-                    })
+                    };
+                    apply_storage_options_provider_to_write_options(
+                        &mut request.write_options,
+                        self.storage_options_provider,
+                    );
+                    Ok(request)
                 }
                 CreateTableBuilderInitialData::None => {
                     unreachable!("No data provided for CreateTableBuilder<true>")
                 }
                 CreateTableBuilderInitialData::Stream(maybe_stream) => {
                     let data = maybe_stream?;
-                    Ok(CreateTableRequest {
+                    let mut request = CreateTableRequest {
                         data: CreateTableData::StreamingData(data),
                         ..self.request
-                    })
+                    };
+                    apply_storage_options_provider_to_write_options(
+                        &mut request.write_options,
+                        self.storage_options_provider,
+                    );
+                    Ok(request)
                 }
             }
         } else {
@@ -190,10 +261,15 @@ impl CreateTableBuilder<true> {
             };
             let data = maybe_iter?;
             let data = Box::new(WithEmbeddings::new(data, self.embeddings));
-            Ok(CreateTableRequest {
+            let mut request = CreateTableRequest {
                 data: CreateTableData::Data(data),
                 ..self.request
-            })
+            };
+            apply_storage_options_provider_to_write_options(
+                &mut request.write_options,
+                self.storage_options_provider,
+            );
+            Ok(request)
         }
     }
 }
@@ -213,13 +289,19 @@ impl CreateTableBuilder<false> {
             data: CreateTableBuilderInitialData::None,
             embeddings: Vec::default(),
             embedding_registry,
+            storage_options_provider: None,
         }
     }
 
     /// Execute the create table operation
     pub async fn execute(self) -> Result<Table> {
         let parent = self.parent.clone();
-        let table = parent.create_table(self.request).await?;
+        let mut request = self.request;
+        apply_storage_options_provider_to_write_options(
+            &mut request.write_options,
+            self.storage_options_provider,
+        );
+        let table = parent.create_table(request).await?;
         Ok(Table::new(table, parent))
     }
 }
@@ -246,16 +328,14 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     ///
     /// See available options at <https://lancedb.com/docs/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        let store_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert(Default::default())
             .store_params
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
-        store_options.insert(key.into(), value.into());
+        merge_storage_options(store_params, [(key.into(), value.into())]);
         self
     }
 
@@ -269,19 +349,20 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
-        let store_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert(Default::default())
             .store_params
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
 
-        for (key, value) in pairs {
-            store_options.insert(key.into(), value.into());
-        }
+        merge_storage_options(
+            store_params,
+            pairs
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into())),
+        );
         self
     }
 
@@ -318,23 +399,21 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// This has no effect in LanceDB Cloud.
     #[deprecated(since = "0.15.1", note = "Use `database_options` instead")]
     pub fn enable_v2_manifest_paths(mut self, use_v2_manifest_paths: bool) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert_with(Default::default)
             .store_params
-            .get_or_insert_with(Default::default)
-            .storage_options
             .get_or_insert_with(Default::default);
-
-        storage_options.insert(
-            OPT_NEW_TABLE_V2_MANIFEST_PATHS.to_string(),
-            if use_v2_manifest_paths {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            },
+        let value = if use_v2_manifest_paths {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        };
+        merge_storage_options(
+            store_params,
+            [(OPT_NEW_TABLE_V2_MANIFEST_PATHS.to_string(), value)],
         );
         self
     }
@@ -344,19 +423,19 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// The default is `LanceFileVersion::Stable`.
     #[deprecated(since = "0.15.1", note = "Use `database_options` instead")]
     pub fn data_storage_version(mut self, data_storage_version: LanceFileVersion) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert_with(Default::default)
             .store_params
-            .get_or_insert_with(Default::default)
-            .storage_options
             .get_or_insert_with(Default::default);
-
-        storage_options.insert(
-            OPT_NEW_TABLE_STORAGE_VERSION.to_string(),
-            data_storage_version.to_string(),
+        merge_storage_options(
+            store_params,
+            [(
+                OPT_NEW_TABLE_STORAGE_VERSION.to_string(),
+                data_storage_version.to_string(),
+            )],
         );
         self
     }
@@ -381,13 +460,7 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// This allows tables to automatically refresh cloud storage credentials
     /// when they expire, enabling long-running operations on remote storage.
     pub fn storage_options_provider(mut self, provider: Arc<dyn StorageOptionsProvider>) -> Self {
-        self.request
-            .write_options
-            .lance_write_params
-            .get_or_insert(Default::default())
-            .store_params
-            .get_or_insert(Default::default())
-            .storage_options_provider = Some(provider);
+        self.storage_options_provider = Some(provider);
         self
     }
 }
@@ -397,6 +470,7 @@ pub struct OpenTableBuilder {
     parent: Arc<dyn Database>,
     request: OpenTableRequest,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+    storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
 }
 
 impl OpenTableBuilder {
@@ -416,6 +490,7 @@ impl OpenTableBuilder {
                 namespace_client: None,
             },
             embedding_registry,
+            storage_options_provider: None,
         }
     }
 
@@ -450,15 +525,13 @@ impl OpenTableBuilder {
     ///
     /// See available options at <https://lancedb.com/docs/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .lance_read_params
             .get_or_insert(Default::default())
             .store_options
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
-        storage_options.insert(key.into(), value.into());
+        merge_storage_options(store_params, [(key.into(), value.into())]);
         self
     }
 
@@ -472,18 +545,19 @@ impl OpenTableBuilder {
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .lance_read_params
             .get_or_insert(Default::default())
             .store_options
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
 
-        for (key, value) in pairs {
-            storage_options.insert(key.into(), value.into());
-        }
+        merge_storage_options(
+            store_params,
+            pairs
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into())),
+        );
         self
     }
 
@@ -507,18 +581,23 @@ impl OpenTableBuilder {
     /// This allows tables to automatically refresh cloud storage credentials
     /// when they expire, enabling long-running operations on remote storage.
     pub fn storage_options_provider(mut self, provider: Arc<dyn StorageOptionsProvider>) -> Self {
-        self.request
-            .lance_read_params
-            .get_or_insert(Default::default())
-            .store_options
-            .get_or_insert(Default::default())
-            .storage_options_provider = Some(provider);
+        self.storage_options_provider = Some(provider);
         self
     }
 
     /// Open the table
     pub async fn execute(self) -> Result<Table> {
-        let table = self.parent.open_table(self.request).await?;
+        let mut request = self.request;
+        if let Some(provider) = self.storage_options_provider {
+            if let Some(read_params) = request.lance_read_params.as_mut() {
+                apply_storage_options_provider_to_read_params(read_params, Some(provider));
+            } else {
+                let mut read_params = ReadParams::default();
+                apply_storage_options_provider_to_read_params(&mut read_params, Some(provider));
+                request.lance_read_params = Some(read_params);
+            }
+        }
+        let table = self.parent.open_table(request).await?;
         Ok(Table::new_with_embedding_registry(
             table,
             self.parent,
