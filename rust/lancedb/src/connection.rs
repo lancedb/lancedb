@@ -1533,7 +1533,7 @@ mod tests {
             assert!(db.drop_table("invalid_table", &[]).await.is_ok());
         } else {
             // The behavior of drop_table when using a file:/// endpoint differs from all other
-            // object providers, in that it returns an error in this case.
+            // object providers, in that it returns an error when deleting a non-existent table.
             assert!(matches!(
                 db.drop_table("invalid_table", &[]).await,
                 Err(crate::Error::TableNotFound { .. }),
