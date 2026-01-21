@@ -3,6 +3,7 @@
 
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
 
+pub mod insert;
 pub mod udtf;
 
 use std::{collections::HashMap, sync::Arc};
@@ -13,7 +14,7 @@ use async_trait::async_trait;
 use datafusion_catalog::{Session, TableProvider};
 use datafusion_common::{DataFusionError, Result as DataFusionResult, Statistics};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
-use datafusion_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion_expr::{dml::InsertOp, Expr, TableProviderFilterPushDown, TableType};
 use datafusion_physical_plan::{
     stream::RecordBatchStreamAdapter, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
 };
@@ -249,6 +250,25 @@ impl TableProvider for BaseTableAdapter {
     fn statistics(&self) -> Option<Statistics> {
         // TODO
         None
+    }
+
+    async fn insert_into(
+        &self,
+        _state: &dyn Session,
+        input: Arc<dyn ExecutionPlan>,
+        insert_op: InsertOp,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if !matches!(insert_op, InsertOp::Append) {
+            return Err(DataFusionError::NotImplemented(
+                "Only Append insert operation is supported".to_string(),
+            ));
+        }
+
+        Ok(self
+            .table
+            .create_insert_exec(input)
+            .await
+            .map_err(|err| DataFusionError::External(err.into()))?)
     }
 }
 
@@ -570,5 +590,114 @@ pub mod tests {
         let partition_stats = physical_plan.partition_statistics(None).unwrap();
 
         assert!(matches!(partition_stats.num_rows, Precision::Exact(10)));
+    }
+
+    #[tokio::test]
+    async fn test_insert_append() {
+        use crate::table::AddDataMode;
+        use arrow_array::RecordBatchIterator;
+
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("insert_test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let db = connect(uri).execute().await.unwrap();
+        let tbl = db
+            .create_table("test_insert", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+
+        let initial_count = tbl.count_rows(None).await.unwrap();
+        assert_eq!(initial_count, 10);
+
+        // Create source data to insert
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("i", DataType::Int32, false),
+            Field::new("indexed", DataType::UInt32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(100..110)),
+                Arc::new(UInt32Array::from_iter_values(100..110)),
+            ],
+        )
+        .unwrap();
+
+        // Use the table's add method directly to verify basic insert works
+        tbl.add(RecordBatchIterator::new(vec![Ok(batch)], schema))
+            .mode(AddDataMode::Append)
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify total row count increased
+        let new_count = tbl.count_rows(None).await.unwrap();
+        assert_eq!(new_count, 20);
+    }
+
+    #[tokio::test]
+    async fn test_insert_into_via_sql() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("sql_insert_test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let db = connect(uri).execute().await.unwrap();
+        let tbl = db
+            .create_table("target", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+
+        let adapter = Arc::new(
+            BaseTableAdapter::try_new(tbl.base_table().clone())
+                .await
+                .unwrap(),
+        );
+
+        let ctx = SessionContext::new();
+        ctx.register_table("target", adapter.clone()).unwrap();
+
+        let initial_count = tbl.count_rows(None).await.unwrap();
+        assert_eq!(initial_count, 10);
+
+        // Create source data as a separate in-memory table
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("i", DataType::Int32, false),
+            Field::new("indexed", DataType::UInt32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(100..105)),
+                Arc::new(UInt32Array::from_iter_values(100..105)),
+            ],
+        )
+        .unwrap();
+        ctx.register_batch("source", batch).unwrap();
+
+        // Insert using SQL
+        let result = ctx
+            .sql("INSERT INTO target SELECT * FROM source")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        // The result should contain the count of inserted rows
+        assert_eq!(result.len(), 1);
+        let count_col = result[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
+        assert_eq!(count_col.value(0), 5);
+
+        // Verify total row count increased
+        tbl.checkout_latest().await.unwrap();
+        let new_count = tbl.count_rows(None).await.unwrap();
+        assert_eq!(new_count, 15);
     }
 }
