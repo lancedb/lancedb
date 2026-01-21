@@ -2389,8 +2389,6 @@ impl NativeTable {
                 });
 
                 Ok(NsQueryTableRequest {
-                    identity: None,
-                    context: None,
                     id: None, // Will be set in namespace_query
                     k: vq.base.limit.unwrap_or(10) as i32,
                     vector: Box::new(vector),
@@ -2409,7 +2407,7 @@ impl NativeTable {
                     with_row_id: Some(vq.base.with_row_id),
                     bypass_vector_index: Some(!vq.use_index),
                     full_text_query,
-                    version: None,
+                    ..Default::default()
                 })
             }
             AnyQuery::Query(q) => {
@@ -2464,8 +2462,6 @@ impl NativeTable {
                 });
 
                 Ok(NsQueryTableRequest {
-                    identity: None,
-                    context: None,
                     id: None, // Will be set by caller
                     vector,
                     k: q.limit.unwrap_or(10) as i32,
@@ -2473,18 +2469,11 @@ impl NativeTable {
                     columns,
                     prefilter: Some(q.prefilter),
                     offset: q.offset.map(|o| o as i32),
-                    ef: None,
-                    refine_factor: None,
-                    distance_type: None,
-                    nprobes: None,
                     vector_column: None, // No vector column for plain queries
                     with_row_id: Some(q.with_row_id),
                     bypass_vector_index: Some(true), // No vector index for plain queries
                     full_text_query,
-                    version: None,
-                    fast_search: None,
-                    lower_bound: None,
-                    upper_bound: None,
+                    ..Default::default()
                 })
             }
         }
