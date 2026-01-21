@@ -16,7 +16,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use lancedb::{
-    embeddings::{EmbeddingDefinition, EmbeddingFunction, MaybeEmbedded, WithEmbeddings},
+    embeddings::{EmbeddingDefinition, EmbeddingFunction, WithEmbeddings},
     Error, Result,
 };
 
@@ -67,7 +67,8 @@ impl EmbeddingFunction for SlowMockEmbed {
 
         let len = source.len();
         let inner = Arc::new(Float32Array::from(vec![Some(1.0); len * self.dim]));
-        let field = Field::new("item", inner.data_type().clone(), false);
+        // Inner field must be nullable=true to match dest_type (new_fixed_size_list with true)
+        let field = Field::new("item", inner.data_type().clone(), true);
         let arr = FixedSizeListArray::new(
             Arc::new(field),
             self.dim as _,
@@ -229,25 +230,4 @@ fn test_embedding_error_propagation() {
     assert!(result.is_err());
     let err_msg = format!("{}", result.err().unwrap());
     assert!(err_msg.contains("Intentional failure"));
-}
-
-#[test]
-fn test_maybe_embedded_with_no_embeddings() {
-    // Test that MaybeEmbedded::No variant works correctly
-    let batch = create_test_batch().unwrap();
-    let schema = batch.schema();
-
-    let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], schema.clone());
-    let table_def = lancedb::table::TableDefinition {
-        schema: schema.clone(),
-        column_definitions: vec![lancedb::table::ColumnDefinition {
-            kind: lancedb::table::ColumnKind::Physical,
-        }],
-    };
-
-    let mut maybe_embedded = MaybeEmbedded::try_new(reader, table_def, None).unwrap();
-
-    let result = maybe_embedded.next().unwrap().unwrap();
-    assert_eq!(result.num_columns(), 1);
-    assert_eq!(result.column(0).as_ref(), batch.column(0).as_ref());
 }

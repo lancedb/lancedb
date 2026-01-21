@@ -58,7 +58,7 @@ use std::sync::Arc;
 use crate::arrow::IntoArrow;
 use crate::connection::NoData;
 use crate::database::Database;
-use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
+use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::index::vector::VectorIndex;
 use crate::index::IndexStatistics;
@@ -2672,6 +2672,45 @@ impl NativeTable {
         dataset.replace_field_metadata(new_values).await?;
         Ok(())
     }
+
+    /// Add embedding computation as a projection if the table has embedding columns.
+    ///
+    /// If an embedding registry is provided and the table definition includes
+    /// embedding columns, this wraps the input plan with a ProjectionExec that
+    /// computes embeddings using the registered embedding functions.
+    async fn maybe_add_embedding_projection(
+        &self,
+        input: Arc<dyn ExecutionPlan>,
+        registry: Option<Arc<dyn EmbeddingRegistry>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let Some(registry) = registry else {
+            return Ok(input);
+        };
+
+        let table_def = self.table_definition().await?;
+        let mut embeddings = Vec::new();
+
+        for cd in table_def.column_definitions.iter() {
+            if let ColumnKind::Embedding(def) = &cd.kind {
+                let func = registry.get(&def.embedding_name).ok_or_else(|| {
+                    Error::EmbeddingFunctionNotFound {
+                        name: def.embedding_name.clone(),
+                        reason: format!(
+                            "Table was defined with embedding column `{}` but no function found",
+                            def.embedding_name
+                        ),
+                    }
+                })?;
+                embeddings.push((def.clone(), func));
+            }
+        }
+
+        if embeddings.is_empty() {
+            return Ok(input);
+        }
+
+        self::datafusion::embedding_udf::build_embedding_projection(input, embeddings)
+    }
 }
 
 #[async_trait::async_trait]
@@ -2768,12 +2807,6 @@ impl BaseTable for NativeTable {
         // Ensure the dataset is in latest mode (not checked out to a specific version)
         self.dataset.ensure_mutable().await?;
 
-        let data = Box::new(MaybeEmbedded::try_new(
-            data,
-            self.table_definition().await?,
-            add.embedding_registry,
-        )?) as Box<dyn RecordBatchReader + Send>;
-
         let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
@@ -2782,8 +2815,13 @@ impl BaseTable for NativeTable {
             ..Default::default()
         });
 
-        // Convert RecordBatchReader to ExecutionPlan
+        // Convert RecordBatchReader to ExecutionPlan (raw data, no embeddings yet)
         let input_plan = self::datafusion::insert::reader_to_execution_plan(data);
+
+        // Add embedding projection if the table has embedding columns
+        let input_plan = self
+            .maybe_add_embedding_projection(input_plan, add.embedding_registry)
+            .await?;
 
         // Create InsertExec
         let insert_exec = self.create_insert_exec(input_plan, lance_params).await?;

@@ -3,6 +3,7 @@
 
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
 
+pub mod embedding_udf;
 pub mod insert;
 pub mod udtf;
 

@@ -19,7 +19,6 @@ use std::{
 
 use arrow_array::{Array, RecordBatch, RecordBatchReader};
 use arrow_schema::{DataType, Field, SchemaBuilder};
-// use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -127,58 +126,13 @@ impl MemoryRegistry {
 /// When multiple embedding functions are defined, they are computed in parallel using
 /// scoped threads to improve performance. For a single embedding function, computation
 /// is done inline without threading overhead.
+///
+/// NOTE: This is used for table creation with embeddings. For data insertion into
+/// existing tables, use the DataFusion projection-based approach via
+/// `build_embedding_projection`.
 pub struct WithEmbeddings<R: RecordBatchReader> {
     inner: R,
     embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
-}
-
-/// A record batch that might have embeddings applied to it.
-pub enum MaybeEmbedded<R: RecordBatchReader> {
-    /// The record batch reader has embeddings applied to it
-    Yes(WithEmbeddings<R>),
-    /// The record batch reader does not have embeddings applied to it
-    /// The inner record batch reader is returned as-is
-    No(R),
-}
-
-impl<R: RecordBatchReader> MaybeEmbedded<R> {
-    /// Create a new RecordBatchReader with embeddings applied to it if the table definition
-    /// specifies an embedding column and the registry contains an embedding function with that name
-    /// Otherwise, this is a no-op and the inner RecordBatchReader is returned.
-    pub fn try_new(
-        inner: R,
-        table_definition: TableDefinition,
-        registry: Option<Arc<dyn EmbeddingRegistry>>,
-    ) -> Result<Self> {
-        if let Some(registry) = registry {
-            let mut embeddings = Vec::with_capacity(table_definition.column_definitions.len());
-            for cd in table_definition.column_definitions.iter() {
-                if let ColumnKind::Embedding(embedding_def) = &cd.kind {
-                    match registry.get(&embedding_def.embedding_name) {
-                        Some(func) => {
-                            embeddings.push((embedding_def.clone(), func));
-                        }
-                        None => {
-                            return Err(Error::EmbeddingFunctionNotFound {
-                                name: embedding_def.embedding_name.clone(),
-                                reason: format!(
-                                    "Table was defined with an embedding column `{}` but no embedding function was found with that name within the registry.",
-                                    embedding_def.embedding_name
-                                ),
-                            });
-                        }
-                    }
-                }
-            }
-
-            if !embeddings.is_empty() {
-                return Ok(Self::Yes(WithEmbeddings { inner, embeddings }));
-            }
-        };
-
-        // No embeddings to apply
-        Ok(Self::No(inner))
-    }
 }
 
 impl<R: RecordBatchReader> WithEmbeddings<R> {
@@ -281,25 +235,6 @@ impl<R: RecordBatchReader> WithEmbeddings<R> {
                 })
                 .collect()
         })
-    }
-}
-
-impl<R: RecordBatchReader> Iterator for MaybeEmbedded<R> {
-    type Item = std::result::Result<RecordBatch, arrow_schema::ArrowError>;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Yes(inner) => inner.next(),
-            Self::No(inner) => inner.next(),
-        }
-    }
-}
-
-impl<R: RecordBatchReader> RecordBatchReader for MaybeEmbedded<R> {
-    fn schema(&self) -> Arc<arrow_schema::Schema> {
-        match self {
-            Self::Yes(inner) => inner.schema(),
-            Self::No(inner) => inner.schema(),
-        }
     }
 }
 
