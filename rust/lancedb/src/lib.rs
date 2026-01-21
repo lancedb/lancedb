@@ -54,8 +54,6 @@
 //! You can also use [`ConnectOptions`] to configure the connection to the database.
 //!
 //! ```rust
-//! # #[cfg(feature = "aws")]
-//! # {
 //! use object_store::aws::AwsCredential;
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = lancedb::connect("data/sample-lancedb")
@@ -68,7 +66,6 @@
 //!     .await
 //!     .unwrap();
 //! # });
-//! # }
 //! ```
 //!
 //! LanceDB uses [arrow-rs](https://github.com/apache/arrow-rs) to define schema, data types and array itself.

@@ -36,10 +36,42 @@ use crate::remote::{
 };
 use crate::table::{TableDefinition, WriteOptions};
 use crate::Table;
+use lance::io::ObjectStoreParams;
 pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
-use lance_io::object_store::StorageOptionsProvider;
+use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
+
+fn merge_storage_options(
+    store_params: &mut ObjectStoreParams,
+    pairs: impl IntoIterator<Item = (String, String)>,
+) {
+    let mut options = store_params.storage_options().cloned().unwrap_or_default();
+    for (key, value) in pairs {
+        options.insert(key, value);
+    }
+    let provider = store_params
+        .storage_options_accessor
+        .as_ref()
+        .and_then(|accessor| accessor.provider().cloned());
+    let accessor = if let Some(provider) = provider {
+        StorageOptionsAccessor::with_initial_and_provider(options, provider)
+    } else {
+        StorageOptionsAccessor::with_static_options(options)
+    };
+    store_params.storage_options_accessor = Some(Arc::new(accessor));
+}
+
+fn set_storage_options_provider(
+    store_params: &mut ObjectStoreParams,
+    provider: Arc<dyn StorageOptionsProvider>,
+) {
+    let accessor = match store_params.storage_options().cloned() {
+        Some(options) => StorageOptionsAccessor::with_initial_and_provider(options, provider),
+        None => StorageOptionsAccessor::with_provider(provider),
+    };
+    store_params.storage_options_accessor = Some(Arc::new(accessor));
+}
 
 /// A builder for configuring a [`Connection::table_names`] operation
 pub struct TableNamesBuilder {
@@ -246,16 +278,14 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     ///
     /// See available options at <https://lancedb.com/docs/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        let store_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert(Default::default())
             .store_params
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
-        store_options.insert(key.into(), value.into());
+        merge_storage_options(store_params, [(key.into(), value.into())]);
         self
     }
 
@@ -269,19 +299,17 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
-        let store_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert(Default::default())
             .store_params
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
-
-        for (key, value) in pairs {
-            store_options.insert(key.into(), value.into());
-        }
+        let updates = pairs
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()));
+        merge_storage_options(store_params, updates);
         self
     }
 
@@ -318,23 +346,21 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// This has no effect in LanceDB Cloud.
     #[deprecated(since = "0.15.1", note = "Use `database_options` instead")]
     pub fn enable_v2_manifest_paths(mut self, use_v2_manifest_paths: bool) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert_with(Default::default)
             .store_params
-            .get_or_insert_with(Default::default)
-            .storage_options
             .get_or_insert_with(Default::default);
-
-        storage_options.insert(
-            OPT_NEW_TABLE_V2_MANIFEST_PATHS.to_string(),
-            if use_v2_manifest_paths {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            },
+        let value = if use_v2_manifest_paths {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        };
+        merge_storage_options(
+            store_params,
+            [(OPT_NEW_TABLE_V2_MANIFEST_PATHS.to_string(), value)],
         );
         self
     }
@@ -344,19 +370,19 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// The default is `LanceFileVersion::Stable`.
     #[deprecated(since = "0.15.1", note = "Use `database_options` instead")]
     pub fn data_storage_version(mut self, data_storage_version: LanceFileVersion) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert_with(Default::default)
             .store_params
-            .get_or_insert_with(Default::default)
-            .storage_options
             .get_or_insert_with(Default::default);
-
-        storage_options.insert(
-            OPT_NEW_TABLE_STORAGE_VERSION.to_string(),
-            data_storage_version.to_string(),
+        merge_storage_options(
+            store_params,
+            [(
+                OPT_NEW_TABLE_STORAGE_VERSION.to_string(),
+                data_storage_version.to_string(),
+            )],
         );
         self
     }
@@ -381,13 +407,14 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// This allows tables to automatically refresh cloud storage credentials
     /// when they expire, enabling long-running operations on remote storage.
     pub fn storage_options_provider(mut self, provider: Arc<dyn StorageOptionsProvider>) -> Self {
-        self.request
+        let store_params = self
+            .request
             .write_options
             .lance_write_params
             .get_or_insert(Default::default())
             .store_params
-            .get_or_insert(Default::default())
-            .storage_options_provider = Some(provider);
+            .get_or_insert(Default::default());
+        set_storage_options_provider(store_params, provider);
         self
     }
 }
@@ -450,15 +477,13 @@ impl OpenTableBuilder {
     ///
     /// See available options at <https://lancedb.com/docs/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .lance_read_params
             .get_or_insert(Default::default())
             .store_options
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
-        storage_options.insert(key.into(), value.into());
+        merge_storage_options(store_params, [(key.into(), value.into())]);
         self
     }
 
@@ -472,18 +497,16 @@ impl OpenTableBuilder {
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .lance_read_params
             .get_or_insert(Default::default())
             .store_options
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
-
-        for (key, value) in pairs {
-            storage_options.insert(key.into(), value.into());
-        }
+        let updates = pairs
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()));
+        merge_storage_options(store_params, updates);
         self
     }
 
@@ -507,12 +530,13 @@ impl OpenTableBuilder {
     /// This allows tables to automatically refresh cloud storage credentials
     /// when they expire, enabling long-running operations on remote storage.
     pub fn storage_options_provider(mut self, provider: Arc<dyn StorageOptionsProvider>) -> Self {
-        self.request
+        let store_params = self
+            .request
             .lance_read_params
             .get_or_insert(Default::default())
             .store_options
-            .get_or_insert(Default::default())
-            .storage_options_provider = Some(provider);
+            .get_or_insert(Default::default());
+        set_storage_options_provider(store_params, provider);
         self
     }
 

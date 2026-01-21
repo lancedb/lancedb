@@ -1717,10 +1717,11 @@ mod tests {
             // Create a child namespace first
             let namespace = vec!["test_ns".to_string()];
             conn.create_namespace(CreateNamespaceRequest {
+                identity: None,
+                context: None,
                 id: Some(namespace.clone()),
                 mode: None,
                 properties: None,
-                ..Default::default()
             })
             .await
             .expect("Failed to create namespace");
@@ -1744,10 +1745,11 @@ mod tests {
             // List tables in the child namespace
             let list_response = conn
                 .list_tables(ListTablesRequest {
+                    identity: None,
+                    context: None,
                     id: Some(namespace.clone()),
                     page_token: None,
                     limit: None,
-                    ..Default::default()
                 })
                 .await
                 .expect("Failed to list tables");
@@ -1757,10 +1759,11 @@ mod tests {
             let namespace_client = conn.namespace_client().await.unwrap();
             let list_response = namespace_client
                 .list_tables(ListTablesRequest {
+                    identity: None,
+                    context: None,
                     id: Some(namespace.clone()),
                     page_token: None,
                     limit: None,
-                    ..Default::default()
                 })
                 .await
                 .unwrap();
@@ -1799,10 +1802,11 @@ mod tests {
             // Create a child namespace first
             let namespace = vec!["multi_table_ns".to_string()];
             conn.create_namespace(CreateNamespaceRequest {
+                identity: None,
+                context: None,
                 id: Some(namespace.clone()),
                 mode: None,
                 properties: None,
-                ..Default::default()
             })
             .await
             .expect("Failed to create namespace");
@@ -1826,10 +1830,11 @@ mod tests {
             // List tables in the child namespace
             let list_response = conn
                 .list_tables(ListTablesRequest {
+                    identity: None,
+                    context: None,
                     id: Some(namespace.clone()),
                     page_token: None,
                     limit: None,
-                    ..Default::default()
                 })
                 .await
                 .unwrap();
