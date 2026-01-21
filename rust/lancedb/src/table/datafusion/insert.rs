@@ -89,13 +89,13 @@ fn make_count_schema() -> SchemaRef {
 
 impl DisplayAs for InsertExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "InsertExec")
+        write!(f, "{}", Self::static_name())
     }
 }
 
 impl ExecutionPlan for InsertExec {
     fn name(&self) -> &str {
-        "InsertExec"
+        Self::static_name()
     }
 
     fn as_any(&self) -> &dyn Any {
