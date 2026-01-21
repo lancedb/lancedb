@@ -140,5 +140,5 @@ class GeminiText(TextEmbeddingFunction):
                     # Include header as per goo.gle/gemini-partners
                     "x-goog-api-client": f"lancedb/{__version__}",
                 }
-            }
+            },
         )
