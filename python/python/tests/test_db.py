@@ -268,6 +268,8 @@ async def test_create_table_from_iterator_async(mem_db_async: lancedb.AsyncConne
 
 
 def test_create_exist_ok(tmp_db: lancedb.DBConnection):
+    from conftest import pandas_string_type
+
     data = pd.DataFrame(
         {
             "vector": [[3.1, 4.1], [5.9, 26.5]],
@@ -286,10 +288,11 @@ def test_create_exist_ok(tmp_db: lancedb.DBConnection):
     assert tbl.schema == tbl2.schema
     assert len(tbl) == len(tbl2)
 
+    # pandas 3.0+ uses large_string, pandas 2.x uses string
     schema = pa.schema(
         [
             pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-            pa.field("item", pa.utf8()),
+            pa.field("item", pandas_string_type()),
             pa.field("price", pa.float64()),
         ]
     )
@@ -299,7 +302,7 @@ def test_create_exist_ok(tmp_db: lancedb.DBConnection):
     bad_schema = pa.schema(
         [
             pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-            pa.field("item", pa.utf8()),
+            pa.field("item", pandas_string_type()),
             pa.field("price", pa.float64()),
             pa.field("extra", pa.float32()),
         ]
@@ -365,6 +368,8 @@ async def test_create_mode_async(tmp_db_async: lancedb.AsyncConnection):
 
 @pytest.mark.asyncio
 async def test_create_exist_ok_async(tmp_db_async: lancedb.AsyncConnection):
+    from conftest import pandas_string_type
+
     data = pd.DataFrame(
         {
             "vector": [[3.1, 4.1], [5.9, 26.5]],
@@ -382,10 +387,11 @@ async def test_create_exist_ok_async(tmp_db_async: lancedb.AsyncConnection):
     assert tbl.name == tbl2.name
     assert await tbl.schema() == await tbl2.schema()
 
+    # pandas 3.0+ uses large_string, pandas 2.x uses string
     schema = pa.schema(
         [
             pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-            pa.field("item", pa.utf8()),
+            pa.field("item", pandas_string_type()),
             pa.field("price", pa.float64()),
         ]
     )
@@ -595,6 +601,8 @@ def test_open_table_sync(tmp_db: lancedb.DBConnection):
 
 @pytest.mark.asyncio
 async def test_open_table(tmp_path):
+    from conftest import pandas_string_type
+
     db = await lancedb.connect_async(tmp_path)
     data = pd.DataFrame(
         {
@@ -614,10 +622,11 @@ async def test_open_table(tmp_path):
         )
         is not None
     )
+    # pandas 3.0+ uses large_string, pandas 2.x uses string
     assert await tbl.schema() == pa.schema(
         {
             "vector": pa.list_(pa.float32(), list_size=2),
-            "item": pa.utf8(),
+            "item": pandas_string_type(),
             "price": pa.float64(),
         }
     )

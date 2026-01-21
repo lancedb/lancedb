@@ -528,12 +528,19 @@ def test_sanitize_data(
         else:
             expected_schema = schema
     else:
+        from conftest import pandas_string_type
+
+        # polars uses large_string, pandas 3.0+ uses large_string, others use string
+        if isinstance(data, pl.DataFrame):
+            text_type = pa.large_utf8()
+        elif isinstance(data, pd.DataFrame):
+            text_type = pandas_string_type()
+        else:
+            text_type = pa.string()
         expected_schema = pa.schema(
             {
                 "id": pa.int64(),
-                "text": pa.large_utf8()
-                if isinstance(data, pl.DataFrame)
-                else pa.string(),
+                "text": text_type,
                 "vector": pa.list_(pa.float32(), 10),
             }
         )
