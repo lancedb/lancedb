@@ -7,6 +7,7 @@ use std::{
 };
 
 use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
+use arrow_ipc::CompressionType;
 use arrow_schema::{ArrowError, DataType, Field, Schema as ArrowSchema, SchemaRef};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
@@ -87,7 +88,13 @@ impl<S: HttpSend> RemoteInsertExec<S> {
     }
 
     fn stream_as_body(data: SendableRecordBatchStream) -> DataFusionResult<reqwest::Body> {
-        let writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
+        let options = arrow_ipc::writer::IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+        let writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
+            Vec::new(),
+            &data.schema(),
+            options,
+        )?;
 
         let stream = futures::stream::try_unfold((data, writer), move |(mut data, mut writer)| {
             async move {

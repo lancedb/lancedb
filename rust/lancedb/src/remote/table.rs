@@ -17,6 +17,7 @@ use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_ipc::reader::FileReader;
+use arrow_ipc::CompressionType;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use datafusion_common::DataFusionError;
@@ -263,8 +264,13 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
-        // TODO: Once Phalanx supports compression, we should use it here.
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
+        let options = arrow_ipc::writer::IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
+            Vec::new(),
+            &data.schema(),
+            options,
+        )?;
 
         //  Mutex is just here to make it sync. We shouldn't have any contention.
         let mut data = Mutex::new(data);
@@ -1779,10 +1785,17 @@ mod tests {
     }
 
     fn write_ipc_stream(data: &RecordBatch) -> Vec<u8> {
+        let options = arrow_ipc::writer::IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))
+            .unwrap();
         let mut body = Vec::new();
         {
-            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &data.schema())
-                .expect("Failed to create writer");
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
+                &mut body,
+                &data.schema(),
+                options,
+            )
+            .expect("Failed to create writer");
             writer.write(data).expect("Failed to write data");
             writer.finish().expect("Failed to finish");
         }
