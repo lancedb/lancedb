@@ -26,6 +26,8 @@ import pytest
 from lance_namespace import (
     CreateEmptyTableRequest,
     CreateEmptyTableResponse,
+    DeclareTableRequest,
+    DeclareTableResponse,
     DescribeTableRequest,
     DescribeTableResponse,
     LanceNamespace,
@@ -159,6 +161,19 @@ class TrackingNamespace(LanceNamespace):
         modified["expires_at_millis"] = str(expires_at_millis)
 
         return modified
+
+    def declare_table(self, request: DeclareTableRequest) -> DeclareTableResponse:
+        """Track declare_table calls and inject rotating credentials."""
+        with self.lock:
+            self.create_call_count += 1
+            count = self.create_call_count
+
+        response = self.inner.declare_table(request)
+        response.storage_options = self._modify_storage_options(
+            response.storage_options, count
+        )
+
+        return response
 
     def create_empty_table(
         self, request: CreateEmptyTableRequest

@@ -289,7 +289,7 @@ def test_create_exist_ok(tmp_db: lancedb.DBConnection):
     schema = pa.schema(
         [
             pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-            pa.field("item", pa.utf8()),
+            pa.field("item", pa.large_utf8()),
             pa.field("price", pa.float64()),
         ]
     )
@@ -299,7 +299,7 @@ def test_create_exist_ok(tmp_db: lancedb.DBConnection):
     bad_schema = pa.schema(
         [
             pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-            pa.field("item", pa.utf8()),
+            pa.field("item", pa.large_utf8()),
             pa.field("price", pa.float64()),
             pa.field("extra", pa.float32()),
         ]
@@ -385,7 +385,7 @@ async def test_create_exist_ok_async(tmp_db_async: lancedb.AsyncConnection):
     schema = pa.schema(
         [
             pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-            pa.field("item", pa.utf8()),
+            pa.field("item", pa.large_utf8()),
             pa.field("price", pa.float64()),
         ]
     )
@@ -397,7 +397,7 @@ async def test_create_exist_ok_async(tmp_db_async: lancedb.AsyncConnection):
     # bad_schema = pa.schema(
     #     [
     #         pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-    #         pa.field("item", pa.utf8()),
+    #         pa.field("item", pa.large_utf8()),
     #         pa.field("price", pa.float64()),
     #         pa.field("extra", pa.float32()),
     #     ]
@@ -617,7 +617,7 @@ async def test_open_table(tmp_path):
     assert await tbl.schema() == pa.schema(
         {
             "vector": pa.list_(pa.float32(), list_size=2),
-            "item": pa.utf8(),
+            "item": pa.large_utf8(),
             "price": pa.float64(),
         }
     )
