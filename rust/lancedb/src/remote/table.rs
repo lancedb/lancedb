@@ -28,7 +28,7 @@ use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
+use lance::dataset::{ColumnAlteration, NewColumnTransform, Version, WriteMode, WriteParams};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
@@ -1532,14 +1532,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn create_insert_exec(
         &self,
         input: Arc<dyn ExecutionPlan>,
+        write_params: WriteParams,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // create_insert_exec is called from insert_into which only supports Append
+        let overwrite = matches!(write_params.mode, WriteMode::Overwrite);
         Ok(Arc::new(insert::RemoteInsertExec::new(
             self.name.clone(),
             self.identifier.clone(),
             self.client.clone(),
             input,
-            false, // overwrite
+            overwrite,
         )))
     }
 }
