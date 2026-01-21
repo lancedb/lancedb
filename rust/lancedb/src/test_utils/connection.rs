@@ -150,7 +150,7 @@ async fn create_new_connection(
 async fn new_local_connection() -> Result<TestConnection> {
     let temp_dir = tempdir()?;
     let uri = temp_dir.path().to_str().unwrap();
-    let connection = connect(uri).execute().await?;
+    let connection = connect(&uri).execute().await?;
     Ok(TestConnection {
         uri: uri.to_string(),
         connection,
