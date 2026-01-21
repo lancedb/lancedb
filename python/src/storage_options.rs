@@ -17,12 +17,11 @@ use pyo3::types::PyDict;
 /// Internal wrapper around a Python object implementing StorageOptionsProvider
 pub struct PyStorageOptionsProvider {
     /// The Python object implementing fetch_storage_options()
-    inner: Py<PyAny>,
+    inner: PyObject,
 }
 
 impl Clone for PyStorageOptionsProvider {
     fn clone(&self) -> Self {
-        #[allow(deprecated)]
         Python::with_gil(|py| Self {
             inner: self.inner.clone_ref(py),
         })
@@ -30,8 +29,7 @@ impl Clone for PyStorageOptionsProvider {
 }
 
 impl PyStorageOptionsProvider {
-    pub fn new(obj: Py<PyAny>) -> PyResult<Self> {
-        #[allow(deprecated)]
+    pub fn new(obj: PyObject) -> PyResult<Self> {
         Python::with_gil(|py| {
             // Verify the object has a fetch_storage_options method
             if !obj.bind(py).hasattr("fetch_storage_options")? {
@@ -39,9 +37,7 @@ impl PyStorageOptionsProvider {
                     "StorageOptionsProvider must implement fetch_storage_options() method",
                 ));
             }
-            Ok(Self {
-                inner: obj.clone_ref(py),
-            })
+            Ok(Self { inner: obj })
         })
     }
 }
@@ -64,7 +60,6 @@ impl StorageOptionsProvider for PyStorageOptionsProviderWrapper {
         let py_provider = self.py_provider.clone();
 
         tokio::task::spawn_blocking(move || {
-            #[allow(deprecated)]
             Python::with_gil(|py| {
                 // Call the Python fetch_storage_options method
                 let result = py_provider
@@ -124,7 +119,6 @@ impl StorageOptionsProvider for PyStorageOptionsProviderWrapper {
     }
 
     fn provider_id(&self) -> String {
-        #[allow(deprecated)]
         Python::with_gil(|py| {
             // Call provider_id() method on the Python object
             let obj = self.py_provider.inner.bind(py);
@@ -149,7 +143,7 @@ impl std::fmt::Debug for PyStorageOptionsProviderWrapper {
 /// This is the main entry point for converting Python StorageOptionsProvider objects
 /// to Rust trait objects that can be used by the Lance ecosystem.
 pub fn py_object_to_storage_options_provider(
-    py_obj: Py<PyAny>,
+    py_obj: PyObject,
 ) -> PyResult<Arc<dyn StorageOptionsProvider>> {
     let py_provider = PyStorageOptionsProvider::new(py_obj)?;
     Ok(Arc::new(PyStorageOptionsProviderWrapper::new(py_provider)))

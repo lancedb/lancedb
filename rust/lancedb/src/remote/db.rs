@@ -1718,8 +1718,6 @@ mod tests {
             let namespace = vec!["test_ns".to_string()];
             conn.create_namespace(CreateNamespaceRequest {
                 id: Some(namespace.clone()),
-                mode: None,
-                properties: None,
                 ..Default::default()
             })
             .await
@@ -1745,8 +1743,6 @@ mod tests {
             let list_response = conn
                 .list_tables(ListTablesRequest {
                     id: Some(namespace.clone()),
-                    page_token: None,
-                    limit: None,
                     ..Default::default()
                 })
                 .await
@@ -1758,8 +1754,6 @@ mod tests {
             let list_response = namespace_client
                 .list_tables(ListTablesRequest {
                     id: Some(namespace.clone()),
-                    page_token: None,
-                    limit: None,
                     ..Default::default()
                 })
                 .await
@@ -1800,8 +1794,6 @@ mod tests {
             let namespace = vec!["multi_table_ns".to_string()];
             conn.create_namespace(CreateNamespaceRequest {
                 id: Some(namespace.clone()),
-                mode: None,
-                properties: None,
                 ..Default::default()
             })
             .await
@@ -1827,8 +1819,6 @@ mod tests {
             let list_response = conn
                 .list_tables(ListTablesRequest {
                     id: Some(namespace.clone()),
-                    page_token: None,
-                    limit: None,
                     ..Default::default()
                 })
                 .await
