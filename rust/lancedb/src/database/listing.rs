@@ -983,8 +983,14 @@ impl Database for ListingDatabase {
             if !self.storage_options.is_empty() {
                 self.inherit_storage_options(&mut storage_options);
             }
-            let accessor = if let Some(ref provider) = self.storage_options_provider {
-                StorageOptionsAccessor::with_initial_and_provider(storage_options, provider.clone())
+            // Preserve request-level provider if no connection-level provider exists
+            let request_provider = store_params
+                .storage_options_accessor
+                .as_ref()
+                .and_then(|a| a.provider().cloned());
+            let provider = self.storage_options_provider.clone().or(request_provider);
+            let accessor = if let Some(provider) = provider {
+                StorageOptionsAccessor::with_initial_and_provider(storage_options, provider)
             } else {
                 StorageOptionsAccessor::with_static_options(storage_options)
             };

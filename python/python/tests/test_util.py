@@ -531,7 +531,9 @@ def test_sanitize_data(
         expected_schema = pa.schema(
             {
                 "id": pa.int64(),
-                "text": pa.large_utf8(),
+                "text": pa.large_utf8()
+                if isinstance(data, pl.DataFrame)
+                else pa.string(),
                 "vector": pa.list_(pa.float32(), 10),
             }
         )
