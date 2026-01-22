@@ -3,7 +3,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 /// A function that maps a RecordBatch to another RecordBatch with error handling
-type RecordBatchMapper = Box<dyn Fn(&RecordBatch) -> Result<RecordBatch, lance::Error> + Send + Sync>;
+type RecordBatchMapper = Box<dyn Fn(&RecordBatch) -> lance_core::Result<RecordBatch> + Send + Sync>;
 
 use crate::{
     connection::Connection,
@@ -17,7 +17,6 @@ use arrow::{
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
-use lance::dataset::BatchUDF;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions,
     Table as LanceDbTable,
@@ -778,27 +777,22 @@ impl Table {
 
             let output_schema = Arc::new(Schema::new(vec![vector_field.clone()]));
 
-            let mapper: RecordBatchMapper =
-                Box::new(move |batch: &RecordBatch| {
+            let mapper: RecordBatchMapper = Box::new(move |batch: &RecordBatch| {
                 let out_batch = Python::with_gil(|py| {
                     let batch_py = batch.to_pyarrow(py)?;
                     let batch_py = handler.bind(py).call1((batch_py,))?;
                     let out_batch = RecordBatch::from_pyarrow_bound(&batch_py)?;
                     Ok::<_, pyo3::PyErr>(out_batch)
                 })
-                .map_err(|e| lance::Error::invalid_input(format!("{e}"), snafu::location!()))?;
+                .map_err(|_| lance_core::Error::InvalidInput {
+                    source: "computing embedding failed".into(),
+                    location: snafu::location!(),
+                })?;
                 Ok(out_batch)
             });
 
-            let batch_udf = BatchUDF {
-                mapper,
-                output_schema,
-                result_checkpoint: None,
-            };
-
-            let transform = NewColumnTransform::BatchUDF(batch_udf);
             let result = inner
-                .add_columns(transform, Some(vec![source_column]))
+                .add_columns_with_mapper(mapper, output_schema, None, Some(vec![source_column]))
                 .await
                 .infer_error()?;
             Ok(AddColumnsResult::from(result))
