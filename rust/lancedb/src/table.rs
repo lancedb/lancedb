@@ -343,47 +343,6 @@ const DEFAULT_TARGET_PARTITION_SIZE: usize = 128 * 1024 * 1024;
 /// Default estimated row size when actual size is unknown (1 KB).
 const DEFAULT_ESTIMATED_ROW_SIZE: usize = 1024;
 
-/// A batch generator that yields batches from a Vec.
-struct VecBatchGenerator {
-    batches: std::sync::Mutex<Option<Vec<arrow_array::RecordBatch>>>,
-    schema: SchemaRef,
-}
-
-impl std::fmt::Debug for VecBatchGenerator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VecBatchGenerator")
-            .field("schema", &self.schema)
-            .finish()
-    }
-}
-
-impl std::fmt::Display for VecBatchGenerator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "VecBatchGenerator")
-    }
-}
-
-impl datafusion_physical_plan::memory::LazyBatchGenerator for VecBatchGenerator {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn generate_next_batch(
-        &mut self,
-    ) -> datafusion_common::Result<Option<arrow_array::RecordBatch>> {
-        let mut guard = self.batches.lock().unwrap();
-        if let Some(batches) = guard.as_mut() {
-            if batches.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(batches.remove(0)))
-            }
-        } else {
-            Ok(None)
-        }
-    }
-}
-
 /// A builder for configuring a [`Table::add_from_source`] operation with full metadata support.
 ///
 /// This builder extends [`AddDataBuilder`] by supporting data sources that provide metadata
@@ -536,43 +495,35 @@ impl AddDataBuilder2 {
 
     /// Execute the add operation.
     pub async fn execute(self) -> Result<AddResult> {
+        use crate::data_source::SourceDataExec;
         use datafusion_execution::TaskContext;
-        use datafusion_physical_plan::memory::{LazyBatchGenerator, LazyMemoryExec};
+        use datafusion_physical_plan::repartition::RepartitionExec;
         use datafusion_physical_plan::ExecutionPlanProperties;
-        use parking_lot::RwLock;
-        use std::sync::Mutex;
+        use datafusion_physical_plan::Partitioning;
 
         let num_rows = self.source.num_rows();
-        let target_partitions = self
+        let target_write_partitions = self
             .target_partitions
             .unwrap_or_else(|| Self::compute_optimal_partitions(num_rows));
 
-        // Convert source to execution plan via stream
-        let schema = self.source.schema();
-        let stream = self.source.read()?;
-        let batches: Vec<_> = stream.collect::<Vec<_>>().await;
-        let batches: Result<Vec<_>> = batches
-            .into_iter()
-            .map(|r| {
-                r.map_err(|e| Error::Runtime {
-                    message: e.to_string(),
-                })
-            })
-            .collect();
-        let batches = batches?;
+        // Get CPU count for preprocessing parallelism
+        let cpu_partitions = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1);
 
-        // Create a LazyMemoryExec from the collected batches
-        let generator = VecBatchGenerator {
-            batches: Mutex::new(Some(batches)),
-            schema: schema.clone(),
-        };
-        let generators: Vec<Arc<RwLock<dyn LazyBatchGenerator>>> =
-            vec![Arc::new(RwLock::new(generator))];
-        let mut input_plan: Arc<dyn ExecutionPlan> = Arc::new(
-            LazyMemoryExec::try_new(schema, generators).map_err(|e| Error::Runtime {
-                message: format!("Failed to create memory exec: {}", e),
-            })?,
-        );
+        // Create SourceDataExec - streams data lazily without collecting into memory
+        let mut input_plan: Arc<dyn ExecutionPlan> = Arc::new(SourceDataExec::new(self.source));
+
+        // Repartition for CPU parallelism BEFORE preprocessing steps.
+        // This allows embedding computation and preprocessing to run in parallel.
+        if cpu_partitions > 1 {
+            input_plan = Arc::new(
+                RepartitionExec::try_new(input_plan, Partitioning::RoundRobinBatch(cpu_partitions))
+                    .map_err(|e| Error::Runtime {
+                        message: format!("Failed to create CPU repartition: {}", e),
+                    })?,
+            );
+        }
 
         // Add embedding projection if the table has embedding columns
         input_plan = self
@@ -599,18 +550,15 @@ impl AddDataBuilder2 {
 
         let input_partitions = input_plan.output_partitioning().partition_count();
 
-        // Repartition if needed to match target partitions
-        if input_partitions != target_partitions && target_partitions > 0 {
-            use datafusion_physical_plan::repartition::RepartitionExec;
-            use datafusion_physical_plan::Partitioning;
-
+        // Repartition for write parallelism if different from current partitions
+        if input_partitions != target_write_partitions && target_write_partitions > 0 {
             input_plan = Arc::new(
                 RepartitionExec::try_new(
                     input_plan,
-                    Partitioning::RoundRobinBatch(target_partitions),
+                    Partitioning::RoundRobinBatch(target_write_partitions),
                 )
                 .map_err(|e| Error::Runtime {
-                    message: format!("Failed to create repartition: {}", e),
+                    message: format!("Failed to create write repartition: {}", e),
                 })?,
             );
         }
@@ -3291,6 +3239,7 @@ impl BaseTable for NativeTable {
 
         // Execute the plan
         let task_ctx = Arc::new(TaskContext::default());
+        // TODO: if there are multiple partitions, we should create a thread for each and run them in parallel.
         let mut stream = insert_exec
             .execute(0, task_ctx)
             .map_err(|e| Error::Runtime {

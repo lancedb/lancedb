@@ -278,6 +278,136 @@ impl SourceData for ReaderWithMetadata {
     }
 }
 
+// --- ExecutionPlan adapter for SourceData ---
+
+use std::any::Any;
+use std::sync::Mutex;
+
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion_common::stats::Precision;
+use datafusion_common::{DataFusionError, Result as DFResult, Statistics};
+use datafusion_execution::TaskContext;
+use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion_physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+};
+
+/// An ExecutionPlan that wraps a SourceData, allowing it to be used in DataFusion pipelines.
+///
+/// This plan has a single partition and streams data lazily without collecting into memory.
+pub struct SourceDataExec {
+    /// The wrapped source data. Option allows taking ownership in execute().
+    source: Mutex<Option<Box<dyn SourceData>>>,
+    schema: SchemaRef,
+    properties: PlanProperties,
+    num_rows: Option<usize>,
+}
+
+impl std::fmt::Debug for SourceDataExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SourceDataExec")
+            .field("schema", &self.schema)
+            .field("num_rows", &self.num_rows)
+            .finish()
+    }
+}
+
+impl SourceDataExec {
+    /// Create a new SourceDataExec from a SourceData.
+    pub fn new(source: Box<dyn SourceData>) -> Self {
+        let schema = source.schema();
+        let num_rows = source.num_rows();
+
+        // Single partition, incremental emission (streaming), bounded
+        let properties = PlanProperties::new(
+            EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        );
+
+        Self {
+            source: Mutex::new(Some(source)),
+            schema,
+            properties,
+            num_rows,
+        }
+    }
+}
+
+impl DisplayAs for SourceDataExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SourceDataExec: rows={:?}",
+            self.num_rows.map(|n| n.to_string()).unwrap_or("?".into())
+        )
+    }
+}
+
+impl ExecutionPlan for SourceDataExec {
+    fn name(&self) -> &str {
+        "SourceDataExec"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        if !children.is_empty() {
+            return Err(DataFusionError::Internal(
+                "SourceDataExec does not have children".to_string(),
+            ));
+        }
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> DFResult<SendableRecordBatchStream> {
+        if partition != 0 {
+            return Err(DataFusionError::Internal(format!(
+                "SourceDataExec only supports partition 0, got {}",
+                partition
+            )));
+        }
+
+        // Take the source out of the mutex (can only be executed once)
+        let source = self.source.lock().unwrap().take().ok_or_else(|| {
+            DataFusionError::Internal("SourceDataExec can only be executed once".to_string())
+        })?;
+
+        source
+            .read()
+            .map_err(|e| DataFusionError::External(Box::new(e)))
+    }
+
+    fn partition_statistics(&self, _partition: Option<usize>) -> DFResult<Statistics> {
+        Ok(Statistics {
+            num_rows: self
+                .num_rows
+                .map(Precision::Exact)
+                .unwrap_or(Precision::Absent),
+            total_byte_size: Precision::Absent,
+            column_statistics: vec![],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
