@@ -51,17 +51,15 @@
 //! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
 //! - `db://dbname` - Lance Cloud
 //!
-//! You can also use [`ConnectOptions`] to configure the connection to the database.
+//! You can also use [`ConnectBuilder`] to configure the connection to the database.
 //!
 //! ```rust
-//! use object_store::aws::AwsCredential;
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = lancedb::connect("data/sample-lancedb")
-//!     .aws_creds(AwsCredential {
-//!         key_id: "some_key".to_string(),
-//!         secret_key: "some_secret".to_string(),
-//!         token: None,
-//!     })
+//!     .storage_options([
+//!         ("aws_access_key_id", "some_key"),
+//!         ("aws_secret_access_key", "some_secret"),
+//!     ])
 //!     .execute()
 //!     .await
 //!     .unwrap();
