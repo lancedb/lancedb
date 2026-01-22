@@ -1074,7 +1074,7 @@ class Table(ABC):
             "append" and "overwrite".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
@@ -2517,8 +2517,8 @@ class LanceTable(Table):
 
         Returns
         -------
-        int
-            The number of vectors in the table.
+        AddResult
+            An object containing the new version number of the table after adding data.
         """
         return LOOP.run(
             self._table.add(
@@ -3740,29 +3740,26 @@ class AsyncTable:
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
         """
-        schema = await self.schema()
-        if on_bad_vectors is None:
-            on_bad_vectors = "error"
-        if fill_value is None:
-            fill_value = 0.0
-
+        from .source_data import to_source_data, _register_optional_converters
         from ._lancedb import PyEmbeddingRegistry
 
+        # Re-check for newly imported optional deps
+        _register_optional_converters()
+
+        source = to_source_data(data)
         rust_registry = PyEmbeddingRegistry.from_singleton()
-        metadata = schema.metadata or {}
 
-        data = _sanitize_data_without_embeddings(
-            data,
-            schema,
-            metadata=metadata,
-            on_bad_vectors=on_bad_vectors,
-            fill_value=fill_value,
-            allow_subschema=True,
+        # Rust handles schema casting (List -> FixedSizeList, type casts, etc.)
+        return await self._inner.add(
+            source.reader(),
+            mode or "append",
+            source.num_rows,  # row_count_hint
+            source.rescannable,  # whether source can be re-read
+            on_bad_vectors or "error",  # passed to Rust PreprocessingExec
+            fill_value if fill_value is not None else 0.0,  # fill value for bad vectors
+            None,  # target_partitions (use default)
+            rust_registry,
         )
-        if isinstance(data, pa.Table):
-            data = data.to_reader()
-
-        return await self._inner.add(data, mode or "append", rust_registry)
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """

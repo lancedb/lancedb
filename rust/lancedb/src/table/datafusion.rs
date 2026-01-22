@@ -3,8 +3,10 @@
 
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
 
+pub mod cast_vector;
 pub mod embedding_udf;
 pub mod insert;
+pub mod preprocessing;
 pub mod udtf;
 
 use std::{collections::HashMap, sync::Arc};

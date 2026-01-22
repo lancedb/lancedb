@@ -57,6 +57,7 @@ use std::sync::Arc;
 
 use crate::arrow::IntoArrow;
 use crate::connection::NoData;
+use crate::data_source::{DataSource, DataSourceMetadata};
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry, WithEmbeddings};
 use crate::error::{Error, Result};
@@ -333,6 +334,283 @@ impl<T: IntoArrow> AddDataBuilder<T> {
             embedding_registry: self.embedding_registry,
         };
         parent.add(without_data, data).await
+    }
+}
+
+/// Default target partition size for automatic partition computation (128 MB).
+const DEFAULT_TARGET_PARTITION_SIZE: usize = 128 * 1024 * 1024;
+
+/// Default estimated row size when actual size is unknown (1 KB).
+const DEFAULT_ESTIMATED_ROW_SIZE: usize = 1024;
+
+/// A builder for configuring a [`Table::add_from_source`] operation with full metadata support.
+///
+/// This builder extends [`AddDataBuilder`] by supporting data sources that provide metadata
+/// about their capabilities (row count, parallelism, rescannability). This metadata enables
+/// the insert pipeline to make better decisions about write parallelism.
+///
+/// # Example
+///
+/// ```
+/// use lancedb::data_source::{IntoArrowAdapter, RowCountHint};
+/// use arrow_array::{RecordBatch, RecordBatchIterator};
+/// use arrow_schema::{Schema, Field, DataType};
+/// use std::sync::Arc;
+///
+/// # use lancedb::Table;
+/// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+/// let schema = Arc::new(Schema::new(vec![
+///     Field::new("id", DataType::Int32, false),
+/// ]));
+/// let reader = RecordBatchIterator::new(vec![].into_iter(), schema.clone());
+///
+/// // Create a data source with metadata hints
+/// let source = IntoArrowAdapter::new(Box::new(reader), schema)
+///     .with_row_count(RowCountHint::Exact(10000));
+///
+/// // Insert with automatic partition optimization
+/// table.add_from_source(Box::new(source))
+///     .execute()
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
+pub use self::datafusion::preprocessing::{OnBadVectors, PreprocessingOptions};
+
+pub struct AddDataBuilder2 {
+    parent: Arc<dyn BaseTable>,
+    source: Box<dyn DataSource>,
+    mode: AddDataMode,
+    write_options: WriteOptions,
+    embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    target_partitions: Option<usize>,
+    preprocessing_options: Option<PreprocessingOptions>,
+}
+
+impl std::fmt::Debug for AddDataBuilder2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AddDataBuilder2")
+            .field("parent", &self.parent)
+            .field("source", &self.source)
+            .field("mode", &self.mode)
+            .field("write_options", &self.write_options)
+            .field("target_partitions", &self.target_partitions)
+            .field("preprocessing_options", &self.preprocessing_options)
+            .finish()
+    }
+}
+
+impl AddDataBuilder2 {
+    /// Set the write mode (append or overwrite).
+    pub fn mode(mut self, mode: AddDataMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Set write options for the operation.
+    pub fn write_options(mut self, options: WriteOptions) -> Self {
+        self.write_options = options;
+        self
+    }
+
+    /// Set the embedding registry to use for computing embeddings.
+    ///
+    /// This allows passing a custom registry that can look up embedding functions
+    /// by name. If not set, the table's default embedding registry is used.
+    pub fn embedding_registry(mut self, registry: Arc<dyn EmbeddingRegistry>) -> Self {
+        self.embedding_registry = Some(registry);
+        self
+    }
+
+    /// Override the automatically computed target partition count.
+    ///
+    /// By default, the number of output partitions (and thus output files) is computed
+    /// based on the data source metadata. Use this to manually control parallelism.
+    ///
+    /// # Arguments
+    ///
+    /// * `partitions` - The number of partitions to use for writing. Each partition
+    ///   becomes a separate output file.
+    pub fn target_partitions(mut self, partitions: usize) -> Self {
+        self.target_partitions = Some(partitions);
+        self
+    }
+
+    /// Set preprocessing options for handling bad vectors.
+    ///
+    /// Preprocessing can detect and handle vectors that contain:
+    /// - NaN values in float arrays
+    /// - Variable-length lists that should be fixed-size
+    /// - Values that need type conversion (e.g., int to float32)
+    ///
+    /// # Arguments
+    ///
+    /// * `options` - The preprocessing options to apply
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use lancedb::table::{PreprocessingOptions, OnBadVectors};
+    /// use lancedb::data_source::IntoArrowAdapter;
+    /// use arrow_array::RecordBatchIterator;
+    /// use arrow_schema::{Schema, Field, DataType};
+    /// use std::sync::Arc;
+    ///
+    /// # use lancedb::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let schema = Arc::new(Schema::new(vec![
+    ///     Field::new("id", DataType::Int32, false),
+    /// ]));
+    /// let reader = RecordBatchIterator::new(vec![].into_iter(), schema.clone());
+    /// let source = IntoArrowAdapter::new(Box::new(reader), schema);
+    ///
+    /// // Drop rows with bad vectors instead of erroring
+    /// let preprocessing = PreprocessingOptions {
+    ///     on_bad_vectors: OnBadVectors::Drop,
+    ///     ..Default::default()
+    /// };
+    ///
+    /// table.add_from_source(Box::new(source))
+    ///     .preprocessing(preprocessing)
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn preprocessing(mut self, options: PreprocessingOptions) -> Self {
+        self.preprocessing_options = Some(options);
+        self
+    }
+
+    /// Compute the optimal number of partitions based on source metadata.
+    fn compute_optimal_partitions(metadata: &DataSourceMetadata) -> usize {
+        match &metadata.row_count {
+            Some(hint) if hint.is_reliable() => {
+                let rows = hint.value();
+                let estimated_bytes = rows * DEFAULT_ESTIMATED_ROW_SIZE;
+                let computed = (estimated_bytes / DEFAULT_TARGET_PARTITION_SIZE).max(1);
+                // Don't exceed the number of available streams
+                computed.min(metadata.num_streams.max(1))
+            }
+            _ => {
+                // Without row count, use the number of streams (at least 1)
+                metadata.num_streams.max(1)
+            }
+        }
+    }
+
+    /// Execute the add operation.
+    pub async fn execute(self) -> Result<AddResult> {
+        use datafusion_execution::TaskContext;
+        use datafusion_physical_plan::ExecutionPlanProperties;
+
+        let metadata = self.source.metadata();
+        let target_partitions = self
+            .target_partitions
+            .unwrap_or_else(|| Self::compute_optimal_partitions(&metadata));
+
+        // Convert source to execution plan
+        let mut input_plan = self.source.into_execution_plan()?;
+
+        // Add embedding projection if the table has embedding columns
+        input_plan = self
+            .parent
+            .add_embedding_projection(input_plan, self.embedding_registry.clone())
+            .await?;
+
+        // Add preprocessing if options are provided
+        if let Some(preprocessing_options) = self.preprocessing_options {
+            input_plan = Arc::new(self::datafusion::preprocessing::PreprocessingExec::new(
+                input_plan,
+                preprocessing_options,
+                None, // Target schema will be inferred
+            ));
+        }
+
+        // Cast schema to match target table schema (handles List -> FixedSizeList, etc.)
+        let target_schema = self.parent.schema().await?;
+        input_plan =
+            self::datafusion::cast_vector::create_schema_cast_projection(input_plan, target_schema)
+                .map_err(|e| Error::Runtime {
+                    message: format!("Failed to create schema cast projection: {}", e),
+                })?;
+
+        let input_partitions = input_plan.output_partitioning().partition_count();
+
+        // Repartition if needed to match target partitions
+        if input_partitions != target_partitions && target_partitions > 0 {
+            use datafusion_physical_plan::repartition::RepartitionExec;
+            use datafusion_physical_plan::Partitioning;
+
+            input_plan = Arc::new(
+                RepartitionExec::try_new(
+                    input_plan,
+                    Partitioning::RoundRobinBatch(target_partitions),
+                )
+                .map_err(|e| Error::Runtime {
+                    message: format!("Failed to create repartition: {}", e),
+                })?,
+            );
+        }
+
+        // Get the lance write params
+        let lance_params = self
+            .write_options
+            .lance_write_params
+            .unwrap_or(WriteParams {
+                mode: match self.mode {
+                    AddDataMode::Append => WriteMode::Append,
+                    AddDataMode::Overwrite => WriteMode::Overwrite,
+                },
+                ..Default::default()
+            });
+
+        // Create and execute the insert plan
+        let insert_exec = self
+            .parent
+            .create_insert_exec(input_plan, lance_params)
+            .await?;
+
+        let task_ctx = Arc::new(TaskContext::default());
+        let num_output_partitions = insert_exec.output_partitioning().partition_count();
+
+        // Execute all partitions in parallel and collect results
+        let mut handles = Vec::with_capacity(num_output_partitions);
+        for partition in 0..num_output_partitions {
+            let exec = insert_exec.clone();
+            let ctx = task_ctx.clone();
+            handles.push(tokio::spawn(async move {
+                use futures::StreamExt;
+                let mut stream = exec.execute(partition, ctx).map_err(|e| Error::Runtime {
+                    message: format!("Failed to execute insert partition {}: {}", partition, e),
+                })?;
+                while let Some(batch) = stream.next().await {
+                    batch.map_err(|e| Error::Runtime {
+                        message: format!(
+                            "Insert execution failed for partition {}: {}",
+                            partition, e
+                        ),
+                    })?;
+                }
+                Ok::<_, Error>(())
+            }));
+        }
+
+        // Wait for all partitions to complete
+        for handle in handles {
+            handle
+                .await
+                .map_err(|e| Error::Runtime {
+                    message: format!("Insert task panicked: {}", e),
+                })?
+                .map_err(|e| Error::Runtime {
+                    message: format!("Insert failed: {}", e),
+                })?;
+        }
+
+        // Get the version from the base table
+        let version = self.parent.version().await?;
+        Ok(AddResult { version })
     }
 }
 
@@ -647,6 +925,27 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "create_insert_exec not implemented".to_string(),
         })
     }
+
+    /// Add embedding computation as a projection if the table has embedding columns.
+    ///
+    /// If an embedding registry is provided and the table definition includes
+    /// embedding columns, this wraps the input plan with a ProjectionExec that
+    /// computes embeddings using the registered embedding functions.
+    ///
+    /// # Arguments
+    /// * `input` - The input execution plan
+    /// * `registry` - Optional embedding registry to look up embedding functions
+    ///
+    /// # Returns
+    /// The input plan, possibly wrapped with embedding computation
+    async fn add_embedding_projection(
+        &self,
+        input: Arc<dyn ExecutionPlan>,
+        _registry: Option<Arc<dyn EmbeddingRegistry>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Default implementation returns input unchanged
+        Ok(input)
+    }
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -815,6 +1114,100 @@ impl Table {
             mode: AddDataMode::Append,
             write_options: WriteOptions::default(),
             embedding_registry: Some(self.embedding_registry.clone()),
+        }
+    }
+
+    /// Insert new records from a data source with metadata support.
+    ///
+    /// This method extends [`Self::add`] by accepting data sources that can provide
+    /// metadata about their capabilities (row count, parallelism, rescannability).
+    /// This metadata enables the insert pipeline to make better decisions about
+    /// write parallelism and partitioning.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - A data source implementing [`DataSource`]
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use lancedb::data_source::{IntoArrowAdapter, RowCountHint, DataSourceMetadata};
+    /// use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
+    /// use arrow_schema::{Schema, Field, DataType};
+    /// use std::sync::Arc;
+    ///
+    /// # use lancedb::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let schema = Arc::new(Schema::new(vec![
+    ///     Field::new("id", DataType::Int32, false),
+    /// ]));
+    /// let batch = RecordBatch::try_new(
+    ///     schema.clone(),
+    ///     vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+    /// )?;
+    /// let reader = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+    ///
+    /// // Create a data source with metadata for optimal partitioning
+    /// let source = IntoArrowAdapter::new(Box::new(reader), schema)
+    ///     .with_row_count(RowCountHint::Exact(3));
+    ///
+    /// table.add_from_source(Box::new(source))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Multi-Stream Sources
+    ///
+    /// For sources that can provide multiple parallel streams (like PyArrow Datasets),
+    /// use [`MultiStreamDataSource`](crate::data_source::MultiStreamDataSource):
+    ///
+    /// ```
+    /// use lancedb::data_source::{MultiStreamDataSource, RowCountHint};
+    /// use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
+    /// use arrow_schema::{Schema, Field, DataType};
+    /// use std::sync::Arc;
+    ///
+    /// # use lancedb::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let schema = Arc::new(Schema::new(vec![
+    ///     Field::new("id", DataType::Int32, false),
+    /// ]));
+    ///
+    /// // Create a multi-stream source with 3 partitions
+    /// let mut source = MultiStreamDataSource::new(schema.clone());
+    /// for i in 0..3 {
+    ///     let schema_clone = schema.clone();
+    ///     source = source.add_stream(Box::new(move || {
+    ///         let batch = RecordBatch::try_new(
+    ///             schema_clone.clone(),
+    ///             vec![Arc::new(Int32Array::from(vec![i * 10]))],
+    ///         ).unwrap();
+    ///         let reader = RecordBatchIterator::new(
+    ///             vec![Ok(batch)],
+    ///             schema_clone,
+    ///         );
+    ///         Ok(Box::new(reader) as Box<dyn arrow_array::RecordBatchReader + Send>)
+    ///     }));
+    /// }
+    ///
+    /// table.add_from_source(Box::new(source.with_row_count(RowCountHint::Computed(3))))
+    ///     .target_partitions(2)  // Coalesce to 2 output files
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn add_from_source(&self, source: Box<dyn DataSource>) -> AddDataBuilder2 {
+        AddDataBuilder2 {
+            parent: self.inner.clone(),
+            source,
+            mode: AddDataMode::Append,
+            write_options: WriteOptions::default(),
+            embedding_registry: Some(self.embedding_registry.clone()),
+            target_partitions: None,
+            preprocessing_options: None,
         }
     }
 
@@ -3480,12 +3873,22 @@ impl BaseTable for NativeTable {
         input: Arc<dyn ExecutionPlan>,
         write_params: WriteParams,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        // Ensure the dataset is not in time travel mode
+        self.dataset.ensure_mutable().await?;
         Ok(Arc::new(self::datafusion::insert::InsertExec::new(
             self.dataset.clone(),
             Arc::new(self.dataset.get().await?.clone()),
             input,
             write_params,
         )))
+    }
+
+    async fn add_embedding_projection(
+        &self,
+        input: Arc<dyn ExecutionPlan>,
+        registry: Option<Arc<dyn EmbeddingRegistry>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.maybe_add_embedding_projection(input, registry).await
     }
 }
 

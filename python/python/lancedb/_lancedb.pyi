@@ -143,6 +143,11 @@ class Table:
         self,
         data: pa.RecordBatchReader,
         mode: Literal["append", "overwrite"],
+        row_count_hint: Optional[int] = None,
+        rescannable: bool = True,
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+        target_partitions: Optional[int] = None,
         embedding_registry: Optional[PyEmbeddingRegistry] = None,
     ) -> AddResult: ...
     async def update(

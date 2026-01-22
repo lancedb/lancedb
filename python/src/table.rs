@@ -10,14 +10,15 @@ use crate::{
     query::{Query, TakeQuery},
 };
 use arrow::{
+    array::RecordBatchReader,
     datatypes::{DataType, Schema},
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
 use lancedb::embeddings::EmbeddingRegistry;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions,
-    Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OnBadVectors, OptimizeAction,
+    OptimizeOptions, PreprocessingOptions, Table as LanceDbTable,
 };
 use pyo3::{
     exceptions::{PyKeyError, PyRuntimeError, PyValueError},
@@ -298,21 +299,78 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (data, mode, embedding_registry=None))]
+    #[pyo3(signature = (
+        data,
+        mode,
+        row_count_hint=None,
+        rescannable=true,
+        on_bad_vectors="error",
+        fill_value=0.0,
+        target_partitions=None,
+        embedding_registry=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: Bound<'_, PyAny>,
         mode: String,
+        row_count_hint: Option<usize>,
+        rescannable: bool,
+        on_bad_vectors: &str,
+        fill_value: f32,
+        target_partitions: Option<usize>,
         embedding_registry: Option<PyRef<'_, PyEmbeddingRegistry>>,
     ) -> PyResult<Bound<'a, PyAny>> {
+        use lancedb::data_source::{DataSourceMetadata, IntoArrowAdapter, RowCountHint};
+
         let batches = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
-        let mut op = self_.inner_ref()?.add(batches);
+        let schema = batches.schema();
+
+        // Build metadata from hints
+        let mut metadata = DataSourceMetadata::default();
+        if let Some(count) = row_count_hint {
+            metadata.row_count = Some(RowCountHint::UserHint(count));
+        }
+        metadata.rescannable = rescannable;
+
+        // Create the data source with metadata
+        let source =
+            Box::new(IntoArrowAdapter::new(Box::new(batches), schema).with_metadata(metadata));
+
+        let mut op = self_.inner_ref()?.add_from_source(source);
+
         if mode == "append" {
             op = op.mode(AddDataMode::Append);
         } else if mode == "overwrite" {
             op = op.mode(AddDataMode::Overwrite);
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
+        }
+
+        // Parse on_bad_vectors string to enum
+        let on_bad_vectors_enum = match on_bad_vectors {
+            "error" => OnBadVectors::Error,
+            "drop" => OnBadVectors::Drop,
+            "fill" => OnBadVectors::Fill,
+            "null" => OnBadVectors::Null,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid on_bad_vectors: {}. Valid values are: error, drop, fill, null",
+                    on_bad_vectors
+                )))
+            }
+        };
+
+        // Set preprocessing options
+        let preprocessing = PreprocessingOptions {
+            on_bad_vectors: on_bad_vectors_enum,
+            fill_value,
+            infer_vector_schema: true,
+        };
+        op = op.preprocessing(preprocessing);
+
+        if let Some(partitions) = target_partitions {
+            op = op.target_partitions(partitions);
         }
 
         // Clone registry for the async block if provided

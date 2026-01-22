@@ -197,6 +197,7 @@
 pub mod arrow;
 pub mod connection;
 pub mod data;
+pub mod data_source;
 pub mod database;
 pub mod dataloader;
 pub mod embeddings;
