@@ -547,8 +547,6 @@ class EmbeddingUdfConfig:
 def make_embedding_udf_handler(
     function, ndims: int, vector_column: str, source_column: str
 ):
-    if ndims > 2**31 - 1:
-        raise ValueError("ndims exceeds i32::MAX")
     dtype = pa.list_(pa.float32(), ndims)
     schema = pa.schema([pa.field(vector_column, dtype, nullable=True)])
 
