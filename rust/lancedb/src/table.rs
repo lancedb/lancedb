@@ -40,7 +40,7 @@ use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
-use lance_io::object_store::LanceNamespaceStorageOptionsProvider;
+use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
 use lance_namespace::models::{
     QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
     QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery,
@@ -1425,9 +1425,7 @@ impl Table {
             })
             .collect::<Vec<_>>();
 
-        let unioned = UnionExec::try_new(projected_plans).map_err(|e| Error::Runtime {
-            message: format!("Failed to build union plan: {e}"),
-        })?;
+        let unioned = Arc::new(UnionExec::new(projected_plans));
         // We require 1 partition in the final output
         let repartitioned = RepartitionExec::try_new(
             unioned,
@@ -1668,18 +1666,14 @@ impl NativeTable {
 
         // Use DatasetBuilder::from_namespace which automatically fetches location
         // and storage options from the namespace
-        let builder = DatasetBuilder::from_namespace(
-            namespace_client.clone(),
-            table_id,
-            false, // Don't ignore namespace storage options
-        )
-        .await
-        .map_err(|e| match e {
-            lance::Error::Namespace { source, .. } => Error::Runtime {
-                message: format!("Failed to get table info from namespace: {:?}", source),
-            },
-            source => Error::Lance { source },
-        })?;
+        let builder = DatasetBuilder::from_namespace(namespace_client.clone(), table_id)
+            .await
+            .map_err(|e| match e {
+                lance::Error::Namespace { source, .. } => Error::Runtime {
+                    message: format!("Failed to get table info from namespace: {:?}", source),
+                },
+                source => Error::Lance { source },
+            })?;
 
         let dataset = builder
             .with_read_params(params)
@@ -1883,7 +1877,13 @@ impl NativeTable {
         let store_params = params
             .store_params
             .get_or_insert_with(ObjectStoreParams::default);
-        store_params.storage_options_provider = Some(storage_options_provider);
+        let accessor = match store_params.storage_options().cloned() {
+            Some(options) => {
+                StorageOptionsAccessor::with_initial_and_provider(options, storage_options_provider)
+            }
+            None => StorageOptionsAccessor::with_provider(storage_options_provider),
+        };
+        store_params.storage_options_accessor = Some(Arc::new(accessor));
 
         // Patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
@@ -2349,7 +2349,7 @@ impl NativeTable {
                 };
 
                 // Convert select to columns list
-                let columns: Option<Box<QueryTableRequestColumns>> = match &vq.base.select {
+                let columns = match &vq.base.select {
                     Select::All => None,
                     Select::Columns(cols) => Some(Box::new(QueryTableRequestColumns {
                         column_names: Some(cols.clone()),
@@ -2407,7 +2407,6 @@ impl NativeTable {
                     with_row_id: Some(vq.base.with_row_id),
                     bypass_vector_index: Some(!vq.use_index),
                     full_text_query,
-                    version: None,
                     ..Default::default()
                 })
             }
@@ -2426,7 +2425,7 @@ impl NativeTable {
                     .map(|f| self.filter_to_sql(f))
                     .transpose()?;
 
-                let columns: Option<Box<QueryTableRequestColumns>> = match &q.select {
+                let columns = match &q.select {
                     Select::All => None,
                     Select::Columns(cols) => Some(Box::new(QueryTableRequestColumns {
                         column_names: Some(cols.clone()),
@@ -2470,18 +2469,10 @@ impl NativeTable {
                     columns,
                     prefilter: Some(q.prefilter),
                     offset: q.offset.map(|o| o as i32),
-                    ef: None,
-                    refine_factor: None,
-                    distance_type: None,
-                    nprobes: None,
                     vector_column: None, // No vector column for plain queries
                     with_row_id: Some(q.with_row_id),
                     bypass_vector_index: Some(true), // No vector index for plain queries
                     full_text_query,
-                    version: None,
-                    fast_search: None,
-                    lower_bound: None,
-                    upper_bound: None,
                     ..Default::default()
                 })
             }
@@ -3244,7 +3235,7 @@ impl BaseTable for NativeTable {
             .get()
             .await
             .ok()
-            .and_then(|dataset| dataset.storage_options().cloned())
+            .and_then(|dataset| dataset.initial_storage_options().cloned())
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
@@ -5154,15 +5145,16 @@ mod tests {
         let any_query = AnyQuery::VectorQuery(vq);
         let ns_request = table.convert_to_namespace_query(&any_query).unwrap();
 
-        let column_names = ns_request
-            .columns
-            .as_ref()
-            .and_then(|cols| cols.column_names.clone());
-
         assert_eq!(ns_request.k, 10);
         assert_eq!(ns_request.offset, Some(5));
         assert_eq!(ns_request.filter, Some("id > 0".to_string()));
-        assert_eq!(column_names, Some(vec!["id".to_string()]));
+        assert_eq!(
+            ns_request
+                .columns
+                .as_ref()
+                .and_then(|c| c.column_names.as_ref()),
+            Some(&vec!["id".to_string()])
+        );
         assert_eq!(ns_request.vector_column, Some("vector".to_string()));
         assert_eq!(ns_request.distance_type, Some("l2".to_string()));
         assert!(ns_request.vector.single_vector.is_some());
@@ -5199,16 +5191,17 @@ mod tests {
         let any_query = AnyQuery::Query(q);
         let ns_request = table.convert_to_namespace_query(&any_query).unwrap();
 
-        let column_names = ns_request
-            .columns
-            .as_ref()
-            .and_then(|cols| cols.column_names.clone());
-
         // Plain queries should pass an empty vector
         assert_eq!(ns_request.k, 20);
         assert_eq!(ns_request.offset, Some(5));
         assert_eq!(ns_request.filter, Some("id > 5".to_string()));
-        assert_eq!(column_names, Some(vec!["id".to_string()]));
+        assert_eq!(
+            ns_request
+                .columns
+                .as_ref()
+                .and_then(|c| c.column_names.as_ref()),
+            Some(&vec!["id".to_string()])
+        );
         assert_eq!(ns_request.with_row_id, Some(true));
         assert_eq!(ns_request.bypass_vector_index, Some(true));
         assert!(ns_request.vector_column.is_none()); // No vector column for plain queries

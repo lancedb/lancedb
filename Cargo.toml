@@ -15,39 +15,39 @@ categories = ["database-implementations"]
 rust-version = "1.78.0"
 
 [workspace.dependencies]
-lance = { "version" = "=2.0.0-beta.8", default-features = false, "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=2.0.0-beta.8", "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=2.0.0-beta.8", "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=2.0.0-beta.8", "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=2.0.0-beta.8", default-features = false, "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=2.0.0-beta.8", "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=2.0.0-beta.8", "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=2.0.0-beta.8", "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=2.0.0-beta.8", default-features = false, "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=2.0.0-beta.8", "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=2.0.0-beta.8", "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=2.0.0-beta.8", "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=2.0.0-beta.8", "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=2.0.0-beta.8", "tag" = "v2.0.0-beta.8", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=1.0.3", default-features = false, "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=1.0.3", "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=1.0.3", "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=1.0.3", "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=1.0.3", default-features = false, "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=1.0.3", "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=1.0.3", "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=1.0.3", "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=1.0.3", default-features = false, "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=1.0.3", "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=1.0.3", "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=1.0.3", "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=1.0.3", "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=1.0.3", "tag" = "v1.0.3", "git" = "https://github.com/lance-format/lance.git" }
 ahash = "0.8"
 # Note that this one does not include pyarrow
-arrow = { version = "57.2", optional = false }
-arrow-array = "57.2"
-arrow-data = "57.2"
-arrow-ipc = "57.2"
-arrow-ord = "57.2"
-arrow-schema = "57.2"
-arrow-select = "57.2"
-arrow-cast = "57.2"
+arrow = { version = "56.2", optional = false }
+arrow-array = "56.2"
+arrow-data = "56.2"
+arrow-ipc = "56.2"
+arrow-ord = "56.2"
+arrow-schema = "56.2"
+arrow-select = "56.2"
+arrow-cast = "56.2"
 async-trait = "0"
-datafusion = { version = "51.0", default-features = false }
-datafusion-catalog = "51.0"
-datafusion-common = { version = "51.0", default-features = false }
-datafusion-execution = "51.0"
-datafusion-expr = "51.0"
-datafusion-physical-plan = "51.0"
+datafusion = { version = "50.1", default-features = false }
+datafusion-catalog = "50.1"
+datafusion-common = { version = "50.1", default-features = false }
+datafusion-execution = "50.1"
+datafusion-expr = "50.1"
+datafusion-physical-plan = "50.1"
 env_logger = "0.11"
-half = { "version" = "2.7.1", default-features = false, features = [
+half = { "version" = "2.6.0", default-features = false, features = [
     "num-traits",
 ] }
 futures = "0"
@@ -59,7 +59,7 @@ rand = "0.9"
 snafu = "0.8"
 url = "2"
 num-traits = "0.2"
-regex = "1.12"
+regex = "1.10"
 lazy_static = "1"
 semver = "1.0.25"
 chrono = "0.4"

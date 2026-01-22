@@ -9,14 +9,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lance_namespace::{
     models::{
-        CreateNamespaceRequest, CreateNamespaceResponse, DeclareTableRequest,
-        DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
-        DropNamespaceRequest, DropNamespaceResponse, DropTableRequest, ListNamespacesRequest,
-        ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+        CreateEmptyTableRequest, CreateNamespaceRequest, CreateNamespaceResponse,
+        DeclareTableRequest, DescribeNamespaceRequest, DescribeNamespaceResponse,
+        DescribeTableRequest, DropNamespaceRequest, DropNamespaceResponse, DropTableRequest,
+        ListNamespacesRequest, ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
     },
     LanceNamespace,
 };
 use lance_namespace_impls::ConnectBuilder;
+use log::warn;
 
 use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
@@ -154,7 +155,6 @@ impl Database for LanceNamespaceDatabase {
         table_id.push(request.name.clone());
         let describe_request = DescribeTableRequest {
             id: Some(table_id.clone()),
-            version: None,
             ..Default::default()
         };
 
@@ -205,26 +205,53 @@ impl Database for LanceNamespaceDatabase {
         let mut table_id = request.namespace.clone();
         table_id.push(request.name.clone());
 
-        let create_empty_request = DeclareTableRequest {
+        // Try declare_table first, falling back to create_empty_table for backwards
+        // compatibility with older namespace clients that don't support declare_table
+        let declare_request = DeclareTableRequest {
             id: Some(table_id.clone()),
-            location: None,
-            vend_credentials: None,
             ..Default::default()
         };
 
-        let create_empty_response = self
-            .namespace
-            .declare_table(create_empty_request)
-            .await
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to declare table: {}", e),
-            })?;
+        let location = match self.namespace.declare_table(declare_request).await {
+            Ok(response) => response.location.ok_or_else(|| Error::Runtime {
+                message: "Table location is missing from declare_table response".to_string(),
+            })?,
+            Err(e) => {
+                // Check if the error is "not supported" and try create_empty_table as fallback
+                let err_str = e.to_string().to_lowercase();
+                if err_str.contains("not supported") || err_str.contains("not implemented") {
+                    warn!(
+                        "declare_table is not supported by the namespace client, \
+                        falling back to deprecated create_empty_table. \
+                        create_empty_table is deprecated and will be removed in Lance 3.0.0. \
+                        Please upgrade your namespace client to support declare_table."
+                    );
+                    #[allow(deprecated)]
+                    let create_empty_request = CreateEmptyTableRequest {
+                        id: Some(table_id.clone()),
+                        ..Default::default()
+                    };
 
-        let location = create_empty_response
-            .location
-            .ok_or_else(|| Error::Runtime {
-                message: "Table location is missing from create_empty_table response".to_string(),
-            })?;
+                    #[allow(deprecated)]
+                    let create_response = self
+                        .namespace
+                        .create_empty_table(create_empty_request)
+                        .await
+                        .map_err(|e| Error::Runtime {
+                            message: format!("Failed to create empty table: {}", e),
+                        })?;
+
+                    create_response.location.ok_or_else(|| Error::Runtime {
+                        message: "Table location is missing from create_empty_table response"
+                            .to_string(),
+                    })?
+                } else {
+                    return Err(Error::Runtime {
+                        message: format!("Failed to declare table: {}", e),
+                    });
+                }
+            }
+        };
 
         let native_table = NativeTable::create_from_namespace(
             self.namespace.clone(),
@@ -439,8 +466,6 @@ mod tests {
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
             id: Some(vec!["test_ns".into()]),
-            mode: None,
-            properties: None,
             ..Default::default()
         })
         .await
@@ -501,8 +526,6 @@ mod tests {
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
             id: Some(vec!["test_ns".into()]),
-            mode: None,
-            properties: None,
             ..Default::default()
         })
         .await
@@ -566,8 +589,6 @@ mod tests {
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
             id: Some(vec!["test_ns".into()]),
-            mode: None,
-            properties: None,
             ..Default::default()
         })
         .await
@@ -651,8 +672,6 @@ mod tests {
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
             id: Some(vec!["test_ns".into()]),
-            mode: None,
-            properties: None,
             ..Default::default()
         })
         .await
@@ -708,8 +727,6 @@ mod tests {
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
             id: Some(vec!["test_ns".into()]),
-            mode: None,
-            properties: None,
             ..Default::default()
         })
         .await
@@ -790,8 +807,6 @@ mod tests {
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
             id: Some(vec!["test_ns".into()]),
-            mode: None,
-            properties: None,
             ..Default::default()
         })
         .await
@@ -825,8 +840,6 @@ mod tests {
         // Create a child namespace first
         conn.create_namespace(CreateNamespaceRequest {
             id: Some(vec!["test_ns".into()]),
-            mode: None,
-            properties: None,
             ..Default::default()
         })
         .await

@@ -2,10 +2,25 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from datetime import timedelta
+
 from lancedb.db import AsyncConnection, DBConnection
 import lancedb
 import pytest
 import pytest_asyncio
+
+
+def pandas_string_type():
+    """Return the PyArrow string type that pandas uses for string columns.
+
+    pandas 3.0+ uses large_string for string columns, pandas 2.x uses string.
+    """
+    import pandas as pd
+    import pyarrow as pa
+
+    version = tuple(int(x) for x in pd.__version__.split(".")[:2])
+    if version >= (3, 0):
+        return pa.large_utf8()
+    return pa.utf8()
 
 
 # Use an in-memory database for most tests.

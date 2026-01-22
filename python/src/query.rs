@@ -29,7 +29,6 @@ use pyo3::types::PyList;
 use pyo3::types::{PyDict, PyString};
 use pyo3::Bound;
 use pyo3::IntoPyObject;
-use pyo3::Py;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
@@ -454,12 +453,7 @@ impl Query {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            #[allow(deprecated)]
-            let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-                let bound = schema.to_pyarrow(py)?;
-                Ok(bound.unbind())
-            })?;
-            Ok(py_obj)
+            Python::with_gil(|py| schema.to_pyarrow(py))
         })
     }
 
@@ -538,12 +532,7 @@ impl TakeQuery {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            #[allow(deprecated)]
-            let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-                let bound = schema.to_pyarrow(py)?;
-                Ok(bound.unbind())
-            })?;
-            Ok(py_obj)
+            Python::with_gil(|py| schema.to_pyarrow(py))
         })
     }
 
@@ -638,12 +627,7 @@ impl FTSQuery {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            #[allow(deprecated)]
-            let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-                let bound = schema.to_pyarrow(py)?;
-                Ok(bound.unbind())
-            })?;
-            Ok(py_obj)
+            Python::with_gil(|py| schema.to_pyarrow(py))
         })
     }
 
@@ -822,12 +806,7 @@ impl VectorQuery {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            #[allow(deprecated)]
-            let py_obj: Py<PyAny> = Python::with_gil(|py| -> PyResult<Py<PyAny>> {
-                let bound = schema.to_pyarrow(py)?;
-                Ok(bound.unbind())
-            })?;
-            Ok(py_obj)
+            Python::with_gil(|py| schema.to_pyarrow(py))
         })
     }
 
