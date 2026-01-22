@@ -10,10 +10,11 @@ from .pydantic import LanceModel, model_to_dict
 
 @dataclass
 class SourceData:
+    schema: pa.Schema
     num_rows: Optional[int]
     # Factory function to create a new reader each time (supports re-scanning)
     reader: Callable[[], pa.RecordBatchReader]
-    # Whether this source can be re-read (False for streaming sources)
+    # Whether calling reader() multiple times yields fresh data
     rescannable: bool = True
 
 
@@ -31,12 +32,15 @@ def to_source_data(data) -> SourceData:
 @to_source_data.register(pa.RecordBatchReader)
 def _from_reader(data: pa.RecordBatchReader) -> SourceData:
     # RecordBatchReader can only be consumed once - not rescannable
-    return SourceData(num_rows=None, reader=lambda: data, rescannable=False)
+    return SourceData(
+        schema=data.schema, num_rows=None, reader=lambda: data, rescannable=False
+    )
 
 
 @to_source_data.register(pa.RecordBatch)
 def _from_batch(data: pa.RecordBatch) -> SourceData:
     return SourceData(
+        schema=data.schema,
         num_rows=data.num_rows,
         reader=lambda: pa.RecordBatchReader.from_batches(data.schema, [data]),
     )
@@ -44,20 +48,27 @@ def _from_batch(data: pa.RecordBatch) -> SourceData:
 
 @to_source_data.register(pa.Table)
 def _from_table(data: pa.Table) -> SourceData:
-    return SourceData(num_rows=data.num_rows, reader=data.to_reader)
+    return SourceData(schema=data.schema, num_rows=data.num_rows, reader=data.to_reader)
 
 
 @to_source_data.register(ds.Dataset)
 def _from_dataset(data: ds.Dataset) -> SourceData:
     return SourceData(
-        num_rows=data.count_rows(), reader=lambda: data.scanner().to_reader()
+        schema=data.schema,
+        num_rows=data.count_rows(),
+        reader=lambda: data.scanner().to_reader(),
     )
 
 
 @to_source_data.register(ds.Scanner)
 def _from_scanner(data: ds.Scanner) -> SourceData:
     # Scanner can only be consumed once - not rescannable
-    return SourceData(num_rows=None, reader=data.to_reader, rescannable=False)
+    return SourceData(
+        schema=data.projected_schema,
+        num_rows=None,
+        reader=data.to_reader,
+        rescannable=False,
+    )
 
 
 # --- Python builtins ---
@@ -73,16 +84,20 @@ def _from_list(data: list) -> SourceData:
         schema = data[0].__class__.to_arrow_schema()
         dicts = [model_to_dict(d) for d in data]
         table = pa.Table.from_pylist(dicts, schema=schema)
-        return SourceData(num_rows=len(data), reader=table.to_reader)
+        return SourceData(
+            schema=table.schema, num_rows=len(data), reader=table.to_reader
+        )
 
     # Handle list of RecordBatches
     if isinstance(data[0], pa.RecordBatch):
         table = pa.Table.from_batches(data)
-        return SourceData(num_rows=table.num_rows, reader=table.to_reader)
+        return SourceData(
+            schema=table.schema, num_rows=table.num_rows, reader=table.to_reader
+        )
 
     # Handle list of dicts (most common case)
     table = pa.Table.from_pylist(data)
-    return SourceData(num_rows=len(data), reader=table.to_reader)
+    return SourceData(schema=table.schema, num_rows=len(data), reader=table.to_reader)
 
 
 @to_source_data.register(dict)
@@ -93,7 +108,9 @@ def _from_dict(data: dict) -> SourceData:
 def _from_iterable(data: Iterator) -> SourceData:
     # Consume iterator into table (no row count hint)
     table = pa.Table.from_pylist(list(data))
-    return SourceData(num_rows=table.num_rows, reader=table.to_reader)
+    return SourceData(
+        schema=table.schema, num_rows=table.num_rows, reader=table.to_reader
+    )
 
 
 # --- Lazy registration for optional dependencies ---
@@ -113,7 +130,9 @@ def _register_optional_converters():
             # Remove pandas metadata to avoid schema conflicts
             table = pa.Table.from_pandas(data, preserve_index=False)
             table = table.replace_schema_metadata(None)
-            return SourceData(num_rows=len(data), reader=table.to_reader)
+            return SourceData(
+                schema=table.schema, num_rows=len(data), reader=table.to_reader
+            )
 
     if "polars" in sys.modules and "polars" not in _registered_modules:
         _registered_modules.add("polars")
@@ -122,12 +141,16 @@ def _register_optional_converters():
         @to_source_data.register(pl.DataFrame)
         def _from_polars(data: pl.DataFrame) -> SourceData:
             arrow = data.to_arrow()
-            return SourceData(num_rows=len(data), reader=arrow.to_reader)
+            return SourceData(
+                schema=arrow.schema, num_rows=len(data), reader=arrow.to_reader
+            )
 
         @to_source_data.register(pl.LazyFrame)
         def _from_polars_lazy(data: pl.LazyFrame) -> SourceData:
             arrow = data.collect().to_arrow()
-            return SourceData(num_rows=arrow.num_rows, reader=arrow.to_reader)
+            return SourceData(
+                schema=arrow.schema, num_rows=arrow.num_rows, reader=arrow.to_reader
+            )
 
     if "datasets" in sys.modules and "datasets" not in _registered_modules:
         _registered_modules.add("datasets")
@@ -137,7 +160,9 @@ def _register_optional_converters():
         @to_source_data.register(HFDataset)
         def _from_hf_dataset(data: HFDataset) -> SourceData:
             table = data.data.table  # Access underlying Arrow table
-            return SourceData(num_rows=len(data), reader=table.to_reader)
+            return SourceData(
+                schema=table.schema, num_rows=len(data), reader=table.to_reader
+            )
 
         @to_source_data.register(HFDatasetDict)
         def _from_hf_dataset_dict(data: HFDatasetDict) -> SourceData:
@@ -158,6 +183,7 @@ def _register_optional_converters():
 
             total_rows = sum(len(dataset) for dataset in data.values())
             return SourceData(
+                schema=schema,
                 num_rows=total_rows,
                 reader=lambda: pa.RecordBatchReader.from_batches(schema, gen()),
             )
@@ -169,7 +195,9 @@ def _register_optional_converters():
         @to_source_data.register(lance.LanceDataset)
         def _from_lance(data: lance.LanceDataset) -> SourceData:
             return SourceData(
-                num_rows=data.count_rows(), reader=lambda: data.scanner().to_reader()
+                schema=data.schema,
+                num_rows=data.count_rows(),
+                reader=lambda: data.scanner().to_reader(),
             )
 
 

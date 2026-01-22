@@ -16,6 +16,9 @@ crate-type = ["cdylib"]
 [dependencies]
 arrow = { version = "57.2", features = ["pyarrow"] }
 async-trait = "0.1"
+datafusion-common.workspace = true
+datafusion-execution.workspace = true
+datafusion-physical-plan.workspace = true
 lancedb = { path = "../rust/lancedb", default-features = false }
 lance-core.workspace = true
 lance-namespace.workspace = true

@@ -5013,6 +5013,9 @@ version = "0.26.1"
 dependencies = [
  "arrow",
  "async-trait",
+ "datafusion-common",
+ "datafusion-execution",
+ "datafusion-physical-plan",
  "env_logger",
  "futures",
  "lance-core",

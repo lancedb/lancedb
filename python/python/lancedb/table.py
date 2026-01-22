@@ -3751,10 +3751,11 @@ class AsyncTable:
 
         # Rust handles schema casting (List -> FixedSizeList, type casts, etc.)
         return await self._inner.add(
-            source.reader(),
+            source.reader,
+            source.schema,
             mode or "append",
             source.num_rows,  # row_count_hint
-            source.rescannable,  # whether source can be re-read
+            source.rescannable,
             on_bad_vectors or "error",  # passed to Rust PreprocessingExec
             fill_value if fill_value is not None else 0.0,  # fill value for bad vectors
             None,  # target_partitions (use default)

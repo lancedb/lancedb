@@ -1,5 +1,5 @@
 from datetime import timedelta
-from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
+from typing import Callable, Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
 
 import pyarrow as pa
 
@@ -141,7 +141,8 @@ class Table:
     async def schema(self) -> pa.Schema: ...
     async def add(
         self,
-        data: pa.RecordBatchReader,
+        reader_factory: Callable[[], pa.RecordBatchReader],
+        schema: pa.Schema,
         mode: Literal["append", "overwrite"],
         row_count_hint: Optional[int] = None,
         rescannable: bool = True,

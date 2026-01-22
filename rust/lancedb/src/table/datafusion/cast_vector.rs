@@ -12,13 +12,11 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use arrow::buffer::NullBuffer;
-use arrow_array::{
-    new_null_array, Array, ArrayRef, FixedSizeListArray, Float32Array, ListArray,
-};
+use arrow::buffer::OffsetBuffer;
+use arrow_array::{new_null_array, Array, ArrayRef, FixedSizeListArray, Float32Array, ListArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion_common::{exec_err, DataFusionError, Result as DataFusionResult};
 use datafusion_expr::ColumnarValue;
-use arrow::buffer::OffsetBuffer;
 use datafusion_physical_plan::expressions::{cast, Column};
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
@@ -137,10 +135,7 @@ impl CastToFixedSizeListExpr {
     fn contains_nan(array: &ArrayRef) -> bool {
         if let Some(float_arr) = array.as_any().downcast_ref::<Float32Array>() {
             float_arr.values().iter().any(|v| v.is_nan())
-        } else if let Some(float_arr) = array
-            .as_any()
-            .downcast_ref::<arrow_array::Float64Array>()
-        {
+        } else if let Some(float_arr) = array.as_any().downcast_ref::<arrow_array::Float64Array>() {
             float_arr.values().iter().any(|v| v.is_nan())
         } else {
             false
@@ -196,11 +191,7 @@ impl CastToFixedSizeListExpr {
 
 impl std::fmt::Display for CastToFixedSizeListExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "cast_to_fsl({}, dim={})",
-            self.source, self.dimension
-        )
+        write!(f, "cast_to_fsl({}, dim={})", self.source, self.dimension)
     }
 }
 
@@ -257,9 +248,7 @@ impl PhysicalExpr for CastToFixedSizeListExpr {
                 let list_array = source_array
                     .as_any()
                     .downcast_ref::<ListArray>()
-                    .ok_or_else(|| {
-                        DataFusionError::Internal("Expected ListArray".to_string())
-                    })?;
+                    .ok_or_else(|| DataFusionError::Internal("Expected ListArray".to_string()))?;
                 Arc::new(self.list_to_fsl(list_array)?)
             }
             DataType::LargeList(_) => {
@@ -366,24 +355,27 @@ pub fn create_schema_cast_projection(
 
         let input_col: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field_name, idx));
 
-        let expr: Arc<dyn PhysicalExpr> =
-            if input_field.data_type() == target_field.data_type() {
-                // No conversion needed
-                input_col
-            } else if needs_fsl_conversion(input_field.data_type(), target_field.data_type()) {
-                // Use CastToFixedSizeListExpr for List → FixedSizeList
-                Arc::new(CastToFixedSizeListExpr::try_new_from_target_type(
-                    input_col,
-                    target_field.data_type(),
-                )?)
-            } else if is_compatible_subset(input_field.data_type(), target_field.data_type()) {
-                // Input is a compatible subset of target (e.g., struct with fewer fields)
-                // Lance will handle adding missing fields with null values
-                input_col
-            } else {
-                // Use standard CAST for other type conversions
-                cast(input_col, input_schema.as_ref(), target_field.data_type().clone())?
-            };
+        let expr: Arc<dyn PhysicalExpr> = if input_field.data_type() == target_field.data_type() {
+            // No conversion needed
+            input_col
+        } else if needs_fsl_conversion(input_field.data_type(), target_field.data_type()) {
+            // Use CastToFixedSizeListExpr for List → FixedSizeList
+            Arc::new(CastToFixedSizeListExpr::try_new_from_target_type(
+                input_col,
+                target_field.data_type(),
+            )?)
+        } else if is_compatible_subset(input_field.data_type(), target_field.data_type()) {
+            // Input is a compatible subset of target (e.g., struct with fewer fields)
+            // Lance will handle adding missing fields with null values
+            input_col
+        } else {
+            // Use standard CAST for other type conversions
+            cast(
+                input_col,
+                input_schema.as_ref(),
+                target_field.data_type().clone(),
+            )?
+        };
 
         exprs.push((expr, field_name.clone()));
     }
@@ -445,8 +437,7 @@ fn is_compatible_subset(from: &DataType, to: &DataType) -> bool {
             DataType::FixedSizeList(from_field, from_dim),
             DataType::FixedSizeList(to_field, to_dim),
         ) => {
-            from_dim == to_dim
-                && is_compatible_subset(from_field.data_type(), to_field.data_type())
+            from_dim == to_dim && is_compatible_subset(from_field.data_type(), to_field.data_type())
         }
         // Other types: not a subset relationship
         _ => false,
@@ -464,9 +455,10 @@ fn needs_fsl_conversion(from: &DataType, to: &DataType) -> bool {
         (DataType::List(_), DataType::FixedSizeList(_, _)) => true,
         (DataType::LargeList(_), DataType::FixedSizeList(_, _)) => true,
         // FSL to FSL with different inner types or dimensions
-        (DataType::FixedSizeList(from_field, from_dim), DataType::FixedSizeList(to_field, to_dim)) => {
-            from_field.data_type() != to_field.data_type() || from_dim != to_dim
-        }
+        (
+            DataType::FixedSizeList(from_field, from_dim),
+            DataType::FixedSizeList(to_field, to_dim),
+        ) => from_field.data_type() != to_field.data_type() || from_dim != to_dim,
         _ => false,
     }
 }
@@ -503,11 +495,8 @@ mod tests {
             Some(vec![7.0, 8.0, 9.0]),
         ]);
 
-        let expr = CastToFixedSizeListExpr::new(
-            Arc::new(Column::new("test", 0)),
-            3,
-            DataType::Float32,
-        );
+        let expr =
+            CastToFixedSizeListExpr::new(Arc::new(Column::new("test", 0)), 3, DataType::Float32);
 
         let result = expr.list_to_fsl(&list_array).unwrap();
 
@@ -526,11 +515,8 @@ mod tests {
             Some(vec![7.0, 8.0, 9.0]),
         ]);
 
-        let expr = CastToFixedSizeListExpr::new(
-            Arc::new(Column::new("test", 0)),
-            3,
-            DataType::Float32,
-        );
+        let expr =
+            CastToFixedSizeListExpr::new(Arc::new(Column::new("test", 0)), 3, DataType::Float32);
 
         let result = expr.list_to_fsl(&list_array).unwrap();
 
@@ -548,11 +534,8 @@ mod tests {
             Some(vec![7.0, 8.0, 9.0]),
         ]);
 
-        let expr = CastToFixedSizeListExpr::new(
-            Arc::new(Column::new("test", 0)),
-            3,
-            DataType::Float32,
-        );
+        let expr =
+            CastToFixedSizeListExpr::new(Arc::new(Column::new("test", 0)), 3, DataType::Float32);
 
         let result = expr.list_to_fsl(&list_array).unwrap();
 
@@ -570,11 +553,8 @@ mod tests {
             Some(vec![7.0, 8.0, 9.0]),
         ]);
 
-        let expr = CastToFixedSizeListExpr::new(
-            Arc::new(Column::new("test", 0)),
-            3,
-            DataType::Float32,
-        );
+        let expr =
+            CastToFixedSizeListExpr::new(Arc::new(Column::new("test", 0)), 3, DataType::Float32);
 
         let result = expr.list_to_fsl(&list_array).unwrap();
 

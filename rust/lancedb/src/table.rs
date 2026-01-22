@@ -57,7 +57,7 @@ use std::sync::Arc;
 
 use crate::arrow::IntoArrow;
 use crate::connection::NoData;
-use crate::data_source::{DataSource, DataSourceMetadata};
+use crate::data_source::SourceData;
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry, WithEmbeddings};
 use crate::error::{Error, Result};
@@ -343,16 +343,57 @@ const DEFAULT_TARGET_PARTITION_SIZE: usize = 128 * 1024 * 1024;
 /// Default estimated row size when actual size is unknown (1 KB).
 const DEFAULT_ESTIMATED_ROW_SIZE: usize = 1024;
 
+/// A batch generator that yields batches from a Vec.
+struct VecBatchGenerator {
+    batches: std::sync::Mutex<Option<Vec<arrow_array::RecordBatch>>>,
+    schema: SchemaRef,
+}
+
+impl std::fmt::Debug for VecBatchGenerator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VecBatchGenerator")
+            .field("schema", &self.schema)
+            .finish()
+    }
+}
+
+impl std::fmt::Display for VecBatchGenerator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "VecBatchGenerator")
+    }
+}
+
+impl datafusion_physical_plan::memory::LazyBatchGenerator for VecBatchGenerator {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn generate_next_batch(
+        &mut self,
+    ) -> datafusion_common::Result<Option<arrow_array::RecordBatch>> {
+        let mut guard = self.batches.lock().unwrap();
+        if let Some(batches) = guard.as_mut() {
+            if batches.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(batches.remove(0)))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 /// A builder for configuring a [`Table::add_from_source`] operation with full metadata support.
 ///
 /// This builder extends [`AddDataBuilder`] by supporting data sources that provide metadata
-/// about their capabilities (row count, parallelism, rescannability). This metadata enables
-/// the insert pipeline to make better decisions about write parallelism.
+/// about their capabilities (row count, rescannability). This metadata enables the insert
+/// pipeline to make better decisions about write parallelism.
 ///
 /// # Example
 ///
 /// ```
-/// use lancedb::data_source::{IntoArrowAdapter, RowCountHint};
+/// use lancedb::data_source::ReaderWithMetadata;
 /// use arrow_array::{RecordBatch, RecordBatchIterator};
 /// use arrow_schema::{Schema, Field, DataType};
 /// use std::sync::Arc;
@@ -365,8 +406,8 @@ const DEFAULT_ESTIMATED_ROW_SIZE: usize = 1024;
 /// let reader = RecordBatchIterator::new(vec![].into_iter(), schema.clone());
 ///
 /// // Create a data source with metadata hints
-/// let source = IntoArrowAdapter::new(Box::new(reader), schema)
-///     .with_row_count(RowCountHint::Exact(10000));
+/// let source = ReaderWithMetadata::new(Box::new(reader), schema)
+///     .with_num_rows(10000);
 ///
 /// // Insert with automatic partition optimization
 /// table.add_from_source(Box::new(source))
@@ -379,7 +420,7 @@ pub use self::datafusion::preprocessing::{OnBadVectors, PreprocessingOptions};
 
 pub struct AddDataBuilder2 {
     parent: Arc<dyn BaseTable>,
-    source: Box<dyn DataSource>,
+    source: Box<dyn SourceData>,
     mode: AddDataMode,
     write_options: WriteOptions,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
@@ -451,7 +492,7 @@ impl AddDataBuilder2 {
     ///
     /// ```
     /// use lancedb::table::{PreprocessingOptions, OnBadVectors};
-    /// use lancedb::data_source::IntoArrowAdapter;
+    /// use lancedb::data_source::ReaderWithMetadata;
     /// use arrow_array::RecordBatchIterator;
     /// use arrow_schema::{Schema, Field, DataType};
     /// use std::sync::Arc;
@@ -462,7 +503,7 @@ impl AddDataBuilder2 {
     ///     Field::new("id", DataType::Int32, false),
     /// ]));
     /// let reader = RecordBatchIterator::new(vec![].into_iter(), schema.clone());
-    /// let source = IntoArrowAdapter::new(Box::new(reader), schema);
+    /// let source = ReaderWithMetadata::new(Box::new(reader), schema);
     ///
     /// // Drop rows with bad vectors instead of erroring
     /// let preprocessing = PreprocessingOptions {
@@ -482,35 +523,56 @@ impl AddDataBuilder2 {
         self
     }
 
-    /// Compute the optimal number of partitions based on source metadata.
-    fn compute_optimal_partitions(metadata: &DataSourceMetadata) -> usize {
-        match &metadata.row_count {
-            Some(hint) if hint.is_reliable() => {
-                let rows = hint.value();
+    /// Compute the optimal number of partitions based on row count hint.
+    fn compute_optimal_partitions(num_rows: Option<usize>) -> usize {
+        match num_rows {
+            Some(rows) => {
                 let estimated_bytes = rows * DEFAULT_ESTIMATED_ROW_SIZE;
-                let computed = (estimated_bytes / DEFAULT_TARGET_PARTITION_SIZE).max(1);
-                // Don't exceed the number of available streams
-                computed.min(metadata.num_streams.max(1))
+                (estimated_bytes / DEFAULT_TARGET_PARTITION_SIZE).max(1)
             }
-            _ => {
-                // Without row count, use the number of streams (at least 1)
-                metadata.num_streams.max(1)
-            }
+            None => 1, // Default to single partition without row count
         }
     }
 
     /// Execute the add operation.
     pub async fn execute(self) -> Result<AddResult> {
         use datafusion_execution::TaskContext;
+        use datafusion_physical_plan::memory::{LazyBatchGenerator, LazyMemoryExec};
         use datafusion_physical_plan::ExecutionPlanProperties;
+        use parking_lot::RwLock;
+        use std::sync::Mutex;
 
-        let metadata = self.source.metadata();
+        let num_rows = self.source.num_rows();
         let target_partitions = self
             .target_partitions
-            .unwrap_or_else(|| Self::compute_optimal_partitions(&metadata));
+            .unwrap_or_else(|| Self::compute_optimal_partitions(num_rows));
 
-        // Convert source to execution plan
-        let mut input_plan = self.source.into_execution_plan()?;
+        // Convert source to execution plan via stream
+        let schema = self.source.schema();
+        let stream = self.source.read()?;
+        let batches: Vec<_> = stream.collect::<Vec<_>>().await;
+        let batches: Result<Vec<_>> = batches
+            .into_iter()
+            .map(|r| {
+                r.map_err(|e| Error::Runtime {
+                    message: e.to_string(),
+                })
+            })
+            .collect();
+        let batches = batches?;
+
+        // Create a LazyMemoryExec from the collected batches
+        let generator = VecBatchGenerator {
+            batches: Mutex::new(Some(batches)),
+            schema: schema.clone(),
+        };
+        let generators: Vec<Arc<RwLock<dyn LazyBatchGenerator>>> =
+            vec![Arc::new(RwLock::new(generator))];
+        let mut input_plan: Arc<dyn ExecutionPlan> = Arc::new(
+            LazyMemoryExec::try_new(schema, generators).map_err(|e| Error::Runtime {
+                message: format!("Failed to create memory exec: {}", e),
+            })?,
+        );
 
         // Add embedding projection if the table has embedding columns
         input_plan = self
@@ -1120,18 +1182,47 @@ impl Table {
     /// Insert new records from a data source with metadata support.
     ///
     /// This method extends [`Self::add`] by accepting data sources that can provide
-    /// metadata about their capabilities (row count, parallelism, rescannability).
-    /// This metadata enables the insert pipeline to make better decisions about
-    /// write parallelism and partitioning.
+    /// metadata about their capabilities (row count, rescannability). This metadata
+    /// enables the insert pipeline to make better decisions about write parallelism
+    /// and partitioning.
     ///
     /// # Arguments
     ///
-    /// * `source` - A data source implementing [`DataSource`]
+    /// * `source` - A data source implementing [`SourceData`](crate::data_source::SourceData)
     ///
     /// # Example
     ///
     /// ```
-    /// use lancedb::data_source::{IntoArrowAdapter, RowCountHint, DataSourceMetadata};
+    /// use lancedb::data_source::{SourceData, ReaderWithMetadata};
+    /// use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
+    /// use arrow_schema::{Schema, Field, DataType};
+    /// use std::sync::Arc;
+    ///
+    /// # use lancedb::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let schema = Arc::new(Schema::new(vec![
+    ///     Field::new("id", DataType::Int32, false),
+    /// ]));
+    /// let batch = RecordBatch::try_new(
+    ///     schema.clone(),
+    ///     vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+    /// )?;
+    ///
+    /// // RecordBatch implements SourceData directly with exact row count
+    /// table.add_from_source(Box::new(batch))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Using ReaderWithMetadata
+    ///
+    /// For streaming sources where you know the row count upfront, use
+    /// [`ReaderWithMetadata`](crate::data_source::ReaderWithMetadata):
+    ///
+    /// ```
+    /// use lancedb::data_source::ReaderWithMetadata;
     /// use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     /// use arrow_schema::{Schema, Field, DataType};
     /// use std::sync::Arc;
@@ -1147,9 +1238,9 @@ impl Table {
     /// )?;
     /// let reader = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
     ///
-    /// // Create a data source with metadata for optimal partitioning
-    /// let source = IntoArrowAdapter::new(Box::new(reader), schema)
-    ///     .with_row_count(RowCountHint::Exact(3));
+    /// // Wrap reader with known row count for better partitioning
+    /// let source = ReaderWithMetadata::new(Box::new(reader), schema)
+    ///     .with_num_rows(3);
     ///
     /// table.add_from_source(Box::new(source))
     ///     .execute()
@@ -1157,49 +1248,7 @@ impl Table {
     /// # Ok(())
     /// # }
     /// ```
-    ///
-    /// # Multi-Stream Sources
-    ///
-    /// For sources that can provide multiple parallel streams (like PyArrow Datasets),
-    /// use [`MultiStreamDataSource`](crate::data_source::MultiStreamDataSource):
-    ///
-    /// ```
-    /// use lancedb::data_source::{MultiStreamDataSource, RowCountHint};
-    /// use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
-    /// use arrow_schema::{Schema, Field, DataType};
-    /// use std::sync::Arc;
-    ///
-    /// # use lancedb::Table;
-    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
-    /// let schema = Arc::new(Schema::new(vec![
-    ///     Field::new("id", DataType::Int32, false),
-    /// ]));
-    ///
-    /// // Create a multi-stream source with 3 partitions
-    /// let mut source = MultiStreamDataSource::new(schema.clone());
-    /// for i in 0..3 {
-    ///     let schema_clone = schema.clone();
-    ///     source = source.add_stream(Box::new(move || {
-    ///         let batch = RecordBatch::try_new(
-    ///             schema_clone.clone(),
-    ///             vec![Arc::new(Int32Array::from(vec![i * 10]))],
-    ///         ).unwrap();
-    ///         let reader = RecordBatchIterator::new(
-    ///             vec![Ok(batch)],
-    ///             schema_clone,
-    ///         );
-    ///         Ok(Box::new(reader) as Box<dyn arrow_array::RecordBatchReader + Send>)
-    ///     }));
-    /// }
-    ///
-    /// table.add_from_source(Box::new(source.with_row_count(RowCountHint::Computed(3))))
-    ///     .target_partitions(2)  // Coalesce to 2 output files
-    ///     .execute()
-    ///     .await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn add_from_source(&self, source: Box<dyn DataSource>) -> AddDataBuilder2 {
+    pub fn add_from_source(&self, source: Box<dyn SourceData>) -> AddDataBuilder2 {
         AddDataBuilder2 {
             parent: self.inner.clone(),
             source,
@@ -5236,7 +5285,7 @@ mod tests {
 
             let conn1 = ConnectBuilder::new(uri).execute().await.unwrap();
             let table1 = conn1
-                .create_empty_table("my_table", data.schema())
+                .create_empty_table("my_table", RecordBatchReader::schema(&data))
                 .execute()
                 .await
                 .unwrap();

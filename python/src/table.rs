@@ -10,11 +10,14 @@ use crate::{
     query::{Query, TakeQuery},
 };
 use arrow::{
-    array::RecordBatchReader,
-    datatypes::{DataType, Schema},
+    datatypes::{DataType, Schema, SchemaRef},
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
+use datafusion_common::exec_datafusion_err;
+use datafusion_execution::SendableRecordBatchStream;
+use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+use lancedb::data_source::SourceData;
 use lancedb::embeddings::EmbeddingRegistry;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OnBadVectors, OptimizeAction,
@@ -27,6 +30,72 @@ use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
+
+/// Adapter that implements SourceData for a Python reader factory callable.
+///
+/// This holds a Python callable that returns a RecordBatchReader when called.
+/// For rescannable sources, the callable can be invoked multiple times to
+/// get fresh readers.
+struct PySourceData {
+    /// Python callable that returns a RecordBatchReader
+    reader_factory: Py<PyAny>,
+    schema: SchemaRef,
+    num_rows: Option<usize>,
+    rescannable: bool,
+}
+
+impl std::fmt::Debug for PySourceData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PySourceData")
+            .field("schema", &self.schema)
+            .field("num_rows", &self.num_rows)
+            .field("rescannable", &self.rescannable)
+            .finish()
+    }
+}
+
+impl SourceData for PySourceData {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn read(self: Box<Self>) -> lancedb::Result<SendableRecordBatchStream> {
+        // Call the Python factory to get a reader
+        let reader: ArrowArrayStreamReader =
+            Python::with_gil(|py| -> Result<ArrowArrayStreamReader, lancedb::Error> {
+                let result =
+                    self.reader_factory
+                        .call0(py)
+                        .map_err(|e| lancedb::Error::Runtime {
+                            message: format!("Python reader factory failed: {}", e),
+                        })?;
+                ArrowArrayStreamReader::from_pyarrow_bound(result.bind(py)).map_err(|e| {
+                    lancedb::Error::Runtime {
+                        message: format!("Failed to create Arrow reader from Python: {}", e),
+                    }
+                })
+            })?;
+
+        let schema = self.schema.clone();
+        // Create a lazy stream that pulls batches on demand
+        let stream = futures::stream::unfold(reader, |mut reader| async move {
+            match reader.next() {
+                Some(Ok(batch)) => Some((Ok(batch), reader)),
+                Some(Err(e)) => Some((Err(exec_datafusion_err!("Arrow error: {}", e)), reader)),
+                None => None,
+            }
+        });
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+    }
+
+    fn num_rows(&self) -> Option<usize> {
+        self.num_rows
+    }
+
+    fn rescannable(&self) -> bool {
+        self.rescannable
+    }
+}
 
 /// Statistics about a compaction operation.
 #[pyclass(get_all)]
@@ -300,7 +369,8 @@ impl Table {
     }
 
     #[pyo3(signature = (
-        data,
+        reader_factory,
+        schema,
         mode,
         row_count_hint=None,
         rescannable=true,
@@ -312,7 +382,8 @@ impl Table {
     #[allow(clippy::too_many_arguments)]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
-        data: Bound<'_, PyAny>,
+        reader_factory: Py<PyAny>,
+        schema: PyArrowType<Schema>,
         mode: String,
         row_count_hint: Option<usize>,
         rescannable: bool,
@@ -321,23 +392,17 @@ impl Table {
         target_partitions: Option<usize>,
         embedding_registry: Option<PyRef<'_, PyEmbeddingRegistry>>,
     ) -> PyResult<Bound<'a, PyAny>> {
-        use lancedb::data_source::{DataSourceMetadata, IntoArrowAdapter, RowCountHint};
+        let schema: SchemaRef = Arc::new(schema.0);
 
-        let batches = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
-        let schema = batches.schema();
+        // Create the data source with Python callable factory
+        let source = PySourceData {
+            reader_factory,
+            schema,
+            num_rows: row_count_hint,
+            rescannable,
+        };
 
-        // Build metadata from hints
-        let mut metadata = DataSourceMetadata::default();
-        if let Some(count) = row_count_hint {
-            metadata.row_count = Some(RowCountHint::UserHint(count));
-        }
-        metadata.rescannable = rescannable;
-
-        // Create the data source with metadata
-        let source =
-            Box::new(IntoArrowAdapter::new(Box::new(batches), schema).with_metadata(metadata));
-
-        let mut op = self_.inner_ref()?.add_from_source(source);
+        let mut op = self_.inner_ref()?.add_from_source(Box::new(source));
 
         if mode == "append" {
             op = op.mode(AddDataMode::Append);
