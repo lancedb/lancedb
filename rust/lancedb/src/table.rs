@@ -13,7 +13,7 @@ use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
-use datafusion_physical_plan::ExecutionPlan;
+use datafusion_physical_plan::{displayable, ExecutionPlan};
 use futures::{FutureExt, StreamExt, TryFutureExt};
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
@@ -502,14 +502,16 @@ impl AddDataBuilder2 {
         use datafusion_physical_plan::Partitioning;
 
         let num_rows = self.source.num_rows();
-        let target_write_partitions = self
-            .target_partitions
-            .unwrap_or_else(|| Self::compute_optimal_partitions(num_rows));
-
         // Get CPU count for preprocessing parallelism
         let cpu_partitions = std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(1);
+        // Want to split into parallel writes, but there's not much benefit to having
+        // more writers than CPU cores, since writers have to do encoding work.
+        let target_write_partitions = self
+            .target_partitions
+            .unwrap_or_else(|| Self::compute_optimal_partitions(num_rows))
+            .min(cpu_partitions);
 
         // Create SourceDataExec - streams data lazily without collecting into memory
         let mut input_plan: Arc<dyn ExecutionPlan> = Arc::new(SourceDataExec::new(self.source));
