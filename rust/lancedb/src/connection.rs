@@ -892,9 +892,8 @@ pub struct ConnectBuilder {
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
 }
 
-const ENV_VARS_TO_STORAGE_OPTS: [(&str, &str); 1] = [
-    ("AZURE_STORAGE_ACCOUNT_NAME", "azure_storage_account_name"),
-];
+const ENV_VARS_TO_STORAGE_OPTS: [(&str, &str); 1] =
+    [("AZURE_STORAGE_ACCOUNT_NAME", "azure_storage_account_name")];
 
 impl ConnectBuilder {
     /// Create a new [`ConnectOptions`] with the given database URI.
