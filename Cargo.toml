@@ -45,6 +45,7 @@ datafusion-catalog = "51.0"
 datafusion-common = { version = "51.0", default-features = false }
 datafusion-execution = "51.0"
 datafusion-expr = "51.0"
+datafusion-physical-expr = "51.0"
 datafusion-physical-plan = "51.0"
 env_logger = "0.11"
 half = { "version" = "2.7.1", default-features = false, features = [
