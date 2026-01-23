@@ -297,10 +297,10 @@ impl IvfPqIndexBuilder {
 }
 
 pub(crate) fn suggested_num_sub_vectors(dim: u32) -> u32 {
-    if dim % 16 == 0 {
+    if dim.is_multiple_of(16) {
         // Should be more aggressive than this default.
         dim / 16
-    } else if dim % 8 == 0 {
+    } else if dim.is_multiple_of(8) {
         dim / 8
     } else {
         log::warn!(

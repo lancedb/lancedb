@@ -181,7 +181,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        msrv: ["1.78.0"] # This should match up with rust-version in Cargo.toml
+        msrv: ["1.88.0"] # This should match up with rust-version in Cargo.toml
     env:
       # Need up-to-date compilers for kernels
       CC: clang-18
@@ -212,4 +212,6 @@ jobs:
           cargo update -p aws-sdk-sts --precise 1.51.0
           cargo update -p home --precise 0.5.9
       - name: cargo +${{ matrix.msrv }} check
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.msrv }}
         run: cargo check --profile ci --workspace --tests --benches --all-features
