@@ -621,6 +621,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<()>;
     /// Get statistics on the table
     async fn stats(&self) -> Result<TableStatistics>;
+    /// Create an ExecutionPlan for inserting data into the table.
+    ///
+    /// This is used by the DataFusion TableProvider implementation to support
+    /// INSERT INTO statements.
+    async fn create_insert_exec(
+        &self,
+        _input: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
+        _write_params: WriteParams,
+    ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
+        Err(Error::NotSupported {
+            message: "create_insert_exec not implemented".to_string(),
+        })
+    }
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -3350,6 +3363,21 @@ impl BaseTable for NativeTable {
             fragment_stats: frag_stats,
         };
         Ok(stats)
+    }
+
+    async fn create_insert_exec(
+        &self,
+        input: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
+        write_params: WriteParams,
+    ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
+        let ds = self.dataset.get().await?;
+        let dataset = Arc::new((*ds).clone());
+        Ok(Arc::new(datafusion::insert::InsertExec::new(
+            self.dataset.clone(),
+            dataset,
+            input,
+            write_params,
+        )))
     }
 }
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+pub mod insert;
+
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
@@ -1507,6 +1509,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })?;
         Ok(stats)
+    }
+
+    async fn create_insert_exec(
+        &self,
+        input: Arc<dyn ExecutionPlan>,
+        write_params: lance::dataset::WriteParams,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let overwrite = matches!(write_params.mode, lance::dataset::WriteMode::Overwrite);
+        Ok(Arc::new(insert::RemoteInsertExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            input,
+            overwrite,
+        )))
     }
 }
 
