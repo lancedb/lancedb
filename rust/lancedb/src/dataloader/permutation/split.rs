@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::{
-    iter,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    Arc,
 };
 
 use arrow_array::{Array, BooleanArray, RecordBatch, UInt64Array};
@@ -158,7 +155,7 @@ impl Splitter {
                 remaining_in_split
             };
 
-            split_ids.extend(iter::repeat(split_id as u64).take(rows_to_add as usize));
+            split_ids.extend(std::iter::repeat_n(split_id as u64, rows_to_add as usize));
             if done {
                 // Quit early if we've run out of splits
                 break;
@@ -662,7 +659,7 @@ mod tests {
         assert_eq!(split_batch.num_rows(), total_split_sizes as usize);
         let mut expected = Vec::with_capacity(total_split_sizes as usize);
         for (i, size) in expected_split_sizes.iter().enumerate() {
-            expected.extend(iter::repeat(i as u64).take(*size as usize));
+            expected.extend(std::iter::repeat_n(i as u64, *size as usize));
         }
         let expected = Arc::new(UInt64Array::from(expected)) as Arc<dyn Array>;
 

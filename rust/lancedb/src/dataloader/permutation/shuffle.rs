@@ -171,7 +171,7 @@ impl Shuffler {
             // This is kind of an annoying limitation but if we allow runt clumps from batches then
             // clumps will get unaligned and we will mess up the clumps when we do the in-memory
             // shuffle step.  If this is a problem we can probably figure out a better way to do this.
-            if !is_last && batch.num_rows() as u64 % clump_size != 0 {
+            if !is_last && !(batch.num_rows() as u64).is_multiple_of(clump_size) {
                 return Err(Error::Runtime {
                     message: format!(
                         "Expected batch size ({}) to be divisible by clump size ({})",

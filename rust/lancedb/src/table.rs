@@ -2061,7 +2061,7 @@ impl NativeTable {
             return provided;
         }
         let suggested = suggested_num_sub_vectors(dim);
-        if num_bits.is_some_and(|num_bits| num_bits == 4) && suggested % 2 != 0 {
+        if num_bits.is_some_and(|num_bits| num_bits == 4) && !suggested.is_multiple_of(2) {
             // num_sub_vectors must be even when 4 bits are used
             suggested + 1
         } else {
@@ -3402,7 +3402,6 @@ pub struct FragmentSummaryStats {
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use std::iter;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -4019,7 +4018,7 @@ mod tests {
                 schema.clone(),
                 vec![
                     Arc::new(Int32Array::from_iter_values(offset..(offset + 10))),
-                    Arc::new(Int32Array::from_iter_values(iter::repeat(age).take(10))),
+                    Arc::new(Int32Array::from_iter_values(std::iter::repeat_n(age, 10))),
                 ],
             )],
             schema,
