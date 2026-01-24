@@ -892,6 +892,7 @@ pub struct ConnectBuilder {
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
 }
 
+#[cfg(feature = "remote")]
 const ENV_VARS_TO_STORAGE_OPTS: [(&str, &str); 1] =
     [("AZURE_STORAGE_ACCOUNT_NAME", "azure_storage_account_name")];
 
