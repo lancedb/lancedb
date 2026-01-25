@@ -922,7 +922,7 @@ impl Database for ListingDatabase {
             .with_read_params(read_params.clone())
             .load()
             .await
-            .map_err(|e| Error::Lance { source: e })?;
+            .map_err(|e| -> Error { e.into() })?;
 
         let version_ref = match (request.source_version, request.source_tag) {
             (Some(v), None) => Ok(Ref::Version(None, Some(v))),
@@ -937,7 +937,7 @@ impl Database for ListingDatabase {
         source_dataset
             .shallow_clone(&target_uri, version_ref, Some(storage_params))
             .await
-            .map_err(|e| Error::Lance { source: e })?;
+            .map_err(|e| -> Error { e.into() })?;
 
         let cloned_table = NativeTable::open_with_params(
             &target_uri,

@@ -78,3 +78,96 @@ impl AddDataBuilder {
         self.parent.clone().add(self).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow_array::{Int32Array, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+    use lance::dataset::{WriteMode, WriteParams};
+    use tempfile::tempdir;
+
+    use crate::connect;
+    use crate::table::WriteOptions;
+
+    use super::AddDataMode;
+
+    fn make_test_batch(start: i32, end: i32) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from_iter_values(start..end))],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_add() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        let batch = make_test_batch(0, 10);
+        let schema = batch.schema().clone();
+        let table = conn.create_table("test", batch).execute().await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+
+        let new_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(100..110))],
+        )
+        .unwrap();
+
+        table.add(new_batch).execute().await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 20);
+        assert_eq!(table.name(), "test");
+    }
+
+    #[tokio::test]
+    async fn test_add_overwrite() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        let batch = make_test_batch(0, 10);
+        let schema = batch.schema().clone();
+        let table = conn.create_table("test", batch).execute().await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+
+        let new_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(100..110))],
+        )
+        .unwrap();
+
+        // Can overwrite using AddDataMode::Overwrite
+        table
+            .add(new_batch.clone())
+            .mode(AddDataMode::Overwrite)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+        assert_eq!(table.name(), "test");
+
+        // Can overwrite using underlying WriteParams (which
+        // take precedence over AddDataMode)
+        let param: WriteParams = WriteParams {
+            mode: WriteMode::Overwrite,
+            ..Default::default()
+        };
+
+        table
+            .add(new_batch)
+            .write_options(WriteOptions {
+                lance_write_params: Some(param),
+            })
+            .mode(AddDataMode::Append)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+        assert_eq!(table.name(), "test");
+    }
+}

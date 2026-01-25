@@ -1521,7 +1521,7 @@ impl NativeTable {
                     name: name.to_string(),
                     source: Box::new(e),
                 },
-                source => Error::Lance { source },
+                e => e.into(),
             })?;
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
@@ -1605,7 +1605,7 @@ impl NativeTable {
                 lance::Error::Namespace { source, .. } => Error::Runtime {
                     message: format!("Failed to get table info from namespace: {:?}", source),
                 },
-                source => Error::Lance { source },
+                e => e.into(),
             })?;
 
         let dataset = builder
@@ -1617,7 +1617,7 @@ impl NativeTable {
                     name: name.to_string(),
                     source: Box::new(e),
                 },
-                source => Error::Lance { source },
+                e => e.into(),
             })?;
 
         let uri = dataset.uri().to_string();
@@ -1711,7 +1711,7 @@ impl NativeTable {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
                     name: name.to_string(),
                 },
-                source => Error::Lance { source },
+                e => e.into(),
             })?;
 
         let id = Self::build_id(&namespace, name);
@@ -1832,7 +1832,7 @@ impl NativeTable {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
                     name: name.to_string(),
                 },
-                source => Error::Lance { source },
+                e => e.into(),
             })?;
 
         let id = Self::build_id(&namespace, name);
@@ -3338,7 +3338,6 @@ mod tests {
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
-    use lance::dataset::WriteMode;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance::Dataset;
     use rand::Rng;
@@ -3408,28 +3407,6 @@ mod tests {
                 .unwrap(),
             5
         );
-    }
-
-    #[tokio::test]
-    async fn test_add() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
-
-        let batches = make_test_batches();
-        let schema = batches.schema().clone();
-        let table = conn.create_table("test", batches).execute().await.unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
-
-        let new_batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from_iter_values(100..110))],
-        )
-        .unwrap();
-
-        table.add(new_batch).execute().await.unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 20);
-        assert_eq!(table.name(), "test");
     }
 
     #[tokio::test]
@@ -3515,54 +3492,6 @@ mod tests {
         merge_insert_builder.use_index(false);
         merge_insert_builder.execute(new_batches).await.unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 25);
-    }
-
-    #[tokio::test]
-    async fn test_add_overwrite() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
-
-        let batches = make_test_batches();
-        let schema = batches.schema().clone();
-        let table = conn.create_table("test", batches).execute().await.unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
-
-        let new_batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from_iter_values(100..110))],
-        )
-        .unwrap();
-
-        // Can overwrite using AddDataOptions::mode
-        table
-            .add(new_batch.clone())
-            .mode(AddDataMode::Overwrite)
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
-        assert_eq!(table.name(), "test");
-
-        // Can overwrite using underlying WriteParams (which
-        // take precedence over AddDataOptions::mode)
-
-        let param: WriteParams = WriteParams {
-            mode: WriteMode::Overwrite,
-            ..Default::default()
-        };
-
-        table
-            .add(new_batch)
-            .write_options(WriteOptions {
-                lance_write_params: Some(param),
-            })
-            .mode(AddDataMode::Append)
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
-        assert_eq!(table.name(), "test");
     }
 
     #[tokio::test]

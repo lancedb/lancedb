@@ -115,15 +115,28 @@ impl Scannable for Box<dyn RecordBatchReader + Send> {
     fn read(self: Box<Self>) -> Result<SendableRecordBatchStream> {
         let inner: Box<dyn RecordBatchReader + Send> = *self;
         let schema = RecordBatchReader::schema(inner.as_ref());
-        // TODO: run the reader in tokio::task::spawn_blocking to avoid blocking async runtime
-        // Create a lazy stream that pulls batches on demand
-        let stream = futures::stream::unfold(inner, |mut reader| async move {
-            match reader.next() {
-                Some(Ok(batch)) => Some((Ok(batch), reader)),
-                Some(Err(e)) => Some((Err(e.into()), reader)),
-                None => None,
+
+        // Use a channel to bridge blocking RecordBatchReader to async stream.
+        // Buffer size of 2 provides some pipelining while limiting memory use.
+        let (tx, rx) = tokio::sync::mpsc::channel::<crate::Result<RecordBatch>>(2);
+
+        // Spawn blocking task to read from the reader
+        tokio::task::spawn_blocking(move || {
+            let mut reader = inner;
+            for batch_result in reader.by_ref() {
+                let result = batch_result.map_err(Into::into);
+                // If receiver is dropped, stop reading
+                if tx.blocking_send(result).is_err() {
+                    break;
+                }
             }
         });
+
+        // Convert the receiver into a stream using unfold
+        let stream = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|batch| (batch, rx))
+        });
+
         Ok(Box::pin(SimpleRecordBatchStream { schema, stream }))
     }
 
