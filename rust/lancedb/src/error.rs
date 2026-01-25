@@ -97,7 +97,7 @@ impl From<ArrowError> for Error {
     fn from(source: ArrowError) -> Self {
         match source {
             ArrowError::ExternalError(source) => match source.downcast::<Self>() {
-                Ok(e) => return *e,
+                Ok(e) => *e,
                 Err(source) => Self::External { source },
             },
             _ => Self::Arrow { source },
@@ -111,7 +111,7 @@ impl From<lance::Error> for Error {
         // pass those variants through here as well.
         match source {
             lance::Error::External { source } => match source.downcast::<Self>() {
-                Ok(e) => return *e,
+                Ok(e) => *e,
                 Err(source) => Self::External { source },
             },
             _ => Self::Lance { source },

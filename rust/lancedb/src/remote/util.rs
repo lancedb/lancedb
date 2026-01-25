@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::io::Cursor;
-
-use arrow_array::RecordBatchReader;
 use arrow_ipc::CompressionType;
 use arrow_schema::ArrowError;
 use futures::StreamExt;
@@ -13,27 +10,13 @@ use crate::{arrow::SendableRecordBatchStream, Result};
 
 use super::db::ServerVersion;
 
-pub fn batches_to_ipc_bytes(batches: impl RecordBatchReader) -> Result<Vec<u8>> {
-    const WRITE_BUF_SIZE: usize = 4096;
-    let buf = Vec::with_capacity(WRITE_BUF_SIZE);
-    let mut buf = Cursor::new(buf);
-    {
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut buf, &batches.schema())?;
-
-        for batch in batches {
-            let batch = batch?;
-            writer.write(&batch)?;
-        }
-        writer.finish()?;
-    }
-    Ok(buf.into_inner())
-}
-
 pub fn stream_as_body(data: SendableRecordBatchStream) -> Result<reqwest::Body> {
     let options = arrow_ipc::writer::IpcWriteOptions::default()
         .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+    const WRITE_BUF_SIZE: usize = 4096;
+    let buf = Vec::with_capacity(WRITE_BUF_SIZE);
     let writer =
-        arrow_ipc::writer::StreamWriter::try_new_with_options(Vec::new(), &data.schema(), options)?;
+        arrow_ipc::writer::StreamWriter::try_new_with_options(buf, &data.schema(), options)?;
     let stream = futures::stream::try_unfold((data, writer), move |(mut data, mut writer)| {
         async move {
             match data.next().await {

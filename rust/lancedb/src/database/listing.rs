@@ -1098,8 +1098,10 @@ impl Database for ListingDatabase {
 mod tests {
     use super::*;
     use crate::connection::ConnectRequest;
-    use crate::database::{CreateTableData, CreateTableMode, CreateTableRequest, WriteOptions};
-    use crate::table::{Table, TableDefinition};
+    use crate::data::scannable::Scannable;
+    use crate::database::{CreateTableMode, CreateTableRequest};
+    use crate::table::WriteOptions;
+    use crate::Table;
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use std::path::PathBuf;
@@ -1139,7 +1141,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "source_table".to_string(),
                 namespace: vec![],
-                data: CreateTableData::Empty(TableDefinition::new_from_schema(schema.clone())),
+                data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1196,16 +1198,11 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch)],
-            schema.clone(),
-        ));
-
         let source_table = db
             .create_table(CreateTableRequest {
                 name: "source_with_data".to_string(),
                 namespace: vec![],
-                data: CreateTableData::Data(reader),
+                data: Box::new(batch) as Box<dyn Scannable>,
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1264,7 +1261,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
             namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -1300,7 +1297,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
             namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -1340,7 +1337,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
             namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -1380,7 +1377,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
             namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -1435,7 +1432,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "source".to_string(),
             namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -1484,16 +1481,11 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch1)],
-            schema.clone(),
-        ));
-
         let source_table = db
             .create_table(CreateTableRequest {
                 name: "versioned_source".to_string(),
                 namespace: vec![],
-                data: CreateTableData::Data(reader),
+                data: Box::new(batch1) as Box<dyn Scannable>,
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1517,14 +1509,7 @@ mod tests {
 
         let db = Arc::new(db);
         let source_table_obj = Table::new(source_table.clone(), db.clone());
-        source_table_obj
-            .add(Box::new(arrow_array::RecordBatchIterator::new(
-                vec![Ok(batch2)],
-                schema.clone(),
-            )))
-            .execute()
-            .await
-            .unwrap();
+        source_table_obj.add(batch2).execute().await.unwrap();
 
         // Verify source table now has 4 rows
         assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
@@ -1570,16 +1555,11 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch1)],
-            schema.clone(),
-        ));
-
         let source_table = db
             .create_table(CreateTableRequest {
                 name: "tagged_source".to_string(),
                 namespace: vec![],
-                data: CreateTableData::Data(reader),
+                data: Box::new(batch1),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1607,14 +1587,7 @@ mod tests {
         .unwrap();
 
         let source_table_obj = Table::new(source_table.clone(), db.clone());
-        source_table_obj
-            .add(Box::new(arrow_array::RecordBatchIterator::new(
-                vec![Ok(batch2)],
-                schema.clone(),
-            )))
-            .execute()
-            .await
-            .unwrap();
+        source_table_obj.add(batch2).execute().await.unwrap();
 
         // Source table should have 4 rows
         assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
@@ -1657,16 +1630,11 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch1)],
-            schema.clone(),
-        ));
-
         let source_table = db
             .create_table(CreateTableRequest {
                 name: "independent_source".to_string(),
                 namespace: vec![],
-                data: CreateTableData::Data(reader),
+                data: Box::new(batch1),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1706,14 +1674,7 @@ mod tests {
 
         let db = Arc::new(db);
         let cloned_table_obj = Table::new(cloned_table.clone(), db.clone());
-        cloned_table_obj
-            .add(Box::new(arrow_array::RecordBatchIterator::new(
-                vec![Ok(batch_clone)],
-                schema.clone(),
-            )))
-            .execute()
-            .await
-            .unwrap();
+        cloned_table_obj.add(batch_clone).execute().await.unwrap();
 
         // Add different data to the source table
         let batch_source = RecordBatch::try_new(
@@ -1726,14 +1687,7 @@ mod tests {
         .unwrap();
 
         let source_table_obj = Table::new(source_table.clone(), db);
-        source_table_obj
-            .add(Box::new(arrow_array::RecordBatchIterator::new(
-                vec![Ok(batch_source)],
-                schema.clone(),
-            )))
-            .execute()
-            .await
-            .unwrap();
+        source_table_obj.add(batch_source).execute().await.unwrap();
 
         // Verify they have evolved independently
         assert_eq!(source_table.count_rows(None).await.unwrap(), 4); // 2 + 2
@@ -1751,16 +1705,11 @@ mod tests {
             RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1, 2]))])
                 .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch1)],
-            schema.clone(),
-        ));
-
         let source_table = db
             .create_table(CreateTableRequest {
                 name: "latest_version_source".to_string(),
                 namespace: vec![],
-                data: CreateTableData::Data(reader),
+                data: Box::new(batch1),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1779,14 +1728,7 @@ mod tests {
             .unwrap();
 
             let source_table_obj = Table::new(source_table.clone(), db.clone());
-            source_table_obj
-                .add(Box::new(arrow_array::RecordBatchIterator::new(
-                    vec![Ok(batch)],
-                    schema.clone(),
-                )))
-                .execute()
-                .await
-                .unwrap();
+            source_table_obj.add(batch).execute().await.unwrap();
         }
 
         // Source should have 8 rows total (2 + 2 + 2 + 2)
@@ -1849,16 +1791,11 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch)],
-            schema.clone(),
-        ));
-
         let table = db
             .create_table(CreateTableRequest {
                 name: "test_stable".to_string(),
                 namespace: vec![],
-                data: CreateTableData::Data(reader),
+                data: Box::new(batch),
                 mode: CreateTableMode::Create,
                 write_options: Default::default(),
                 location: None,
@@ -1887,11 +1824,6 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch)],
-            schema.clone(),
-        ));
-
         let mut storage_options = HashMap::new();
         storage_options.insert(
             OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
@@ -1914,7 +1846,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "test_stable_table_level".to_string(),
                 namespace: vec![],
-                data: CreateTableData::Data(reader),
+                data: Box::new(batch),
                 mode: CreateTableMode::Create,
                 write_options,
                 location: None,
@@ -1963,11 +1895,6 @@ mod tests {
         )
         .unwrap();
 
-        let reader = Box::new(arrow_array::RecordBatchIterator::new(
-            vec![Ok(batch)],
-            schema.clone(),
-        ));
-
         let mut storage_options = HashMap::new();
         storage_options.insert(
             OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
@@ -1990,7 +1917,7 @@ mod tests {
             .create_table(CreateTableRequest {
                 name: "test_override".to_string(),
                 namespace: vec![],
-                data: CreateTableData::Data(reader),
+                data: Box::new(batch),
                 mode: CreateTableMode::Create,
                 write_options,
                 location: None,
@@ -2108,7 +2035,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "table1".to_string(),
             namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema.clone())),
+            data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,
@@ -2120,7 +2047,7 @@ mod tests {
         db.create_table(CreateTableRequest {
             name: "table2".to_string(),
             namespace: vec![],
-            data: CreateTableData::Empty(TableDefinition::new_from_schema(schema)),
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
             mode: CreateTableMode::Create,
             write_options: Default::default(),
             location: None,

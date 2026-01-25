@@ -62,7 +62,7 @@ impl std::fmt::Debug for dyn Scannable {
 
 impl Scannable for RecordBatch {
     fn schema(&self) -> SchemaRef {
-        RecordBatch::schema(self)
+        Self::schema(self)
     }
 
     fn read(self: Box<Self>) -> Result<SendableRecordBatchStream> {
@@ -74,7 +74,7 @@ impl Scannable for RecordBatch {
     }
 
     fn num_rows(&self) -> Option<usize> {
-        Some(RecordBatch::num_rows(self))
+        Some(Self::num_rows(self))
     }
 
     fn rescannable(&self) -> bool {
@@ -138,7 +138,7 @@ impl Scannable for Box<dyn RecordBatchReader + Send> {
 
 impl Scannable for SendableRecordBatchStream {
     fn schema(&self) -> SchemaRef {
-        crate::arrow::RecordBatchStream::schema(self)
+        self.as_ref().schema()
     }
 
     fn read(self: Box<Self>) -> Result<SendableRecordBatchStream> {

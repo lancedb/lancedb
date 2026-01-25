@@ -157,7 +157,7 @@ impl CreateTableBuilder {
 #[cfg(test)]
 mod tests {
     use arrow_array::{record_batch, RecordBatchIterator};
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_schema::{ArrowError, DataType, Field, Schema};
     use lance_file::version::LanceFileVersion;
     use tempfile::tempdir;
 
@@ -238,25 +238,104 @@ mod tests {
         test_create_table_with_data(stream).await;
     }
 
+    #[derive(Debug)]
+    struct MyError;
+
+    impl std::fmt::Display for MyError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "MyError occurred")
+        }
+    }
+
+    impl std::error::Error for MyError {}
+
     #[tokio::test]
     async fn test_create_preserves_reader_error() {
-        todo!("Test if a reader returns an error, the error is returned back as Error::External");
-        // assert!(matches!(result, Err(Error::External { source }) if source.to_string() == original_error.to_string()));
+        let first_batch = record_batch!(("id", Int64, [1, 2])).unwrap();
+        let schema = first_batch.schema();
+        let iterator = vec![
+            Ok(first_batch),
+            Err(ArrowError::ExternalError(Box::new(MyError))),
+        ];
+        let reader = Box::new(RecordBatchIterator::new(
+            iterator.into_iter(),
+            schema.clone(),
+        )) as Box<dyn arrow_array::RecordBatchReader + Send>;
+
+        let db = connect("memory://").execute().await.unwrap();
+        let result = db.create_table("failing_table", reader).execute().await;
+
+        assert!(matches!(result, Err(Error::External { source})
+            if source.downcast_ref::<MyError>().is_some()
+        ));
     }
 
     #[tokio::test]
     async fn test_create_preserves_stream_error() {
-        todo!("Similar test as above, but for streams");
+        let first_batch = record_batch!(("id", Int64, [1, 2])).unwrap();
+        let schema = first_batch.schema();
+        let iterator = vec![
+            Ok(first_batch),
+            Err(Error::External {
+                source: Box::new(MyError),
+            }),
+        ];
+        let stream = futures::stream::iter(iterator);
+        let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+            schema: schema.clone(),
+            stream,
+        });
+
+        let db = connect("memory://").execute().await.unwrap();
+        let result = db
+            .create_table("failing_stream_table", stream)
+            .execute()
+            .await;
+
+        assert!(matches!(result, Err(Error::External { source})
+            if source.downcast_ref::<MyError>().is_some()
+        ));
     }
 
     #[tokio::test]
-    async fn test_create_table_all_params() {
-        todo!("Create mock registry and database and test all builder params passed through, including multiple embedding functions")
+    async fn test_create_table_with_storage_options() {
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let db = connect("memory://").execute().await.unwrap();
+
+        let table = db
+            .create_table("options_table", batch)
+            .storage_option("timeout", "30s")
+            .storage_options([("retry_count", "3")])
+            .execute()
+            .await
+            .unwrap();
+
+        let final_options = table.storage_options().await.unwrap();
+        assert_eq!(final_options.get("timeout"), Some(&"30s".to_string()));
+        assert_eq!(final_options.get("retry_count"), Some(&"3".to_string()));
     }
 
     #[tokio::test]
     async fn test_create_table_unregistered_embedding() {
-        todo!("Test we get expected error when adding embedding not in the registry")
+        let db = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("text", Utf8, ["hello", "world"])).unwrap();
+
+        // Try to add an embedding that doesn't exist in the registry
+        let result = db
+            .create_table("embed_table", batch)
+            .add_embedding(EmbeddingDefinition::new(
+                "text",
+                "nonexistent_embedding_function",
+                None::<&str>,
+            ));
+
+        match result {
+            Err(Error::EmbeddingFunctionNotFound { name, .. }) => {
+                assert_eq!(name, "nonexistent_embedding_function");
+            }
+            Err(other) => panic!("Expected EmbeddingFunctionNotFound error, got: {:?}", other),
+            Ok(_) => panic!("Expected error, but got Ok"),
+        }
     }
 
     #[tokio::test]
@@ -293,13 +372,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_table_v2() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri)
+    #[rstest::rstest]
+    #[case(LanceFileVersion::Legacy)]
+    #[case(LanceFileVersion::Stable)]
+    async fn test_create_table_with_storage_version(
+        #[case] data_storage_version: LanceFileVersion,
+    ) {
+        let db = connect("memory://")
             .database_options(&ListingDatabaseOptions {
                 new_table_config: NewTableConfig {
-                    data_storage_version: Some(LanceFileVersion::Legacy),
+                    data_storage_version: Some(data_storage_version),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -308,63 +390,21 @@ mod tests {
             .await
             .unwrap();
 
-        // let tbl = db
-        //     .create_table("v1_test", make_data())
-        //     .execute()
-        //     .await
-        //     .unwrap();
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("legacy_table", batch)
+            .execute()
+            .await
+            .unwrap();
 
-        todo!(
-            "Instead of checking row group sizes, can we instead check the file version directly?"
-        );
-        // This may involve downcasting to LanceTable and checking the underlying LanceFile version.
-
-        // // In v1 the row group size will trump max_batch_length
-        // let batches = tbl
-        //     .query()
-        //     .limit(20000)
-        //     .execute_with_options(QueryExecutionOptions {
-        //         max_batch_length: 50000,
-        //         ..Default::default()
-        //     })
-        //     .await
-        //     .unwrap()
-        //     .try_collect::<Vec<_>>()
-        //     .await
-        //     .unwrap();
-        // assert_eq!(batches.len(), 20);
-
-        // let db = connect(uri)
-        //     .database_options(&ListingDatabaseOptions {
-        //         new_table_config: NewTableConfig {
-        //             data_storage_version: Some(LanceFileVersion::Stable),
-        //             ..Default::default()
-        //         },
-        //         ..Default::default()
-        //     })
-        //     .execute()
-        //     .await
-        //     .unwrap();
-
-        // let tbl = db
-        //     .create_table("v2_test", make_data())
-        //     .execute()
-        //     .await
-        //     .unwrap();
-
-        // // In v2 the page size is much bigger than 50k so we should get a single batch
-        // let batches = tbl
-        //     .query()
-        //     .execute_with_options(QueryExecutionOptions {
-        //         max_batch_length: 50000,
-        //         ..Default::default()
-        //     })
-        //     .await
-        //     .unwrap()
-        //     .try_collect::<Vec<_>>()
-        //     .await
-        //     .unwrap();
-
-        // assert_eq!(batches.len(), 1);
+        let native_table = table.as_native().unwrap();
+        let storage_format = native_table
+            .manifest()
+            .await
+            .unwrap()
+            .data_storage_format
+            .lance_file_version()
+            .unwrap();
+        assert_eq!(storage_format, data_storage_version);
     }
 }

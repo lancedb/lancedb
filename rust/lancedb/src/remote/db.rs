@@ -437,7 +437,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         // TODO: handle body send retries by calling read() again and passing a new body.
-        let body = stream_as_body(request.data.read())?;
+        let body = stream_as_body(request.data.read()?)?;
 
         let identifier =
             build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
@@ -795,7 +795,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, OnceLock};
 
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
+    use arrow_array::{Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
 
     use crate::connection::ConnectBuilder;
@@ -975,8 +975,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], data.schema()));
-        let table = conn.create_table("table1", reader).execute().await.unwrap();
+        let table = conn.create_table("table1", data).execute().await.unwrap();
         assert_eq!(table.name(), "table1");
     }
 
@@ -993,8 +992,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], data.schema()));
-        let result = conn.create_table("table1", reader).execute().await;
+        let result = conn.create_table("table1", data).execute().await;
         assert!(result.is_err());
         assert!(
             matches!(result, Err(crate::Error::TableAlreadyExists { name }) if name == "table1")
@@ -1027,8 +1025,7 @@ mod tests {
                 vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
             )
             .unwrap();
-            let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], data.schema()));
-            let mut builder = conn.create_table("table1", reader);
+            let mut builder = conn.create_table("table1", data.clone());
             if let Some(mode) = mode {
                 builder = builder.mode(mode);
             }
@@ -1053,9 +1050,8 @@ mod tests {
         .unwrap();
 
         let called: Arc<OnceLock<bool>> = Arc::new(OnceLock::new());
-        let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], data.schema()));
         let called_in_cb = called.clone();
-        conn.create_table("table1", reader)
+        conn.create_table("table1", data)
             .mode(CreateTableMode::ExistOk(Box::new(move |b| {
                 called_in_cb.clone().set(true).unwrap();
                 b
@@ -1244,9 +1240,8 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], data.schema()));
         let table = conn
-            .create_table("table1", reader)
+            .create_table("table1", data)
             .namespace(vec!["ns1".to_string()])
             .execute()
             .await
@@ -1712,10 +1707,8 @@ mod tests {
                 vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
             )
             .unwrap();
-            let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], schema.clone()));
-
             let table = conn
-                .create_table("test_table", reader)
+                .create_table("test_table", data)
                 .namespace(namespace.clone())
                 .execute()
                 .await;
@@ -1788,9 +1781,7 @@ mod tests {
                 let data =
                     RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![i]))])
                         .unwrap();
-                let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], schema.clone()));
-
-                conn.create_table(format!("table{}", i), reader)
+                conn.create_table(format!("table{}", i), data)
                     .namespace(namespace.clone())
                     .execute()
                     .await

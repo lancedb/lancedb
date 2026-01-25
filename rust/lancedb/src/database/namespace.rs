@@ -354,15 +354,13 @@ mod tests {
     use super::*;
     use crate::connect_namespace;
     use crate::query::ExecutableQuery;
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
+    use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
     use tempfile::tempdir;
 
     /// Helper function to create test data
-    fn create_test_data() -> RecordBatchIterator<
-        std::vec::IntoIter<std::result::Result<RecordBatch, arrow_schema::ArrowError>>,
-    > {
+    fn create_test_data() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, false),
@@ -371,12 +369,7 @@ mod tests {
         let id_array = Int32Array::from(vec![1, 2, 3, 4, 5]);
         let name_array = StringArray::from(vec!["Alice", "Bob", "Charlie", "David", "Eve"]);
 
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(id_array), Arc::new(name_array)],
-        )
-        .unwrap();
-        RecordBatchIterator::new(vec![std::result::Result::Ok(batch)].into_iter(), schema)
+        RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(name_array)]).unwrap()
     }
 
     #[tokio::test]
@@ -618,13 +611,7 @@ mod tests {
 
         // Test: Overwrite the table
         let table2 = conn
-            .create_table(
-                "overwrite_test",
-                RecordBatchIterator::new(
-                    vec![std::result::Result::Ok(test_data2)].into_iter(),
-                    schema,
-                ),
-            )
+            .create_table("overwrite_test", test_data2)
             .namespace(vec!["test_ns".into()])
             .mode(CreateTableMode::Overwrite)
             .execute()

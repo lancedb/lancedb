@@ -994,20 +994,12 @@ mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
-    use crate::query::QueryBase;
-    use crate::query::{ExecutableQuery, QueryExecutionOptions};
-    use crate::test_utils::connection::new_test_connection;
-    use arrow::compute::concat_batches;
     use arrow_array::RecordBatchReader;
     use arrow_schema::{DataType, Field, Schema};
-    use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
-    use futures::{stream, TryStreamExt};
-    use lance_core::error::{ArrowResult, DataFusionResult};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
     use tempfile::tempdir;
 
-    use crate::arrow::SimpleRecordBatchStream;
+    use crate::test_utils::connection::new_test_connection;
 
     use super::*;
 
@@ -1123,11 +1115,6 @@ mod tests {
         assert_eq!(tables, vec!["table1".to_owned()]);
     }
 
-    fn make_data() -> Box<dyn RecordBatchReader + Send + 'static> {
-        let id = Box::new(IncrementingInt32::new().named("id".to_string()));
-        Box::new(BatchGenerator::new().col(id).batches(10, 2000))
-    }
-
     #[tokio::test]
     async fn drop_table() {
         let tc = new_test_connection().await.unwrap();
@@ -1167,10 +1154,10 @@ mod tests {
         let mut batch_gen = BatchGenerator::new()
             .col(Box::new(IncrementingInt32::new().named("id")))
             .col(Box::new(IncrementingInt32::new().named("value")));
-        let reader = batch_gen.batches(5, 100);
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(batch_gen.batches(5, 100));
 
         let source_table = db
-            .create_table("source_table", Box::new(reader))
+            .create_table("source_table", reader)
             .execute()
             .await
             .unwrap();

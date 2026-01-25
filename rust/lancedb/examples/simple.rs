@@ -8,11 +8,11 @@
 use std::sync::Arc;
 
 use arrow_array::types::Float32Type;
-use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator};
+use arrow_array::{
+    FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader,
+};
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
-
-use lancedb::arrow::IntoArrow;
 use lancedb::connection::Connection;
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -59,7 +59,7 @@ async fn open_with_existing_tbl() -> Result<()> {
     Ok(())
 }
 
-fn create_some_records() -> Result<impl IntoArrow> {
+fn create_some_records() -> Result<RecordBatch> {
     const TOTAL: usize = 1000;
     const DIM: usize = 128;
 
@@ -76,25 +76,18 @@ fn create_some_records() -> Result<impl IntoArrow> {
     ]));
 
     // Create a RecordBatch stream.
-    let batches = RecordBatchIterator::new(
-        vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
-                Arc::new(
-                    FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                        (0..TOTAL).map(|_| Some(vec![Some(1.0); DIM])),
-                        DIM as i32,
-                    ),
-                ),
-            ],
-        )
-        .unwrap()]
-        .into_iter()
-        .map(Ok),
+    Ok(RecordBatch::try_new(
         schema.clone(),
-    );
-    Ok(Box::new(batches))
+        vec![
+            Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
+            Arc::new(
+                FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                    (0..TOTAL).map(|_| Some(vec![Some(1.0); DIM])),
+                    DIM as i32,
+                ),
+            ),
+        ],
+    )?)
 }
 
 async fn create_table(db: &Connection) -> Result<LanceDbTable> {

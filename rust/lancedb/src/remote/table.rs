@@ -43,6 +43,7 @@ use tokio::sync::RwLock;
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
+use super::util::stream_as_body;
 use super::ARROW_STREAM_CONTENT_TYPE;
 use crate::index::waiter::wait_for_index;
 use crate::{
@@ -261,7 +262,10 @@ impl<S: HttpSend> RemoteTable<S> {
 
     fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
         // TODO: Once Phalanx supports compression, we should use it here.
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new(
+            Vec::new(),
+            &RecordBatchReader::schema(&*data),
+        )?;
 
         //  Mutex is just here to make it sync. We shouldn't have any contention.
         let mut data = Mutex::new(data);
@@ -793,11 +797,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })
     }
-    async fn add(
-        &self,
-        add: AddDataBuilder<NoData>,
-        data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<AddResult> {
+    async fn add(&self, add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
         let mut request = self
             .client
@@ -811,7 +811,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             }
         }
 
-        let (request_id, response) = self.send_streaming(request, data, true).await?;
+        // TODO: handle body send retries by calling read() again for rescannable sources
+        let body = stream_as_body(add.data.read()?)?;
+
+        let (request_id, response) = self.client.send(request.body(body)).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
         if body.trim().is_empty() {
@@ -1596,7 +1599,8 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let example_data = || {
+        let example_data_for_add = || batch.clone();
+        let example_data_for_merge = || -> Box<dyn RecordBatchReader + Send> {
             Box::new(RecordBatchIterator::new(
                 [Ok(batch.clone())],
                 batch.schema(),
@@ -1609,11 +1613,11 @@ mod tests {
             Box::pin(table.schema().map_ok(|_| ())),
             Box::pin(table.count_rows(None).map_ok(|_| ())),
             Box::pin(table.update().column("a", "a + 1").execute().map_ok(|_| ())),
-            Box::pin(table.add(example_data()).execute().map_ok(|_| ())),
+            Box::pin(table.add(example_data_for_add()).execute().map_ok(|_| ())),
             Box::pin(
                 table
                     .merge_insert(&["test"])
-                    .execute(example_data())
+                    .execute(example_data_for_merge())
                     .map_ok(|_| ()),
             ),
             Box::pin(table.delete("false").map_ok(|_| ())),
@@ -1745,8 +1749,15 @@ mod tests {
     fn write_ipc_stream(data: &RecordBatch) -> Vec<u8> {
         let mut body = Vec::new();
         {
-            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &data.schema())
-                .expect("Failed to create writer");
+            let options = arrow_ipc::writer::IpcWriteOptions::default()
+                .try_with_compression(Some(arrow_ipc::CompressionType::LZ4_FRAME))
+                .expect("Failed to create IPC write options");
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
+                &mut body,
+                &data.schema(),
+                options,
+            )
+            .expect("Failed to create writer");
             writer.write(data).expect("Failed to write data");
             writer.finish().expect("Failed to finish");
         }
@@ -1804,11 +1815,7 @@ mod tests {
                 panic!("Unexpected request path: {}", request.url().path());
             }
         });
-        let result = table
-            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
-            .execute()
-            .await
-            .unwrap();
+        let result = table.add(data.clone()).execute().await.unwrap();
 
         // Check version matches expected value
         assert_eq!(result.version, expected_version);
@@ -1865,7 +1872,7 @@ mod tests {
         });
 
         let result = table
-            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
+            .add(data.clone())
             .mode(AddDataMode::Overwrite)
             .execute()
             .await
@@ -2005,7 +2012,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data = Box::new(RecordBatchIterator::new(
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -2057,7 +2064,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data = Box::new(RecordBatchIterator::new(
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -2989,7 +2996,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data = Box::new(RecordBatchIterator::new(
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -3004,10 +3011,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let res = table
-            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
-            .execute()
-            .await;
+        let res = table.add(data.clone()).execute().await;
         assert!(matches!(res, Err(Error::NotSupported { .. })));
 
         let res = table
@@ -3269,11 +3273,7 @@ mod tests {
             }
         });
 
-        let result = table
-            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
-            .execute()
-            .await
-            .unwrap();
+        let result = table.add(data.clone()).execute().await.unwrap();
 
         assert_eq!(result.version, 2);
 
