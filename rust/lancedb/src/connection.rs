@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_array::RecordBatchReader;
-use arrow_schema::{Field, SchemaRef};
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
 use lance::dataset::ReadParams;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
@@ -17,30 +17,28 @@ use lance_namespace::models::{
 #[cfg(feature = "aws")]
 use object_store::aws::AwsCredential;
 
-use crate::arrow::{IntoArrow, IntoArrowStream, SendableRecordBatchStream};
-use crate::database::listing::{
-    ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
-};
+use crate::connection::create_table::CreateTableBuilder;
+use crate::data::scannable::Scannable;
+use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
-    DatabaseOptions, OpenTableRequest, ReadConsistency, TableNamesRequest,
+    CloneTableRequest, Database, DatabaseOptions, OpenTableRequest, ReadConsistency,
+    TableNamesRequest,
 };
-use crate::embeddings::{
-    EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
-};
+use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 #[cfg(feature = "remote")]
 use crate::remote::{
     client::ClientConfig,
     db::{OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION},
 };
-use crate::table::{TableDefinition, WriteOptions};
 use crate::Table;
 use lance::io::ObjectStoreParams;
 pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
+
+mod create_table;
 
 fn merge_storage_options(
     store_params: &mut ObjectStoreParams,
@@ -113,309 +111,6 @@ impl TableNamesBuilder {
     #[allow(deprecated)]
     pub async fn execute(self) -> Result<Vec<String>> {
         self.parent.clone().table_names(self.request).await
-    }
-}
-
-pub struct NoData {}
-
-impl IntoArrow for NoData {
-    fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
-        unreachable!("NoData should never be converted to Arrow")
-    }
-}
-
-// Stores the value given from the initial CreateTableBuilder::new call
-// and defers errors until `execute` is called
-enum CreateTableBuilderInitialData {
-    None,
-    Iterator(Result<Box<dyn RecordBatchReader + Send>>),
-    Stream(Result<SendableRecordBatchStream>),
-}
-
-/// A builder for configuring a [`Connection::create_table`] operation
-pub struct CreateTableBuilder<const HAS_DATA: bool> {
-    parent: Arc<dyn Database>,
-    embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
-    embedding_registry: Arc<dyn EmbeddingRegistry>,
-    request: CreateTableRequest,
-    // This is a bit clumsy but we defer errors until `execute` is called
-    // to maintain backwards compatibility
-    data: CreateTableBuilderInitialData,
-}
-
-// Builder methods that only apply when we have initial data
-impl CreateTableBuilder<true> {
-    fn new<T: IntoArrow>(
-        parent: Arc<dyn Database>,
-        name: String,
-        data: T,
-        embedding_registry: Arc<dyn EmbeddingRegistry>,
-    ) -> Self {
-        let dummy_schema = Arc::new(arrow_schema::Schema::new(Vec::<Field>::default()));
-        Self {
-            parent,
-            request: CreateTableRequest::new(
-                name,
-                CreateTableData::Empty(TableDefinition::new_from_schema(dummy_schema)),
-            ),
-            embeddings: Vec::new(),
-            embedding_registry,
-            data: CreateTableBuilderInitialData::Iterator(data.into_arrow()),
-        }
-    }
-
-    fn new_streaming<T: IntoArrowStream>(
-        parent: Arc<dyn Database>,
-        name: String,
-        data: T,
-        embedding_registry: Arc<dyn EmbeddingRegistry>,
-    ) -> Self {
-        let dummy_schema = Arc::new(arrow_schema::Schema::new(Vec::<Field>::default()));
-        Self {
-            parent,
-            request: CreateTableRequest::new(
-                name,
-                CreateTableData::Empty(TableDefinition::new_from_schema(dummy_schema)),
-            ),
-            embeddings: Vec::new(),
-            embedding_registry,
-            data: CreateTableBuilderInitialData::Stream(data.into_arrow()),
-        }
-    }
-
-    /// Execute the create table operation
-    pub async fn execute(self) -> Result<Table> {
-        let embedding_registry = self.embedding_registry.clone();
-        let parent = self.parent.clone();
-        let request = self.into_request()?;
-        Ok(Table::new_with_embedding_registry(
-            parent.create_table(request).await?,
-            parent,
-            embedding_registry,
-        ))
-    }
-
-    fn into_request(self) -> Result<CreateTableRequest> {
-        if self.embeddings.is_empty() {
-            match self.data {
-                CreateTableBuilderInitialData::Iterator(maybe_iter) => {
-                    let data = maybe_iter?;
-                    Ok(CreateTableRequest {
-                        data: CreateTableData::Data(data),
-                        ..self.request
-                    })
-                }
-                CreateTableBuilderInitialData::None => {
-                    unreachable!("No data provided for CreateTableBuilder<true>")
-                }
-                CreateTableBuilderInitialData::Stream(maybe_stream) => {
-                    let data = maybe_stream?;
-                    Ok(CreateTableRequest {
-                        data: CreateTableData::StreamingData(data),
-                        ..self.request
-                    })
-                }
-            }
-        } else {
-            let CreateTableBuilderInitialData::Iterator(maybe_iter) = self.data else {
-                return Err(Error::NotSupported { message: "Creating a table with embeddings is currently not support when the input is streaming".to_string() });
-            };
-            let data = maybe_iter?;
-            let data = Box::new(WithEmbeddings::new(data, self.embeddings));
-            Ok(CreateTableRequest {
-                data: CreateTableData::Data(data),
-                ..self.request
-            })
-        }
-    }
-}
-
-// Builder methods that only apply when we do not have initial data
-impl CreateTableBuilder<false> {
-    fn new(
-        parent: Arc<dyn Database>,
-        name: String,
-        schema: SchemaRef,
-        embedding_registry: Arc<dyn EmbeddingRegistry>,
-    ) -> Self {
-        let table_definition = TableDefinition::new_from_schema(schema);
-        Self {
-            parent,
-            request: CreateTableRequest::new(name, CreateTableData::Empty(table_definition)),
-            data: CreateTableBuilderInitialData::None,
-            embeddings: Vec::default(),
-            embedding_registry,
-        }
-    }
-
-    /// Execute the create table operation
-    pub async fn execute(self) -> Result<Table> {
-        let parent = self.parent.clone();
-        let table = parent.create_table(self.request).await?;
-        Ok(Table::new(table, parent))
-    }
-}
-
-impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
-    /// Set the mode for creating the table
-    ///
-    /// This controls what happens if a table with the given name already exists
-    pub fn mode(mut self, mode: CreateTableMode) -> Self {
-        self.request.mode = mode;
-        self
-    }
-
-    /// Apply the given write options when writing the initial data
-    pub fn write_options(mut self, write_options: WriteOptions) -> Self {
-        self.request.write_options = write_options;
-        self
-    }
-
-    /// Set an option for the storage layer.
-    ///
-    /// Options already set on the connection will be inherited by the table,
-    /// but can be overridden here.
-    ///
-    /// See available options at <https://lancedb.com/docs/storage/>
-    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        let store_params = self
-            .request
-            .write_options
-            .lance_write_params
-            .get_or_insert(Default::default())
-            .store_params
-            .get_or_insert(Default::default());
-        merge_storage_options(store_params, [(key.into(), value.into())]);
-        self
-    }
-
-    /// Set multiple options for the storage layer.
-    ///
-    /// Options already set on the connection will be inherited by the table,
-    /// but can be overridden here.
-    ///
-    /// See available options at <https://lancedb.com/docs/storage/>
-    pub fn storage_options(
-        mut self,
-        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
-    ) -> Self {
-        let store_params = self
-            .request
-            .write_options
-            .lance_write_params
-            .get_or_insert(Default::default())
-            .store_params
-            .get_or_insert(Default::default());
-        let updates = pairs
-            .into_iter()
-            .map(|(key, value)| (key.into(), value.into()));
-        merge_storage_options(store_params, updates);
-        self
-    }
-
-    /// Add an embedding definition to the table.
-    ///
-    /// The `embedding_name` must match the name of an embedding function that
-    /// was previously registered with the connection's [`EmbeddingRegistry`].
-    pub fn add_embedding(mut self, definition: EmbeddingDefinition) -> Result<Self> {
-        // Early verification of the embedding name
-        let embedding_func = self
-            .embedding_registry
-            .get(&definition.embedding_name)
-            .ok_or_else(|| Error::EmbeddingFunctionNotFound {
-                name: definition.embedding_name.clone(),
-                reason: "No embedding function found in the connection's embedding_registry"
-                    .to_string(),
-            })?;
-
-        self.embeddings.push((definition, embedding_func));
-        Ok(self)
-    }
-
-    /// Set whether to use V2 manifest paths for the table. (default: false)
-    ///
-    /// These paths provide more efficient opening of tables with many
-    /// versions on object stores.
-    ///
-    /// <div class="warning">Turning this on will make the dataset unreadable
-    /// for older versions of LanceDB (prior to 0.10.0).</div>
-    ///
-    /// To migrate an existing dataset, instead use the
-    /// [[NativeTable::migrate_manifest_paths_v2]].
-    ///
-    /// This has no effect in LanceDB Cloud.
-    #[deprecated(since = "0.15.1", note = "Use `database_options` instead")]
-    pub fn enable_v2_manifest_paths(mut self, use_v2_manifest_paths: bool) -> Self {
-        let store_params = self
-            .request
-            .write_options
-            .lance_write_params
-            .get_or_insert_with(Default::default)
-            .store_params
-            .get_or_insert_with(Default::default);
-        let value = if use_v2_manifest_paths {
-            "true".to_string()
-        } else {
-            "false".to_string()
-        };
-        merge_storage_options(
-            store_params,
-            [(OPT_NEW_TABLE_V2_MANIFEST_PATHS.to_string(), value)],
-        );
-        self
-    }
-
-    /// Set the data storage version.
-    ///
-    /// The default is `LanceFileVersion::Stable`.
-    #[deprecated(since = "0.15.1", note = "Use `database_options` instead")]
-    pub fn data_storage_version(mut self, data_storage_version: LanceFileVersion) -> Self {
-        let store_params = self
-            .request
-            .write_options
-            .lance_write_params
-            .get_or_insert_with(Default::default)
-            .store_params
-            .get_or_insert_with(Default::default);
-        merge_storage_options(
-            store_params,
-            [(
-                OPT_NEW_TABLE_STORAGE_VERSION.to_string(),
-                data_storage_version.to_string(),
-            )],
-        );
-        self
-    }
-
-    /// Set the namespace for the table
-    pub fn namespace(mut self, namespace: Vec<String>) -> Self {
-        self.request.namespace = namespace;
-        self
-    }
-
-    /// Set a custom location for the table.
-    ///
-    /// If not set, the database will derive a location from its URI and the table name.
-    /// This is useful when integrating with namespace systems that manage table locations.
-    pub fn location(mut self, location: impl Into<String>) -> Self {
-        self.request.location = Some(location.into());
-        self
-    }
-
-    /// Set a storage options provider for automatic credential refresh.
-    ///
-    /// This allows tables to automatically refresh cloud storage credentials
-    /// when they expire, enabling long-running operations on remote storage.
-    pub fn storage_options_provider(mut self, provider: Arc<dyn StorageOptionsProvider>) -> Self {
-        let store_params = self
-            .request
-            .write_options
-            .lance_write_params
-            .get_or_insert(Default::default())
-            .store_params
-            .get_or_insert(Default::default());
-        set_storage_options_provider(store_params, provider);
-        self
     }
 }
 
@@ -656,35 +351,17 @@ impl Connection {
     ///
     /// * `name` - The name of the table
     /// * `initial_data` - The initial data to write to the table
-    pub fn create_table<T: IntoArrow>(
+    pub fn create_table<T: Scannable + 'static>(
         &self,
         name: impl Into<String>,
         initial_data: T,
-    ) -> CreateTableBuilder<true> {
-        CreateTableBuilder::<true>::new(
+    ) -> CreateTableBuilder {
+        let initial_data = Box::new(initial_data);
+        CreateTableBuilder::new(
             self.internal.clone(),
+            self.embedding_registry.clone(),
             name.into(),
             initial_data,
-            self.embedding_registry.clone(),
-        )
-    }
-
-    /// Create a new table from a stream of data
-    ///
-    /// # Parameters
-    ///
-    /// * `name` - The name of the table
-    /// * `initial_data` - The initial data to write to the table
-    pub fn create_table_streaming<T: IntoArrowStream>(
-        &self,
-        name: impl Into<String>,
-        initial_data: T,
-    ) -> CreateTableBuilder<true> {
-        CreateTableBuilder::<true>::new_streaming(
-            self.internal.clone(),
-            name.into(),
-            initial_data,
-            self.embedding_registry.clone(),
         )
     }
 
@@ -698,13 +375,9 @@ impl Connection {
         &self,
         name: impl Into<String>,
         schema: SchemaRef,
-    ) -> CreateTableBuilder<false> {
-        CreateTableBuilder::<false>::new(
-            self.internal.clone(),
-            name.into(),
-            schema,
-            self.embedding_registry.clone(),
-        )
+    ) -> CreateTableBuilder {
+        let empty_batch = RecordBatch::new_empty(schema);
+        self.create_table(name, empty_batch)
     }
 
     /// Open an existing table in the database
@@ -1456,134 +1129,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_table_v2() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri)
-            .database_options(&ListingDatabaseOptions {
-                new_table_config: NewTableConfig {
-                    data_storage_version: Some(LanceFileVersion::Legacy),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .execute()
-            .await
-            .unwrap();
-
-        let tbl = db
-            .create_table("v1_test", make_data())
-            .execute()
-            .await
-            .unwrap();
-
-        // In v1 the row group size will trump max_batch_length
-        let batches = tbl
-            .query()
-            .limit(20000)
-            .execute_with_options(QueryExecutionOptions {
-                max_batch_length: 50000,
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-        assert_eq!(batches.len(), 20);
-
-        let db = connect(uri)
-            .database_options(&ListingDatabaseOptions {
-                new_table_config: NewTableConfig {
-                    data_storage_version: Some(LanceFileVersion::Stable),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .execute()
-            .await
-            .unwrap();
-
-        let tbl = db
-            .create_table("v2_test", make_data())
-            .execute()
-            .await
-            .unwrap();
-
-        // In v2 the page size is much bigger than 50k so we should get a single batch
-        let batches = tbl
-            .query()
-            .execute_with_options(QueryExecutionOptions {
-                max_batch_length: 50000,
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-
-        assert_eq!(batches.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_create_table_streaming() {
-        let tmp_dir = tempdir().unwrap();
-
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri).execute().await.unwrap();
-
-        let batches = make_data().collect::<ArrowResult<Vec<_>>>().unwrap();
-
-        let schema = batches.first().unwrap().schema();
-        let one_batch = concat_batches(&schema, batches.iter()).unwrap();
-
-        let ldb_stream = stream::iter(batches.clone().into_iter().map(Result::Ok));
-        let ldb_stream: SendableRecordBatchStream =
-            Box::pin(SimpleRecordBatchStream::new(ldb_stream, schema.clone()));
-
-        let tbl1 = db
-            .create_table_streaming("one", ldb_stream)
-            .execute()
-            .await
-            .unwrap();
-
-        let df_stream = stream::iter(batches.into_iter().map(DataFusionResult::Ok));
-        let df_stream: datafusion_physical_plan::SendableRecordBatchStream =
-            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), df_stream));
-
-        let tbl2 = db
-            .create_table_streaming("two", df_stream)
-            .execute()
-            .await
-            .unwrap();
-
-        let tbl1_data = tbl1
-            .query()
-            .execute()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-
-        let tbl1_data = concat_batches(&schema, tbl1_data.iter()).unwrap();
-        assert_eq!(tbl1_data, one_batch);
-
-        let tbl2_data = tbl2
-            .query()
-            .execute()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-
-        let tbl2_data = concat_batches(&schema, tbl2_data.iter()).unwrap();
-        assert_eq!(tbl2_data, one_batch);
-    }
-
-    #[tokio::test]
     async fn drop_table() {
         let tc = new_test_connection().await.unwrap();
         let db = tc.connection;
@@ -1613,41 +1158,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_table_already_exists() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri).execute().await.unwrap();
-        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
-        db.create_empty_table("test", schema.clone())
-            .execute()
-            .await
-            .unwrap();
-        // TODO: None of the open table options are "inspectable" right now but once one is we
-        // should assert we are passing these options in correctly
-        db.create_empty_table("test", schema)
-            .mode(CreateTableMode::exist_ok(|mut req| {
-                req.index_cache_size = Some(16);
-                req
-            }))
-            .execute()
-            .await
-            .unwrap();
-        let other_schema = Arc::new(Schema::new(vec![Field::new("y", DataType::Int32, false)]));
-        assert!(db
-            .create_empty_table("test", other_schema.clone())
-            .execute()
-            .await
-            .is_err());
-        let overwritten = db
-            .create_empty_table("test", other_schema.clone())
-            .mode(CreateTableMode::Overwrite)
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(other_schema, overwritten.schema().await.unwrap());
-    }
-
-    #[tokio::test]
     async fn test_clone_table() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
@@ -1660,7 +1170,7 @@ mod tests {
         let reader = batch_gen.batches(5, 100);
 
         let source_table = db
-            .create_table("source_table", reader)
+            .create_table("source_table", Box::new(reader))
             .execute()
             .await
             .unwrap();

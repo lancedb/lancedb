@@ -4,13 +4,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_array::RecordBatchIterator;
 use async_trait::async_trait;
 use http::StatusCode;
 use lance_io::object_store::StorageOptions;
 use moka::future::Cache;
 use reqwest::header::CONTENT_TYPE;
-use tokio::task::spawn_blocking;
 
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
@@ -19,16 +17,17 @@ use lance_namespace::models::{
 };
 
 use crate::database::{
-    CloneTableRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
-    DatabaseOptions, OpenTableRequest, ReadConsistency, TableNamesRequest,
+    CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
+    OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
+use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
 use crate::Error;
 
 use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender};
 use super::table::RemoteTable;
-use super::util::{batches_to_ipc_bytes, parse_server_version};
+use super::util::parse_server_version;
 use super::ARROW_STREAM_CONTENT_TYPE;
 
 // Request structure for the remote clone table API
@@ -437,25 +436,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
-        let data = match request.data {
-            CreateTableData::Data(data) => data,
-            CreateTableData::StreamingData(_) => {
-                return Err(Error::NotSupported {
-                    message: "Creating a remote table from a streaming source".to_string(),
-                })
-            }
-            CreateTableData::Empty(table_definition) => {
-                let schema = table_definition.schema.clone();
-                Box::new(RecordBatchIterator::new(vec![], schema))
-            }
-        };
-
-        // TODO: https://github.com/lancedb/lancedb/issues/1026
-        // We should accept data from an async source.  In the meantime, spawn this as blocking
-        // to make sure we don't block the tokio runtime if the source is slow.
-        let data_buffer = spawn_blocking(move || batches_to_ipc_bytes(data))
-            .await
-            .unwrap()?;
+        // TODO: handle body send retries by calling read() again and passing a new body.
+        let body = stream_as_body(request.data.read())?;
 
         let identifier =
             build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
@@ -463,7 +445,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .client
             .post(&format!("/v1/table/{}/create/", identifier))
             .query(&[("mode", Into::<&str>::into(&request.mode))])
-            .body(data_buffer)
+            .body(body)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
         let (request_id, rsp) = self.client.send(req).await?;
@@ -993,7 +975,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let reader = RecordBatchIterator::new([Ok(data.clone())], data.schema());
+        let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], data.schema()));
         let table = conn.create_table("table1", reader).execute().await.unwrap();
         assert_eq!(table.name(), "table1");
     }
@@ -1011,7 +993,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let reader = RecordBatchIterator::new([Ok(data.clone())], data.schema());
+        let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], data.schema()));
         let result = conn.create_table("table1", reader).execute().await;
         assert!(result.is_err());
         assert!(
@@ -1045,7 +1027,7 @@ mod tests {
                 vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
             )
             .unwrap();
-            let reader = RecordBatchIterator::new([Ok(data.clone())], data.schema());
+            let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], data.schema()));
             let mut builder = conn.create_table("table1", reader);
             if let Some(mode) = mode {
                 builder = builder.mode(mode);
@@ -1071,7 +1053,7 @@ mod tests {
         .unwrap();
 
         let called: Arc<OnceLock<bool>> = Arc::new(OnceLock::new());
-        let reader = RecordBatchIterator::new([Ok(data.clone())], data.schema());
+        let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], data.schema()));
         let called_in_cb = called.clone();
         conn.create_table("table1", reader)
             .mode(CreateTableMode::ExistOk(Box::new(move |b| {
@@ -1262,7 +1244,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let reader = RecordBatchIterator::new([Ok(data.clone())], data.schema());
+        let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], data.schema()));
         let table = conn
             .create_table("table1", reader)
             .namespace(vec!["ns1".to_string()])
@@ -1730,7 +1712,7 @@ mod tests {
                 vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
             )
             .unwrap();
-            let reader = RecordBatchIterator::new([Ok(data.clone())], schema.clone());
+            let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], schema.clone()));
 
             let table = conn
                 .create_table("test_table", reader)
@@ -1806,7 +1788,7 @@ mod tests {
                 let data =
                     RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![i]))])
                         .unwrap();
-                let reader = RecordBatchIterator::new([Ok(data.clone())], schema.clone());
+                let reader = Box::new(RecordBatchIterator::new([Ok(data.clone())], schema.clone()));
 
                 conn.create_table(format!("table{}", i), reader)
                     .namespace(namespace.clone())

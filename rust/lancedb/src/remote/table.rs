@@ -46,7 +46,6 @@ use super::db::ServerVersion;
 use super::ARROW_STREAM_CONTENT_TYPE;
 use crate::index::waiter::wait_for_index;
 use crate::{
-    connection::NoData,
     error::Result,
     index::{IndexBuilder, IndexConfig},
     query::QueryExecutionOptions,

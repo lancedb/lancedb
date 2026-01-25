@@ -18,12 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow_array::RecordBatchReader;
-use async_trait::async_trait;
-use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
-use futures::stream;
 use lance::dataset::ReadParams;
-use lance_datafusion::utils::StreamingWriteSource;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
     DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
@@ -31,9 +26,9 @@ use lance_namespace::models::{
 };
 use lance_namespace::LanceNamespace;
 
-use crate::arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt};
+use crate::data::scannable::Scannable;
 use crate::error::Result;
-use crate::table::{BaseTable, TableDefinition, WriteOptions};
+use crate::table::{BaseTable, WriteOptions};
 
 pub mod listing;
 pub mod namespace;
@@ -115,51 +110,14 @@ impl Default for CreateTableMode {
     }
 }
 
-/// The data to start a table or a schema to create an empty table
-pub enum CreateTableData {
-    /// Creates a table using an iterator of data, the schema will be obtained from the data
-    Data(Box<dyn RecordBatchReader + Send>),
-    /// Creates a table using a stream of data, the schema will be obtained from the data
-    StreamingData(SendableRecordBatchStream),
-    /// Creates an empty table, the definition / schema must be provided separately
-    Empty(TableDefinition),
-}
-
-impl CreateTableData {
-    pub fn schema(&self) -> Arc<arrow_schema::Schema> {
-        match self {
-            Self::Data(reader) => reader.schema(),
-            Self::StreamingData(stream) => stream.schema(),
-            Self::Empty(definition) => definition.schema.clone(),
-        }
-    }
-}
-
-#[async_trait]
-impl StreamingWriteSource for CreateTableData {
-    fn arrow_schema(&self) -> Arc<arrow_schema::Schema> {
-        self.schema()
-    }
-    fn into_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream {
-        match self {
-            Self::Data(reader) => reader.into_stream(),
-            Self::StreamingData(stream) => stream.into_df_stream(),
-            Self::Empty(table_definition) => {
-                let schema = table_definition.schema.clone();
-                Box::pin(RecordBatchStreamAdapter::new(schema, stream::empty()))
-            }
-        }
-    }
-}
-
 /// A request to create a table
 pub struct CreateTableRequest {
     /// The name of the new table
     pub name: String,
     /// The namespace to create the table in. Empty list represents root namespace.
     pub namespace: Vec<String>,
-    /// Initial data to write to the table, can be None to create an empty table
-    pub data: CreateTableData,
+    /// Initial data to write to the table, can be empty.
+    pub data: Box<dyn Scannable>,
     /// The mode to use when creating the table
     pub mode: CreateTableMode,
     /// Options to use when writing data (only used if `data` is not None)
@@ -173,7 +131,7 @@ pub struct CreateTableRequest {
 }
 
 impl CreateTableRequest {
-    pub fn new(name: String, data: CreateTableData) -> Self {
+    pub fn new(name: String, data: Box<dyn Scannable>) -> Self {
         Self {
             name,
             namespace: vec![],

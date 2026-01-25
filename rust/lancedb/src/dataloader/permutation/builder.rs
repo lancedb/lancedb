@@ -13,7 +13,7 @@ use lance_datafusion::exec::SessionContextExt;
 use crate::{
     arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream},
     connect,
-    database::{CreateTableData, CreateTableRequest, Database},
+    database::{CreateTableRequest, Database},
     dataloader::permutation::{
         shuffle::{Shuffler, ShufflerConfig},
         split::{SplitStrategy, Splitter, SPLIT_ID_COLUMN},
@@ -301,10 +301,8 @@ impl PermutationBuilder {
             }
         };
 
-        let create_table_request = CreateTableRequest::new(
-            name.to_string(),
-            CreateTableData::StreamingData(streaming_data),
-        );
+        let create_table_request =
+            CreateTableRequest::new(name.to_string(), Box::new(streaming_data));
 
         let table = database.create_table(create_table_request).await?;
 
@@ -334,7 +332,7 @@ mod tests {
             .col("some_value", lance_datagen::array::step::<Int32Type>())
             .into_ldb_stream(RowCount::from(100), BatchCount::from(10));
         let data_table = db
-            .create_table_streaming("mytbl", initial_data)
+            .create_table("mytbl", initial_data)
             .execute()
             .await
             .unwrap();

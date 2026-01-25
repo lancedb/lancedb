@@ -56,7 +56,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::arrow::IntoArrow;
-use crate::connection::NoData;
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
