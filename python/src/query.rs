@@ -453,7 +453,7 @@ impl Query {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+            Python::with_gil(|py| schema.to_pyarrow(py))
         })
     }
 
@@ -532,7 +532,7 @@ impl TakeQuery {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+            Python::with_gil(|py| schema.to_pyarrow(py))
         })
     }
 
@@ -627,7 +627,7 @@ impl FTSQuery {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+            Python::with_gil(|py| schema.to_pyarrow(py))
         })
     }
 
@@ -806,7 +806,7 @@ impl VectorQuery {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.output_schema().await.infer_error()?;
-            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+            Python::with_gil(|py| schema.to_pyarrow(py))
         })
     }
 

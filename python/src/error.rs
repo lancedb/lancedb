@@ -40,7 +40,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     request_id,
                     source,
                     status_code,
-                } => Python::attach(|py| {
+                } => Python::with_gil(|py| {
                     let message = err.to_string();
                     let http_err_cls = py
                         .import(intern!(py, "lancedb.remote.errors"))?
@@ -75,7 +75,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     max_read_failures,
                     source,
                     status_code,
-                } => Python::attach(|py| {
+                } => Python::with_gil(|py| {
                     let cause_err = http_from_rust_error(
                         py,
                         source.as_ref(),
