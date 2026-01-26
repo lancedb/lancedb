@@ -1520,9 +1520,9 @@ describe("when optimizing a dataset", () => {
 
   it("delete unverified", async () => {
     const version = await table.version();
-    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${String(
-      18446744073709551615n - (BigInt(version) - 1n),
-    ).padStart(20, "0")}.manifest`;
+    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${
+      version - 1
+    }.manifest`;
     fs.rmSync(versionFile);
 
     let stats = await table.optimize({ deleteUnverified: false });
