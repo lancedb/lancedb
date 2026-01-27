@@ -81,75 +81,55 @@ impl AddDataBuilder {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use arrow_array::{Int32Array, RecordBatch};
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_array::record_batch;
     use lance::dataset::{WriteMode, WriteParams};
-    use tempfile::tempdir;
 
     use crate::connect;
     use crate::table::WriteOptions;
 
     use super::AddDataMode;
 
-    fn make_test_batch(start: i32, end: i32) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
-        RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int32Array::from_iter_values(start..end))],
-        )
-        .unwrap()
-    }
-
     #[tokio::test]
     async fn test_add() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
 
-        let batch = make_test_batch(0, 10);
-        let schema = batch.schema().clone();
-        let table = conn.create_table("test", batch).execute().await.unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+        let batch = record_batch!(("i", Int32, [0, 1, 2])).unwrap();
+        let table = conn
+            .create_table("test", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
 
-        let new_batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from_iter_values(100..110))],
-        )
-        .unwrap();
-
+        let new_batch = record_batch!(("i", Int32, [3])).unwrap();
         table.add(new_batch).execute().await.unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 20);
-        assert_eq!(table.name(), "test");
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 4);
+        assert_eq!(table.schema().await.unwrap(), batch.schema());
     }
 
     #[tokio::test]
     async fn test_add_overwrite() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
 
-        let batch = make_test_batch(0, 10);
-        let schema = batch.schema().clone();
-        let table = conn.create_table("test", batch).execute().await.unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+        let batch = record_batch!(("i", Int32, [0, 1, 2])).unwrap();
+        let table = conn
+            .create_table("test", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), batch.num_rows());
 
-        let new_batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from_iter_values(100..110))],
-        )
-        .unwrap();
-
-        // Can overwrite using AddDataMode::Overwrite
-        table
+        let new_batch = record_batch!(("x", Float32, [0.0, 1.0])).unwrap();
+        let res = table
             .add(new_batch.clone())
             .mode(AddDataMode::Overwrite)
             .execute()
             .await
             .unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
-        assert_eq!(table.name(), "test");
+        assert_eq!(res.version, table.version().await.unwrap());
+        assert_eq!(table.count_rows(None).await.unwrap(), new_batch.num_rows());
+        assert_eq!(table.schema().await.unwrap(), new_batch.schema());
 
         // Can overwrite using underlying WriteParams (which
         // take precedence over AddDataMode)
@@ -159,7 +139,7 @@ mod tests {
         };
 
         table
-            .add(new_batch)
+            .add(new_batch.clone())
             .write_options(WriteOptions {
                 lance_write_params: Some(param),
             })
@@ -167,7 +147,6 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
-        assert_eq!(table.name(), "test");
+        assert_eq!(table.count_rows(None).await.unwrap(), new_batch.num_rows());
     }
 }
