@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use crate::data::scannable::Scannable;
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
@@ -341,6 +342,91 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(res)
     }
 
+    /// Send a request with data from a Scannable source.
+    ///
+    /// For rescannable sources, this will retry on retryable errors by re-reading
+    /// the data. For non-rescannable sources (streams), only a single attempt is made.
+    async fn send_scannable(
+        &self,
+        req_builder: RequestBuilder,
+        data: &mut dyn Scannable,
+    ) -> Result<(String, Response)> {
+        use crate::remote::retry::RetryCounter;
+
+        let rescannable = data.rescannable();
+        let max_retries = if rescannable {
+            self.client.retry_config.retries
+        } else {
+            0
+        };
+
+        // Clone the request builder to extract the request id
+        let tmp_req = req_builder.try_clone().ok_or_else(|| Error::Runtime {
+            message: "Attempted to retry a request that cannot be cloned".to_string(),
+        })?;
+        let (_, r) = tmp_req.build_split();
+        let mut r = r.unwrap();
+        let request_id = self.client.extract_request_id(&mut r);
+        let mut retry_counter = RetryCounter::new(&self.client.retry_config, request_id.clone());
+
+        loop {
+            // Re-read data on each attempt
+            let stream = data.scan_as_stream();
+            let body = stream_as_body(stream)?;
+
+            let mut req_builder = req_builder.try_clone().ok_or_else(|| Error::Runtime {
+                message: "Attempted to retry a request that cannot be cloned".to_string(),
+            })?;
+            req_builder = req_builder.body(body);
+
+            let (c, request) = req_builder.build_split();
+            let mut request = request.unwrap();
+            self.client.set_request_id(&mut request, &request_id);
+
+            // Apply dynamic headers
+            request = self.client.apply_dynamic_headers(request).await?;
+
+            self.client.log_request(&request, &request_id);
+
+            let response = match self.client.sender.send(&c, request).await {
+                Ok(r) => r,
+                Err(err) => {
+                    if err.is_connect() {
+                        retry_counter.increment_connect_failures(err)?;
+                    } else if err.is_body() || err.is_decode() {
+                        retry_counter.increment_read_failures(err)?;
+                    } else {
+                        return Err(crate::Error::Http {
+                            source: err.into(),
+                            request_id,
+                            status_code: None,
+                        });
+                    }
+                    tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                    continue;
+                }
+            };
+
+            let status = response.status();
+
+            // Check for retryable status codes
+            if self.client.retry_config.statuses.contains(&status)
+                && retry_counter.request_failures < max_retries
+            {
+                let http_err = crate::Error::Http {
+                    source: format!("Retryable status code: {}", status).into(),
+                    request_id: request_id.clone(),
+                    status_code: Some(status),
+                };
+                retry_counter.increment_request_failures(http_err)?;
+                tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                continue;
+            }
+
+            return Ok((request_id, response));
+        }
+    }
+
     pub(super) async fn handle_table_not_found(
         table_name: &str,
         response: reqwest::Response,
@@ -656,8 +742,9 @@ impl<S: HttpSend> std::fmt::Display for RemoteTable<S> {
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
-    use crate::remote::client::test_utils::client_with_handler;
     use crate::remote::client::test_utils::MockSender;
+    use crate::remote::client::test_utils::{client_with_handler, client_with_handler_and_config};
+    use crate::remote::ClientConfig;
 
     impl RemoteTable<MockSender> {
         pub fn new_mock<F, T>(name: String, handler: F, version: Option<semver::Version>) -> Self
@@ -672,6 +759,23 @@ mod test_utils {
                 namespace: vec![],
                 identifier: name,
                 server_version: version.map(ServerVersion).unwrap_or_default(),
+                version: RwLock::new(None),
+                location: RwLock::new(None),
+            }
+        }
+
+        pub fn new_mock_with_config<F, T>(name: String, handler: F, config: ClientConfig) -> Self
+        where
+            F: Fn(reqwest::Request) -> http::Response<T> + Send + Sync + 'static,
+            T: Into<reqwest::Body>,
+        {
+            let client = client_with_handler_and_config(handler, config);
+            Self {
+                client,
+                name: name.clone(),
+                namespace: vec![],
+                identifier: name,
+                server_version: ServerVersion::default(),
                 version: RwLock::new(None),
                 location: RwLock::new(None),
             }
@@ -797,7 +901,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })
     }
-    async fn add(&self, add: AddDataBuilder) -> Result<AddResult> {
+    async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
         let mut request = self
             .client
@@ -811,10 +915,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             }
         }
 
-        // TODO: handle body send retries by calling read() again for rescannable sources
-        let body = stream_as_body(add.data.read()?)?;
-
-        let (request_id, response) = self.client.send(request.body(body)).await?;
+        let (request_id, response) = self.send_scannable(request, &mut *add.data).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
         if body.trim().is_empty() {
@@ -1560,12 +1661,14 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::{collections::HashMap, pin::Pin};
 
     use super::*;
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
+    use arrow_array::{record_batch, Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
@@ -3419,5 +3522,83 @@ mod tests {
         let uri2 = table.uri().await.unwrap();
         assert_eq!(uri2, "gs://bucket/table");
         assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, no new call
+    }
+
+    #[tokio::test]
+    async fn test_add_retries_rescannable_data() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        // Configure with retries enabled (default is 3)
+        let config = crate::remote::ClientConfig::default();
+
+        let table = Table::new_with_handler_and_config(
+            "my_table",
+            move |_request| {
+                let count = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if count < 2 {
+                    // First two attempts fail with a retryable error (409)
+                    http::Response::builder().status(409).body("").unwrap()
+                } else {
+                    // Third attempt succeeds
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 1}"#)
+                        .unwrap()
+                }
+            },
+            config,
+        );
+
+        // RecordBatch is rescannable - should retry and succeed
+        let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
+        let result = table.add(batch).execute().await;
+
+        assert!(
+            result.is_ok(),
+            "Expected success after retries: {:?}",
+            result
+        );
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            3,
+            "Expected 2 failed attempts + 1 success = 3 total"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_no_retry_for_non_rescannable() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        // Configure with retries enabled
+        let config = crate::remote::ClientConfig::default();
+
+        let table = Table::new_with_handler_and_config(
+            "my_table",
+            move |_request| {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                // Always fail with retryable error
+                http::Response::builder().status(409).body("").unwrap()
+            },
+            config,
+        );
+
+        // RecordBatchReader is NOT rescannable - should NOT retry
+        let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            vec![Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        let result = table.add(reader).execute().await;
+
+        // Should fail because we can't retry non-rescannable sources
+        assert!(result.is_err());
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "Expected only one attempt for non-rescannable source"
+        );
     }
 }

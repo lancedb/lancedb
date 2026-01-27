@@ -435,9 +435,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(response)
     }
 
-    async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
-        // TODO: handle body send retries by calling read() again and passing a new body.
-        let body = stream_as_body(request.data.read()?)?;
+    async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        let body = stream_as_body(request.data.scan_as_stream())?;
 
         let identifier =
             build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);

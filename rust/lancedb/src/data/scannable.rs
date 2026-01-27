@@ -9,16 +9,15 @@
 
 use std::sync::Arc;
 
+use arrow_array::RecordBatchIterator;
 use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
-use datafusion_common::DataFusionError;
 use futures::stream::once;
 use lance_datafusion::utils::StreamingWriteSource;
 
-use crate::{
-    arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream},
-    Result,
+use crate::arrow::{
+    SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream,
 };
 
 pub trait Scannable: Send {
@@ -27,9 +26,12 @@ pub trait Scannable: Send {
 
     /// Read data as a stream of record batches.
     ///
-    /// This consumes the data source. The returned stream produces batches
-    /// matching the schema from [`Self::schema()`].
-    fn read(self: Box<Self>) -> Result<SendableRecordBatchStream>;
+    /// For rescannable sources (in-memory data like RecordBatch, Vec<RecordBatch>),
+    /// this can be called multiple times and returns cloned data each time.
+    ///
+    /// For non-rescannable sources (streams, readers), the first call returns data
+    /// and subsequent calls return an empty stream.
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream;
 
     /// Optional hint about the number of rows.
     ///
@@ -65,12 +67,13 @@ impl Scannable for RecordBatch {
         Self::schema(self)
     }
 
-    fn read(self: Box<Self>) -> Result<SendableRecordBatchStream> {
-        let schema = self.schema();
-        Ok(Box::pin(SimpleRecordBatchStream {
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        let batch = self.clone();
+        let schema = batch.schema();
+        Box::pin(SimpleRecordBatchStream {
             schema,
-            stream: once(async move { Ok(*self) }),
-        }))
+            stream: once(async move { Ok(batch) }),
+        })
     }
 
     fn num_rows(&self) -> Option<usize> {
@@ -91,11 +94,11 @@ impl Scannable for Vec<RecordBatch> {
         }
     }
 
-    fn read(self: Box<Self>) -> Result<SendableRecordBatchStream> {
-        let schema = Scannable::schema(self.as_ref());
-        let batches = *self;
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        let schema = Scannable::schema(self);
+        let batches = self.clone();
         let stream = futures::stream::iter(batches.into_iter().map(Ok));
-        Ok(Box::pin(SimpleRecordBatchStream { schema, stream }))
+        Box::pin(SimpleRecordBatchStream { schema, stream })
     }
 
     fn num_rows(&self) -> Option<usize> {
@@ -112,9 +115,11 @@ impl Scannable for Box<dyn RecordBatchReader + Send> {
         RecordBatchReader::schema(self.as_ref())
     }
 
-    fn read(self: Box<Self>) -> Result<SendableRecordBatchStream> {
-        let inner: Box<dyn RecordBatchReader + Send> = *self;
-        let schema = RecordBatchReader::schema(inner.as_ref());
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        let schema = RecordBatchReader::schema(self.as_ref());
+        let empty_reader: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(std::iter::empty(), schema.clone()));
+        let reader = std::mem::replace(self, empty_reader);
 
         // Use a channel to bridge blocking RecordBatchReader to async stream.
         // Buffer size of 2 provides some pipelining while limiting memory use.
@@ -122,7 +127,7 @@ impl Scannable for Box<dyn RecordBatchReader + Send> {
 
         // Spawn blocking task to read from the reader
         tokio::task::spawn_blocking(move || {
-            let mut reader = inner;
+            let mut reader = reader;
             for batch_result in reader.by_ref() {
                 let result = batch_result.map_err(Into::into);
                 // If receiver is dropped, stop reading
@@ -137,7 +142,7 @@ impl Scannable for Box<dyn RecordBatchReader + Send> {
             rx.recv().await.map(|batch| (batch, rx))
         });
 
-        Ok(Box::pin(SimpleRecordBatchStream { schema, stream }))
+        Box::pin(SimpleRecordBatchStream { schema, stream })
     }
 
     fn num_rows(&self) -> Option<usize> {
@@ -154,8 +159,13 @@ impl Scannable for SendableRecordBatchStream {
         self.as_ref().schema()
     }
 
-    fn read(self: Box<Self>) -> Result<SendableRecordBatchStream> {
-        Ok(*self)
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        let schema = self.as_ref().schema();
+        let empty_stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+            schema: schema.clone(),
+            stream: futures::stream::empty(),
+        });
+        std::mem::replace(self, empty_stream)
     }
 
     fn num_rows(&self) -> Option<usize> {
@@ -173,21 +183,92 @@ impl StreamingWriteSource for Box<dyn Scannable> {
         self.schema()
     }
 
-    fn into_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream {
-        let schema = self.schema();
-        match self.read() {
-            Ok(stream) => stream.into_df_stream(),
-            Err(err) => {
-                let err = DataFusionError::External(Box::new(err));
-                let err_fut = futures::future::err(err);
-                let err_stream = futures::stream::once(err_fut);
-                Box::pin(
-                    datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(
-                        schema.clone(),
-                        err_stream,
-                    ),
-                )
-            }
-        }
+    fn into_stream(mut self) -> datafusion_physical_plan::SendableRecordBatchStream {
+        self.scan_as_stream().into_df_stream()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::record_batch;
+    use futures::TryStreamExt;
+
+    #[tokio::test]
+    async fn test_record_batch_rescannable() {
+        let mut batch = record_batch!(("id", Int64, [0, 1, 2])).unwrap();
+
+        let stream1 = batch.scan_as_stream();
+        let batches1: Vec<RecordBatch> = stream1.try_collect().await.unwrap();
+        assert_eq!(batches1.len(), 1);
+        assert_eq!(batches1[0], batch);
+
+        assert!(batch.rescannable());
+        let stream2 = batch.scan_as_stream();
+        let batches2: Vec<RecordBatch> = stream2.try_collect().await.unwrap();
+        assert_eq!(batches2.len(), 1);
+        assert_eq!(batches2[0], batch);
+    }
+
+    #[tokio::test]
+    async fn test_vec_batch_rescannable() {
+        let mut batches = vec![
+            record_batch!(("id", Int64, [0, 1])).unwrap(),
+            record_batch!(("id", Int64, [2, 3, 4])).unwrap(),
+        ];
+
+        let stream1 = batches.scan_as_stream();
+        let result1: Vec<RecordBatch> = stream1.try_collect().await.unwrap();
+        assert_eq!(result1.len(), 2);
+        assert_eq!(result1[0], batches[0]);
+        assert_eq!(result1[1], batches[1]);
+
+        assert!(batches.rescannable());
+        let stream2 = batches.scan_as_stream();
+        let result2: Vec<RecordBatch> = stream2.try_collect().await.unwrap();
+        assert_eq!(result2.len(), 2);
+        assert_eq!(result2[0], batches[0]);
+        assert_eq!(result2[1], batches[1]);
+    }
+
+    #[tokio::test]
+    async fn test_reader_not_rescannable() {
+        let batch = record_batch!(("id", Int64, [0, 1, 2])).unwrap();
+        let schema = batch.schema();
+        let mut reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            vec![Ok(batch.clone())],
+            schema.clone(),
+        ));
+
+        let stream1 = reader.scan_as_stream();
+        let result1: Vec<RecordBatch> = stream1.try_collect().await.unwrap();
+        assert_eq!(result1.len(), 1);
+        assert_eq!(result1[0], batch);
+
+        assert!(!reader.rescannable());
+        let stream2 = reader.scan_as_stream();
+        let result2: Vec<RecordBatch> = stream2.try_collect().await.unwrap();
+        assert_eq!(result2.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_stream_not_rescannable() {
+        let batch = record_batch!(("id", Int64, [0, 1, 2])).unwrap();
+        let schema = batch.schema();
+        let inner_stream = futures::stream::iter(vec![Ok(batch.clone())]);
+        let mut stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+            schema: schema.clone(),
+            stream: inner_stream,
+        });
+
+        let stream1 = stream.scan_as_stream();
+        let result1: Vec<RecordBatch> = stream1.try_collect().await.unwrap();
+        assert_eq!(result1.len(), 1);
+        assert_eq!(result1[0], batch);
+
+        assert!(!stream.rescannable());
+        let stream2 = stream.scan_as_stream();
+        let result2: Vec<RecordBatch> = stream2.try_collect().await.unwrap();
+        assert_eq!(result2.len(), 0);
     }
 }
