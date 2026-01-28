@@ -5,6 +5,7 @@ use crate::data::scannable::Scannable;
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
+use crate::remote::util::stream_as_ipc;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::AlterColumnsResult;
@@ -352,6 +353,21 @@ impl<S: HttpSend> RemoteTable<S> {
         data: &mut dyn Scannable,
     ) -> Result<(String, Response)> {
         use crate::remote::retry::RetryCounter;
+
+        // Right now, Python and Typescript don't pass down re-scannable data yet.
+        // So to preserve existing retry behavior, we have to collect data in
+        // memory for now. Once they expose rescannable data sources, we can remove this.
+        if !data.rescannable() && self.client.retry_config.retries > 0 {
+            let mut body = Vec::new();
+            stream_as_ipc(data.scan_as_stream())?
+                .try_for_each(|b| {
+                    body.extend_from_slice(&b);
+                    futures::future::ok(())
+                })
+                .await?;
+            let req_builder = req_builder.body(body);
+            return self.client.send_with_retry(req_builder, None, true).await;
+        }
 
         let rescannable = data.rescannable();
         let max_retries = if rescannable {
@@ -3595,10 +3611,24 @@ mod tests {
 
         // Should fail because we can't retry non-rescannable sources
         assert!(result.is_err());
-        assert_eq!(
-            call_count.load(Ordering::SeqCst),
-            1,
-            "Expected only one attempt for non-rescannable source"
+        // Right now, we actually do retry, so we get 3 failures. In the future
+        // this will change and we need to update the test.
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                Error::Retry {
+                    request_failures: 3,
+                    ..
+                }
+            ),
+            "Expected RequestFailed with status 409"
         );
+        // TODO: After we implement proper non-rescannable handling, uncomment below
+        // (This is blocked on getting Python and Node to pass down re-scannable data.)
+        // assert_eq!(
+        //     call_count.load(Ordering::SeqCst),
+        //     1,
+        //     "Expected only one attempt for non-rescannable source"
+        // );
     }
 }

@@ -3,14 +3,16 @@
 
 use arrow_ipc::CompressionType;
 use arrow_schema::ArrowError;
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use reqwest::Response;
 
 use crate::{arrow::SendableRecordBatchStream, Result};
 
 use super::db::ServerVersion;
 
-pub fn stream_as_body(data: SendableRecordBatchStream) -> Result<reqwest::Body> {
+pub fn stream_as_ipc(
+    data: SendableRecordBatchStream,
+) -> Result<impl Stream<Item = Result<bytes::Bytes>>> {
     let options = arrow_ipc::writer::IpcWriteOptions::default()
         .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
     const WRITE_BUF_SIZE: usize = 4096;
@@ -23,7 +25,7 @@ pub fn stream_as_body(data: SendableRecordBatchStream) -> Result<reqwest::Body> 
                 Some(Ok(batch)) => {
                     writer.write(&batch)?;
                     let buffer = std::mem::take(writer.get_mut());
-                    Ok(Some((buffer, (data, writer))))
+                    Ok(Some((bytes::Bytes::from(buffer), (data, writer))))
                 }
                 Some(Err(e)) => Err(e),
                 None => {
@@ -32,11 +34,16 @@ pub fn stream_as_body(data: SendableRecordBatchStream) -> Result<reqwest::Body> 
                         return Ok(None);
                     };
                     let buffer = std::mem::take(writer.get_mut());
-                    Ok(Some((buffer, (data, writer))))
+                    Ok(Some((bytes::Bytes::from(buffer), (data, writer))))
                 }
             }
         }
     });
+    Ok(stream.fuse())
+}
+
+pub fn stream_as_body(data: SendableRecordBatchStream) -> Result<reqwest::Body> {
+    let stream = stream_as_ipc(data)?;
     Ok(reqwest::Body::wrap_stream(stream))
 }
 

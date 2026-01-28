@@ -147,7 +147,8 @@ impl Scannable for Box<dyn RecordBatchReader + Send> {
         // Convert the receiver into a stream using unfold
         let stream = futures::stream::unfold(rx, |mut rx| async move {
             rx.recv().await.map(|batch| (batch, rx))
-        });
+        })
+        .fuse();
 
         Box::pin(SimpleRecordBatchStream { schema, stream })
     }
