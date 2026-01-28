@@ -27,6 +27,8 @@ pub const SRC_ROW_ID_COL: &str = "row_id";
 
 pub const SPLIT_NAMES_CONFIG_KEY: &str = "split_names";
 
+pub const DEFAULT_MEMORY_LIMIT: usize = 100 * 1024 * 1024;
+
 /// Where to store the permutation table
 #[derive(Debug, Clone, Default)]
 enum PermutationDestination {
@@ -167,10 +169,20 @@ impl PermutationBuilder {
         &self,
         data: SendableRecordBatchStream,
     ) -> Result<SendableRecordBatchStream> {
+        let memory_limit = std::env::var("LANCEDB_PERM_BUILDER_MEMORY_LIMIT")
+            .unwrap_or_else(|_| DEFAULT_MEMORY_LIMIT.to_string())
+            .parse::<usize>()
+            .unwrap_or_else(|_| {
+                log::error!(
+                    "Failed to parse LANCEDB_PERM_BUILDER_MEMORY_LIMIT, using default: {}",
+                    DEFAULT_MEMORY_LIMIT
+                );
+                DEFAULT_MEMORY_LIMIT
+            });
         let ctx = SessionContext::new_with_config_rt(
             SessionConfig::default(),
             RuntimeEnvBuilder::new()
-                .with_memory_limit(100 * 1024 * 1024, 1.0)
+                .with_memory_limit(memory_limit, 1.0)
                 .with_disk_manager_builder(
                     DiskManagerBuilder::default()
                         .with_mode(self.config.temp_dir.to_disk_manager_mode()),
