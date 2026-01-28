@@ -3,11 +3,10 @@
 
 use std::{iter::once, sync::Arc};
 
-use arrow_array::{RecordBatch, RecordBatchIterator, StringArray};
+use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use futures::StreamExt;
 use lancedb::{
-    arrow::IntoArrow,
     connect,
     embeddings::{
         sentence_transformers::SentenceTransformersEmbeddings, EmbeddingDefinition,
@@ -59,7 +58,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn make_data() -> impl IntoArrow {
+fn make_data() -> RecordBatch {
     let schema = Schema::new(vec![Field::new("facts", DataType::Utf8, false)]);
 
     let facts = StringArray::from_iter_values(vec![
@@ -90,6 +89,5 @@ fn make_data() -> impl IntoArrow {
         "The first chatbot was ELIZA, created in the 1960s.",
     ]);
     let schema = Arc::new(schema);
-    let rb = RecordBatch::try_new(schema.clone(), vec![Arc::new(facts)]).unwrap();
-    Box::new(RecordBatchIterator::new(vec![Ok(rb)], schema))
+    RecordBatch::try_new(schema.clone(), vec![Arc::new(facts)]).unwrap()
 }

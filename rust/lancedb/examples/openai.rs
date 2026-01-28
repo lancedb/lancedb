@@ -5,11 +5,9 @@
 
 use std::{iter::once, sync::Arc};
 
-use arrow_array::{Float64Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_array::{RecordBatch, StringArray};
 use futures::StreamExt;
 use lancedb::{
-    arrow::IntoArrow,
     connect,
     embeddings::{openai::OpenAIEmbeddingFunction, EmbeddingDefinition, EmbeddingFunction},
     query::{ExecutableQuery, QueryBase},
@@ -64,26 +62,19 @@ async fn main() -> Result<()> {
 }
 // --8<-- [end:openai_embeddings]
 
-fn make_data() -> impl IntoArrow {
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Int32, true),
-        Field::new("text", DataType::Utf8, false),
-        Field::new("price", DataType::Float64, false),
-    ]);
-
-    let id = Int32Array::from(vec![1, 2, 3, 4]);
-    let text = StringArray::from_iter_values(vec![
-        "Black T-Shirt",
-        "Leather Jacket",
-        "Winter Parka",
-        "Hooded Sweatshirt",
-    ]);
-    let price = Float64Array::from(vec![10.0, 50.0, 100.0, 30.0]);
-    let schema = Arc::new(schema);
-    let rb = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(id), Arc::new(text), Arc::new(price)],
-    )
-    .unwrap();
-    Box::new(RecordBatchIterator::new(vec![Ok(rb)], schema))
+fn make_data() -> RecordBatch {
+    arrow_array::record_batch!(
+        ("id", Int32, [1, 2, 3, 4]),
+        (
+            "text",
+            Utf8,
+            [
+                "Black T-Shirt",
+                "Leather Jacket",
+                "Winter Parka",
+                "Hooded Sweatshirt"
+            ]
+        ),
+        ("price", Float64, [10.0, 50.0, 100.0, 30.0])
+    ).unwrap()
 }
