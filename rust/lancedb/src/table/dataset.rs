@@ -101,6 +101,7 @@ impl DatasetRef {
                     refs::Ref::Version(_, Some(target_ver)) => version != target_ver,
                     refs::Ref::Version(_, None) => true, // No specific version, always checkout
                     refs::Ref::Tag(_) => true,           // Always checkout for tags
+                    refs::Ref::VersionNumber(target_ver) => version != target_ver,
                 };
 
                 if should_checkout {
