@@ -17,6 +17,7 @@ use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_ipc::reader::FileReader;
+use arrow_ipc::CompressionType;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use datafusion_common::DataFusionError;
@@ -28,7 +29,7 @@ use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
+use lance::dataset::{ColumnAlteration, NewColumnTransform, Version, WriteMode, WriteParams};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
@@ -55,6 +56,8 @@ use crate::{
         TableDefinition, UpdateBuilder,
     },
 };
+
+mod insert;
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 const METRIC_TYPE_KEY: &str = "metric_type";
@@ -261,8 +264,13 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
-        // TODO: Once Phalanx supports compression, we should use it here.
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
+        let options = arrow_ipc::writer::IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
+            Vec::new(),
+            &data.schema(),
+            options,
+        )?;
 
         //  Mutex is just here to make it sync. We shouldn't have any contention.
         let mut data = Mutex::new(data);
@@ -800,32 +808,50 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<AddResult> {
         self.check_mutable().await?;
-        let mut request = self
-            .client
-            .post(&format!("/v1/table/{}/insert/", self.identifier))
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
-        match add.mode {
-            AddDataMode::Append => {}
-            AddDataMode::Overwrite => {
-                request = request.query(&[("mode", "overwrite")]);
+        let overwrite = matches!(add.mode, AddDataMode::Overwrite);
+
+        // Convert RecordBatchReader to a stream
+        let schema = data.schema();
+        let stream = futures::stream::iter(data).map_err(DataFusionError::from);
+        let input_stream: SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(schema, stream));
+
+        // Wrap in OneShotExec as the input plan
+        let input_plan: Arc<dyn ExecutionPlan> = Arc::new(OneShotExec::new(input_stream));
+
+        // Create the RemoteInsertExec
+        let insert_exec = Arc::new(insert::RemoteInsertExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            input_plan,
+            overwrite,
+        ));
+
+        // Execute the plan and drain the results
+        let stream = execute_plan(insert_exec.clone(), Default::default())?;
+        stream.try_collect::<Vec<_>>().await.map_err(|e| {
+            // Try to recover the original crate::Error from DataFusionError::External
+            if let DataFusionError::External(inner) = e {
+                match inner.downcast::<Error>() {
+                    Ok(err) => return *err,
+                    Err(inner) => {
+                        return Error::Runtime {
+                            message: format!("Insert execution failed: {}", inner),
+                        }
+                    }
+                }
             }
-        }
-
-        let (request_id, response) = self.send_streaming(request, data, true).await?;
-        let response = self.check_table_response(&request_id, response).await?;
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        if body.trim().is_empty() {
-            // Backward compatible with old servers
-            return Ok(AddResult { version: 0 });
-        }
-
-        let add_response: AddResult = serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse add response: {}", e).into(),
-            request_id,
-            status_code: None,
+            Error::Runtime {
+                message: format!("Insert execution failed: {}", e),
+            }
         })?;
-        Ok(add_response)
+
+        // Retrieve the result from the execution
+        insert_exec.add_result().ok_or_else(|| Error::Runtime {
+            message: "Insert execution completed but no result was returned".to_string(),
+        })
     }
 
     async fn create_plan(
@@ -1508,6 +1534,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })?;
         Ok(stats)
     }
+
+    async fn create_insert_exec(
+        &self,
+        input: Arc<dyn ExecutionPlan>,
+        write_params: WriteParams,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let overwrite = matches!(write_params.mode, WriteMode::Overwrite);
+        Ok(Arc::new(insert::RemoteInsertExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            input,
+            overwrite,
+        )))
+    }
 }
 
 #[derive(Serialize)]
@@ -1744,10 +1785,17 @@ mod tests {
     }
 
     fn write_ipc_stream(data: &RecordBatch) -> Vec<u8> {
+        let options = arrow_ipc::writer::IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))
+            .unwrap();
         let mut body = Vec::new();
         {
-            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &data.schema())
-                .expect("Failed to create writer");
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
+                &mut body,
+                &data.schema(),
+                options,
+            )
+            .expect("Failed to create writer");
             writer.write(data).expect("Failed to write data");
             writer.finish().expect("Failed to finish");
         }
