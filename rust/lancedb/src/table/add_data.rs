@@ -82,20 +82,133 @@ impl AddDataBuilder {
 mod tests {
     use std::sync::Arc;
 
-    use arrow_array::{record_batch, RecordBatch};
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_array::{record_batch, RecordBatch, RecordBatchIterator};
+    use arrow_schema::{ArrowError, DataType, Field, Schema};
     use futures::TryStreamExt;
     use lance::dataset::{WriteMode, WriteParams};
 
+    use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
     use crate::connect;
+    use crate::data::scannable::Scannable;
     use crate::embeddings::{
         EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry,
     };
     use crate::query::{ExecutableQuery, QueryBase, Select};
-    use crate::table::{ColumnDefinition, ColumnKind, TableDefinition, WriteOptions};
+    use crate::table::{ColumnDefinition, ColumnKind, Table, TableDefinition, WriteOptions};
     use crate::test_utils::embeddings::MockEmbed;
+    use crate::Error;
 
     use super::AddDataMode;
+
+    async fn create_test_table() -> Table {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        conn.create_table("test", batch).execute().await.unwrap()
+    }
+
+    async fn test_add_with_data<T>(data: T)
+    where
+        T: Scannable + 'static,
+    {
+        let table = create_test_table().await;
+        let schema = data.schema();
+        table.add(data).execute().await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 5); // 3 initial + 2 added
+        assert_eq!(table.schema().await.unwrap(), schema);
+    }
+
+    #[tokio::test]
+    async fn test_add_with_batch() {
+        let batch = record_batch!(("id", Int64, [4, 5])).unwrap();
+        test_add_with_data(batch).await;
+    }
+
+    #[tokio::test]
+    async fn test_add_with_vec_batch() {
+        let data = vec![
+            record_batch!(("id", Int64, [4])).unwrap(),
+            record_batch!(("id", Int64, [5])).unwrap(),
+        ];
+        test_add_with_data(data).await;
+    }
+
+    #[tokio::test]
+    async fn test_add_with_record_batch_reader() {
+        let data = vec![
+            record_batch!(("id", Int64, [4])).unwrap(),
+            record_batch!(("id", Int64, [5])).unwrap(),
+        ];
+        let schema = data[0].schema();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
+            RecordBatchIterator::new(data.into_iter().map(Ok), schema.clone()),
+        );
+        test_add_with_data(reader).await;
+    }
+
+    #[tokio::test]
+    async fn test_add_with_stream() {
+        let data = vec![
+            record_batch!(("id", Int64, [4])).unwrap(),
+            record_batch!(("id", Int64, [5])).unwrap(),
+        ];
+        let schema = data[0].schema();
+        let stream = futures::stream::iter(data.into_iter().map(Ok));
+        let stream: SendableRecordBatchStream =
+            Box::pin(SimpleRecordBatchStream { schema, stream });
+        test_add_with_data(stream).await;
+    }
+
+    #[derive(Debug)]
+    struct MyError;
+
+    impl std::fmt::Display for MyError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "MyError occurred")
+        }
+    }
+
+    impl std::error::Error for MyError {}
+
+    #[tokio::test]
+    async fn test_add_preserves_reader_error() {
+        let table = create_test_table().await;
+        let first_batch = record_batch!(("id", Int64, [4])).unwrap();
+        let schema = first_batch.schema();
+        let iterator = vec![
+            Ok(first_batch),
+            Err(ArrowError::ExternalError(Box::new(MyError))),
+        ];
+        let reader = Box::new(RecordBatchIterator::new(
+            iterator.into_iter(),
+            schema.clone(),
+        )) as Box<dyn arrow_array::RecordBatchReader + Send>;
+
+        let result = table.add(reader).execute().await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_add_preserves_stream_error() {
+        let table = create_test_table().await;
+        let first_batch = record_batch!(("id", Int64, [4])).unwrap();
+        let schema = first_batch.schema();
+        let iterator = vec![
+            Ok(first_batch),
+            Err(Error::External {
+                source: Box::new(MyError),
+            }),
+        ];
+        let stream = futures::stream::iter(iterator);
+        let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+            schema: schema.clone(),
+            stream,
+        });
+
+        let result = table.add(stream).execute().await;
+
+        assert!(result.is_err());
+    }
 
     #[tokio::test]
     async fn test_add() {
