@@ -492,5 +492,13 @@ mod tests {
             assert_eq!(embedding_col.null_count(), 0);
             assert_eq!(embedding_col.len(), batch.num_rows());
         }
+
+        // Verify the schema metadata contains the column definitions
+        assert!(
+            result_schema
+                .metadata
+                .contains_key("lancedb::column_definitions"),
+            "Schema metadata should contain column definitions"
+        );
     }
 }

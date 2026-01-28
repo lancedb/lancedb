@@ -76,5 +76,6 @@ fn make_data() -> RecordBatch {
             ]
         ),
         ("price", Float64, [10.0, 50.0, 100.0, 30.0])
-    ).unwrap()
+    )
+    .unwrap()
 }

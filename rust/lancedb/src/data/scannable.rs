@@ -24,7 +24,7 @@ use crate::embeddings::{
     compute_embeddings_for_batch, compute_output_schema, EmbeddingDefinition, EmbeddingFunction,
     EmbeddingRegistry,
 };
-use crate::table::{ColumnKind, TableDefinition};
+use crate::table::{ColumnDefinition, ColumnKind, TableDefinition};
 use crate::{Error, Result};
 
 pub trait Scannable: Send {
@@ -200,7 +200,7 @@ impl StreamingWriteSource for Box<dyn Scannable> {
 pub struct WithEmbeddingsScannable {
     inner: Box<dyn Scannable>,
     embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
-    output_schema: SchemaRef,
+    table_definition: TableDefinition,
 }
 
 impl WithEmbeddingsScannable {
@@ -212,23 +212,38 @@ impl WithEmbeddingsScannable {
         embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
     ) -> Result<Self> {
         let output_schema = compute_output_schema(&inner.schema(), &embeddings)?;
+
+        // Build column definitions: Physical for base columns, Embedding for new ones
+        let base_col_count = inner.schema().fields().len();
+        let column_definitions: Vec<ColumnDefinition> = (0..base_col_count)
+            .map(|_| ColumnDefinition {
+                kind: ColumnKind::Physical,
+            })
+            .chain(embeddings.iter().map(|(ed, _)| ColumnDefinition {
+                kind: ColumnKind::Embedding(ed.clone()),
+            }))
+            .collect();
+
+        let table_definition = TableDefinition::new(output_schema, column_definitions);
+
         Ok(Self {
             inner,
             embeddings,
-            output_schema,
+            table_definition,
         })
     }
 }
 
 impl Scannable for WithEmbeddingsScannable {
     fn schema(&self) -> SchemaRef {
-        self.output_schema.clone()
+        self.table_definition.clone().into_rich_schema()
     }
 
     fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
         let inner_stream = self.inner.scan_as_stream();
         let embeddings = self.embeddings.clone();
-        let output_schema = self.output_schema.clone();
+        // Use the rich schema with column definitions metadata
+        let output_schema = self.schema();
 
         let mapped_stream = inner_stream.then(move |batch_result| {
             let embeddings = embeddings.clone();
