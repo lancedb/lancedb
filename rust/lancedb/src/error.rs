@@ -107,10 +107,9 @@ impl From<ArrowError> for Error {
 
 impl From<lance::Error> for Error {
     fn from(source: lance::Error) -> Self {
-        // TODO: Once Lance is changed to preserve ObjectStore, DataFusion, and Arrow errors, we can
-        // pass those variants through here as well.
+        // Try to unwrap external errors that were wrapped by lance
         match source {
-            lance::Error::External { source } => match source.downcast::<Self>() {
+            lance::Error::Wrapped { error, .. } => match error.downcast::<Self>() {
                 Ok(e) => *e,
                 Err(source) => Self::External { source },
             },

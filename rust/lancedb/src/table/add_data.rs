@@ -35,7 +35,6 @@ pub struct AddDataBuilder {
     pub(crate) data: Box<dyn Scannable>,
     pub(crate) mode: AddDataMode,
     pub(crate) write_options: WriteOptions,
-    #[allow(dead_code)] // Used for future embedding support
     pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
 }
 
@@ -81,11 +80,20 @@ impl AddDataBuilder {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::record_batch;
+    use std::sync::Arc;
+
+    use arrow_array::{record_batch, RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+    use futures::TryStreamExt;
     use lance::dataset::{WriteMode, WriteParams};
 
     use crate::connect;
-    use crate::table::WriteOptions;
+    use crate::embeddings::{
+        EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry,
+    };
+    use crate::query::{ExecutableQuery, QueryBase, Select};
+    use crate::table::{ColumnDefinition, ColumnKind, TableDefinition, WriteOptions};
+    use crate::test_utils::embeddings::MockEmbed;
 
     use super::AddDataMode;
 
@@ -148,5 +156,74 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), new_batch.num_rows());
+    }
+
+    #[tokio::test]
+    async fn test_add_with_embeddings() {
+        let registry = Arc::new(MemoryRegistry::new());
+        let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
+        registry.register("mock", mock_embedding).unwrap();
+
+        let conn = connect("memory://")
+            .embedding_registry(registry)
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new(
+                "text_embedding",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                false,
+            ),
+        ]));
+
+        // Add embedding metadata to the schema
+        let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_embedding"));
+        let table_def = TableDefinition::new(
+            schema.clone(),
+            vec![
+                ColumnDefinition {
+                    kind: ColumnKind::Physical,
+                },
+                ColumnDefinition {
+                    kind: ColumnKind::Embedding(embedding_def),
+                },
+            ],
+        );
+        let rich_schema = table_def.into_rich_schema();
+
+        let table = conn
+            .create_empty_table("embed_test", rich_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Now add new data WITHOUT the embedding column - it should be computed automatically
+        let new_batch = record_batch!(("text", Utf8, ["hello", "world"])).unwrap();
+        table.add(new_batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+
+        // Query to verify the embeddings were computed for the new rows
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["text", "text_embedding"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 2);
+
+        // Check that all rows have embedding values (not null)
+        for batch in &results {
+            let embedding_col = batch.column(1);
+            assert_eq!(embedding_col.null_count(), 0);
+        }
     }
 }

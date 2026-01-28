@@ -14,11 +14,18 @@ use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use futures::stream::once;
+use futures::StreamExt;
 use lance_datafusion::utils::StreamingWriteSource;
 
 use crate::arrow::{
     SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream,
 };
+use crate::embeddings::{
+    compute_embeddings_for_batch, compute_output_schema, EmbeddingDefinition, EmbeddingFunction,
+    EmbeddingRegistry,
+};
+use crate::table::{ColumnKind, TableDefinition};
+use crate::{Error, Result};
 
 pub trait Scannable: Send {
     /// Returns the schema of the data.
@@ -188,6 +195,152 @@ impl StreamingWriteSource for Box<dyn Scannable> {
     }
 }
 
+/// A scannable that applies embeddings to the stream.
+pub struct WithEmbeddingsScannable {
+    inner: Box<dyn Scannable>,
+    embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
+    output_schema: SchemaRef,
+}
+
+impl WithEmbeddingsScannable {
+    /// Create a new WithEmbeddingsScannable.
+    ///
+    /// The embeddings are applied to the inner scannable's data as new columns.
+    pub fn try_new(
+        inner: Box<dyn Scannable>,
+        embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
+    ) -> Result<Self> {
+        let output_schema = compute_output_schema(&inner.schema(), &embeddings)?;
+        Ok(Self {
+            inner,
+            embeddings,
+            output_schema,
+        })
+    }
+}
+
+impl Scannable for WithEmbeddingsScannable {
+    fn schema(&self) -> SchemaRef {
+        self.output_schema.clone()
+    }
+
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        let inner_stream = self.inner.scan_as_stream();
+        let embeddings = self.embeddings.clone();
+        let output_schema = self.output_schema.clone();
+
+        let mapped_stream = inner_stream.then(move |batch_result| {
+            let embeddings = embeddings.clone();
+            async move {
+                let batch = batch_result?;
+                // Run embedding computation in a blocking task to avoid blocking async runtime
+                let result = tokio::task::spawn_blocking(move || {
+                    compute_embeddings_for_batch(batch, &embeddings)
+                })
+                .await
+                .map_err(|e| Error::Runtime {
+                    message: format!("Task panicked during embedding computation: {}", e),
+                })??;
+                Ok(result)
+            }
+        });
+
+        Box::pin(SimpleRecordBatchStream {
+            schema: output_schema,
+            stream: mapped_stream,
+        })
+    }
+
+    fn num_rows(&self) -> Option<usize> {
+        self.inner.num_rows()
+    }
+
+    fn rescannable(&self) -> bool {
+        self.inner.rescannable()
+    }
+}
+
+/// A scannable that might have embeddings applied to it.
+pub enum MaybeEmbeddedScannable {
+    /// Embeddings are applied to the scannable
+    Yes(WithEmbeddingsScannable),
+    /// No embeddings, passthrough to inner scannable
+    No(Box<dyn Scannable>),
+}
+
+impl MaybeEmbeddedScannable {
+    /// Create a new MaybeEmbeddedScannable.
+    ///
+    /// If the table definition specifies embedding columns and the registry contains
+    /// the required embedding functions, embeddings will be applied. Otherwise, this
+    /// is a no-op and the inner scannable is returned as-is.
+    pub fn try_new(
+        inner: Box<dyn Scannable>,
+        table_definition: &TableDefinition,
+        registry: Option<&Arc<dyn EmbeddingRegistry>>,
+    ) -> Result<Self> {
+        if let Some(registry) = registry {
+            let mut embeddings = Vec::with_capacity(table_definition.column_definitions.len());
+            for cd in table_definition.column_definitions.iter() {
+                if let ColumnKind::Embedding(embedding_def) = &cd.kind {
+                    match registry.get(&embedding_def.embedding_name) {
+                        Some(func) => {
+                            embeddings.push((embedding_def.clone(), func));
+                        }
+                        None => {
+                            return Err(Error::EmbeddingFunctionNotFound {
+                                name: embedding_def.embedding_name.clone(),
+                                reason: format!(
+                                    "Table was defined with an embedding column `{}` but no embedding function was found with that name within the registry.",
+                                    embedding_def.embedding_name
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+
+            if !embeddings.is_empty() {
+                return Ok(Self::Yes(WithEmbeddingsScannable::try_new(
+                    inner, embeddings,
+                )?));
+            }
+        }
+
+        Ok(Self::No(inner))
+    }
+}
+
+impl Scannable for MaybeEmbeddedScannable {
+    fn schema(&self) -> SchemaRef {
+        match self {
+            Self::Yes(inner) => inner.schema(),
+            Self::No(inner) => inner.schema(),
+        }
+    }
+
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        match self {
+            Self::Yes(inner) => inner.scan_as_stream(),
+            Self::No(inner) => inner.scan_as_stream(),
+        }
+    }
+
+    fn num_rows(&self) -> Option<usize> {
+        match self {
+            Self::Yes(inner) => inner.num_rows(),
+            Self::No(inner) => inner.num_rows(),
+        }
+    }
+
+    fn rescannable(&self) -> bool {
+        match self {
+            Self::Yes(inner) => inner.rescannable(),
+            Self::No(inner) => inner.rescannable(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +423,245 @@ mod tests {
         let stream2 = stream.scan_as_stream();
         let result2: Vec<RecordBatch> = stream2.try_collect().await.unwrap();
         assert_eq!(result2.len(), 0);
+    }
+
+    mod embedding_tests {
+        use super::*;
+        use crate::embeddings::MemoryRegistry;
+        use crate::table::{ColumnDefinition, ColumnKind};
+        use arrow_array::Array as _;
+        use arrow_array::{ArrayRef, FixedSizeListArray, Float32Array, StringArray};
+        use arrow_schema::{DataType, Field, Schema};
+        use std::borrow::Cow;
+
+        /// A mock embedding function that returns a fixed-size vector for each input string.
+        #[derive(Debug)]
+        struct MockEmbeddingFunction {
+            dim: usize,
+        }
+
+        impl MockEmbeddingFunction {
+            fn new(dim: usize) -> Self {
+                Self { dim }
+            }
+        }
+
+        impl EmbeddingFunction for MockEmbeddingFunction {
+            fn name(&self) -> &str {
+                "mock"
+            }
+
+            fn source_type(&self) -> crate::Result<Cow<'_, DataType>> {
+                Ok(Cow::Owned(DataType::Utf8))
+            }
+
+            fn dest_type(&self) -> crate::Result<Cow<'_, DataType>> {
+                Ok(Cow::Owned(DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    self.dim as i32,
+                )))
+            }
+
+            fn compute_source_embeddings(
+                &self,
+                source: Arc<dyn arrow_array::Array>,
+            ) -> crate::Result<Arc<dyn arrow_array::Array>> {
+                let strings = source.as_any().downcast_ref::<StringArray>().unwrap();
+                let num_rows = strings.len();
+
+                // Create a vector of length dim for each row, filled with 1.0
+                let values: Vec<f32> = (0..num_rows * self.dim).map(|_| 1.0f32).collect();
+                let values_array = Float32Array::from(values);
+
+                let list = FixedSizeListArray::try_new(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    self.dim as i32,
+                    Arc::new(values_array) as ArrayRef,
+                    None,
+                )
+                .unwrap();
+
+                Ok(Arc::new(list))
+            }
+
+            fn compute_query_embeddings(
+                &self,
+                input: Arc<dyn arrow_array::Array>,
+            ) -> crate::Result<Arc<dyn arrow_array::Array>> {
+                self.compute_source_embeddings(input)
+            }
+        }
+
+        #[tokio::test]
+        async fn test_with_embeddings_scannable() {
+            let schema = Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)]));
+            let text_array = StringArray::from(vec!["hello", "world", "test"]);
+            let batch =
+                RecordBatch::try_new(schema.clone(), vec![Arc::new(text_array) as ArrayRef])
+                    .unwrap();
+
+            let mock_embedding = Arc::new(MockEmbeddingFunction::new(4));
+            let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_embedding"));
+
+            let mut scannable = WithEmbeddingsScannable::try_new(
+                Box::new(batch.clone()),
+                vec![(embedding_def, mock_embedding)],
+            )
+            .unwrap();
+
+            // Check that schema has the embedding column
+            let output_schema = scannable.schema();
+            assert_eq!(output_schema.fields().len(), 2);
+            assert_eq!(output_schema.field(0).name(), "text");
+            assert_eq!(output_schema.field(1).name(), "text_embedding");
+
+            // Check num_rows and rescannable are preserved
+            assert_eq!(scannable.num_rows(), Some(3));
+            assert!(scannable.rescannable());
+
+            // Read the data
+            let stream = scannable.scan_as_stream();
+            let results: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+            assert_eq!(results.len(), 1);
+
+            let result_batch = &results[0];
+            assert_eq!(result_batch.num_rows(), 3);
+            assert_eq!(result_batch.num_columns(), 2);
+
+            // Verify the embedding column is present and has the right shape
+            let embedding_col = result_batch.column(1);
+            assert_eq!(embedding_col.len(), 3);
+        }
+
+        #[tokio::test]
+        async fn test_maybe_embedded_scannable_no_embeddings() {
+            let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+
+            // Create a table definition with no embedding columns
+            let table_def = TableDefinition::new_from_schema(batch.schema());
+
+            // Even with a registry, if there are no embedding columns, it's a passthrough
+            let registry: Arc<dyn EmbeddingRegistry> = Arc::new(MemoryRegistry::new());
+            let mut scannable = MaybeEmbeddedScannable::try_new(
+                Box::new(batch.clone()),
+                &table_def,
+                Some(&registry),
+            )
+            .unwrap();
+
+            // Should be a No variant (passthrough)
+            assert!(matches!(scannable, MaybeEmbeddedScannable::No(_)));
+
+            // Check that data passes through unchanged
+            let stream = scannable.scan_as_stream();
+            let results: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0], batch);
+        }
+
+        #[tokio::test]
+        async fn test_maybe_embedded_scannable_with_embeddings() {
+            let schema = Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)]));
+            let text_array = StringArray::from(vec!["hello", "world"]);
+            let batch =
+                RecordBatch::try_new(schema.clone(), vec![Arc::new(text_array) as ArrayRef])
+                    .unwrap();
+
+            // Create a table definition with an embedding column
+            let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_embedding"));
+            let embedding_schema = Arc::new(Schema::new(vec![
+                Field::new("text", DataType::Utf8, false),
+                Field::new(
+                    "text_embedding",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        4,
+                    ),
+                    false,
+                ),
+            ]));
+            let table_def = TableDefinition::new(
+                embedding_schema,
+                vec![
+                    ColumnDefinition {
+                        kind: ColumnKind::Physical,
+                    },
+                    ColumnDefinition {
+                        kind: ColumnKind::Embedding(embedding_def.clone()),
+                    },
+                ],
+            );
+
+            // Register the mock embedding function
+            let registry: Arc<dyn EmbeddingRegistry> = Arc::new(MemoryRegistry::new());
+            let mock_embedding: Arc<dyn EmbeddingFunction> =
+                Arc::new(MockEmbeddingFunction::new(4));
+            registry.register("mock", mock_embedding).unwrap();
+
+            let mut scannable =
+                MaybeEmbeddedScannable::try_new(Box::new(batch), &table_def, Some(&registry))
+                    .unwrap();
+
+            // Should be a Yes variant
+            assert!(matches!(scannable, MaybeEmbeddedScannable::Yes(_)));
+
+            // Read and verify the data has embeddings
+            let stream = scannable.scan_as_stream();
+            let results: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+            assert_eq!(results.len(), 1);
+
+            let result_batch = &results[0];
+            assert_eq!(result_batch.num_columns(), 2);
+            assert_eq!(result_batch.schema().field(1).name(), "text_embedding");
+        }
+
+        #[tokio::test]
+        async fn test_maybe_embedded_scannable_missing_function() {
+            let schema = Arc::new(Schema::new(vec![Field::new("text", DataType::Utf8, false)]));
+            let text_array = StringArray::from(vec!["hello"]);
+            let batch =
+                RecordBatch::try_new(schema.clone(), vec![Arc::new(text_array) as ArrayRef])
+                    .unwrap();
+
+            // Create a table definition with an embedding column
+            let embedding_def =
+                EmbeddingDefinition::new("text", "nonexistent", Some("text_embedding"));
+            let embedding_schema = Arc::new(Schema::new(vec![
+                Field::new("text", DataType::Utf8, false),
+                Field::new(
+                    "text_embedding",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        4,
+                    ),
+                    false,
+                ),
+            ]));
+            let table_def = TableDefinition::new(
+                embedding_schema,
+                vec![
+                    ColumnDefinition {
+                        kind: ColumnKind::Physical,
+                    },
+                    ColumnDefinition {
+                        kind: ColumnKind::Embedding(embedding_def),
+                    },
+                ],
+            );
+
+            // Registry has no embedding functions registered
+            let registry: Arc<dyn EmbeddingRegistry> = Arc::new(MemoryRegistry::new());
+
+            let result =
+                MaybeEmbeddedScannable::try_new(Box::new(batch), &table_def, Some(&registry));
+
+            // Should fail because the embedding function is not found
+            assert!(result.is_err());
+            let err = result.err().unwrap();
+            assert!(
+                matches!(err, Error::EmbeddingFunctionNotFound { .. }),
+                "Expected EmbeddingFunctionNotFound"
+            );
+        }
     }
 }

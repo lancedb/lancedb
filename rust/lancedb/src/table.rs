@@ -55,7 +55,7 @@ use std::format;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::data::scannable::Scannable;
+use crate::data::scannable::{MaybeEmbeddedScannable, Scannable};
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -2698,12 +2698,20 @@ impl BaseTable for NativeTable {
             ..Default::default()
         });
 
+        // Apply embeddings if configured
+        let table_def = self.table_definition().await?;
+        let data: Box<dyn Scannable> = Box::new(MaybeEmbeddedScannable::try_new(
+            add.data,
+            &table_def,
+            add.embedding_registry.as_ref(),
+        )?);
+
         let dataset = {
             // Limited scope for the mutable borrow of self.dataset avoids deadlock.
             let ds = self.dataset.get_mut().await?;
             InsertBuilder::new(Arc::new(ds.clone()))
                 .with_params(&lance_params)
-                .execute_stream(add.data)
+                .execute_stream(data)
                 .await?
         };
         let version = dataset.manifest().version;
