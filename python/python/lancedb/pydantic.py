@@ -298,12 +298,18 @@ else:
 
 
 def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
+    def _safe_issubclass(candidate: Any, base: type) -> bool:
+        try:
+            return issubclass(candidate, base)
+        except TypeError:
+            return False
+
     if inspect.isclass(tp):
-        if issubclass(tp, pydantic.BaseModel):
+        if _safe_issubclass(tp, pydantic.BaseModel):
             # Struct
             fields = _pydantic_model_to_fields(tp)
             return pa.struct(fields)
-        if issubclass(tp, FixedSizeListMixin):
+        if _safe_issubclass(tp, FixedSizeListMixin):
             if getattr(tp, "is_multi_vector", lambda: False)():
                 return pa.list_(pa.list_(tp.value_arrow_type(), tp.dim()))
             # For regular Vector
@@ -357,10 +363,12 @@ def is_nullable(field: FieldInfo) -> bool:
         for typ in args:
             if typ is type(None):
                 return True
-    elif inspect.isclass(field.annotation) and issubclass(
-        field.annotation, FixedSizeListMixin
-    ):
-        return field.annotation.nullable()
+    elif inspect.isclass(field.annotation):
+        try:
+            if issubclass(field.annotation, FixedSizeListMixin):
+                return field.annotation.nullable()
+        except TypeError:
+            return False
     return False
 
 
