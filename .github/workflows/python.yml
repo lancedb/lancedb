@@ -36,9 +36,9 @@ jobs:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Install ruff
         run: |
           pip install ruff==0.9.9
@@ -61,9 +61,9 @@ jobs:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Install protobuf compiler
         run: |
           sudo apt update
@@ -90,9 +90,9 @@ jobs:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: "pip"
       - name: Install protobuf
         run: |
@@ -110,7 +110,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        python-minor-version: ["9", "12"]
+        python-minor-version: ["10", "13"]
     runs-on: "ubuntu-24.04"
     defaults:
       run:
@@ -126,7 +126,7 @@ jobs:
           sudo apt update
           sudo apt install -y protobuf-compiler
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: 3.${{ matrix.python-minor-version }}
       - uses: ./.github/workflows/build_linux_wheel
@@ -156,9 +156,9 @@ jobs:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - uses: ./.github/workflows/build_mac_wheel
         with:
           args: --profile ci
@@ -185,9 +185,9 @@ jobs:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - uses: ./.github/workflows/build_windows_wheel
         with:
           args: --profile ci
@@ -212,9 +212,9 @@ jobs:
           sudo apt update
           sudo apt install -y protobuf-compiler
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: 3.9
+          python-version: "3.10"
       - name: Install lancedb
         run: |
           pip install "pydantic<2"
