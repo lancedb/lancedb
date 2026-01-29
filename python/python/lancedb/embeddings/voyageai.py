@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 
 # Token limits for different VoyageAI models
 VOYAGE_TOTAL_TOKEN_LIMITS = {
+    "voyage-4": 320_000,
+    "voyage-4-lite": 1_000_000,
+    "voyage-4-large": 120_000,
     "voyage-context-3": 32_000,
     "voyage-3.5-lite": 1_000_000,
     "voyage-3.5": 320_000,
@@ -167,6 +170,9 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
     name: str
         The name of the model to use. List of acceptable models:
 
+            * voyage-4 (1024 dims, general-purpose and multilingual retrieval)
+            * voyage-4-lite (1024 dims, optimized for latency and cost)
+            * voyage-4-large (1024 dims, best retrieval quality)
             * voyage-context-3
             * voyage-3.5
             * voyage-3.5-lite
@@ -215,6 +221,9 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
     _FLEXIBLE_DIM_MODELS: ClassVar[list] = ["voyage-multimodal-3.5"]
     _VALID_DIMENSIONS: ClassVar[list] = [256, 512, 1024, 2048]
     text_embedding_models: list = [
+        "voyage-4",
+        "voyage-4-lite",
+        "voyage-4-large",
         "voyage-3.5",
         "voyage-3.5-lite",
         "voyage-3",
@@ -252,6 +261,9 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         elif self.name == "voyage-code-2":
             return 1536
         elif self.name in [
+            "voyage-4",
+            "voyage-4-lite",
+            "voyage-4-large",
             "voyage-context-3",
             "voyage-3.5",
             "voyage-3.5-lite",
