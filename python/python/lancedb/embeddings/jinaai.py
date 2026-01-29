@@ -77,8 +77,8 @@ class JinaEmbeddings(EmbeddingFunction):
             if isinstance(inputs, list):
                 inputs = inputs
             else:
-                PIL = attempt_import_or_raise("PIL", "pillow")
-                if isinstance(inputs, PIL.Image.Image):
+                PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
+                if isinstance(inputs, PIL_Image.Image):
                     inputs = [inputs]
         return inputs
 
@@ -89,13 +89,13 @@ class JinaEmbeddings(EmbeddingFunction):
         elif isinstance(image, (str, Path)):
             parsed = urlparse.urlparse(image)
             # TODO handle drive letter on windows.
-            PIL = attempt_import_or_raise("PIL", "pillow")
+            PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
             if parsed.scheme == "file":
-                pil_image = PIL.Image.open(parsed.path)
+                pil_image = PIL_Image.open(parsed.path)
             elif parsed.scheme == "":
-                pil_image = PIL.Image.open(image if os.name == "nt" else parsed.path)
+                pil_image = PIL_Image.open(image if os.name == "nt" else parsed.path)
             elif parsed.scheme.startswith("http"):
-                pil_image = PIL.Image.open(io.BytesIO(url_retrieve(image)))
+                pil_image = PIL_Image.open(io.BytesIO(url_retrieve(image)))
             else:
                 raise NotImplementedError("Only local and http(s) urls are supported")
             buffered = io.BytesIO()
@@ -103,9 +103,9 @@ class JinaEmbeddings(EmbeddingFunction):
             image_bytes = buffered.getvalue()
             image_dict = {"image": base64.b64encode(image_bytes).decode("utf-8")}
         else:
-            PIL = attempt_import_or_raise("PIL", "pillow")
+            PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
 
-            if isinstance(image, PIL.Image.Image):
+            if isinstance(image, PIL_Image.Image):
                 buffered = io.BytesIO()
                 image.save(buffered, format="PNG")
                 image_bytes = buffered.getvalue()
@@ -136,9 +136,9 @@ class JinaEmbeddings(EmbeddingFunction):
         elif isinstance(query, (Path, bytes)):
             return [self.generate_image_embedding(query)]
         else:
-            PIL = attempt_import_or_raise("PIL", "pillow")
+            PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
 
-            if isinstance(query, PIL.Image.Image):
+            if isinstance(query, PIL_Image.Image):
                 return [self.generate_image_embedding(query)]
             else:
                 raise TypeError(
