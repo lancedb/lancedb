@@ -79,10 +79,11 @@ use self::merge::MergeInsertBuilder;
 
 pub mod datafusion;
 pub(crate) mod dataset;
+pub mod delete;
 pub mod merge;
-
 use crate::index::waiter::wait_for_index;
 pub use chrono::Duration;
+pub use delete::DeleteResult;
 use futures::future::{join_all, Either};
 pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
@@ -439,15 +440,6 @@ pub struct UpdateResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AddResult {
-    // The commit version associated with the operation.
-    // A version of `0` indicates compatibility with legacy servers that do not return
-    /// a commit version.
-    #[serde(default)]
-    pub version: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct DeleteResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
@@ -3078,11 +3070,8 @@ impl BaseTable for NativeTable {
 
     /// Delete rows from the table
     async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
-        let mut dataset = self.dataset.get_mut().await?;
-        dataset.delete(predicate).await?;
-        Ok(DeleteResult {
-            version: dataset.version().version,
-        })
+        // Delegate to the submodule implementation
+        delete::execute_delete(self, predicate).await
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
