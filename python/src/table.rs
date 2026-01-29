@@ -377,7 +377,8 @@ impl Table {
         on_bad_vectors="error",
         fill_value=0.0,
         target_partitions=None,
-        embedding_registry=None
+        embedding_registry=None,
+        progress=None
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn add<'a>(
@@ -391,6 +392,7 @@ impl Table {
         fill_value: f32,
         target_partitions: Option<usize>,
         embedding_registry: Option<PyRef<'_, PyEmbeddingRegistry>>,
+        progress: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let schema: SchemaRef = Arc::new(schema.0);
 
@@ -446,6 +448,18 @@ impl Table {
             let mut op = op;
             if let Some(reg) = registry {
                 op = op.embedding_registry(reg);
+            }
+            if let Some(py_callback) = progress {
+                op = op.progress_callback(move |progress| {
+                    #[allow(deprecated)]
+                    Python::with_gil(|py| {
+                        let dict = PyDict::new(py);
+                        let _ = dict.set_item("rows_written", progress.rows_written);
+                        let _ = dict.set_item("bytes_written", progress.bytes_written);
+                        let _ = dict.set_item("elapsed_secs", progress.elapsed.as_secs_f64());
+                        let _ = py_callback.call1(py, (dict,));
+                    });
+                });
             }
             let result = op.execute().await.infer_error()?;
             Ok(AddResult::from(result))

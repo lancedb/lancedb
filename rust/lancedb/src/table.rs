@@ -92,6 +92,71 @@ use lance::dataset::statistics::DatasetStatisticsExt;
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
 pub use lance_index::optimize::OptimizeOptions;
 use serde_with::skip_serializing_none;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
+
+/// Progress information for write operations.
+///
+/// This struct is passed to progress callbacks during data insertion to report
+/// the cumulative progress across all partitions.
+///
+/// # Byte semantics
+///
+/// - **Local tables**: `bytes_written` is the Arrow in-memory size of the batches
+///   written. This is an approximation; actual disk bytes may differ after encoding
+///   and compression.
+/// - **Remote tables**: `bytes_written` is the byte length of each serialized IPC
+///   chunk sent over HTTP, which reflects the actual compressed data transferred.
+#[derive(Debug, Clone)]
+pub struct WriteProgress {
+    /// Number of rows written so far (cumulative across all partitions).
+    pub rows_written: usize,
+    /// Bytes written so far (see struct-level docs for semantics).
+    pub bytes_written: usize,
+    /// Elapsed time since the write operation started.
+    pub elapsed: std::time::Duration,
+}
+
+/// Shared state for aggregating progress across multiple partitions.
+///
+/// Each partition atomically increments the counters and fires the callback.
+pub struct WriteProgressState {
+    callback: Arc<dyn Fn(WriteProgress) + Send + Sync>,
+    rows_written: AtomicUsize,
+    bytes_written: AtomicUsize,
+    start_time: Instant,
+}
+
+impl WriteProgressState {
+    pub fn new(callback: Arc<dyn Fn(WriteProgress) + Send + Sync>) -> Self {
+        Self {
+            callback,
+            rows_written: AtomicUsize::new(0),
+            bytes_written: AtomicUsize::new(0),
+            start_time: Instant::now(),
+        }
+    }
+
+    /// Atomically add `rows` and `bytes` to the counters and fire the callback.
+    pub fn report(&self, rows: usize, bytes: usize) {
+        let total_rows = self.rows_written.fetch_add(rows, Ordering::Relaxed) + rows;
+        let total_bytes = self.bytes_written.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        (self.callback)(WriteProgress {
+            rows_written: total_rows,
+            bytes_written: total_bytes,
+            elapsed: self.start_time.elapsed(),
+        });
+    }
+}
+
+impl std::fmt::Debug for WriteProgressState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteProgressState")
+            .field("rows_written", &self.rows_written)
+            .field("bytes_written", &self.bytes_written)
+            .finish()
+    }
+}
 
 /// Defines the type of column
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -385,6 +450,7 @@ pub struct AddDataBuilder2 {
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     target_partitions: Option<usize>,
     preprocessing_options: Option<PreprocessingOptions>,
+    progress_callback: Option<Arc<dyn Fn(WriteProgress) + Send + Sync>>,
 }
 
 impl std::fmt::Debug for AddDataBuilder2 {
@@ -396,6 +462,10 @@ impl std::fmt::Debug for AddDataBuilder2 {
             .field("write_options", &self.write_options)
             .field("target_partitions", &self.target_partitions)
             .field("preprocessing_options", &self.preprocessing_options)
+            .field(
+                "progress_callback",
+                &self.progress_callback.as_ref().map(|_| "..."),
+            )
             .finish()
     }
 }
@@ -479,6 +549,18 @@ impl AddDataBuilder2 {
     /// ```
     pub fn preprocessing(mut self, options: PreprocessingOptions) -> Self {
         self.preprocessing_options = Some(options);
+        self
+    }
+
+    /// Set a callback to receive progress updates during the write operation.
+    ///
+    /// The callback receives a [`WriteProgress`] with cumulative totals across
+    /// all write partitions. It is called after each batch is processed.
+    pub fn progress_callback(
+        mut self,
+        callback: impl Fn(WriteProgress) + Send + Sync + 'static,
+    ) -> Self {
+        self.progress_callback = Some(Arc::new(callback));
         self
     }
 
@@ -577,10 +659,15 @@ impl AddDataBuilder2 {
                 ..Default::default()
             });
 
+        // Create progress state if callback was provided
+        let progress = self
+            .progress_callback
+            .map(|cb| Arc::new(WriteProgressState::new(cb)));
+
         // Create and execute the insert plan
         let insert_exec = self
             .parent
-            .create_insert_exec(input_plan, lance_params)
+            .create_insert_exec(input_plan, lance_params, progress)
             .await?;
 
         let task_ctx = Arc::new(TaskContext::default());
@@ -932,6 +1019,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         _input: Arc<dyn ExecutionPlan>,
         _write_params: WriteParams,
+        _progress: Option<Arc<WriteProgressState>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Err(Error::NotSupported {
             message: "create_insert_exec not implemented".to_string(),
@@ -1207,6 +1295,7 @@ impl Table {
             embedding_registry: Some(self.embedding_registry.clone()),
             target_partitions: None,
             preprocessing_options: None,
+            progress_callback: None,
         }
     }
 
@@ -3236,8 +3325,10 @@ impl BaseTable for NativeTable {
             .maybe_add_embedding_projection(input_plan, add.embedding_registry)
             .await?;
 
-        // Create InsertExec
-        let insert_exec = self.create_insert_exec(input_plan, lance_params).await?;
+        // Create InsertExec (no progress callback for legacy add path)
+        let insert_exec = self
+            .create_insert_exec(input_plan, lance_params, None)
+            .await?;
 
         // Execute the plan
         let task_ctx = Arc::new(TaskContext::default());
@@ -3872,6 +3963,7 @@ impl BaseTable for NativeTable {
         &self,
         input: Arc<dyn ExecutionPlan>,
         write_params: WriteParams,
+        progress: Option<Arc<WriteProgressState>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         // Ensure the dataset is not in time travel mode
         self.dataset.ensure_mutable().await?;
@@ -3880,6 +3972,7 @@ impl BaseTable for NativeTable {
             Arc::new(self.dataset.get().await?.clone()),
             input,
             write_params,
+            progress,
         )))
     }
 
@@ -5745,5 +5838,57 @@ mod tests {
 
         // Should have an empty vector
         assert!(ns_request.vector.single_vector.as_ref().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_add_from_source_with_progress() {
+        use std::sync::atomic::AtomicUsize;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        let batches = make_test_batches();
+        let table = conn
+            .create_table("test_progress", batches)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(100..200))],
+        )
+        .unwrap();
+
+        let rows_seen = Arc::new(AtomicUsize::new(0));
+        let bytes_seen = Arc::new(AtomicUsize::new(0));
+        let call_count = Arc::new(AtomicUsize::new(0));
+
+        let rows_clone = rows_seen.clone();
+        let bytes_clone = bytes_seen.clone();
+        let count_clone = call_count.clone();
+
+        table
+            .add_from_source(Box::new(batch))
+            .progress_callback(move |progress| {
+                rows_clone.store(progress.rows_written, Ordering::Relaxed);
+                bytes_clone.store(progress.bytes_written, Ordering::Relaxed);
+                count_clone.fetch_add(1, Ordering::Relaxed);
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 110);
+
+        // Progress callback should have been called at least once
+        assert!(call_count.load(Ordering::Relaxed) > 0);
+        // All 100 rows should have been reported
+        assert_eq!(rows_seen.load(Ordering::Relaxed), 100);
+        // Some bytes should have been reported
+        assert!(bytes_seen.load(Ordering::Relaxed) > 0);
     }
 }

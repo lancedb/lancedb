@@ -1056,6 +1056,7 @@ class Table(ABC):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
+        progress=None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -1077,6 +1078,12 @@ class Table(ABC):
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: optional
+            A progress reporter. Can be a tqdm-like object with an ``update``
+            method, a callable that receives a dict with keys
+            ``rows_written``, ``bytes_written``, ``elapsed_secs``, or ``None``
+            to disable progress reporting. See :mod:`lancedb.progress` for
+            helpers.
 
         Returns
         -------
@@ -2496,6 +2503,7 @@ class LanceTable(Table):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
+        progress=None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -2514,6 +2522,8 @@ class LanceTable(Table):
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: optional
+            A progress reporter. See :meth:`Table.add` for details.
 
         Returns
         -------
@@ -2522,7 +2532,11 @@ class LanceTable(Table):
         """
         return LOOP.run(
             self._table.add(
-                data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+                data,
+                mode=mode,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                progress=progress,
             )
         )
 
@@ -3717,6 +3731,7 @@ class AsyncTable:
         mode: Optional[Literal["append", "overwrite"]] = "append",
         on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
+        progress=None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -3738,16 +3753,21 @@ class AsyncTable:
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: optional
+            A progress reporter. See :meth:`Table.add` for details.
 
         """
         from .source_data import to_source_data, _register_optional_converters
         from ._lancedb import PyEmbeddingRegistry
+        from .progress import make_progress_callback
 
         # Re-check for newly imported optional deps
         _register_optional_converters()
 
         source = to_source_data(data)
         rust_registry = PyEmbeddingRegistry.from_singleton()
+
+        callback = make_progress_callback(progress)
 
         # Rust handles schema casting (List -> FixedSizeList, type casts, etc.)
         return await self._inner.add(
@@ -3760,6 +3780,7 @@ class AsyncTable:
             fill_value if fill_value is not None else 0.0,  # fill value for bad vectors
             None,  # target_partitions (use default)
             rust_registry,
+            callback,
         )
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:

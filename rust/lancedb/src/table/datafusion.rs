@@ -280,7 +280,7 @@ impl TableProvider for BaseTableAdapter {
 
         Ok(self
             .table
-            .create_insert_exec(input, write_params)
+            .create_insert_exec(input, write_params, None)
             .await
             .map_err(|err| DataFusionError::External(err.into()))?)
     }

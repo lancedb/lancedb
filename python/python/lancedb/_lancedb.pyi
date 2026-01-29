@@ -150,6 +150,7 @@ class Table:
         fill_value: float = 0.0,
         target_partitions: Optional[int] = None,
         embedding_registry: Optional[PyEmbeddingRegistry] = None,
+        progress: Optional[Callable[[dict], None]] = None,
     ) -> AddResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]

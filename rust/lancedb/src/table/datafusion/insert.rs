@@ -30,12 +30,12 @@ use lance::{
 use lance_table::format::Fragment;
 
 use crate::table::dataset::DatasetConsistencyWrapper;
+use crate::table::WriteProgressState;
 
 /// Execution plan for inserting data into a LanceDB table.
 ///
 /// This plan handles inserting data from DataFusion queries into Lance tables.
 /// Each partition's data is written and committed independently.
-#[derive(Debug)]
 pub struct InsertExec {
     ds_wrapper: DatasetConsistencyWrapper,
     dataset: Arc<Dataset>,
@@ -43,6 +43,17 @@ pub struct InsertExec {
     write_params: WriteParams,
     properties: PlanProperties,
     transactions: Arc<Mutex<Vec<Transaction>>>,
+    progress: Option<Arc<WriteProgressState>>,
+}
+
+impl std::fmt::Debug for InsertExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InsertExec")
+            .field("dataset", &self.dataset)
+            .field("input", &self.input)
+            .field("write_params", &self.write_params)
+            .finish()
+    }
 }
 
 impl InsertExec {
@@ -53,11 +64,13 @@ impl InsertExec {
     /// * `dataset` - The current dataset snapshot
     /// * `input` - The input execution plan providing data to insert
     /// * `write_params` - Write parameters including mode (Append/Overwrite)
+    /// * `progress` - Optional progress state for tracking write progress
     pub fn new(
         ds_wrapper: DatasetConsistencyWrapper,
         dataset: Arc<Dataset>,
         input: Arc<dyn ExecutionPlan>,
         write_params: WriteParams,
+        progress: Option<Arc<WriteProgressState>>,
     ) -> Self {
         let num_partitions = input.output_partitioning().partition_count();
         let output_schema = make_count_schema();
@@ -75,6 +88,7 @@ impl InsertExec {
             write_params,
             properties,
             transactions: Arc::new(Mutex::new(Vec::with_capacity(num_partitions))),
+            progress,
         }
     }
 }
@@ -124,6 +138,7 @@ impl ExecutionPlan for InsertExec {
             self.dataset.clone(),
             children[0].clone(),
             self.write_params.clone(),
+            self.progress.clone(),
         )))
     }
 
@@ -146,6 +161,22 @@ impl ExecutionPlan for InsertExec {
         let transactions = self.transactions.clone();
         let num_partitions = self.input.output_partitioning().partition_count();
         let write_params = self.write_params.clone();
+        let progress = self.progress.clone();
+
+        // Wrap input stream with progress reporting if a callback was provided
+        let input_stream: SendableRecordBatchStream = if let Some(ref progress) = progress {
+            let schema = input_stream.schema();
+            let progress = progress.clone();
+            let mapped = input_stream.map(move |result| {
+                if let Ok(ref batch) = result {
+                    progress.report(batch.num_rows(), batch.get_array_memory_size());
+                }
+                result
+            });
+            Box::pin(RecordBatchStreamAdapter::new(schema, mapped))
+        } else {
+            input_stream
+        };
 
         let fut = async move {
             let transaction = InsertBuilder::new(dataset.clone())

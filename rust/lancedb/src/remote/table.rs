@@ -12,7 +12,7 @@ use crate::table::DropColumnsResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
-use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
+use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics, WriteProgressState};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
@@ -827,6 +827,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             self.client.clone(),
             input_plan,
             overwrite,
+            None, // no progress for legacy add path
         ));
 
         // Execute the plan and drain the results
@@ -1539,6 +1540,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         input: Arc<dyn ExecutionPlan>,
         write_params: WriteParams,
+        progress: Option<Arc<WriteProgressState>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let overwrite = matches!(write_params.mode, WriteMode::Overwrite);
         Ok(Arc::new(insert::RemoteInsertExec::new(
@@ -1547,6 +1549,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             self.client.clone(),
             input,
             overwrite,
+            progress,
         )))
     }
 }

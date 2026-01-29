@@ -25,7 +25,7 @@ use crate::{
         client::{HttpSend, RestfulLanceDbClient, Sender},
         ARROW_STREAM_CONTENT_TYPE,
     },
-    table::AddResult,
+    table::{AddResult, WriteProgressState},
     Error,
 };
 
@@ -37,7 +37,6 @@ fn make_count_schema() -> SchemaRef {
     )]))
 }
 
-#[derive(Debug)]
 pub struct RemoteInsertExec<S: HttpSend = Sender> {
     table_name: String,
     identifier: String,
@@ -46,6 +45,17 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     overwrite: bool,
     properties: PlanProperties,
     add_result: Arc<Mutex<Option<AddResult>>>,
+    progress: Option<Arc<WriteProgressState>>,
+}
+
+impl<S: HttpSend> std::fmt::Debug for RemoteInsertExec<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteInsertExec")
+            .field("table_name", &self.table_name)
+            .field("identifier", &self.identifier)
+            .field("overwrite", &self.overwrite)
+            .finish()
+    }
 }
 
 impl<S: HttpSend> DisplayAs for RemoteInsertExec<S> {
@@ -61,6 +71,7 @@ impl<S: HttpSend> RemoteInsertExec<S> {
         client: RestfulLanceDbClient<S>,
         input: Arc<dyn ExecutionPlan>,
         overwrite: bool,
+        progress: Option<Arc<WriteProgressState>>,
     ) -> Self {
         let output_schema = make_count_schema();
         let properties = PlanProperties::new(
@@ -77,6 +88,7 @@ impl<S: HttpSend> RemoteInsertExec<S> {
             overwrite,
             properties,
             add_result: Arc::new(Mutex::new(None)),
+            progress,
         }
     }
 
@@ -87,7 +99,10 @@ impl<S: HttpSend> RemoteInsertExec<S> {
         }
     }
 
-    fn stream_as_body(data: SendableRecordBatchStream) -> DataFusionResult<reqwest::Body> {
+    fn stream_as_body(
+        data: SendableRecordBatchStream,
+        progress: Option<Arc<WriteProgressState>>,
+    ) -> DataFusionResult<reqwest::Body> {
         let options = arrow_ipc::writer::IpcWriteOptions::default()
             .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
         let writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
@@ -97,11 +112,16 @@ impl<S: HttpSend> RemoteInsertExec<S> {
         )?;
 
         let stream = futures::stream::try_unfold((data, writer), move |(mut data, mut writer)| {
+            let progress = progress.clone();
             async move {
                 match data.next().await {
                     Some(Ok(batch)) => {
+                        let num_rows = batch.num_rows();
                         writer.write(&batch)?;
                         let buffer = std::mem::take(writer.get_mut());
+                        if let Some(ref progress) = progress {
+                            progress.report(num_rows, buffer.len());
+                        }
                         Ok(Some((buffer, (data, writer))))
                     }
                     Some(Err(e)) => Err(e),
@@ -153,6 +173,7 @@ impl<S: HttpSend> ExecutionPlan for RemoteInsertExec<S> {
             self.client.clone(),
             children[0].clone(),
             self.overwrite,
+            self.progress.clone(),
         )))
     }
 
@@ -182,6 +203,8 @@ impl<S: HttpSend> ExecutionPlan for RemoteInsertExec<S> {
         let table_name = self.table_name.clone();
         let overwrite = self.overwrite;
 
+        let progress = self.progress.clone();
+
         let fut = async move {
             let mut request = client
                 .post(&format!("/v1/table/{}/insert/", identifier))
@@ -191,7 +214,7 @@ impl<S: HttpSend> ExecutionPlan for RemoteInsertExec<S> {
                 request = request.query(&[("mode", "overwrite")]);
             }
 
-            let body = Self::stream_as_body(input_stream)?;
+            let body = Self::stream_as_body(input_stream, progress)?;
             let request = request.body(body);
 
             let (request_id, response) = client
