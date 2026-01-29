@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
-import sys
 from datetime import date, datetime
 from typing import List, Optional, Tuple
 
