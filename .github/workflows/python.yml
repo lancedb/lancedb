@@ -38,7 +38,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Install ruff
         run: |
           pip install ruff==0.9.9
@@ -63,7 +63,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Install protobuf compiler
         run: |
           sudo apt update
@@ -92,7 +92,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: "pip"
       - name: Install protobuf
         run: |
@@ -110,7 +110,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        python-minor-version: ["9", "12"]
+        python-minor-version: ["10", "14"]
     runs-on: "ubuntu-24.04"
     defaults:
       run:
@@ -158,7 +158,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - uses: ./.github/workflows/build_mac_wheel
         with:
           args: --profile ci
@@ -187,7 +187,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - uses: ./.github/workflows/build_windows_wheel
         with:
           args: --profile ci
@@ -214,7 +214,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.9
+          python-version: 3.10
       - name: Install lancedb
         run: |
           pip install "pydantic<2"

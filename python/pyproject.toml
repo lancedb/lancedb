@@ -16,7 +16,7 @@ description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
 license = { file = "LICENSE" }
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 keywords = [
     "data-format",
     "data-science",
@@ -33,10 +33,11 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
 ]
 
@@ -137,4 +138,4 @@ include = [
     "python/lancedb/_lancedb.pyi",
 ]
 exclude = ["python/tests/"]
-pythonVersion = "3.12"
+pythonVersion = "3.14"
