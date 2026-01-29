@@ -19,7 +19,7 @@ use crate::{
         split::{SplitStrategy, Splitter, SPLIT_ID_COLUMN},
         util::{rename_column, TemporaryDirectory},
     },
-    query::{ExecutableQuery, QueryBase},
+    query::{ExecutableQuery, QueryBase, Select},
     Error, Result, Table,
 };
 
@@ -244,7 +244,7 @@ impl PermutationBuilder {
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(self) -> Result<Table> {
         // First pass, apply filter and load row ids
-        let mut rows = self.base_table.query().with_row_id();
+        let mut rows = self.base_table.query().select(Select::columns(&[ROW_ID]));
 
         if let Some(filter) = &self.config.filter {
             rows = rows.only_if(filter);
@@ -334,6 +334,47 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn test_permutation_table_only_stores_row_id_and_split_id() {
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let initial_data = lance_datagen::gen_batch()
+            .col("col_a", lance_datagen::array::step::<Int32Type>())
+            .col("col_b", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(100), BatchCount::from(10));
+        let data_table = db
+            .create_table_streaming("base_tbl", initial_data)
+            .execute()
+            .await
+            .unwrap();
+
+        let permutation_table = PermutationBuilder::new(data_table.clone())
+            .with_split_strategy(
+                SplitStrategy::Sequential {
+                    sizes: SplitSizes::Percentages(vec![0.5, 0.5]),
+                },
+                None,
+            )
+            .with_filter("col_a > 57".to_string())
+            .build()
+            .await
+            .unwrap();
+
+        let schema = permutation_table.schema().await.unwrap();
+        let field_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(
+            field_names,
+            vec!["row_id", "split_id"],
+            "Permutation table should only contain row_id and split_id columns, but found: {:?}",
+            field_names,
+        );
+    }
+
+    #[tokio::test]
     async fn test_permutation_builder() {
         let temp_dir = tempfile::tempdir().unwrap();
 
@@ -363,8 +404,6 @@ mod tests {
             .build()
             .await
             .unwrap();
-
-        println!("permutation_table: {:?}", permutation_table);
 
         // Potentially brittle seed-dependent values below
         assert_eq!(permutation_table.count_rows(None).await.unwrap(), 330);
