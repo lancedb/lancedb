@@ -827,6 +827,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             self.client.clone(),
             input_plan,
             overwrite,
+            &self.server_version,
             None, // no progress for legacy add path
         ));
 
@@ -1549,6 +1550,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             self.client.clone(),
             input,
             overwrite,
+            &self.server_version,
             progress,
         )))
     }
@@ -3471,5 +3473,144 @@ mod tests {
         let uri2 = table.uri().await.unwrap();
         assert_eq!(uri2, "gs://bucket/table");
         assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, no new call
+    }
+
+    #[tokio::test]
+    async fn test_parallel_insert() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use datafusion_execution::TaskContext;
+        use datafusion_physical_plan::union::UnionExec;
+        use lance_datafusion::exec::OneShotExec;
+
+        use crate::remote::client::test_utils::client_with_handler;
+        use crate::remote::db::ServerVersion;
+        use crate::remote::table::insert::RemoteInsertExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let insert_count_clone = insert_count.clone();
+
+        let client = client_with_handler(move |request| {
+            let path = request.url().path().to_string();
+            if path == "/v1/table/my_table/insert/" {
+                let has_uncommitted = request
+                    .url()
+                    .query_pairs()
+                    .any(|(k, v)| k == "uncommitted" && v == "true");
+                assert!(has_uncommitted, "insert should have uncommitted=true");
+
+                let idx = insert_count_clone.fetch_add(1, Ordering::SeqCst);
+                let txn = format!("txn_{}", idx);
+                let body = serde_json::json!({ "transaction": txn }).to_string();
+                http::Response::builder().status(200).body(body).unwrap()
+            } else if path == "/v1/table/my_table/commit/" {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 99}"#.to_string())
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", path);
+            }
+        });
+
+        // Build a multi-partition input using UnionExec of 3 OneShotExec plans
+        let partitions: Vec<Arc<dyn ExecutionPlan>> = (0..3)
+            .map(|i| {
+                let batch =
+                    RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![i]))])
+                        .unwrap();
+                let stream = Box::pin(RecordBatchStreamAdapter::new(
+                    schema.clone(),
+                    futures::stream::once(futures::future::ok(batch)),
+                ));
+                Arc::new(OneShotExec::new(stream)) as _
+            })
+            .collect();
+        let input = UnionExec::try_new(partitions).unwrap();
+
+        let server_version = ServerVersion(semver::Version::new(0, 4, 0));
+        let insert_exec = Arc::new(RemoteInsertExec::new(
+            "my_table".to_string(),
+            "my_table".to_string(),
+            client,
+            input,
+            false,
+            &server_version,
+            None,
+        ));
+
+        // Execute all partitions in parallel, same as the real insert path
+        let task_ctx = Arc::new(TaskContext::default());
+        let num_partitions = insert_exec.properties().partitioning.partition_count();
+        let mut handles = Vec::new();
+        for partition in 0..num_partitions {
+            let exec = insert_exec.clone();
+            let ctx = task_ctx.clone();
+            handles.push(tokio::spawn(async move {
+                let mut stream = exec.execute(partition, ctx).unwrap();
+                while let Some(batch) = stream.next().await {
+                    batch.unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        assert_eq!(insert_count.load(Ordering::SeqCst), 3);
+        let result = insert_exec.add_result().expect("should have add_result");
+        assert_eq!(result.version, 99);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_insert_disabled_for_old_server() {
+        use datafusion_physical_plan::union::UnionExec;
+        use lance_datafusion::exec::OneShotExec;
+
+        use crate::remote::db::ServerVersion;
+        use crate::remote::table::insert::RemoteInsertExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+
+        // Build a multi-partition input
+        let partitions: Vec<Arc<dyn ExecutionPlan>> = (0..3)
+            .map(|i| {
+                let batch =
+                    RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![i]))])
+                        .unwrap();
+                let stream = Box::pin(RecordBatchStreamAdapter::new(
+                    schema.clone(),
+                    futures::stream::once(futures::future::ok(batch)),
+                ));
+                Arc::new(OneShotExec::new(stream)) as _
+            })
+            .collect();
+        let input = UnionExec::try_new(partitions).unwrap();
+
+        // Old server version should disable parallel insert even with multi-partition input
+        let server_version = ServerVersion(semver::Version::new(0, 3, 0));
+        let insert_exec = RemoteInsertExec::new(
+            "my_table".to_string(),
+            "my_table".to_string(),
+            crate::remote::client::test_utils::client_with_handler(|_| -> http::Response<String> {
+                panic!("should not be called in this test");
+            }),
+            input,
+            false,
+            &server_version,
+            None,
+        );
+
+        // Should require single partition (legacy behavior)
+        let dist = insert_exec.required_input_distribution();
+        assert!(
+            matches!(
+                dist.as_slice(),
+                [datafusion_physical_plan::Distribution::SinglePartition]
+            ),
+            "old server should require SinglePartition"
+        );
     }
 }

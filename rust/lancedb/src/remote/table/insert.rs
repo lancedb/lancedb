@@ -13,16 +13,18 @@ use datafusion::physical_expr::EquivalenceProperties;
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_plan::{
-    stream::RecordBatchStreamAdapter, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
-    PlanProperties,
+    stream::RecordBatchStreamAdapter, DisplayAs, DisplayFormatType, ExecutionPlan,
+    ExecutionPlanProperties, Partitioning, PlanProperties,
 };
 use futures::{stream, StreamExt};
 use http::header::CONTENT_TYPE;
+use serde::{Deserialize, Serialize};
 
 use super::RemoteTable;
 use crate::{
     remote::{
         client::{HttpSend, RestfulLanceDbClient, Sender},
+        db::ServerVersion,
         ARROW_STREAM_CONTENT_TYPE,
     },
     table::{AddResult, WriteProgressState},
@@ -37,14 +39,31 @@ fn make_count_schema() -> SchemaRef {
     )]))
 }
 
+#[derive(Debug, Deserialize)]
+struct UncommittedInsertResponse {
+    transaction: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CommitRequest {
+    transactions: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommitResponse {
+    version: u64,
+}
+
 pub struct RemoteInsertExec<S: HttpSend = Sender> {
     table_name: String,
     identifier: String,
     client: RestfulLanceDbClient<S>,
     input: Arc<dyn ExecutionPlan>,
     overwrite: bool,
+    parallel_insert: bool,
     properties: PlanProperties,
     add_result: Arc<Mutex<Option<AddResult>>>,
+    transactions: Arc<Mutex<Vec<String>>>,
     progress: Option<Arc<WriteProgressState>>,
 }
 
@@ -54,6 +73,7 @@ impl<S: HttpSend> std::fmt::Debug for RemoteInsertExec<S> {
             .field("table_name", &self.table_name)
             .field("identifier", &self.identifier)
             .field("overwrite", &self.overwrite)
+            .field("parallel_insert", &self.parallel_insert)
             .finish()
     }
 }
@@ -71,12 +91,40 @@ impl<S: HttpSend> RemoteInsertExec<S> {
         client: RestfulLanceDbClient<S>,
         input: Arc<dyn ExecutionPlan>,
         overwrite: bool,
+        server_version: &ServerVersion,
         progress: Option<Arc<WriteProgressState>>,
     ) -> Self {
+        let parallel_insert = server_version.support_parallel_insert()
+            && input.output_partitioning().partition_count() > 1;
+        Self::new_inner(
+            table_name,
+            identifier,
+            client,
+            input,
+            overwrite,
+            parallel_insert,
+            progress,
+        )
+    }
+
+    fn new_inner(
+        table_name: String,
+        identifier: String,
+        client: RestfulLanceDbClient<S>,
+        input: Arc<dyn ExecutionPlan>,
+        overwrite: bool,
+        parallel_insert: bool,
+        progress: Option<Arc<WriteProgressState>>,
+    ) -> Self {
+        let num_partitions = if parallel_insert {
+            input.output_partitioning().partition_count()
+        } else {
+            1
+        };
         let output_schema = make_count_schema();
         let properties = PlanProperties::new(
             EquivalenceProperties::new(output_schema),
-            Partitioning::UnknownPartitioning(1),
+            Partitioning::UnknownPartitioning(num_partitions),
             datafusion_physical_plan::execution_plan::EmissionType::Final,
             datafusion_physical_plan::execution_plan::Boundedness::Bounded,
         );
@@ -86,8 +134,10 @@ impl<S: HttpSend> RemoteInsertExec<S> {
             client,
             input,
             overwrite,
+            parallel_insert,
             properties,
             add_result: Arc::new(Mutex::new(None)),
+            transactions: Arc::new(Mutex::new(Vec::new())),
             progress,
         }
     }
@@ -167,19 +217,23 @@ impl<S: HttpSend> ExecutionPlan for RemoteInsertExec<S> {
                 "RemoteInsertExec requires exactly one child".to_string(),
             ));
         }
-        Ok(Arc::new(Self::new(
+        Ok(Arc::new(Self::new_inner(
             self.table_name.clone(),
             self.identifier.clone(),
             self.client.clone(),
             children[0].clone(),
             self.overwrite,
+            self.parallel_insert,
             self.progress.clone(),
         )))
     }
 
     fn required_input_distribution(&self) -> Vec<datafusion_physical_plan::Distribution> {
-        // Until we have a separate commit endpoint, we need to do all inserts in a single partition
-        vec![datafusion_physical_plan::Distribution::SinglePartition]
+        if self.parallel_insert {
+            vec![datafusion_physical_plan::Distribution::UnspecifiedDistribution]
+        } else {
+            vec![datafusion_physical_plan::Distribution::SinglePartition]
+        }
     }
 
     fn benefits_from_input_partitioning(&self) -> Vec<bool> {
@@ -193,7 +247,6 @@ impl<S: HttpSend> ExecutionPlan for RemoteInsertExec<S> {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        // Make a streaming request to remote server to insert data
         let input_stream = self.input.execute(partition, context)?;
 
         let output_schema = make_count_schema();
@@ -202,6 +255,9 @@ impl<S: HttpSend> ExecutionPlan for RemoteInsertExec<S> {
         let identifier = self.identifier.clone();
         let table_name = self.table_name.clone();
         let overwrite = self.overwrite;
+        let parallel_insert = self.parallel_insert;
+        let num_partitions = self.input.output_partitioning().partition_count();
+        let transactions = self.transactions.clone();
 
         let progress = self.progress.clone();
 
@@ -212,6 +268,10 @@ impl<S: HttpSend> ExecutionPlan for RemoteInsertExec<S> {
 
             if overwrite {
                 request = request.query(&[("mode", "overwrite")]);
+            }
+
+            if parallel_insert {
+                request = request.query(&[("uncommitted", "true")]);
             }
 
             let body = Self::stream_as_body(input_stream, progress)?;
@@ -242,21 +302,112 @@ impl<S: HttpSend> ExecutionPlan for RemoteInsertExec<S> {
                 }))
             })?;
 
-            let parsed_result = if body_text.trim().is_empty() {
-                // Backward compatible with old servers
-                AddResult { version: 0 }
-            } else {
-                serde_json::from_str(&body_text).map_err(|e| {
-                    DataFusionError::External(Box::new(Error::Http {
-                        source: format!("Failed to parse add response: {}", e).into(),
-                        request_id: request_id.clone(),
-                        status_code: None,
-                    }))
-                })?
-            };
+            if parallel_insert {
+                // Parse the uncommitted insert response
+                let uncommitted_response: UncommittedInsertResponse =
+                    serde_json::from_str(&body_text).map_err(|e| {
+                        DataFusionError::External(Box::new(Error::Http {
+                            source: format!("Failed to parse uncommitted insert response: {}", e)
+                                .into(),
+                            request_id: request_id.clone(),
+                            status_code: None,
+                        }))
+                    })?;
 
-            // Store the add result
-            {
+                // Collect the transaction; if we're the last partition, commit.
+                let should_commit = {
+                    let mut txns = transactions.lock().map_err(|_| {
+                        DataFusionError::Execution(
+                            "Failed to acquire lock for transactions".to_string(),
+                        )
+                    })?;
+                    txns.push(uncommitted_response.transaction);
+                    txns.len() == num_partitions
+                };
+
+                if should_commit {
+                    let commit_txns = {
+                        let txns = transactions.lock().map_err(|_| {
+                            DataFusionError::Execution(
+                                "Failed to acquire lock for transactions".to_string(),
+                            )
+                        })?;
+                        txns.clone()
+                    };
+
+                    let commit_body = serde_json::to_vec(&CommitRequest {
+                        transactions: commit_txns,
+                    })
+                    .map_err(|e| {
+                        DataFusionError::External(Box::new(Error::Runtime {
+                            message: format!("Failed to serialize commit request: {}", e),
+                        }))
+                    })?;
+
+                    let commit_request = client
+                        .post(&format!("/v1/table/{}/commit/", identifier))
+                        .header(CONTENT_TYPE, "application/json")
+                        .body(commit_body);
+
+                    let (commit_request_id, commit_response) = client
+                        .send(commit_request)
+                        .await
+                        .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                    let commit_response = RemoteTable::<Sender>::handle_table_not_found(
+                        &table_name,
+                        commit_response,
+                        &commit_request_id,
+                    )
+                    .await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                    let commit_response = client
+                        .check_response(&commit_request_id, commit_response)
+                        .await
+                        .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                    let commit_body_text = commit_response.text().await.map_err(|e| {
+                        DataFusionError::External(Box::new(Error::Http {
+                            source: Box::new(e),
+                            request_id: commit_request_id.clone(),
+                            status_code: None,
+                        }))
+                    })?;
+
+                    let commit_result: CommitResponse = serde_json::from_str(&commit_body_text)
+                        .map_err(|e| {
+                            DataFusionError::External(Box::new(Error::Http {
+                                source: format!("Failed to parse commit response: {}", e).into(),
+                                request_id: commit_request_id.clone(),
+                                status_code: None,
+                            }))
+                        })?;
+
+                    let mut res_lock = add_result_mutex.lock().map_err(|_| {
+                        DataFusionError::Execution(
+                            "Failed to acquire lock for add_result".to_string(),
+                        )
+                    })?;
+                    *res_lock = Some(AddResult {
+                        version: commit_result.version,
+                    });
+                }
+            } else {
+                // Legacy single-partition path
+                let parsed_result = if body_text.trim().is_empty() {
+                    // Backward compatible with old servers
+                    AddResult { version: 0 }
+                } else {
+                    serde_json::from_str(&body_text).map_err(|e| {
+                        DataFusionError::External(Box::new(Error::Http {
+                            source: format!("Failed to parse add response: {}", e).into(),
+                            request_id: request_id.clone(),
+                            status_code: None,
+                        }))
+                    })?
+                };
+
                 let mut res_lock = add_result_mutex.lock().map_err(|_| {
                     DataFusionError::Execution("Failed to acquire lock for add_result".to_string())
                 })?;
