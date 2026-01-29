@@ -275,7 +275,7 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
         return pa.timestamp("us", tz=tz)
     elif getattr(py_type, "__origin__", None) in (list, tuple):
         child = py_type.__args__[0]
-        return pa.list_(_pydantic_type_to_arrow_type(child, field))
+        return _pydantic_list_child_to_arrow(child, field)
     raise TypeError(
         f"Converting Pydantic type to Arrow Type: unsupported type {py_type}."
     )
@@ -317,6 +317,15 @@ def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
     return _py_type_to_arrow_type(tp, field)
 
 
+def _pydantic_list_child_to_arrow(child: Any, field: FieldInfo) -> pa.DataType:
+    unwrapped = _unwrap_optional_annotation(child)
+    if unwrapped is not None:
+        return pa.list_(
+            pa.field("item", _pydantic_type_to_arrow_type(unwrapped, field), True)
+        )
+    return pa.list_(_pydantic_type_to_arrow_type(child, field))
+
+
 def _unwrap_optional_annotation(annotation: Any) -> Any | None:
     if isinstance(annotation, (_GenericAlias, GenericAlias)):
         origin = annotation.__origin__
@@ -344,7 +353,7 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
 
         if origin is list:
             child = args[0]
-            return pa.list_(_pydantic_type_to_arrow_type(child, field))
+            return _pydantic_list_child_to_arrow(child, field)
     return _pydantic_type_to_arrow_type(field.annotation, field)
 
 
