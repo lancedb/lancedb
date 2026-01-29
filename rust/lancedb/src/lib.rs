@@ -102,7 +102,7 @@
 //!             Arc::new(Int32Array::from_iter_values(0..256)),
 //!             Arc::new(
 //!                 FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-//!                     (0..256).map(|_| Some(vec![Some(1.0); ndims])),
+//!                     (0..256).map(|_| Some(vec![Some(1.0); ndims as usize])),
 //!                     ndims,
 //!                 ),
 //!             ),
@@ -158,6 +158,7 @@
 //!     .await?
 //!     .try_collect::<Vec<_>>()
 //!     .await?;
+//! #   Ok(())
 //! # }
 //! ```
 
