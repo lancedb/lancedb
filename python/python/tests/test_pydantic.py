@@ -20,10 +20,6 @@ from pydantic import BaseModel
 from pydantic import Field
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="using native type alias requires python3.10 or higher",
-)
 def test_pydantic_to_arrow():
     class StructModel(pydantic.BaseModel):
         a: str
@@ -83,10 +79,6 @@ def test_pydantic_to_arrow():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="using | type syntax requires python3.10 or higher",
-)
 def test_optional_types_py310():
     class TestModel(pydantic.BaseModel):
         a: str | None
@@ -297,10 +289,6 @@ def test_nested_struct_list_optional_container_and_items():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="using PEP 604 union types requires python3.10 or higher",
-)
 def test_nested_struct_list_optional_items_pep604():
     class SplitInfo(pydantic.BaseModel):
         start_frame: int
