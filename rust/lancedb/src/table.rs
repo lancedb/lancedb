@@ -1425,7 +1425,10 @@ impl Table {
             })
             .collect::<Vec<_>>();
 
-        let unioned = Arc::new(UnionExec::new(projected_plans));
+        let unioned = UnionExec::try_new(projected_plans).map_err(|e| Error::Other {
+            message: format!("Failed to union query plans: {}", e),
+            source: Some(e.into()),
+        })?;
         // We require 1 partition in the final output
         let repartitioned = RepartitionExec::try_new(
             unioned,

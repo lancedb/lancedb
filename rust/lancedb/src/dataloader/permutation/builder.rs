@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion_catalog::streaming::StreamingTable;
+use datafusion_common::DataFusionError;
 use datafusion_execution::{disk_manager::DiskManagerBuilder, runtime_env::RuntimeEnvBuilder};
 use datafusion_expr::col;
+use datafusion_physical_plan::{
+    stream::RecordBatchStreamAdapter, streaming::PartitionStream,
+    SendableRecordBatchStream as DataFusionRecordBatchStream,
+};
 use futures::TryStreamExt;
 use lance_core::ROW_ID;
-use lance_datafusion::exec::SessionContextExt;
 
 use crate::{
     arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream},
@@ -28,6 +36,49 @@ pub const SRC_ROW_ID_COL: &str = "row_id";
 pub const SPLIT_NAMES_CONFIG_KEY: &str = "split_names";
 
 pub const DEFAULT_MEMORY_LIMIT: usize = 100 * 1024 * 1024;
+
+struct OneShotPartitionStream {
+    schema: arrow_schema::SchemaRef,
+    stream: Mutex<Option<DataFusionRecordBatchStream>>,
+}
+
+impl OneShotPartitionStream {
+    fn new(schema: arrow_schema::SchemaRef, stream: DataFusionRecordBatchStream) -> Self {
+        Self {
+            schema,
+            stream: Mutex::new(Some(stream)),
+        }
+    }
+}
+
+impl PartitionStream for OneShotPartitionStream {
+    fn schema(&self) -> &arrow_schema::SchemaRef {
+        &self.schema
+    }
+
+    fn execute(&self, _ctx: Arc<datafusion_execution::TaskContext>) -> DataFusionRecordBatchStream {
+        self.stream
+            .lock()
+            .ok()
+            .and_then(|mut stream| stream.take())
+            .unwrap_or_else(|| {
+                Box::pin(RecordBatchStreamAdapter::new(
+                    Arc::clone(&self.schema),
+                    futures::stream::empty::<
+                        std::result::Result<arrow_array::RecordBatch, DataFusionError>,
+                    >(),
+                ))
+            })
+    }
+}
+
+impl std::fmt::Debug for OneShotPartitionStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OneShotPartitionStream")
+            .field("schema", &self.schema)
+            .finish()
+    }
+}
 
 /// Where to store the permutation table
 #[derive(Debug, Clone, Default)]
@@ -190,12 +241,17 @@ impl PermutationBuilder {
                 .build_arc()
                 .unwrap(),
         );
-        let df = ctx
-            .read_one_shot(data.into_df_stream())
-            .map_err(|e| Error::Other {
-                message: format!("Failed to setup sort by split id: {}", e),
-                source: Some(e.into()),
-            })?;
+        let df_stream = data.into_df_stream();
+        let schema = df_stream.schema();
+        let partition = Arc::new(OneShotPartitionStream::new(schema.clone(), df_stream));
+        let table = StreamingTable::try_new(schema, vec![partition]).map_err(|e| Error::Other {
+            message: format!("Failed to create streaming table: {}", e),
+            source: Some(e.into()),
+        })?;
+        let df = ctx.read_table(Arc::new(table)).map_err(|e| Error::Other {
+            message: format!("Failed to setup sort by split id: {}", e),
+            source: Some(e.into()),
+        })?;
         let df_stream = df
             .sort_by(vec![col(SPLIT_ID_COLUMN)])
             .map_err(|e| Error::Other {
