@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
-import sys
 from datetime import date, datetime
 from typing import List, Optional, Tuple
 
@@ -20,10 +19,6 @@ from pydantic import BaseModel
 from pydantic import Field
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 9),
-    reason="using native type alias requires python3.9 or higher",
-)
 def test_pydantic_to_arrow():
     class StructModel(pydantic.BaseModel):
         a: str
@@ -83,10 +78,6 @@ def test_pydantic_to_arrow():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="using | type syntax requires python3.10 or higher",
-)
 def test_optional_types_py310():
     class TestModel(pydantic.BaseModel):
         a: str | None
@@ -105,11 +96,7 @@ def test_optional_types_py310():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="using PEP 604 union types requires python3.10 or higher",
-)
-def test_optional_structs_py310():
+def test_optional_structs():
     class SplitInfo(pydantic.BaseModel):
         start_frame: int
         end_frame: int
@@ -138,10 +125,6 @@ def test_optional_structs_py310():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="using PEP 604 union types requires python3.10 or higher",
-)
 def test_optional_struct_list_py310():
     class SplitInfo(pydantic.BaseModel):
         start_frame: int
@@ -173,10 +156,6 @@ def test_optional_struct_list_py310():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 9),
-    reason="using native type alias requires python3.9 or higher",
-)
 def test_nested_struct_list():
     class SplitInfo(pydantic.BaseModel):
         start_frame: int
@@ -208,10 +187,6 @@ def test_nested_struct_list():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 9),
-    reason="using native type alias requires python3.9 or higher",
-)
 def test_nested_struct_list_optional():
     class SplitInfo(pydantic.BaseModel):
         start_frame: int
@@ -313,10 +288,6 @@ def test_nested_struct_list_optional_container_and_items():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="using PEP 604 union types requires python3.10 or higher",
-)
 def test_nested_struct_list_optional_items_pep604():
     class SplitInfo(pydantic.BaseModel):
         start_frame: int
@@ -352,10 +323,6 @@ def test_nested_struct_list_optional_items_pep604():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info > (3, 8),
-    reason="using native type alias requires python3.9 or higher",
-)
 def test_pydantic_to_arrow_py38():
     class StructModel(pydantic.BaseModel):
         a: str

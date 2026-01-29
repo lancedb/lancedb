@@ -41,7 +41,7 @@ jobs:
           sudo apt install -y protobuf-compiler libssl-dev
           rustup update && rustup default
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.10"
           cache: "pip"

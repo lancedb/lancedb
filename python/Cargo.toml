@@ -21,7 +21,7 @@ lance-core.workspace = true
 lance-namespace.workspace = true
 lance-io.workspace = true
 env_logger.workspace = true
-pyo3 = { version = "0.25", features = ["extension-module", "abi3-py39"] }
+pyo3 = { version = "0.25", features = ["extension-module", "abi3-py310"] }
 pyo3-async-runtimes = { version = "0.25", features = [
     "attributes",
     "tokio-runtime",
@@ -34,7 +34,7 @@ tokio = { version = "1.40", features = ["sync"] }
 [build-dependencies]
 pyo3-build-config = { version = "0.25", features = [
     "extension-module",
-    "abi3-py39",
+    "abi3-py310",
 ] }
 
 [features]
