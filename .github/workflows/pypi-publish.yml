@@ -44,9 +44,9 @@ jobs:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
-          python-version: 3.10
+          python-version: "3.10"
       - uses: ./.github/workflows/build_linux_wheel
         with:
           python-minor-version: 10
@@ -74,9 +74,9 @@ jobs:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
-          python-version: 3.14
+          python-version: "3.14"
       - uses: ./.github/workflows/build_mac_wheel
         with:
           python-minor-version: 10
@@ -95,9 +95,9 @@ jobs:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
-          python-version: 3.14
+          python-version: "3.14"
       - uses: ./.github/workflows/build_windows_wheel
         with:
           python-minor-version: 10
