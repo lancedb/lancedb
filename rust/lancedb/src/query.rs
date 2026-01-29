@@ -1381,7 +1381,7 @@ mod tests {
     use arrow::{array::downcast_array, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{
         cast::AsArray, types::Float32Type, FixedSizeListArray, Float32Array, Int32Array,
-        RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
+        RecordBatch, RecordBatchReader, StringArray,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
@@ -1402,7 +1402,7 @@ mod tests {
         let batches = make_test_batches();
         let conn = connect(uri).execute().await.unwrap();
         let table = conn
-            .create_table("my_table", Box::new(batches))
+            .create_table("my_table", batches)
             .execute()
             .await
             .unwrap();
@@ -1463,7 +1463,7 @@ mod tests {
         let batches = make_non_empty_batches();
         let conn = connect(uri).execute().await.unwrap();
         let table = conn
-            .create_table("my_table", Box::new(batches))
+            .create_table("my_table", batches)
             .execute()
             .await
             .unwrap();
@@ -1525,7 +1525,7 @@ mod tests {
         let batches = make_non_empty_batches();
         let conn = connect(uri).execute().await.unwrap();
         let table = conn
-            .create_table("my_table", Box::new(batches))
+            .create_table("my_table", batches)
             .execute()
             .await
             .unwrap();
@@ -1578,7 +1578,7 @@ mod tests {
         let batches = make_non_empty_batches();
         let conn = connect(uri).execute().await.unwrap();
         let table = conn
-            .create_table("my_table", Box::new(batches))
+            .create_table("my_table", batches)
             .execute()
             .await
             .unwrap();
@@ -1599,13 +1599,13 @@ mod tests {
         assert!(result.is_err());
     }
 
-    fn make_non_empty_batches() -> impl RecordBatchReader + Send + 'static {
+    fn make_non_empty_batches() -> Box<dyn RecordBatchReader + Send> {
         let vec = Box::new(RandomVector::new().named("vector".to_string()));
         let id = Box::new(IncrementingInt32::new().named("id".to_string()));
-        BatchGenerator::new().col(vec).col(id).batch(512)
+        Box::new(BatchGenerator::new().col(vec).col(id).batch(512))
     }
 
-    fn make_test_batches() -> impl RecordBatchReader + Send + 'static {
+    fn make_test_batches() -> RecordBatch {
         let dim: usize = 128;
         let schema = Arc::new(ArrowSchema::new(vec![
             ArrowField::new("key", DataType::Int32, false),
@@ -1619,12 +1619,7 @@ mod tests {
             ),
             ArrowField::new("uri", DataType::Utf8, true),
         ]));
-        RecordBatchIterator::new(
-            vec![RecordBatch::new_empty(schema.clone())]
-                .into_iter()
-                .map(Ok),
-            schema,
-        )
+        RecordBatch::new_empty(schema)
     }
 
     async fn make_test_table(tmp_dir: &tempfile::TempDir) -> Table {
@@ -1633,7 +1628,7 @@ mod tests {
 
         let batches = make_non_empty_batches();
         let conn = connect(uri).execute().await.unwrap();
-        conn.create_table("my_table", Box::new(batches))
+        conn.create_table("my_table", batches)
             .execute()
             .await
             .unwrap()
@@ -1862,10 +1857,8 @@ mod tests {
 
         let record_batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(text), Arc::new(vector)]).unwrap();
-        let record_batch_iter =
-            RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
         let table = conn
-            .create_table("my_table", record_batch_iter)
+            .create_table("my_table", record_batch)
             .execute()
             .await
             .unwrap();
@@ -1949,10 +1942,8 @@ mod tests {
             ],
         )
         .unwrap();
-        let record_batch_iter =
-            RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
         let table = conn
-            .create_table("my_table", record_batch_iter)
+            .create_table("my_table", record_batch)
             .mode(CreateTableMode::Overwrite)
             .execute()
             .await
@@ -2062,8 +2053,6 @@ mod tests {
     async fn test_pagination_with_fts() {
         let db = connect("memory://test").execute().await.unwrap();
         let data = fts_test_data(400);
-        let schema = data.schema();
-        let data = RecordBatchIterator::new(vec![Ok(data)], schema);
         let table = db.create_table("test_table", data).execute().await.unwrap();
 
         table

@@ -4,7 +4,7 @@
 #![cfg(feature = "s3-test")]
 use std::sync::Arc;
 
-use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
+use arrow_array::{Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 
 use aws_config::{BehaviorVersion, ConfigLoader, Region, SdkConfig};
@@ -111,7 +111,6 @@ async fn test_minio_lifecycle() -> Result<()> {
         .await?;
 
     let data = test_data();
-    let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
 
     let table = db.create_table("test_table", data).execute().await?;
 
@@ -127,7 +126,6 @@ async fn test_minio_lifecycle() -> Result<()> {
     assert_eq!(row_count, 3);
 
     let data = test_data();
-    let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
     table.add(data).execute().await?;
 
     db.drop_table("test_table", &[]).await?;
@@ -247,7 +245,6 @@ async fn test_encryption() -> Result<()> {
 
     // Create a table with encryption
     let data = test_data();
-    let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
 
     let mut builder = db.create_table("test_table", data);
     for (key, value) in CONFIG {
@@ -274,7 +271,6 @@ async fn test_encryption() -> Result<()> {
     let table = db.open_table("test_table").execute().await?;
 
     let data = test_data();
-    let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
     table.add(data).execute().await?;
     validate_objects_encrypted(&bucket.0, "test_table", &key.0).await;
 
@@ -300,7 +296,6 @@ async fn test_table_storage_options_override() -> Result<()> {
 
     // Create table overriding with key2 encryption
     let data = test_data();
-    let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
     let _table = db
         .create_table("test_override", data)
         .storage_option("aws_sse_kms_key_id", &key2.0)
@@ -312,7 +307,6 @@ async fn test_table_storage_options_override() -> Result<()> {
 
     // Also test that a table created without override uses connection settings
     let data = test_data();
-    let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
     let _table2 = db.create_table("test_inherit", data).execute().await?;
 
     // Verify this table uses key1 from connection
@@ -419,7 +413,6 @@ async fn test_concurrent_dynamodb_commit() {
         .unwrap();
 
     let data = test_data();
-    let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
 
     let table = db.create_table("test_table", data).execute().await.unwrap();
 
@@ -430,7 +423,6 @@ async fn test_concurrent_dynamodb_commit() {
         let table = db.open_table("test_table").execute().await.unwrap();
         let data = data.clone();
         tasks.push(tokio::spawn(async move {
-            let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
             table.add(data).execute().await.unwrap();
         }));
     }

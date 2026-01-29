@@ -296,7 +296,8 @@ impl Table {
         data: Bound<'_, PyAny>,
         mode: String,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let batches = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
+        let batches: Box<dyn arrow::array::RecordBatchReader + Send> =
+            Box::new(ArrowArrayStreamReader::from_pyarrow_bound(&data)?);
         let mut op = self_.inner_ref()?.add(batches);
         if mode == "append" {
             op = op.mode(AddDataMode::Append);

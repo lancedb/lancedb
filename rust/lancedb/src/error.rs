@@ -6,7 +6,7 @@ use std::sync::PoisonError;
 use arrow_schema::ArrowError;
 use snafu::Snafu;
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
+pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
@@ -80,6 +80,9 @@ pub enum Error {
     Arrow { source: ArrowError },
     #[snafu(display("LanceDBError: not supported: {message}"))]
     NotSupported { message: String },
+    /// External error pass through from user code.
+    #[snafu(transparent)]
+    External { source: BoxError },
     #[snafu(whatever, display("{message}"))]
     Other {
         message: String,
@@ -92,15 +95,26 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<ArrowError> for Error {
     fn from(source: ArrowError) -> Self {
-        Self::Arrow { source }
+        match source {
+            ArrowError::ExternalError(source) => match source.downcast::<Self>() {
+                Ok(e) => *e,
+                Err(source) => Self::External { source },
+            },
+            _ => Self::Arrow { source },
+        }
     }
 }
 
 impl From<lance::Error> for Error {
     fn from(source: lance::Error) -> Self {
-        // TODO: Once Lance is changed to preserve ObjectStore, DataFusion, and Arrow errors, we can
-        // pass those variants through here as well.
-        Self::Lance { source }
+        // Try to unwrap external errors that were wrapped by lance
+        match source {
+            lance::Error::Wrapped { error, .. } => match error.downcast::<Self>() {
+                Ok(e) => *e,
+                Err(source) => Self::External { source },
+            },
+            _ => Self::Lance { source },
+        }
     }
 }
 
