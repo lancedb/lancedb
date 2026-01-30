@@ -10,7 +10,7 @@ import urllib.parse as urlparse
 import numpy as np
 import pyarrow as pa
 from tqdm import tqdm
-from pydantic import PrivateAttr
+from pydantic import Field, PrivateAttr
 
 from ..util import attempt_import_or_raise
 from .base import EmbeddingFunction
@@ -24,7 +24,10 @@ if TYPE_CHECKING:
 
 @register("siglip")
 class SigLipEmbeddings(EmbeddingFunction):
-    model_name: str = "google/siglip-base-patch16-224"
+    siglip_model_name: str = Field(
+        default="google/siglip-base-patch16-224",
+        validation_alias="model_name",
+    )
     device: str = "cpu"
     batch_size: int = 64
     normalize: bool = True
@@ -39,8 +42,10 @@ class SigLipEmbeddings(EmbeddingFunction):
         transformers = attempt_import_or_raise("transformers")
         self._torch = attempt_import_or_raise("torch")
 
-        self._processor = transformers.AutoProcessor.from_pretrained(self.model_name)
-        self._model = transformers.SiglipModel.from_pretrained(self.model_name)
+        self._processor = transformers.AutoProcessor.from_pretrained(
+            self.siglip_model_name
+        )
+        self._model = transformers.SiglipModel.from_pretrained(self.siglip_model_name)
         self._model.to(self.device)
         self._model.eval()
         self._ndims = None

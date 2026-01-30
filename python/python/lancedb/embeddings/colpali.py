@@ -9,6 +9,8 @@ import numpy as np
 import io
 import warnings
 
+from pydantic import Field
+
 from ..util import attempt_import_or_raise
 from .base import EmbeddingFunction
 from .registry import register
@@ -26,7 +28,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
 
     Parameters
     ----------
-    model_name : str
+    colpali_model_name : str
         The name of the model to use (e.g., "Metric-AI/ColQwen2.5-3b-multilingual-v1.0")
         Supports models based on these engines:
         - ColPali: "vidore/colpali-v1.3" and others
@@ -57,7 +59,10 @@ class ColPaliEmbeddings(EmbeddingFunction):
         useful for large models that do not fit in memory.
     """
 
-    model_name: str = "Metric-AI/ColQwen2.5-3b-multilingual-v1.0"
+    colpali_model_name: str = Field(
+        default="Metric-AI/ColQwen2.5-3b-multilingual-v1.0",
+        validation_alias="model_name",
+    )
     device: str = "auto"
     dtype: str = "bfloat16"
     use_token_pooling: bool = True
@@ -107,7 +112,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
             self._processor,
             self._token_pooler,
         ) = self._load_model(
-            self.model_name,
+            self.colpali_model_name,
             dtype,
             device,
             self.pooling_strategy,
