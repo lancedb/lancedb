@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use lance::io::ObjectStoreParams;
+use lance_io::object_store::StorageOptionsAccessor;
 use lance_namespace::{
     models::{
         CreateEmptyTableRequest, CreateNamespaceRequest, CreateNamespaceResponse,
@@ -253,6 +255,21 @@ impl Database for LanceNamespaceDatabase {
             }
         };
 
+        // Inject storage_options into write params if we have them
+        let mut params = request.write_options.lance_write_params;
+        if !self.storage_options.is_empty() {
+            let params_ref = params.get_or_insert_with(Default::default);
+            let store_params = params_ref
+                .store_params
+                .get_or_insert_with(ObjectStoreParams::default);
+            // Only set if not already set by user
+            if store_params.storage_options_accessor.is_none() {
+                store_params.storage_options_accessor = Some(Arc::new(
+                    StorageOptionsAccessor::with_static_options(self.storage_options.clone()),
+                ));
+            }
+        }
+
         let native_table = NativeTable::create_from_namespace(
             self.namespace.clone(),
             &location,
@@ -260,7 +277,7 @@ impl Database for LanceNamespaceDatabase {
             request.namespace.clone(),
             request.data,
             None, // write_store_wrapper not used for namespace connections
-            request.write_options.lance_write_params,
+            params,
             self.read_consistency_interval,
             self.server_side_query_enabled,
             self.session.clone(),
