@@ -5,7 +5,7 @@
 
 use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
-use arrow_array::{RecordBatchIterator, RecordBatchReader};
+use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_expr::Expr;
@@ -24,7 +24,8 @@ pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::{
-    InsertBuilder, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
+    BatchUDF, InsertBuilder, UDFCheckpointStore, UpdateBuilder as LanceUpdateBuilder, WhenMatched,
+    WriteMode, WriteParams,
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::index::vector::utils::infer_vector_dim;
@@ -76,6 +77,8 @@ use crate::utils::{
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
+
+type RecordBatchMapper = Box<dyn Fn(&RecordBatch) -> lance::Result<RecordBatch> + Send + Sync>;
 
 pub mod datafusion;
 pub(crate) mod dataset;
@@ -1224,6 +1227,23 @@ impl Table {
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
         self.inner.add_columns(transforms, read_columns).await
+    }
+
+    /// Add new columns to the table, providing values to fill in.
+    pub async fn add_columns_with_mapper(
+        &self,
+        mapper: RecordBatchMapper,
+        output_schema: Arc<Schema>,
+        result_checkpoint: Option<Arc<dyn UDFCheckpointStore>>,
+        read_columns: Option<Vec<String>>,
+    ) -> Result<AddColumnsResult> {
+        let batch_udf = BatchUDF {
+            mapper,
+            output_schema,
+            result_checkpoint,
+        };
+        let transform = NewColumnTransform::BatchUDF(batch_udf);
+        self.inner.add_columns(transform, read_columns).await
     }
 
     /// Change a column's name or nullability.
