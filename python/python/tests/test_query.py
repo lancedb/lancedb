@@ -1499,3 +1499,48 @@ def test_search_empty_table(mem_db):
     # Search on empty table should return empty results, not crash
     results = table.search([1.0, 2.0]).limit(5).to_list()
     assert results == []
+
+
+def test_fast_search_high_dimension(tmp_path):
+    # 1. Setup database using pytest's tmp_path fixture
+    db = lancedb.connect(tmp_path)
+
+    # 2. Generate dummy data
+    # Your query uses 2560 dims, so our table must match
+    ndim = 2560
+    total_rows = 500
+
+    data = [
+        {
+            "id": i,
+            "image_embedding": np.random.rand(ndim).astype(np.float32),
+            "filename": f"image_{i}.jpg",
+        }
+        for i in range(total_rows)
+    ]
+    # 3. Create the table
+    embeddings_table = db.create_table("my_images", data=data)
+
+    # 4. Run Search
+    # Note: fast_search() usually requires an index for true speed,
+    # but this tests that the flag and pipeline work correctly on the python side.
+    results = (
+        embeddings_table.search(
+            np.random.rand(ndim),
+            vector_column_name="image_embedding",
+        )
+        .fast_search()
+        .distance_type("cosine")
+        .select(["id", "_distance"])
+        .limit(100)
+        .to_pandas()
+    )
+
+    # 5. Verification
+    assert len(results) == 100
+    assert "id" in results.columns
+    assert "_distance" in results.columns
+
+    # Cosine distance should be between 0 and 2
+    assert results["_distance"].min() >= 0
+    assert results["_distance"].max() <= 2.0
