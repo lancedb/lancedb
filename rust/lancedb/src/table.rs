@@ -13,7 +13,7 @@ use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
-use datafusion_physical_plan::{displayable, ExecutionPlan};
+use datafusion_physical_plan::ExecutionPlan;
 use futures::{FutureExt, StreamExt, TryFutureExt};
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
