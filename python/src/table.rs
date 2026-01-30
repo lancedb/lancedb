@@ -4,18 +4,24 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     connection::Connection,
+    embedding::PyEmbeddingRegistry,
     error::PythonErrorExt,
     index::{extract_index_params, IndexConfig},
     query::{Query, TakeQuery},
 };
 use arrow::{
-    datatypes::{DataType, Schema},
+    datatypes::{DataType, Schema, SchemaRef},
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
+use datafusion_common::exec_datafusion_err;
+use datafusion_execution::SendableRecordBatchStream;
+use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+use lancedb::data_source::SourceData;
+use lancedb::embeddings::EmbeddingRegistry;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions,
-    Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OnBadVectors, OptimizeAction,
+    OptimizeOptions, PreprocessingOptions, Table as LanceDbTable,
 };
 use pyo3::{
     exceptions::{PyKeyError, PyRuntimeError, PyValueError},
@@ -24,6 +30,72 @@ use pyo3::{
     Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
+
+/// Adapter that implements SourceData for a Python reader factory callable.
+///
+/// This holds a Python callable that returns a RecordBatchReader when called.
+/// For rescannable sources, the callable can be invoked multiple times to
+/// get fresh readers.
+struct PySourceData {
+    /// Python callable that returns a RecordBatchReader
+    reader_factory: Py<PyAny>,
+    schema: SchemaRef,
+    num_rows: Option<usize>,
+    rescannable: bool,
+}
+
+impl std::fmt::Debug for PySourceData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PySourceData")
+            .field("schema", &self.schema)
+            .field("num_rows", &self.num_rows)
+            .field("rescannable", &self.rescannable)
+            .finish()
+    }
+}
+
+impl SourceData for PySourceData {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn read(self: Box<Self>) -> lancedb::Result<SendableRecordBatchStream> {
+        // Call the Python factory to get a reader
+        let reader: ArrowArrayStreamReader =
+            Python::with_gil(|py| -> Result<ArrowArrayStreamReader, lancedb::Error> {
+                let result =
+                    self.reader_factory
+                        .call0(py)
+                        .map_err(|e| lancedb::Error::Runtime {
+                            message: format!("Python reader factory failed: {}", e),
+                        })?;
+                ArrowArrayStreamReader::from_pyarrow_bound(result.bind(py)).map_err(|e| {
+                    lancedb::Error::Runtime {
+                        message: format!("Failed to create Arrow reader from Python: {}", e),
+                    }
+                })
+            })?;
+
+        let schema = self.schema.clone();
+        // Create a lazy stream that pulls batches on demand
+        let stream = futures::stream::unfold(reader, |mut reader| async move {
+            match reader.next() {
+                Some(Ok(batch)) => Some((Ok(batch), reader)),
+                Some(Err(e)) => Some((Err(exec_datafusion_err!("Arrow error: {}", e)), reader)),
+                None => None,
+            }
+        });
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+    }
+
+    fn num_rows(&self) -> Option<usize> {
+        self.num_rows
+    }
+
+    fn rescannable(&self) -> bool {
+        self.rescannable
+    }
+}
 
 /// Statistics about a compaction operation.
 #[pyclass(get_all)]
@@ -291,13 +363,44 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (
+        reader_factory,
+        schema,
+        mode,
+        row_count_hint=None,
+        rescannable=true,
+        on_bad_vectors="error",
+        fill_value=0.0,
+        target_partitions=None,
+        embedding_registry=None,
+        progress=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
-        data: Bound<'_, PyAny>,
+        reader_factory: Py<PyAny>,
+        schema: PyArrowType<Schema>,
         mode: String,
+        row_count_hint: Option<usize>,
+        rescannable: bool,
+        on_bad_vectors: &str,
+        fill_value: f32,
+        target_partitions: Option<usize>,
+        embedding_registry: Option<PyRef<'_, PyEmbeddingRegistry>>,
+        progress: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let batches = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
-        let mut op = self_.inner_ref()?.add(batches);
+        let schema: SchemaRef = Arc::new(schema.0);
+
+        // Create the data source with Python callable factory
+        let source = PySourceData {
+            reader_factory,
+            schema,
+            num_rows: row_count_hint,
+            rescannable,
+        };
+
+        let mut op = self_.inner_ref()?.add_from_source(Box::new(source));
+
         if mode == "append" {
             op = op.mode(AddDataMode::Append);
         } else if mode == "overwrite" {
@@ -306,7 +409,53 @@ impl Table {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
         }
 
+        // Parse on_bad_vectors string to enum
+        let on_bad_vectors_enum = match on_bad_vectors {
+            "error" => OnBadVectors::Error,
+            "drop" => OnBadVectors::Drop,
+            "fill" => OnBadVectors::Fill,
+            "null" => OnBadVectors::Null,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid on_bad_vectors: {}. Valid values are: error, drop, fill, null",
+                    on_bad_vectors
+                )))
+            }
+        };
+
+        // Set preprocessing options
+        let preprocessing = PreprocessingOptions {
+            on_bad_vectors: on_bad_vectors_enum,
+            fill_value,
+            infer_vector_schema: true,
+        };
+        op = op.preprocessing(preprocessing);
+
+        if let Some(partitions) = target_partitions {
+            op = op.target_partitions(partitions);
+        }
+
+        // Clone registry for the async block if provided
+        let registry: Option<Arc<dyn EmbeddingRegistry>> =
+            embedding_registry.map(|r| Arc::new((*r).clone()) as Arc<dyn EmbeddingRegistry>);
+
         future_into_py(self_.py(), async move {
+            let mut op = op;
+            if let Some(reg) = registry {
+                op = op.embedding_registry(reg);
+            }
+            if let Some(py_callback) = progress {
+                op = op.progress_callback(move |progress| {
+                    #[allow(deprecated)]
+                    Python::with_gil(|py| {
+                        let dict = PyDict::new(py);
+                        let _ = dict.set_item("rows_written", progress.rows_written);
+                        let _ = dict.set_item("bytes_written", progress.bytes_written);
+                        let _ = dict.set_item("elapsed_secs", progress.elapsed.as_secs_f64());
+                        let _ = py_callback.call1(py, (dict,));
+                    });
+                });
+            }
             let result = op.execute().await.infer_error()?;
             Ok(AddResult::from(result))
         })
@@ -667,10 +816,12 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (data, parameters, embedding_registry=None))]
     pub fn execute_merge_insert<'a>(
         self_: PyRef<'a, Self>,
         data: Bound<'a, PyAny>,
         parameters: MergeInsertParams,
+        embedding_registry: Option<PyRef<'_, PyEmbeddingRegistry>>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let batches: ArrowArrayStreamReader = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
         let on = parameters.on.iter().map(|s| s.as_str()).collect::<Vec<_>>();
@@ -692,7 +843,15 @@ impl Table {
             builder.use_index(use_index);
         }
 
+        // Clone registry for async block if provided
+        let registry: Option<Arc<dyn EmbeddingRegistry>> =
+            embedding_registry.map(|r| Arc::new((*r).clone()) as Arc<dyn EmbeddingRegistry>);
+
         future_into_py(self_.py(), async move {
+            let mut builder = builder;
+            if let Some(reg) = registry {
+                builder.embedding_registry(reg);
+            }
             let res = builder.execute(Box::new(batches)).await.infer_error()?;
             Ok(MergeResult::from(res))
         })

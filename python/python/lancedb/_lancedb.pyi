@@ -1,5 +1,5 @@
 from datetime import timedelta
-from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
+from typing import Callable, Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
 
 import pyarrow as pa
 
@@ -87,6 +87,7 @@ class Connection(object):
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         location: Optional[str] = None,
+        embedding_registry: Optional[PyEmbeddingRegistry] = None,
     ) -> Table: ...
     async def create_empty_table(
         self,
@@ -128,6 +129,10 @@ class Connection(object):
     ) -> None: ...
     async def drop_all_tables(self, namespace: Optional[List[str]] = None) -> None: ...
 
+class PyEmbeddingRegistry:
+    @staticmethod
+    def from_singleton() -> PyEmbeddingRegistry: ...
+
 class Table:
     def name(self) -> str: ...
     def __repr__(self) -> str: ...
@@ -135,7 +140,17 @@ class Table:
     def close(self) -> None: ...
     async def schema(self) -> pa.Schema: ...
     async def add(
-        self, data: pa.RecordBatchReader, mode: Literal["append", "overwrite"]
+        self,
+        reader_factory: Callable[[], pa.RecordBatchReader],
+        schema: pa.Schema,
+        mode: Literal["append", "overwrite"],
+        row_count_hint: Optional[int] = None,
+        rescannable: bool = True,
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+        target_partitions: Optional[int] = None,
+        embedding_registry: Optional[PyEmbeddingRegistry] = None,
+        progress: Optional[Callable[[dict], None]] = None,
     ) -> AddResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]

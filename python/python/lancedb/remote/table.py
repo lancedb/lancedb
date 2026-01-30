@@ -315,6 +315,7 @@ class RemoteTable(Table):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        progress=None,
     ) -> AddResult:
         """Add more data to the [Table](Table). It has the same API signature as
         the OSS version.
@@ -337,6 +338,8 @@ class RemoteTable(Table):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: optional
+            A progress reporter. See :meth:`Table.add` for details.
 
         Returns
         -------
@@ -345,7 +348,11 @@ class RemoteTable(Table):
         """
         return LOOP.run(
             self._table.add(
-                data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+                data,
+                mode=mode,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                progress=progress,
             )
         )
 

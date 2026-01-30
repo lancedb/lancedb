@@ -284,6 +284,45 @@ def _sanitize_data(
     return reader
 
 
+def _sanitize_data_without_embeddings(
+    data: "DATA",
+    target_schema: Optional[pa.Schema] = None,
+    metadata: Optional[dict] = None,
+    on_bad_vectors: OnBadVectorsType = "error",
+    fill_value: float = 0.0,
+    *,
+    allow_subschema: bool = False,
+) -> pa.RecordBatchReader:
+    """
+    Sanitize data without computing embeddings.
+
+    This is used when Rust will compute embeddings via the registry callback.
+    Same as _sanitize_data but skips _append_vector_columns().
+    """
+    reader = _into_pyarrow_reader(data, target_schema)
+
+    # Skip _append_vector_columns - Rust handles embeddings via registry callback
+
+    reader = _handle_bad_vectors(
+        reader,
+        on_bad_vectors=on_bad_vectors,
+        fill_value=fill_value,
+    )
+
+    if target_schema is None:
+        target_schema, reader = _infer_target_schema(reader)
+
+    if metadata:
+        new_metadata = dict(target_schema.metadata or {})
+        new_metadata.update(metadata)
+        target_schema = target_schema.with_metadata(new_metadata)
+
+    _validate_schema(target_schema)
+    reader = _cast_to_target_schema(reader, target_schema, allow_subschema)
+
+    return reader
+
+
 def _cast_to_target_schema(
     reader: pa.RecordBatchReader,
     target_schema: pa.Schema,
@@ -421,6 +460,53 @@ def sanitize_create_table(
         if metadata is None and schema is not None:
             metadata = schema.metadata
         data = _sanitize_data(
+            data,
+            schema,
+            metadata=metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+        schema = data.schema
+    else:
+        if schema is not None:
+            data = pa.Table.from_pylist([], schema)
+    if schema is None:
+        if data is None:
+            raise ValueError("Either data or schema must be provided")
+        elif hasattr(data, "schema"):
+            schema = data.schema
+
+    if metadata:
+        schema = schema.with_metadata(metadata)
+        # Need to apply metadata to the data as well
+        if isinstance(data, pa.Table):
+            data = data.replace_schema_metadata(metadata)
+        elif isinstance(data, pa.RecordBatchReader):
+            data = pa.RecordBatchReader.from_batches(schema, data)
+
+    return data, schema
+
+
+def sanitize_create_table_without_embeddings(
+    data,
+    schema: Union[pa.Schema, LanceModel],
+    metadata=None,
+    on_bad_vectors: OnBadVectorsType = "error",
+    fill_value: float = 0.0,
+):
+    """
+    Sanitize data for create_table without computing embeddings in Python.
+    Rust will compute embeddings via the registry callback.
+    """
+    if inspect.isclass(schema) and issubclass(schema, LanceModel):
+        # convert LanceModel to pyarrow schema
+        schema: pa.Schema = schema.to_arrow_schema()
+
+    if data is not None:
+        if metadata is None and schema is not None:
+            metadata = schema.metadata
+        # Use _sanitize_data_without_embeddings instead of _sanitize_data
+        data = _sanitize_data_without_embeddings(
             data,
             schema,
             metadata=metadata,
@@ -970,6 +1056,7 @@ class Table(ABC):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
+        progress=None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -988,9 +1075,15 @@ class Table(ABC):
             "append" and "overwrite".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: optional
+            A progress reporter. Can be a tqdm-like object with an ``update``
+            method, a callable that receives a dict with keys
+            ``rows_written``, ``bytes_written``, ``elapsed_secs``, or ``None``
+            to disable progress reporting. See :mod:`lancedb.progress` for
+            helpers.
 
         Returns
         -------
@@ -2410,6 +2503,7 @@ class LanceTable(Table):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
+        progress=None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -2428,15 +2522,21 @@ class LanceTable(Table):
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: optional
+            A progress reporter. See :meth:`Table.add` for details.
 
         Returns
         -------
-        int
-            The number of vectors in the table.
+        AddResult
+            An object containing the new version number of the table after adding data.
         """
         return LOOP.run(
             self._table.add(
-                data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+                data,
+                mode=mode,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                progress=progress,
             )
         )
 
@@ -3631,6 +3731,7 @@ class AsyncTable:
         mode: Optional[Literal["append", "overwrite"]] = "append",
         on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
+        progress=None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -3652,25 +3753,35 @@ class AsyncTable:
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: optional
+            A progress reporter. See :meth:`Table.add` for details.
 
         """
-        schema = await self.schema()
-        if on_bad_vectors is None:
-            on_bad_vectors = "error"
-        if fill_value is None:
-            fill_value = 0.0
-        data = _sanitize_data(
-            data,
-            schema,
-            metadata=schema.metadata,
-            on_bad_vectors=on_bad_vectors,
-            fill_value=fill_value,
-            allow_subschema=True,
-        )
-        if isinstance(data, pa.Table):
-            data = data.to_reader()
+        from .source_data import to_source_data, _register_optional_converters
+        from ._lancedb import PyEmbeddingRegistry
+        from .progress import make_progress_callback
 
-        return await self._inner.add(data, mode or "append")
+        # Re-check for newly imported optional deps
+        _register_optional_converters()
+
+        source = to_source_data(data)
+        rust_registry = PyEmbeddingRegistry.from_singleton()
+
+        callback = make_progress_callback(progress)
+
+        # Rust handles schema casting (List -> FixedSizeList, type casts, etc.)
+        return await self._inner.add(
+            source.reader,
+            source.schema,
+            mode or "append",
+            source.num_rows,  # row_count_hint
+            source.rescannable,
+            on_bad_vectors or "error",  # passed to Rust PreprocessingExec
+            fill_value if fill_value is not None else 0.0,  # fill value for bad vectors
+            None,  # target_partitions (use default)
+            rust_registry,
+            callback,
+        )
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """
@@ -4077,16 +4188,23 @@ class AsyncTable:
             on_bad_vectors = "error"
         if fill_value is None:
             fill_value = 0.0
-        data = _sanitize_data(
+
+        from ._lancedb import PyEmbeddingRegistry
+
+        rust_registry = PyEmbeddingRegistry.from_singleton()
+        metadata = schema.metadata or {}
+
+        data = _sanitize_data_without_embeddings(
             new_data,
             schema,
-            metadata=schema.metadata,
+            metadata=metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
             allow_subschema=True,
         )
         if isinstance(data, pa.Table):
             data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
+
         return await self._inner.execute_merge_insert(
             data,
             dict(
@@ -4099,6 +4217,7 @@ class AsyncTable:
                 timeout=merge._timeout,
                 use_index=merge._use_index,
             ),
+            rust_registry,
         )
 
     async def delete(self, where: str) -> DeleteResult:

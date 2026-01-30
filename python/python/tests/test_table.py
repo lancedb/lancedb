@@ -1969,6 +1969,53 @@ def test_add_table_with_empty_embeddings(tmp_path):
     assert table.count_rows() == 1
 
 
+def test_add_with_progress_callback(mem_db: DBConnection):
+    table = mem_db.create_table("test_progress", data=[{"x": i} for i in range(10)])
+    assert table.count_rows() == 10
+
+    updates = []
+    table.add(
+        [{"x": i} for i in range(100, 200)],
+        progress=lambda p: updates.append(p),
+    )
+    assert table.count_rows() == 110
+
+    # Progress callback should have been called at least once
+    assert len(updates) > 0
+    # Each update should have the expected keys
+    for u in updates:
+        assert "rows_written" in u
+        assert "bytes_written" in u
+        assert "elapsed_secs" in u
+    # Final update should reflect all rows
+    assert updates[-1]["rows_written"] == 100
+    assert updates[-1]["bytes_written"] > 0
+
+
+def test_add_with_tqdm_adapter(mem_db: DBConnection):
+    from lancedb.progress import TqdmProgressAdapter
+
+    table = mem_db.create_table("test_tqdm", data=[{"x": i} for i in range(10)])
+
+    class FakePbar:
+        def __init__(self):
+            self.total = 0
+            self.postfix = {}
+
+        def update(self, n):
+            self.total += n
+
+        def set_postfix(self, **kwargs):
+            self.postfix = kwargs
+
+    pbar = FakePbar()
+    adapter = TqdmProgressAdapter(pbar)
+    table.add([{"x": i} for i in range(100, 200)], progress=adapter)
+
+    assert pbar.total == 100
+    assert "bytes" in pbar.postfix
+
+
 def test_table_uri(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("my_table", data=[{"x": 0}])
