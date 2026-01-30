@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import inspect
-import sys
 import types
 from abc import ABC, abstractmethod
 from datetime import date, datetime
