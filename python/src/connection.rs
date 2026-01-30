@@ -121,7 +121,8 @@ impl Connection {
 
         let mode = Self::parse_create_mode_str(mode)?;
 
-        let batches = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
+        let batches: Box<dyn arrow::array::RecordBatchReader + Send> =
+            Box::new(ArrowArrayStreamReader::from_pyarrow_bound(&data)?);
 
         let mut builder = inner.create_table(name, batches).mode(mode);
 

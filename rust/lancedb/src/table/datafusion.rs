@@ -258,8 +258,7 @@ pub mod tests {
 
     use arrow::array::AsArray;
     use arrow_array::{
-        BinaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, RecordBatchIterator,
-        RecordBatchReader, StringArray, UInt32Array,
+        BinaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, UInt32Array,
     };
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::{
@@ -279,7 +278,7 @@ pub mod tests {
         table::datafusion::BaseTableAdapter,
     };
 
-    fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+    fn make_test_batches() -> RecordBatch {
         let metadata = HashMap::from_iter(vec![("foo".to_string(), "bar".to_string())]);
         let schema = Arc::new(
             Schema::new(vec![
@@ -288,19 +287,17 @@ pub mod tests {
             ])
             .with_metadata(metadata),
         );
-        RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int32Array::from_iter_values(0..10)),
-                    Arc::new(UInt32Array::from_iter_values(0..10)),
-                ],
-            )],
+        RecordBatch::try_new(
             schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..10)),
+                Arc::new(UInt32Array::from_iter_values(0..10)),
+            ],
         )
+        .unwrap()
     }
 
-    fn make_tbl_two_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+    fn make_tbl_two_test_batches() -> RecordBatch {
         let metadata = HashMap::from_iter(vec![("foo".to_string(), "bar".to_string())]);
         let schema = Arc::new(
             Schema::new(vec![
@@ -313,28 +310,26 @@ pub mod tests {
             ])
             .with_metadata(metadata),
         );
-        RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int64Array::from_iter_values(0..1000)),
-                    Arc::new(StringArray::from_iter_values(
-                        (0..1000).map(|i| i.to_string()),
-                    )),
-                    Arc::new(Float64Array::from_iter_values((0..1000).map(|i| i as f64))),
-                    Arc::new(StringArray::from_iter_values(
-                        (0..1000).map(|i| format!("{{\"i\":{}}}", i)),
-                    )),
-                    Arc::new(BinaryArray::from_iter_values(
-                        (0..1000).map(|i| (i as u32).to_be_bytes().to_vec()),
-                    )),
-                    Arc::new(StringArray::from_iter_values(
-                        (0..1000).map(|i| i.to_string()),
-                    )),
-                ],
-            )],
+        RecordBatch::try_new(
             schema,
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..1000)),
+                Arc::new(StringArray::from_iter_values(
+                    (0..1000).map(|i| i.to_string()),
+                )),
+                Arc::new(Float64Array::from_iter_values((0..1000).map(|i| i as f64))),
+                Arc::new(StringArray::from_iter_values(
+                    (0..1000).map(|i| format!("{{\"i\":{}}}", i)),
+                )),
+                Arc::new(BinaryArray::from_iter_values(
+                    (0..1000).map(|i| (i as u32).to_be_bytes().to_vec()),
+                )),
+                Arc::new(StringArray::from_iter_values(
+                    (0..1000).map(|i| i.to_string()),
+                )),
+            ],
         )
+        .unwrap()
     }
 
     struct TestFixture {

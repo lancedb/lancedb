@@ -3,13 +3,12 @@
 
 use std::{iter::once, sync::Arc};
 
-use arrow_array::{Float64Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray};
+use arrow_array::{Float64Array, Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use aws_config::Region;
 use aws_sdk_bedrockruntime::Client;
 use futures::StreamExt;
 use lancedb::{
-    arrow::IntoArrow,
     connect,
     embeddings::{bedrock::BedrockEmbeddingFunction, EmbeddingDefinition, EmbeddingFunction},
     query::{ExecutableQuery, QueryBase},
@@ -67,7 +66,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn make_data() -> impl IntoArrow {
+fn make_data() -> RecordBatch {
     let schema = Schema::new(vec![
         Field::new("id", DataType::Int32, true),
         Field::new("text", DataType::Utf8, false),
@@ -83,10 +82,9 @@ fn make_data() -> impl IntoArrow {
     ]);
     let price = Float64Array::from(vec![10.0, 50.0, 100.0, 30.0]);
     let schema = Arc::new(schema);
-    let rb = RecordBatch::try_new(
+    RecordBatch::try_new(
         schema.clone(),
         vec![Arc::new(id), Arc::new(text), Arc::new(price)],
     )
-    .unwrap();
-    Box::new(RecordBatchIterator::new(vec![Ok(rb)], schema))
+    .unwrap()
 }

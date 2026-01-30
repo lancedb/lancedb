@@ -1,29 +1,50 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::io::Cursor;
-
-use arrow_array::RecordBatchReader;
+use arrow_ipc::CompressionType;
+use arrow_schema::ArrowError;
+use futures::{Stream, StreamExt};
 use reqwest::Response;
 
-use crate::Result;
+use crate::{arrow::SendableRecordBatchStream, Result};
 
 use super::db::ServerVersion;
 
-pub fn batches_to_ipc_bytes(batches: impl RecordBatchReader) -> Result<Vec<u8>> {
+pub fn stream_as_ipc(
+    data: SendableRecordBatchStream,
+) -> Result<impl Stream<Item = Result<bytes::Bytes>>> {
+    let options = arrow_ipc::writer::IpcWriteOptions::default()
+        .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
     const WRITE_BUF_SIZE: usize = 4096;
     let buf = Vec::with_capacity(WRITE_BUF_SIZE);
-    let mut buf = Cursor::new(buf);
-    {
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut buf, &batches.schema())?;
-
-        for batch in batches {
-            let batch = batch?;
-            writer.write(&batch)?;
+    let writer =
+        arrow_ipc::writer::StreamWriter::try_new_with_options(buf, &data.schema(), options)?;
+    let stream = futures::stream::try_unfold((data, writer), move |(mut data, mut writer)| {
+        async move {
+            match data.next().await {
+                Some(Ok(batch)) => {
+                    writer.write(&batch)?;
+                    let buffer = std::mem::take(writer.get_mut());
+                    Ok(Some((bytes::Bytes::from(buffer), (data, writer))))
+                }
+                Some(Err(e)) => Err(e),
+                None => {
+                    if let Err(ArrowError::IpcError(_msg)) = writer.finish() {
+                        // Will error if already closed.
+                        return Ok(None);
+                    };
+                    let buffer = std::mem::take(writer.get_mut());
+                    Ok(Some((bytes::Bytes::from(buffer), (data, writer))))
+                }
+            }
         }
-        writer.finish()?;
-    }
-    Ok(buf.into_inner())
+    });
+    Ok(stream.fuse())
+}
+
+pub fn stream_as_body(data: SendableRecordBatchStream) -> Result<reqwest::Body> {
+    let stream = stream_as_ipc(data)?;
+    Ok(reqwest::Body::wrap_stream(stream))
 }
 
 pub fn parse_server_version(req_id: &str, rsp: &Response) -> Result<ServerVersion> {
