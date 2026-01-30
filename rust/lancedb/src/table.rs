@@ -23,9 +23,7 @@ pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
-use lance::dataset::{
-    InsertBuilder, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
-};
+use lance::dataset::{InsertBuilder, WhenMatched, WriteMode, WriteParams};
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::index::vector::VectorIndexParams;
@@ -81,6 +79,7 @@ pub mod datafusion;
 pub(crate) mod dataset;
 pub mod merge;
 
+pub mod update;
 use crate::index::waiter::wait_for_index;
 pub use chrono::Duration;
 use futures::future::{join_all, Either};
@@ -91,6 +90,7 @@ use lance::dataset::statistics::DatasetStatisticsExt;
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
 pub use lance_index::optimize::OptimizeOptions;
 use serde_with::skip_serializing_none;
+pub use update::{UpdateBuilder, UpdateResult};
 
 /// Defines the type of column
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,72 +327,6 @@ impl<T: IntoArrow> AddDataBuilder<T> {
     }
 }
 
-/// A builder for configuring an [`Table::update`] operation
-#[derive(Debug, Clone)]
-pub struct UpdateBuilder {
-    parent: Arc<dyn BaseTable>,
-    pub(crate) filter: Option<String>,
-    pub(crate) columns: Vec<(String, String)>,
-}
-
-impl UpdateBuilder {
-    fn new(parent: Arc<dyn BaseTable>) -> Self {
-        Self {
-            parent,
-            filter: None,
-            columns: Vec::new(),
-        }
-    }
-
-    /// Limits the update operation to rows matching the given filter
-    ///
-    /// If a row does not match the filter then it will be left unchanged.
-    pub fn only_if(mut self, filter: impl Into<String>) -> Self {
-        self.filter = Some(filter.into());
-        self
-    }
-
-    /// Specifies a column to update
-    ///
-    /// This method may be called multiple times to update multiple columns
-    ///
-    /// The `update_expr` should be an SQL expression explaining how to calculate
-    /// the new value for the column.  The expression will be evaluated against the
-    /// previous row's value.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use lancedb::Table;
-    /// # async fn doctest_helper(tbl: Table) {
-    ///   let mut operation = tbl.update();
-    ///   // Increments the `bird_count` value by 1
-    ///   operation = operation.column("bird_count", "bird_count + 1");
-    ///   operation.execute().await.unwrap();
-    /// # }
-    /// ```
-    pub fn column(
-        mut self,
-        column_name: impl Into<String>,
-        update_expr: impl Into<String>,
-    ) -> Self {
-        self.columns.push((column_name.into(), update_expr.into()));
-        self
-    }
-
-    /// Executes the update operation.
-    /// Returns the update result
-    pub async fn execute(self) -> Result<UpdateResult> {
-        if self.columns.is_empty() {
-            Err(Error::InvalidInput {
-                message: "at least one column must be specified in an update operation".to_string(),
-            })
-        } else {
-            self.parent.clone().update(self).await
-        }
-    }
-}
-
 /// Filters that can be used to limit the rows returned by a query
 pub enum Filter {
     /// A SQL filter string
@@ -424,17 +358,6 @@ pub trait Tags: Send + Sync {
 
     /// Update an existing tag to point to a new version of the table.
     async fn update(&mut self, tag: &str, version: u64) -> Result<()>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct UpdateResult {
-    #[serde(default)]
-    pub rows_updated: u64,
-    // The commit version associated with the operation.
-    // A version of `0` indicates compatibility with legacy servers that do not return
-    /// a commit version.
-    #[serde(default)]
-    pub version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -2802,25 +2725,8 @@ impl BaseTable for NativeTable {
     }
 
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult> {
-        let dataset = self.dataset.get().await?.clone();
-        let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
-        if let Some(predicate) = update.filter {
-            builder = builder.update_where(&predicate)?;
-        }
-
-        for (column, value) in update.columns {
-            builder = builder.set(column, &value)?;
-        }
-
-        let operation = builder.build()?;
-        let res = operation.execute().await?;
-        self.dataset
-            .set_latest(res.new_dataset.as_ref().clone())
-            .await;
-        Ok(UpdateResult {
-            rows_updated: res.rows_updated,
-            version: res.new_dataset.version().version,
-        })
+        // Delegate to the submodule implementation
+        update::execute_update(self, update).await
     }
 
     async fn create_plan(
