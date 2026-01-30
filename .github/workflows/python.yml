@@ -25,7 +25,7 @@ jobs:
   lint:
     name: "Lint"
     timeout-minutes: 30
-    runs-on: "ubuntu-22.04"
+    runs-on: "ubuntu-24.04"
     defaults:
       run:
         shell: bash
@@ -195,3 +195,30 @@ jobs:
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels
+  min-deps:
+    timeout-minutes: 30
+    runs-on: "ubuntu-24.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - name: Install lancedb
+        run: |
+          pip install pyarrow==16
+          pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests]
+          pip install tantivy
+      - name: Run tests
+        run: pytest -m "not slow and not s3_test" -x -v --durations=30 python/tests
