@@ -1501,46 +1501,28 @@ def test_search_empty_table(mem_db):
     assert results == []
 
 
-def test_fast_search_high_dimension(tmp_path):
-    # 1. Setup database using pytest's tmp_path fixture
+def test_fast_search(tmp_path):
     db = lancedb.connect(tmp_path)
 
-    # 2. Generate dummy data
-    # Your query uses 2560 dims, so our table must match
-    ndim = 2560
-    total_rows = 500
+    # Generate data matching the async test style
+    vectors = pa.FixedShapeTensorArray.from_numpy_ndarray(
+        np.random.rand(256, 32)
+    ).storage
 
-    data = [
-        {
-            "id": i,
-            "image_embedding": np.random.rand(ndim).astype(np.float32),
-            "filename": f"image_{i}.jpg",
-        }
-        for i in range(total_rows)
-    ]
-    # 3. Create the table
-    embeddings_table = db.create_table("my_images", data=data)
+    table = db.create_table("test", pa.table({"vector": vectors}))
 
-    # 4. Run Search
-    # Note: fast_search() usually requires an index for true speed,
-    # but this tests that the flag and pipeline work correctly on the python side.
-    results = (
-        embeddings_table.search(
-            np.random.rand(ndim),
-            vector_column_name="image_embedding",
-        )
-        .fast_search()
-        .distance_type("cosine")
-        .select(["id", "_distance"])
-        .limit(100)
-        .to_pandas()
-    )
+    # FIX: Pass arguments directly instead of using 'config=IvfPq(...)'
+    table.create_index(vector_column_name="vector", num_partitions=1, num_sub_vectors=1)
 
-    # 5. Verification
-    assert len(results) == 100
-    assert "id" in results.columns
-    assert "_distance" in results.columns
+    # Add data to ensure table has enough segments/rows
+    table.add(pa.table({"vector": vectors}))
 
-    # Cosine distance should be between 0 and 2
-    assert results["_distance"].min() >= 0
-    assert results["_distance"].max() <= 2.0
+    q = [1.0] * 32
+
+    # 1. Normal Search -> Should include "LanceScan" (Brute Force / Scan)
+    plan = table.search(q).explain_plan(True)
+    assert "LanceScan" in plan
+
+    # 2. Fast Search -> Should NOT include "LanceScan" (Uses Index)
+    plan = table.search(q).fast_search().explain_plan(True)
+    assert "LanceScan" not in plan
