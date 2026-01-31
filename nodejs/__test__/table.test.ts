@@ -312,6 +312,66 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(res.getChild("id")?.toJSON()).toEqual([2, 3]);
     });
 
+    it("should support takeRowIds with bigint array", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Get actual row IDs using withRowId()
+      const allRows = await table.query().withRowId().toArray();
+      const rowIds = allRows.map((row) => row._rowid) as bigint[];
+
+      // Verify row IDs are bigint
+      expect(typeof rowIds[0]).toBe("bigint");
+
+      // Use takeRowIds with bigint array (the main use case from issue #2722)
+      const res = await table.takeRowIds([rowIds[0], rowIds[2]]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 3]);
+    });
+
+    it("should support takeRowIds with number array for backwards compatibility", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Small row IDs can be passed as numbers
+      const res = await table.takeRowIds([0, 2]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 3]);
+    });
+
+    it("should support takeRowIds with mixed bigint and number array", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Mixed array of bigint and number
+      const res = await table.takeRowIds([0n, 1, 2n]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 2, 3]);
+    });
+
+    it("should throw for non-integer number in takeRowIds", () => {
+      expect(() => table.takeRowIds([1.5])).toThrow(
+        "Row id must be an integer (or bigint)",
+      );
+      expect(() => table.takeRowIds([0, 1.1, 2])).toThrow(
+        "Row id must be an integer (or bigint)",
+      );
+    });
+
+    it("should throw for negative number in takeRowIds", () => {
+      expect(() => table.takeRowIds([-1])).toThrow("Row id cannot be negative");
+      expect(() => table.takeRowIds([0, -5, 2])).toThrow(
+        "Row id cannot be negative",
+      );
+    });
+
+    it("should throw for unsafe large number in takeRowIds", () => {
+      // Number.MAX_SAFE_INTEGER + 1 is not safe
+      const unsafeNumber = Number.MAX_SAFE_INTEGER + 1;
+      expect(() => table.takeRowIds([unsafeNumber])).toThrow(
+        "Row id is too large for number; use bigint instead",
+      );
+    });
+
+    it("should reject negative bigint in takeRowIds", async () => {
+      await table.add([{ id: 1 }]);
+      // Negative bigint should be rejected by the Rust layer
+      await expect(table.takeRowIds([-1n]).toArray()).rejects.toThrow(
+        "Row id cannot be negative",
+      );
+    });
+
     it("should return the table as an instance of an arrow table", async () => {
       const arrowTbl = await table.toArrow();
       expect(arrowTbl).toBeInstanceOf(ArrowTable);
