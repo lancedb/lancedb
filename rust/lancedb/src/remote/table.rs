@@ -1493,6 +1493,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         None
     }
 
+    async fn initial_storage_options(&self) -> Option<HashMap<String, String>> {
+        None
+    }
+
+    async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
+        Ok(None)
+    }
+
     async fn stats(&self) -> Result<TableStatistics> {
         let request = self
             .client
