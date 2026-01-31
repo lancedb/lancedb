@@ -1499,3 +1499,30 @@ def test_search_empty_table(mem_db):
     # Search on empty table should return empty results, not crash
     results = table.search([1.0, 2.0]).limit(5).to_list()
     assert results == []
+
+
+def test_fast_search(tmp_path):
+    db = lancedb.connect(tmp_path)
+
+    # Generate data matching the async test style
+    vectors = pa.FixedShapeTensorArray.from_numpy_ndarray(
+        np.random.rand(256, 32)
+    ).storage
+
+    table = db.create_table("test", pa.table({"vector": vectors}))
+
+    # FIX: Pass arguments directly instead of using 'config=IvfPq(...)'
+    table.create_index(vector_column_name="vector", num_partitions=1, num_sub_vectors=1)
+
+    # Add data to ensure table has enough segments/rows
+    table.add(pa.table({"vector": vectors}))
+
+    q = [1.0] * 32
+
+    # 1. Normal Search -> Should include "LanceScan" (Brute Force / Scan)
+    plan = table.search(q).explain_plan(True)
+    assert "LanceScan" in plan
+
+    # 2. Fast Search -> Should NOT include "LanceScan" (Uses Index)
+    plan = table.search(q).fast_search().explain_plan(True)
+    assert "LanceScan" not in plan
