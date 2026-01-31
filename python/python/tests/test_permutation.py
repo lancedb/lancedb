@@ -438,8 +438,16 @@ def test_filter_with_splits(mem_db):
     row_count = permutation_tbl.count_rows()
     assert row_count == 67
 
+    # Permutation table only contains row_id and split_id
     data = permutation_tbl.search(None).to_arrow().to_pydict()
-    categories = data["category"]
+    assert "row_id" in data
+    assert "split_id" in data
+    assert set(data["split_id"]) == {0, 1}
+
+    # Verify filtered rows are from categories A or B via the original table
+    row_ids = data["row_id"]
+    original_data = tbl.search(None).to_arrow().to_pydict()
+    categories = [original_data["category"][row_id] for row_id in row_ids]
 
     # All categories should be A or B
     assert all(cat in ["A", "B"] for cat in categories)
