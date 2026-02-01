@@ -115,14 +115,18 @@ mod tests {
     use crate::connect;
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, Select};
-    use arrow_array::{BooleanArray, FixedSizeListArray, Float32Array, Int32Array, Float64Array, TimestampMillisecondArray, TimestampNanosecondArray, Date32Array, UInt32Array, Int64Array,
-             LargeStringArray, StringArray, RecordBatchIterator, RecordBatch, RecordBatchReader,Array, record_batch};
-    use arrow_schema::{DataType, Field, Schema, ArrowError, TimeUnit};
+    use arrow_array::{
+        record_batch, Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array,
+        Float64Array, Int32Array, Int64Array, LargeStringArray, RecordBatch, RecordBatchIterator,
+        RecordBatchReader, StringArray, TimestampMillisecondArray, TimestampNanosecondArray,
+        UInt32Array,
+    };
     use arrow_data::ArrayDataBuilder;
-    use std::sync::Arc; 
-    use std::time::Duration;
+    use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
-     
+    use std::sync::Arc;
+    use std::time::Duration;
+
     #[tokio::test]
     async fn test_update_all_types() {
         let conn = connect("memory://")
@@ -317,7 +321,10 @@ mod tests {
         }
     }
     ///Two helper functions
-        fn create_fixed_size_list<T: Array>(values: T, list_size: i32) -> Result<FixedSizeListArray, ArrowError> {
+    fn create_fixed_size_list<T: Array>(
+        values: T,
+        list_size: i32,
+    ) -> Result<FixedSizeListArray, ArrowError> {
         let list_type = DataType::FixedSizeList(
             Arc::new(Field::new("item", values.data_type().clone(), true)),
             list_size,
@@ -331,7 +338,7 @@ mod tests {
         Ok(FixedSizeListArray::from(data))
     }
 
-        fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+    fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
         RecordBatchIterator::new(
             vec![RecordBatch::try_new(
@@ -352,9 +359,14 @@ mod tests {
 
         let batch = record_batch!(
             ("id", Int32, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
-            ("name", Utf8, ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"])
-        ).unwrap();
-        
+            (
+                "name",
+                Utf8,
+                ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
+            )
+        )
+        .unwrap();
+
         let schema = batch.schema();
         // need the iterator for create table
         let record_batch_iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
@@ -410,7 +422,7 @@ mod tests {
         }
     }
 
-        #[tokio::test]
+    #[tokio::test]
     async fn test_update_via_expr() {
         let conn = connect("memory://")
             .read_consistency_interval(Duration::from_secs(0))
@@ -426,6 +438,4 @@ mod tests {
         tbl.update().column("i", "i+1").execute().await.unwrap();
         assert_eq!(0, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
     }
-
-
 }

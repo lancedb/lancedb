@@ -3312,9 +3312,8 @@ mod tests {
 
     use arrow_array::{
         builder::{ListBuilder, StringBuilder},
-        Array, BooleanArray, FixedSizeListArray, Float32Array,
-        Int32Array, LargeStringArray, RecordBatch, RecordBatchIterator,
-        RecordBatchReader, StringArray,
+        Array, BooleanArray, FixedSizeListArray, Float32Array, Int32Array, LargeStringArray,
+        RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
     };
     use arrow_array::{BinaryArray, LargeBinaryArray};
     use arrow_data::ArrayDataBuilder;
@@ -3551,7 +3550,7 @@ mod tests {
         assert_eq!(table.name(), "test");
     }
 
-        #[derive(Default, Debug)]
+    #[derive(Default, Debug)]
     struct NoOpCacheWrapper {
         called: AtomicBool,
     }
