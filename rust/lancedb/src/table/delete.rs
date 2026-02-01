@@ -34,7 +34,7 @@ pub(crate) async fn execute_delete(table: &NativeTable, predicate: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use crate::connect;
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, record_batch};
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -42,9 +42,7 @@ mod tests {
     use futures::TryStreamExt;
     #[tokio::test]
     async fn test_delete_simple() {
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
 
         // 1. Create a table with values 0 to 9
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
@@ -92,5 +90,61 @@ mod tests {
         for val in array.iter() {
             assert!(val.unwrap() <= 5);
         }
+    }
+    #[tokio::test]
+    async fn rows_removed_schema_same() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1,2,3,4,5]), ("name", Utf8, ["a","b","c","d","e"])).unwrap();
+        let original_schema = batch.schema();
+
+        let table = conn.create_table("test_delete_all", RecordBatchIterator::new(vec![Ok(batch)], original_schema.clone())
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        table.delete("true").await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(),0);
+
+        let current_schema = table.schema().await.unwrap();
+        ///check if the original schema is the same as current
+        assert_eq!(current_schema, original_schema);
+    }
+
+    #[tokio::test]
+    async fn test_delete_false_increments_version() {
+        let conn = connect("memory://")
+            .execute()
+            .await
+            .unwrap();
+
+        // Create a table with 5 rows
+        let batch = record_batch!(
+            ("id", Int32, [1, 2, 3, 4, 5])
+        ).unwrap();
+        
+        let schema = batch.schema();
+
+        let table = conn
+            .create_table("test_delete_noop", RecordBatchIterator::new(vec![Ok(batch)], schema))
+            .execute()
+            .await
+            .unwrap();
+
+        // Capture the initial state (Rows = 5, Version = 1)
+        let initial_rows = table.count_rows(None).await.unwrap();
+        let initial_version = table.version().await.unwrap();
+
+        assert_eq!(initial_rows, 5);
+        table.delete("false").await.unwrap();
+
+        // Rows should still be 5
+        let current_rows = table.count_rows(None).await.unwrap();
+        assert_eq!(current_rows, initial_rows, "Data should not change when predicate is false");
+
+        // version check
+        let current_version = table.version().await.unwrap();
+        assert!(current_version > initial_version, "Table version must increment after delete operation");
     }
 }
