@@ -115,129 +115,277 @@ mod tests {
     use crate::connect;
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, Select};
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_array::{BooleanArray, FixedSizeListArray, Float32Array, Int32Array, Float64Array, TimestampMillisecondArray, TimestampNanosecondArray, Date32Array, UInt32Array, Int64Array,
+             LargeStringArray, StringArray, RecordBatchIterator, RecordBatch, RecordBatchReader,Array};
+    use arrow_schema::{DataType, Field, Schema, ArrowError, TimeUnit};
+    use arrow_data::ArrayDataBuilder;
+    use std::sync::Arc; 
+    use std::time::Duration;
     use futures::TryStreamExt;
-    use std::sync::Arc; // Import traits for query execution
-
+     
     #[tokio::test]
-    async fn test_update_simple() {
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+    async fn test_update_all_types() {
+        let conn = connect("memory://")
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
 
-        // 1. Create table with id and value
         let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("val", DataType::Int32, false),
+            Field::new("int32", DataType::Int32, false),
+            Field::new("int64", DataType::Int64, false),
+            Field::new("uint32", DataType::UInt32, false),
+            Field::new("string", DataType::Utf8, false),
+            Field::new("large_string", DataType::LargeUtf8, false),
+            Field::new("float32", DataType::Float32, false),
+            Field::new("float64", DataType::Float64, false),
+            Field::new("bool", DataType::Boolean, false),
+            Field::new("date32", DataType::Date32, false),
+            Field::new(
+                "timestamp_ns",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                "timestamp_ms",
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new(
+                "vec_f32",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+                false,
+            ),
+            Field::new(
+                "vec_f64",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 2),
+                false,
+            ),
         ]));
 
-        let batch = RecordBatch::try_new(
+        let record_batch_iter = RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..10)),
+                    Arc::new(Int64Array::from_iter_values(0..10)),
+                    Arc::new(UInt32Array::from_iter_values(0..10)),
+                    Arc::new(StringArray::from_iter_values(vec![
+                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                    ])),
+                    Arc::new(LargeStringArray::from_iter_values(vec![
+                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                    ])),
+                    Arc::new(Float32Array::from_iter_values((0..10).map(|i| i as f32))),
+                    Arc::new(Float64Array::from_iter_values((0..10).map(|i| i as f64))),
+                    Arc::new(Into::<BooleanArray>::into(vec![
+                        true, false, true, false, true, false, true, false, true, false,
+                    ])),
+                    Arc::new(Date32Array::from_iter_values(0..10)),
+                    Arc::new(TimestampNanosecondArray::from_iter_values(0..10)),
+                    Arc::new(TimestampMillisecondArray::from_iter_values(0..10)),
+                    Arc::new(
+                        create_fixed_size_list(
+                            Float32Array::from_iter_values((0..20).map(|i| i as f32)),
+                            2,
+                        )
+                        .unwrap(),
+                    ),
+                    Arc::new(
+                        create_fixed_size_list(
+                            Float64Array::from_iter_values((0..20).map(|i| i as f64)),
+                            2,
+                        )
+                        .unwrap(),
+                    ),
+                ],
+            )
+            .unwrap()]
+            .into_iter()
+            .map(Ok),
             schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..10)), // ids 0-9
-                Arc::new(Int32Array::from_iter_values(vec![1; 10])), // all values are 1
-            ],
-        )
-        .unwrap();
+        );
 
         let table = conn
-            .create_table(
-                "test_update",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("my_table", record_batch_iter)
             .execute()
             .await
             .unwrap();
 
-        // 2. Execute Update: Set val = 5 where id > 5
-        table
-            .update()
-            .only_if("id > 5")
-            .column("val", "5")
-            .execute()
-            .await
-            .unwrap();
+        // check it can do update for each type
+        let updates: Vec<(&str, &str)> = vec![
+            ("string", "'foo'"),
+            ("large_string", "'large_foo'"),
+            ("int32", "1"),
+            ("int64", "1"),
+            ("uint32", "1"),
+            ("float32", "1.0"),
+            ("float64", "1.0"),
+            ("bool", "true"),
+            ("date32", "1"),
+            ("timestamp_ns", "1"),
+            ("timestamp_ms", "1"),
+            ("vec_f32", "[1.0, 1.0]"),
+            ("vec_f64", "[1.0, 1.0]"),
+        ];
 
-        // 3. Verify Results
-        let batches = table
+        let mut update_op = table.update();
+        for (column, value) in updates {
+            update_op = update_op.column(column, value);
+        }
+        update_op.execute().await.unwrap();
+
+        let mut batches = table
             .query()
-            .select(Select::columns(&["id", "val"]))
+            .select(Select::columns(&[
+                "string",
+                "large_string",
+                "int32",
+                "int64",
+                "uint32",
+                "float32",
+                "float64",
+                "bool",
+                "date32",
+                "timestamp_ns",
+                "timestamp_ms",
+                "vec_f32",
+                "vec_f64",
+            ]))
             .execute()
             .await
             .unwrap()
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
+        let batch = batches.pop().unwrap();
 
-        let batch = &batches[0];
-        let ids = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int32Array>()
-            .unwrap();
-        let vals = batch
-            .column(1)
-            .as_any()
-            .downcast_ref::<Int32Array>()
-            .unwrap();
+        macro_rules! assert_column {
+            ($column:expr, $array_type:ty, $expected:expr) => {
+                let array = $column
+                    .as_any()
+                    .downcast_ref::<$array_type>()
+                    .unwrap()
+                    .iter()
+                    .collect::<Vec<_>>();
+                for v in array {
+                    assert_eq!(v, Some($expected));
+                }
+            };
+        }
 
-        for i in 0..ids.len() {
-            let id = ids.value(i);
-            let val = vals.value(i);
-            if id > 5 {
-                assert_eq!(val, 5, "Row with id {} should have been updated to 5", id);
-            } else {
-                assert_eq!(val, 1, "Row with id {} should stay 1", id);
+        assert_column!(batch.column(0), StringArray, "foo");
+        assert_column!(batch.column(1), LargeStringArray, "large_foo");
+        assert_column!(batch.column(2), Int32Array, 1);
+        assert_column!(batch.column(3), Int64Array, 1);
+        assert_column!(batch.column(4), UInt32Array, 1);
+        assert_column!(batch.column(5), Float32Array, 1.0);
+        assert_column!(batch.column(6), Float64Array, 1.0);
+        assert_column!(batch.column(7), BooleanArray, true);
+        assert_column!(batch.column(8), Date32Array, 1);
+        assert_column!(batch.column(9), TimestampNanosecondArray, 1);
+        assert_column!(batch.column(10), TimestampMillisecondArray, 1);
+
+        let array = batch
+            .column(11)
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>();
+        for v in array {
+            let v = v.unwrap();
+            let f32array = v.as_any().downcast_ref::<Float32Array>().unwrap();
+            for v in f32array {
+                assert_eq!(v, Some(1.0));
+            }
+        }
+
+        let array = batch
+            .column(12)
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>();
+        for v in array {
+            let v = v.unwrap();
+            let f64array = v.as_any().downcast_ref::<Float64Array>().unwrap();
+            for v in f64array {
+                assert_eq!(v, Some(1.0));
             }
         }
     }
+    ///Two helper functions
+        fn create_fixed_size_list<T: Array>(values: T, list_size: i32) -> Result<FixedSizeListArray, ArrowError> {
+        let list_type = DataType::FixedSizeList(
+            Arc::new(Field::new("item", values.data_type().clone(), true)),
+            list_size,
+        );
+        let data = ArrayDataBuilder::new(list_type)
+            .len(values.len() / list_size as usize)
+            .add_child_data(values.into_data())
+            .build()
+            .unwrap();
+
+        Ok(FixedSizeListArray::from(data))
+    }
+
+        fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from_iter_values(0..10))],
+            )],
+            schema,
+        )
+    }
 
     #[tokio::test]
-    async fn test_update_string() {
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+    async fn test_update_with_predicate() {
+        let conn = connect("memory://")
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
 
-        // 1. Create table with id and Name (String)
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, false),
         ]));
 
-        let batch = RecordBatch::try_new(
+        let record_batch_iter = RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..10)),
+                    Arc::new(StringArray::from_iter_values(vec![
+                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                    ])),
+                ],
+            )
+            .unwrap()]
+            .into_iter()
+            .map(Ok),
             schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..5)),
-                Arc::new(StringArray::from(vec![
-                    "alice", "bob", "charlie", "dave", "eve",
-                ])),
-            ],
-        )
-        .unwrap();
+        );
 
         let table = conn
-            .create_table(
-                "test_update_string",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("my_table", record_batch_iter)
             .execute()
             .await
             .unwrap();
 
-        // 2. Execute Update: Change "charlie" (id=2) to "chuck"
-        // IMPORTANT: Note the single quotes inside the string: "'chuck'"
-        // If you forget them, SQL thinks "chuck" is a column name!
         table
             .update()
-            .only_if("id = 2")
-            .column("name", "'chuck'")
+            .only_if("id > 5")
+            .column("name", "'foo'")
             .execute()
             .await
             .unwrap();
 
-        // 3. Verify Results
-        let batches = table
+        let mut batches = table
             .query()
             .select(Select::columns(&["id", "name"]))
             .execute()
@@ -247,28 +395,49 @@ mod tests {
             .await
             .unwrap();
 
-        let batch = &batches[0];
-        let ids = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int32Array>()
-            .unwrap();
-        let names = batch
-            .column(1)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-
-        for i in 0..ids.len() {
-            let id = ids.value(i);
-            let name = names.value(i);
-
-            if id == 2 {
-                assert_eq!(name, "chuck", "Charlie should become Chuck");
-            } else {
-                // Ensure others didn't change (e.g. id 0 is still alice)
-                assert_ne!(name, "chuck");
+        while let Some(batch) = batches.pop() {
+            let ids = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>();
+            let names = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>();
+            for (i, name) in names.iter().enumerate() {
+                let id = ids[i].unwrap();
+                let name = name.unwrap();
+                if id > 5 {
+                    assert_eq!(name, "foo");
+                } else {
+                    assert_eq!(name, &format!("{}", (b'a' + id as u8) as char));
+                }
             }
         }
     }
+
+        #[tokio::test]
+    async fn test_update_via_expr() {
+        let conn = connect("memory://")
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let tbl = conn
+            .create_table("my_table", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(1, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
+        tbl.update().column("i", "i+1").execute().await.unwrap();
+        assert_eq!(0, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
+    }
+
+
 }
