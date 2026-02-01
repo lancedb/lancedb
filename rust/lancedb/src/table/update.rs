@@ -116,7 +116,7 @@ mod tests {
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, Select};
     use arrow_array::{BooleanArray, FixedSizeListArray, Float32Array, Int32Array, Float64Array, TimestampMillisecondArray, TimestampNanosecondArray, Date32Array, UInt32Array, Int64Array,
-             LargeStringArray, StringArray, RecordBatchIterator, RecordBatch, RecordBatchReader,Array};
+             LargeStringArray, StringArray, RecordBatchIterator, RecordBatch, RecordBatchReader,Array, record_batch};
     use arrow_schema::{DataType, Field, Schema, ArrowError, TimeUnit};
     use arrow_data::ArrayDataBuilder;
     use std::sync::Arc; 
@@ -350,26 +350,14 @@ mod tests {
             .await
             .unwrap();
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, false),
-        ]));
-
-        let record_batch_iter = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int32Array::from_iter_values(0..10)),
-                    Arc::new(StringArray::from_iter_values(vec![
-                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-                    ])),
-                ],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
-            schema.clone(),
-        );
+        let batch = record_batch!(
+            ("id", Int32, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+            ("name", Utf8, ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"])
+        ).unwrap();
+        
+        let schema = batch.schema();
+        // need the iterator for create table
+        let record_batch_iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
 
         let table = conn
             .create_table("my_table", record_batch_iter)
