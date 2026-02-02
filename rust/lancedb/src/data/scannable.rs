@@ -117,6 +117,13 @@ impl Scannable for Vec<RecordBatch> {
     }
 }
 
+/// Helper to box a RecordBatchReader so it can implement Scannable.
+pub fn box_reader(
+    reader: impl RecordBatchReader + Send + 'static,
+) -> Box<dyn RecordBatchReader + Send> {
+    Box::new(reader) as Box<dyn RecordBatchReader + Send>
+}
+
 impl Scannable for Box<dyn RecordBatchReader + Send> {
     fn schema(&self) -> SchemaRef {
         RecordBatchReader::schema(self.as_ref())
@@ -124,8 +131,7 @@ impl Scannable for Box<dyn RecordBatchReader + Send> {
 
     fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
         let schema = RecordBatchReader::schema(self.as_ref());
-        let empty_reader: Box<dyn RecordBatchReader + Send> =
-            Box::new(RecordBatchIterator::new(std::iter::empty(), schema.clone()));
+        let empty_reader = box_reader(RecordBatchIterator::new(std::iter::empty(), schema.clone()));
         let reader = std::mem::replace(self, empty_reader);
 
         // Use a channel to bridge blocking RecordBatchReader to async stream.
@@ -276,85 +282,40 @@ impl Scannable for WithEmbeddingsScannable {
     }
 }
 
-/// A scannable that might have embeddings applied to it.
-pub enum MaybeEmbeddedScannable {
-    /// Embeddings are applied to the scannable
-    Yes(WithEmbeddingsScannable),
-    /// No embeddings, passthrough to inner scannable
-    No(Box<dyn Scannable>),
-}
-
-impl MaybeEmbeddedScannable {
-    /// Create a new MaybeEmbeddedScannable.
-    ///
-    /// If the table definition specifies embedding columns and the registry contains
-    /// the required embedding functions, embeddings will be applied. Otherwise, this
-    /// is a no-op and the inner scannable is returned as-is.
-    pub fn try_new(
-        inner: Box<dyn Scannable>,
-        table_definition: &TableDefinition,
-        registry: Option<&Arc<dyn EmbeddingRegistry>>,
-    ) -> Result<Self> {
-        if let Some(registry) = registry {
-            let mut embeddings = Vec::with_capacity(table_definition.column_definitions.len());
-            for cd in table_definition.column_definitions.iter() {
-                if let ColumnKind::Embedding(embedding_def) = &cd.kind {
-                    match registry.get(&embedding_def.embedding_name) {
-                        Some(func) => {
-                            embeddings.push((embedding_def.clone(), func));
-                        }
-                        None => {
-                            return Err(Error::EmbeddingFunctionNotFound {
-                                name: embedding_def.embedding_name.clone(),
-                                reason: format!(
-                                    "Table was defined with an embedding column `{}` but no embedding function was found with that name within the registry.",
-                                    embedding_def.embedding_name
-                                ),
-                            });
-                        }
+pub fn scannable_with_embeddings(
+    inner: Box<dyn Scannable>,
+    table_definition: &TableDefinition,
+    registry: Option<&Arc<dyn EmbeddingRegistry>>,
+) -> Result<Box<dyn Scannable>> {
+    if let Some(registry) = registry {
+        let mut embeddings = Vec::with_capacity(table_definition.column_definitions.len());
+        for cd in table_definition.column_definitions.iter() {
+            if let ColumnKind::Embedding(embedding_def) = &cd.kind {
+                match registry.get(&embedding_def.embedding_name) {
+                    Some(func) => {
+                        embeddings.push((embedding_def.clone(), func));
+                    }
+                    None => {
+                        return Err(Error::EmbeddingFunctionNotFound {
+                            name: embedding_def.embedding_name.clone(),
+                            reason: format!(
+                                "Table was defined with an embedding column `{}` but no embedding function was found with that name within the registry.",
+                                embedding_def.embedding_name
+                            ),
+                        });
                     }
                 }
             }
-
-            if !embeddings.is_empty() {
-                return Ok(Self::Yes(WithEmbeddingsScannable::try_new(
-                    inner, embeddings,
-                )?));
-            }
         }
 
-        Ok(Self::No(inner))
-    }
-}
-
-impl Scannable for MaybeEmbeddedScannable {
-    fn schema(&self) -> SchemaRef {
-        match self {
-            Self::Yes(inner) => inner.schema(),
-            Self::No(inner) => inner.schema(),
+        if !embeddings.is_empty() {
+            return Ok(Box::new(WithEmbeddingsScannable::try_new(
+                inner, embeddings,
+            )?));
         }
     }
 
-    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
-        match self {
-            Self::Yes(inner) => inner.scan_as_stream(),
-            Self::No(inner) => inner.scan_as_stream(),
-        }
-    }
-
-    fn num_rows(&self) -> Option<usize> {
-        match self {
-            Self::Yes(inner) => inner.num_rows(),
-            Self::No(inner) => inner.num_rows(),
-        }
-    }
-
-    fn rescannable(&self) -> bool {
-        match self {
-            Self::Yes(inner) => inner.rescannable(),
-            Self::No(inner) => inner.rescannable(),
-        }
-    }
+    Ok(inner)
 }
 
 #[cfg(test)]
@@ -558,15 +519,9 @@ mod tests {
 
             // Even with a registry, if there are no embedding columns, it's a passthrough
             let registry: Arc<dyn EmbeddingRegistry> = Arc::new(MemoryRegistry::new());
-            let mut scannable = MaybeEmbeddedScannable::try_new(
-                Box::new(batch.clone()),
-                &table_def,
-                Some(&registry),
-            )
-            .unwrap();
-
-            // Should be a No variant (passthrough)
-            assert!(matches!(scannable, MaybeEmbeddedScannable::No(_)));
+            let mut scannable =
+                scannable_with_embeddings(Box::new(batch.clone()), &table_def, Some(&registry))
+                    .unwrap();
 
             // Check that data passes through unchanged
             let stream = scannable.scan_as_stream();
@@ -615,11 +570,7 @@ mod tests {
             registry.register("mock", mock_embedding).unwrap();
 
             let mut scannable =
-                MaybeEmbeddedScannable::try_new(Box::new(batch), &table_def, Some(&registry))
-                    .unwrap();
-
-            // Should be a Yes variant
-            assert!(matches!(scannable, MaybeEmbeddedScannable::Yes(_)));
+                scannable_with_embeddings(Box::new(batch), &table_def, Some(&registry)).unwrap();
 
             // Read and verify the data has embeddings
             let stream = scannable.scan_as_stream();
@@ -668,8 +619,7 @@ mod tests {
             // Registry has no embedding functions registered
             let registry: Arc<dyn EmbeddingRegistry> = Arc::new(MemoryRegistry::new());
 
-            let result =
-                MaybeEmbeddedScannable::try_new(Box::new(batch), &table_def, Some(&registry));
+            let result = scannable_with_embeddings(Box::new(batch), &table_def, Some(&registry));
 
             // Should fail because the embedding function is not found
             assert!(result.is_err());

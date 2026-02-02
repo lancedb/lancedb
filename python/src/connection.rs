@@ -6,6 +6,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::{
     connection::Connection as LanceConnection,
+    data::scannable::box_reader,
     database::{CreateTableMode, Database, ReadConsistency},
 };
 use pyo3::{
@@ -121,8 +122,7 @@ impl Connection {
 
         let mode = Self::parse_create_mode_str(mode)?;
 
-        let batches: Box<dyn arrow::array::RecordBatchReader + Send> =
-            Box::new(ArrowArrayStreamReader::from_pyarrow_bound(&data)?);
+        let batches = box_reader(ArrowArrayStreamReader::from_pyarrow_bound(&data)?);
 
         let mut builder = inner.create_table(name, batches).mode(mode);
 

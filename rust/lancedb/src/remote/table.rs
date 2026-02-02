@@ -1694,6 +1694,7 @@ mod tests {
     use rstest::rstest;
     use serde_json::json;
 
+    use crate::data::scannable::box_reader;
     use crate::index::vector::{IvfFlatIndexBuilder, IvfHnswSqIndexBuilder};
     use crate::remote::db::DEFAULT_SERVER_VERSION;
     use crate::remote::JSON_CONTENT_TYPE;
@@ -2131,7 +2132,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+        let data = box_reader(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -2183,7 +2184,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+        let data = box_reader(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -3115,7 +3116,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+        let data = box_reader(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -3602,7 +3603,7 @@ mod tests {
 
         // RecordBatchReader is NOT rescannable - should NOT retry
         let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
-        let reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+        let reader = box_reader(RecordBatchIterator::new(
             vec![Ok(batch.clone())],
             batch.schema(),
         ));
