@@ -4,5 +4,6 @@
 //! Data types, schema coercion, and data cleaning and etc.
 
 pub mod inspect;
+pub mod preprocessing;
 pub mod sanitize;
 pub mod scannable;
