@@ -1751,6 +1751,7 @@ class LanceTable(Table):
         self._conn = connection
         self._namespace = namespace
         self._location = location  # Store location for use in _dataset_path
+        self._storage_options_provider = storage_options_provider
         if _async is not None:
             self._table = _async
         else:
@@ -1849,7 +1850,8 @@ class LanceTable(Table):
         return lance.dataset(
             self._dataset_path,
             version=self.version,
-            storage_options=self._conn.storage_options,
+            storage_options=self.latest_storage_options(),
+            storage_options_provider=self._storage_options_provider,
             **kwargs,
         )
 
@@ -2771,6 +2773,7 @@ class LanceTable(Table):
         self._conn = db
         self._namespace = namespace
         self._location = location
+        self._storage_options_provider = storage_options_provider
 
         if data_storage_version is not None:
             warnings.warn(
