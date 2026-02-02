@@ -5,7 +5,7 @@
 
 use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
-use arrow_array::{RecordBatchIterator, RecordBatchReader};
+use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_expr::Expr;
@@ -55,10 +55,9 @@ use std::format;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::arrow::IntoArrow;
-use crate::connection::NoData;
+use crate::data::scannable::{MaybeEmbeddedScannable, Scannable};
 use crate::database::Database;
-use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
+use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::index::vector::VectorIndex;
 use crate::index::IndexStatistics;
@@ -77,9 +76,12 @@ use crate::utils::{
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
 
+mod add_data;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod merge;
+
+pub use add_data::{AddDataBuilder, AddDataMode, AddResult};
 
 use crate::index::waiter::wait_for_index;
 pub use chrono::Duration;
@@ -273,60 +275,6 @@ pub struct WriteOptions {
     pub lance_write_params: Option<WriteParams>,
 }
 
-#[derive(Debug, Clone, Default)]
-pub enum AddDataMode {
-    /// Rows will be appended to the table (the default)
-    #[default]
-    Append,
-    /// The existing table will be overwritten with the new data
-    Overwrite,
-}
-
-/// A builder for configuring a [`crate::connection::Connection::create_table`] or [`Table::add`]
-/// operation
-pub struct AddDataBuilder<T: IntoArrow> {
-    parent: Arc<dyn BaseTable>,
-    pub(crate) data: T,
-    pub(crate) mode: AddDataMode,
-    pub(crate) write_options: WriteOptions,
-    embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
-}
-
-impl<T: IntoArrow> std::fmt::Debug for AddDataBuilder<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AddDataBuilder")
-            .field("parent", &self.parent)
-            .field("mode", &self.mode)
-            .field("write_options", &self.write_options)
-            .finish()
-    }
-}
-
-impl<T: IntoArrow> AddDataBuilder<T> {
-    pub fn mode(mut self, mode: AddDataMode) -> Self {
-        self.mode = mode;
-        self
-    }
-
-    pub fn write_options(mut self, options: WriteOptions) -> Self {
-        self.write_options = options;
-        self
-    }
-
-    pub async fn execute(self) -> Result<AddResult> {
-        let parent = self.parent.clone();
-        let data = self.data.into_arrow()?;
-        let without_data = AddDataBuilder::<NoData> {
-            data: NoData {},
-            mode: self.mode,
-            parent: self.parent,
-            write_options: self.write_options,
-            embedding_registry: self.embedding_registry,
-        };
-        parent.add(without_data, data).await
-    }
-}
-
 /// A builder for configuring an [`Table::update`] operation
 #[derive(Debug, Clone)]
 pub struct UpdateBuilder {
@@ -430,15 +378,6 @@ pub trait Tags: Send + Sync {
 pub struct UpdateResult {
     #[serde(default)]
     pub rows_updated: u64,
-    // The commit version associated with the operation.
-    // A version of `0` indicates compatibility with legacy servers that do not return
-    /// a commit version.
-    #[serde(default)]
-    pub version: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AddResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
@@ -554,11 +493,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<String>;
 
     /// Add new records to the table.
-    async fn add(
-        &self,
-        add: AddDataBuilder<NoData>,
-        data: Box<dyn arrow_array::RecordBatchReader + Send>,
-    ) -> Result<AddResult>;
+    async fn add(&self, add: AddDataBuilder) -> Result<AddResult>;
     /// Delete rows from the table.
     async fn delete(&self, predicate: &str) -> Result<DeleteResult>;
     /// Update rows in the table.
@@ -693,6 +628,30 @@ mod test_utils {
                 embedding_registry: Arc::new(MemoryRegistry::new()),
             }
         }
+
+        pub fn new_with_handler_and_config<T>(
+            name: impl Into<String>,
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+            config: crate::remote::ClientConfig,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let inner = Arc::new(crate::remote::table::RemoteTable::new_mock_with_config(
+                name.into(),
+                handler.clone(),
+                config.clone(),
+            ));
+            let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock_with_config(
+                handler, config,
+            ));
+            Self {
+                inner,
+                database: Some(database),
+                // Registry is unused.
+                embedding_registry: Arc::new(MemoryRegistry::new()),
+            }
+        }
     }
 }
 
@@ -793,16 +752,14 @@ impl Table {
     ///
     /// # Arguments
     ///
-    /// * `batches` data to be added to the Table
+    /// * `data` data to be added to the Table
     /// * `options` options to control how data is added
-    pub fn add<T: IntoArrow>(&self, batches: T) -> AddDataBuilder<T> {
-        AddDataBuilder {
-            parent: self.inner.clone(),
-            data: batches,
-            mode: AddDataMode::Append,
-            write_options: WriteOptions::default(),
-            embedding_registry: Some(self.embedding_registry.clone()),
-        }
+    pub fn add<T: Scannable + 'static>(&self, data: T) -> AddDataBuilder {
+        AddDataBuilder::new(
+            self.inner.clone(),
+            Box::new(data),
+            Some(self.embedding_registry.clone()),
+        )
     }
 
     /// Update existing records in the Table
@@ -841,31 +798,26 @@ impl Table {
     ///     .execute()
     ///     .await
     ///     .unwrap();
-    /// # let schema = Arc::new(Schema::new(vec![
-    /// #  Field::new("id", DataType::Int32, false),
-    /// #  Field::new("vector", DataType::FixedSizeList(
-    /// #    Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
-    /// # ]));
-    /// let batches = RecordBatchIterator::new(
-    ///     vec![RecordBatch::try_new(
-    ///         schema.clone(),
-    ///         vec![
-    ///             Arc::new(Int32Array::from_iter_values(0..10)),
-    ///             Arc::new(
-    ///                 FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-    ///                     (0..10).map(|_| Some(vec![Some(1.0); 128])),
-    ///                     128,
-    ///                 ),
-    ///             ),
-    ///         ],
-    ///     )
-    ///     .unwrap()]
-    ///     .into_iter()
-    ///     .map(Ok),
+    /// let schema = Arc::new(Schema::new(vec![
+    ///     Field::new("id", DataType::Int32, false),
+    ///     Field::new("vector", DataType::FixedSizeList(
+    ///         Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
+    /// ]));
+    /// let data = RecordBatch::try_new(
     ///     schema.clone(),
-    /// );
+    ///     vec![
+    ///         Arc::new(Int32Array::from_iter_values(0..10)),
+    ///         Arc::new(
+    ///             FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+    ///                 (0..10).map(|_| Some(vec![Some(1.0); 128])),
+    ///                 128,
+    ///             ),
+    ///         ),
+    ///     ],
+    /// )
+    /// .unwrap();
     /// let tbl = db
-    ///     .create_table("delete_test", Box::new(batches))
+    ///     .create_table("delete_test", data)
     ///     .execute()
     ///     .await
     ///     .unwrap();
@@ -1601,7 +1553,7 @@ impl NativeTable {
                     name: name.to_string(),
                     source: Box::new(e),
                 },
-                source => Error::Lance { source },
+                e => e.into(),
             })?;
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
@@ -1685,7 +1637,7 @@ impl NativeTable {
                 lance::Error::Namespace { source, .. } => Error::Runtime {
                     message: format!("Failed to get table info from namespace: {:?}", source),
                 },
-                source => Error::Lance { source },
+                e => e.into(),
             })?;
 
         let dataset = builder
@@ -1697,7 +1649,7 @@ impl NativeTable {
                     name: name.to_string(),
                     source: Box::new(e),
                 },
-                source => Error::Lance { source },
+                e => e.into(),
             })?;
 
         let uri = dataset.uri().to_string();
@@ -1791,7 +1743,7 @@ impl NativeTable {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
                     name: name.to_string(),
                 },
-                source => Error::Lance { source },
+                e => e.into(),
             })?;
 
         let id = Self::build_id(&namespace, name);
@@ -1818,12 +1770,12 @@ impl NativeTable {
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
     ) -> Result<Self> {
-        let batches = RecordBatchIterator::new(vec![], schema);
+        let data: Box<dyn Scannable> = Box::new(RecordBatch::new_empty(schema));
         Self::create(
             uri,
             name,
             namespace,
-            batches,
+            data,
             write_store_wrapper,
             params,
             read_consistency_interval,
@@ -1912,7 +1864,7 @@ impl NativeTable {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
                     name: name.to_string(),
                 },
-                source => Error::Lance { source },
+                e => e.into(),
             })?;
 
         let id = Self::build_id(&namespace, name);
@@ -2745,17 +2697,7 @@ impl BaseTable for NativeTable {
         }
     }
 
-    async fn add(
-        &self,
-        add: AddDataBuilder<NoData>,
-        data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<AddResult> {
-        let data = Box::new(MaybeEmbedded::try_new(
-            data,
-            self.table_definition().await?,
-            add.embedding_registry,
-        )?) as Box<dyn RecordBatchReader + Send>;
-
+    async fn add(&self, add: AddDataBuilder) -> Result<AddResult> {
         let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
@@ -2763,6 +2705,14 @@ impl BaseTable for NativeTable {
             },
             ..Default::default()
         });
+
+        // Apply embeddings if configured
+        let table_def = self.table_definition().await?;
+        let data: Box<dyn Scannable> = Box::new(MaybeEmbeddedScannable::try_new(
+            add.data,
+            &table_def,
+            add.embedding_registry.as_ref(),
+        )?);
 
         let dataset = {
             // Limited scope for the mutable borrow of self.dataset avoids deadlock.
@@ -3443,7 +3393,6 @@ mod tests {
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
-    use lance::dataset::WriteMode;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance::Dataset;
     use rand::Rng;
@@ -3461,8 +3410,9 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
 
-        let batches = make_test_batches();
-        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
+        let batch = make_test_batches();
+        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
+        Dataset::write(reader, dataset_path.to_str().unwrap(), None)
             .await
             .unwrap();
 
@@ -3495,9 +3445,12 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let batches = make_test_batches();
-        let batches = Box::new(batches) as Box<dyn RecordBatchReader + Send>;
-        let table = NativeTable::create(uri, "test", vec![], batches, None, None, None, None)
+        let batch = make_test_batches();
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            vec![Ok(batch.clone())],
+            batch.schema(),
+        ));
+        let table = NativeTable::create(uri, "test", vec![], reader, None, None, None, None)
             .await
             .unwrap();
 
@@ -3509,33 +3462,6 @@ mod tests {
                 .unwrap(),
             5
         );
-    }
-
-    #[tokio::test]
-    async fn test_add() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
-
-        let batches = make_test_batches();
-        let schema = batches.schema().clone();
-        let table = conn.create_table("test", batches).execute().await.unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
-
-        let new_batches = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![Arc::new(Int32Array::from_iter_values(100..110))],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
-            schema.clone(),
-        );
-
-        table.add(new_batches).execute().await.unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 20);
-        assert_eq!(table.name(), "test");
     }
 
     #[tokio::test]
@@ -3554,7 +3480,7 @@ mod tests {
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
         // Create new data with i=5..15
-        let new_batches = Box::new(merge_insert_test_batches(5, 1));
+        let new_batches = merge_insert_test_batches(5, 1);
 
         // Perform a "insert if not exists"
         let mut merge_insert_builder = table.merge_insert(&["i"]);
@@ -3568,7 +3494,7 @@ mod tests {
         assert_eq!(result.num_attempts, 1);
 
         // Create new data with i=15..25 (no id matches)
-        let new_batches = Box::new(merge_insert_test_batches(15, 2));
+        let new_batches = merge_insert_test_batches(15, 2);
         // Perform a "bulk update" (should not affect anything)
         let mut merge_insert_builder = table.merge_insert(&["i"]);
         merge_insert_builder.when_matched_update_all(None);
@@ -3581,7 +3507,7 @@ mod tests {
         );
 
         // Conditional update that only replaces the age=0 data
-        let new_batches = Box::new(merge_insert_test_batches(5, 3));
+        let new_batches = merge_insert_test_batches(5, 3);
         let mut merge_insert_builder = table.merge_insert(&["i"]);
         merge_insert_builder.when_matched_update_all(Some("target.age = 0".to_string()));
         merge_insert_builder.execute(new_batches).await.unwrap();
@@ -3607,7 +3533,7 @@ mod tests {
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
         // Test use_index=true (default behavior)
-        let new_batches = Box::new(merge_insert_test_batches(5, 1));
+        let new_batches = merge_insert_test_batches(5, 1);
         let mut merge_insert_builder = table.merge_insert(&["i"]);
         merge_insert_builder.when_not_matched_insert_all();
         merge_insert_builder.use_index(true);
@@ -3615,65 +3541,12 @@ mod tests {
         assert_eq!(table.count_rows(None).await.unwrap(), 15);
 
         // Test use_index=false (force table scan)
-        let new_batches = Box::new(merge_insert_test_batches(15, 2));
+        let new_batches = merge_insert_test_batches(15, 2);
         let mut merge_insert_builder = table.merge_insert(&["i"]);
         merge_insert_builder.when_not_matched_insert_all();
         merge_insert_builder.use_index(false);
         merge_insert_builder.execute(new_batches).await.unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 25);
-    }
-
-    #[tokio::test]
-    async fn test_add_overwrite() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
-
-        let batches = make_test_batches();
-        let schema = batches.schema().clone();
-        let table = conn.create_table("test", batches).execute().await.unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
-
-        let batches = vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from_iter_values(100..110))],
-        )
-        .unwrap()]
-        .into_iter()
-        .map(Ok);
-
-        let new_batches = RecordBatchIterator::new(batches.clone(), schema.clone());
-
-        // Can overwrite using AddDataOptions::mode
-        table
-            .add(new_batches)
-            .mode(AddDataMode::Overwrite)
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
-        assert_eq!(table.name(), "test");
-
-        // Can overwrite using underlying WriteParams (which
-        // take precedence over AddDataOptions::mode)
-
-        let param: WriteParams = WriteParams {
-            mode: WriteMode::Overwrite,
-            ..Default::default()
-        };
-
-        let new_batches = RecordBatchIterator::new(batches.clone(), schema.clone());
-        table
-            .add(new_batches)
-            .write_options(WriteOptions {
-                lance_write_params: Some(param),
-            })
-            .mode(AddDataMode::Append)
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(table.count_rows(None).await.unwrap(), 10);
-        assert_eq!(table.name(), "test");
     }
 
     #[tokio::test]
@@ -3692,24 +3565,19 @@ mod tests {
             Field::new("name", DataType::Utf8, false),
         ]));
 
-        let record_batch_iter = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int32Array::from_iter_values(0..10)),
-                    Arc::new(StringArray::from_iter_values(vec![
-                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-                    ])),
-                ],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
+        let record_batch = RecordBatch::try_new(
             schema.clone(),
-        );
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..10)),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                ])),
+            ],
+        )
+        .unwrap();
 
         let table = conn
-            .create_table("my_table", record_batch_iter)
+            .create_table("my_table", record_batch)
             .execute()
             .await
             .unwrap();
@@ -3802,51 +3670,46 @@ mod tests {
             ),
         ]));
 
-        let record_batch_iter = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int32Array::from_iter_values(0..10)),
-                    Arc::new(Int64Array::from_iter_values(0..10)),
-                    Arc::new(UInt32Array::from_iter_values(0..10)),
-                    Arc::new(StringArray::from_iter_values(vec![
-                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-                    ])),
-                    Arc::new(LargeStringArray::from_iter_values(vec![
-                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-                    ])),
-                    Arc::new(Float32Array::from_iter_values((0..10).map(|i| i as f32))),
-                    Arc::new(Float64Array::from_iter_values((0..10).map(|i| i as f64))),
-                    Arc::new(Into::<BooleanArray>::into(vec![
-                        true, false, true, false, true, false, true, false, true, false,
-                    ])),
-                    Arc::new(Date32Array::from_iter_values(0..10)),
-                    Arc::new(TimestampNanosecondArray::from_iter_values(0..10)),
-                    Arc::new(TimestampMillisecondArray::from_iter_values(0..10)),
-                    Arc::new(
-                        create_fixed_size_list(
-                            Float32Array::from_iter_values((0..20).map(|i| i as f32)),
-                            2,
-                        )
-                        .unwrap(),
-                    ),
-                    Arc::new(
-                        create_fixed_size_list(
-                            Float64Array::from_iter_values((0..20).map(|i| i as f64)),
-                            2,
-                        )
-                        .unwrap(),
-                    ),
-                ],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
+        let record_batch = RecordBatch::try_new(
             schema.clone(),
-        );
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..10)),
+                Arc::new(Int64Array::from_iter_values(0..10)),
+                Arc::new(UInt32Array::from_iter_values(0..10)),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                ])),
+                Arc::new(LargeStringArray::from_iter_values(vec![
+                    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                ])),
+                Arc::new(Float32Array::from_iter_values((0..10).map(|i| i as f32))),
+                Arc::new(Float64Array::from_iter_values((0..10).map(|i| i as f64))),
+                Arc::new(Into::<BooleanArray>::into(vec![
+                    true, false, true, false, true, false, true, false, true, false,
+                ])),
+                Arc::new(Date32Array::from_iter_values(0..10)),
+                Arc::new(TimestampNanosecondArray::from_iter_values(0..10)),
+                Arc::new(TimestampMillisecondArray::from_iter_values(0..10)),
+                Arc::new(
+                    create_fixed_size_list(
+                        Float32Array::from_iter_values((0..20).map(|i| i as f32)),
+                        2,
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    create_fixed_size_list(
+                        Float64Array::from_iter_values((0..20).map(|i| i as f64)),
+                        2,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
 
         let table = conn
-            .create_table("my_table", record_batch_iter)
+            .create_table("my_table", record_batch)
             .execute()
             .await
             .unwrap();
@@ -4031,35 +3894,25 @@ mod tests {
         assert!(wrapper.called());
     }
 
-    fn merge_insert_test_batches(
-        offset: i32,
-        age: i32,
-    ) -> impl RecordBatchReader + Send + Sync + 'static {
+    fn merge_insert_test_batches(offset: i32, age: i32) -> Box<dyn RecordBatchReader + Send> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("i", DataType::Int32, false),
             Field::new("age", DataType::Int32, false),
         ]));
-        RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int32Array::from_iter_values(offset..(offset + 10))),
-                    Arc::new(Int32Array::from_iter_values(std::iter::repeat_n(age, 10))),
-                ],
-            )],
-            schema,
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(offset..(offset + 10))),
+                Arc::new(Int32Array::from_iter_values(std::iter::repeat_n(age, 10))),
+            ],
         )
+        .unwrap();
+        Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
     }
 
-    fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+    fn make_test_batches() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
-        RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![Arc::new(Int32Array::from_iter_values(0..10))],
-            )],
-            schema,
-        )
+        RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from_iter_values(0..10))]).unwrap()
     }
 
     #[tokio::test]
@@ -4147,14 +4000,9 @@ mod tests {
         );
 
         let vectors = Arc::new(create_fixed_size_list(float_arr, dimension).unwrap());
-        let batches = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(schema.clone(), vec![vectors.clone()]).unwrap()]
-                .into_iter()
-                .map(Ok),
-            schema,
-        );
+        let batch = RecordBatch::try_new(schema.clone(), vec![vectors.clone()]).unwrap();
 
-        let table = conn.create_table("test", batches).execute().await.unwrap();
+        let table = conn.create_table("test", batch).execute().await.unwrap();
 
         assert_eq!(table.index_stats("my_index").await.unwrap(), None);
 
@@ -4211,14 +4059,9 @@ mod tests {
         let float_arr =
             Float32Array::from_iter_values((0..(num_rows * dimension)).map(|v| v as f32));
         let vectors = Arc::new(create_fixed_size_list(float_arr, dimension as i32).unwrap());
-        let batches = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(schema.clone(), vec![vectors]).unwrap()]
-                .into_iter()
-                .map(Ok),
-            schema,
-        );
+        let batch = RecordBatch::try_new(schema.clone(), vec![vectors]).unwrap();
 
-        let table = conn.create_table("test", batches).execute().await.unwrap();
+        let table = conn.create_table("test", batch).execute().await.unwrap();
         let native_table = table.as_native().unwrap();
         let builder = IvfPqIndexBuilder::default();
         table
@@ -4288,14 +4131,9 @@ mod tests {
         );
 
         let vectors = Arc::new(create_fixed_size_list(float_arr, dimension).unwrap());
-        let batches = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(schema.clone(), vec![vectors.clone()]).unwrap()]
-                .into_iter()
-                .map(Ok),
-            schema,
-        );
+        let batch = RecordBatch::try_new(schema.clone(), vec![vectors.clone()]).unwrap();
 
-        let table = conn.create_table("test", batches).execute().await.unwrap();
+        let table = conn.create_table("test", batch).execute().await.unwrap();
 
         let stats = table.index_stats("my_index").await.unwrap();
         assert!(stats.is_none());
@@ -4353,14 +4191,9 @@ mod tests {
         );
 
         let vectors = Arc::new(create_fixed_size_list(float_arr, dimension).unwrap());
-        let batches = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(schema.clone(), vec![vectors.clone()]).unwrap()]
-                .into_iter()
-                .map(Ok),
-            schema,
-        );
+        let batch = RecordBatch::try_new(schema.clone(), vec![vectors.clone()]).unwrap();
 
-        let table = conn.create_table("test", batches).execute().await.unwrap();
+        let table = conn.create_table("test", batch).execute().await.unwrap();
         let stats = table.index_stats("my_index").await.unwrap();
         assert!(stats.is_none());
 
@@ -4427,10 +4260,7 @@ mod tests {
         .unwrap();
         let conn = ConnectBuilder::new(uri).execute().await.unwrap();
         let table = conn
-            .create_table(
-                "my_table",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
-            )
+            .create_table("my_table", batch.clone())
             .execute()
             .await
             .unwrap();
@@ -4509,10 +4339,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_bitmap",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
-            )
+            .create_table("test_bitmap", batch.clone())
             .execute()
             .await
             .unwrap();
@@ -4613,10 +4440,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_bitmap",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
-            )
+            .create_table("test_bitmap", batch.clone())
             .execute()
             .await
             .unwrap();
@@ -4676,10 +4500,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_bitmap",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
-            )
+            .create_table("test_bitmap", batch.clone())
             .execute()
             .await
             .unwrap();
@@ -4724,7 +4545,7 @@ mod tests {
 
             let conn1 = ConnectBuilder::new(uri).execute().await.unwrap();
             let table1 = conn1
-                .create_empty_table("my_table", data.schema())
+                .create_empty_table("my_table", RecordBatchReader::schema(&data))
                 .execute()
                 .await
                 .unwrap();
@@ -4994,10 +4815,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_stats",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
-            )
+            .create_table("test_stats", batch.clone())
             .execute()
             .await
             .unwrap();
@@ -5010,21 +4828,11 @@ mod tests {
                 ],
             )
             .unwrap();
-            table
-                .add(RecordBatchIterator::new(
-                    vec![Ok(batch.clone())],
-                    batch.schema(),
-                ))
-                .execute()
-                .await
-                .unwrap();
+            table.add(batch.clone()).execute().await.unwrap();
         }
 
         let empty_table = conn
-            .create_table(
-                "test_stats_empty",
-                RecordBatchIterator::new(vec![], batch.schema()),
-            )
+            .create_table("test_stats_empty", RecordBatch::new_empty(batch.schema()))
             .execute()
             .await
             .unwrap();
@@ -5098,22 +4906,12 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_list_indices_skip_frag_reuse",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
-            )
+            .create_table("test_list_indices_skip_frag_reuse", batch.clone())
             .execute()
             .await
             .unwrap();
 
-        table
-            .add(RecordBatchIterator::new(
-                vec![Ok(batch.clone())],
-                batch.schema(),
-            ))
-            .execute()
-            .await
-            .unwrap();
+        table.add(batch.clone()).execute().await.unwrap();
 
         table
             .create_index(&["id"], Index::Bitmap(BitmapIndexBuilder {}))
@@ -5143,8 +4941,9 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test_ns_query.lance");
 
-        let batches = make_test_batches();
-        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
+        let batch = make_test_batches();
+        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
+        Dataset::write(reader, dataset_path.to_str().unwrap(), None)
             .await
             .unwrap();
 
@@ -5196,8 +4995,9 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test_ns_plain.lance");
 
-        let batches = make_test_batches();
-        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
+        let batch = make_test_batches();
+        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
+        Dataset::write(reader, dataset_path.to_str().unwrap(), None)
             .await
             .unwrap();
 

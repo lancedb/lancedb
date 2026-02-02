@@ -491,7 +491,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     }
 
     /// Apply dynamic headers from the header provider if configured
-    async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
+    pub(crate) async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
         if let Some(ref provider) = self.header_provider {
             let headers = provider.get_headers().await?;
             let request_headers = request.headers_mut();
@@ -621,7 +621,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
     }
 
-    fn log_request(&self, request: &Request, request_id: &String) {
+    pub(crate) fn log_request(&self, request: &Request, request_id: &String) {
         if log::log_enabled!(log::Level::Debug) {
             let content_type = request
                 .headers()

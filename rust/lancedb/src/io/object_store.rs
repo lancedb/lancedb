@@ -183,6 +183,7 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
 mod test {
     use super::*;
 
+    use arrow_array::RecordBatchReader;
     use futures::TryStreamExt;
     use lance::{dataset::WriteParams, io::ObjectStoreParams};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
@@ -218,8 +219,9 @@ mod test {
         datagen = datagen.col(Box::<IncrementingInt32>::default());
         datagen = datagen.col(Box::new(RandomVector::default().named("vector".into())));
 
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(datagen.batch(100));
         let res = db
-            .create_table("test", Box::new(datagen.batch(100)))
+            .create_table("test", data)
             .write_options(WriteOptions {
                 lance_write_params: Some(param),
             })

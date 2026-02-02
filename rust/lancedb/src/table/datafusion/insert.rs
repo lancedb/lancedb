@@ -222,7 +222,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use arrow_array::{record_batch, Int32Array, RecordBatchIterator};
+    use arrow_array::{record_batch, RecordBatchIterator};
     use datafusion::prelude::SessionContext;
     use datafusion_catalog::MemTable;
     use tempfile::tempdir;
@@ -238,11 +238,9 @@ mod tests {
 
         // Create initial table
         let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
-        let schema = batch.schema();
-        let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
 
         let table = db
-            .create_table("test_insert", Box::new(reader))
+            .create_table("test_insert", batch)
             .execute()
             .await
             .unwrap();
@@ -279,11 +277,9 @@ mod tests {
 
         // Create initial table with 3 rows
         let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
-        let schema = batch.schema();
-        let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
 
         let table = db
-            .create_table("test_overwrite", Box::new(reader))
+            .create_table("test_overwrite", batch)
             .execute()
             .await
             .unwrap();
@@ -318,20 +314,9 @@ mod tests {
         let db = connect(uri).execute().await.unwrap();
 
         // Create initial table
-        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
-            "id",
-            DataType::Int32,
-            false,
-        )]));
-        let batches = vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
-        )
-        .unwrap()];
-        let reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema.clone());
-
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
         let table = db
-            .create_table("test_empty", Box::new(reader))
+            .create_table("test_empty", batch)
             .execute()
             .await
             .unwrap();
@@ -352,12 +337,12 @@ mod tests {
             false,
         )]));
         // Empty batches
-        let source_reader = RecordBatchIterator::new(
+        let source_reader = Box::new(RecordBatchIterator::new(
             std::iter::empty::<Result<RecordBatch, arrow_schema::ArrowError>>(),
             source_schema,
-        );
+        )) as Box<dyn arrow_array::RecordBatchReader + Send>;
         let source_table = db
-            .create_table("empty_source", Box::new(source_reader))
+            .create_table("empty_source", source_reader)
             .execute()
             .await
             .unwrap();
@@ -389,20 +374,11 @@ mod tests {
         let db = connect(uri).execute().await.unwrap();
 
         // Create initial table
-        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
-            "id",
-            DataType::Int32,
-            true,
-        )]));
-        let batches =
-            vec![
-                RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1]))])
-                    .unwrap(),
-            ];
-        let reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema.clone());
+        let batch = record_batch!(("id", Int32, [1])).unwrap();
+        let schema = batch.schema();
 
         let table = db
-            .create_table("test_multi_batch", Box::new(reader))
+            .create_table("test_multi_batch", batch)
             .execute()
             .await
             .unwrap();

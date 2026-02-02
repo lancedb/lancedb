@@ -15,7 +15,6 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use futures::StreamExt;
 use lancedb::{
-    arrow::IntoArrow,
     connect,
     embeddings::{EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry},
     query::ExecutableQuery,
@@ -253,7 +252,7 @@ async fn test_no_func_in_registry_on_add() -> Result<()> {
     Ok(())
 }
 
-fn create_some_records() -> Result<impl IntoArrow> {
+fn create_some_records() -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
     const TOTAL: usize = 2;
 
     let schema = Arc::new(Schema::new(vec![
