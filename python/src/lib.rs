@@ -3,6 +3,7 @@
 
 use arrow::RecordBatchStream;
 use connection::{connect, Connection};
+use embedding::PyEmbeddingRegistry;
 use env_logger::Env;
 use index::IndexConfig;
 use permutation::{PyAsyncPermutationBuilder, PyPermutationReader};
@@ -20,6 +21,7 @@ use table::{
 
 pub mod arrow;
 pub mod connection;
+pub mod embedding;
 pub mod error;
 pub mod header;
 pub mod index;
@@ -54,6 +56,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<UpdateResult>()?;
     m.add_class::<PyAsyncPermutationBuilder>()?;
     m.add_class::<PyPermutationReader>()?;
+    m.add_class::<PyEmbeddingRegistry>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;

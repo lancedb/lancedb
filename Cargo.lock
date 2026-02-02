@@ -5026,6 +5026,7 @@ dependencies = [
  "moka",
  "num-traits",
  "object_store",
+ "parking_lot",
  "pin-project",
  "polars",
  "polars-arrow",
@@ -5074,6 +5075,9 @@ version = "0.27.1"
 dependencies = [
  "arrow",
  "async-trait",
+ "datafusion-common",
+ "datafusion-execution",
+ "datafusion-physical-plan",
  "env_logger",
  "futures",
  "lance-core",

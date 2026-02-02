@@ -348,11 +348,11 @@ impl EmbeddingFunction for MockEmbed {
         Ok(Cow::Borrowed(&self.dest_type))
     }
     fn compute_source_embeddings(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
-        // We can't use the FixedSizeListBuilder here because it always adds a null bitmap
-        // and we want to explicitly work with non-nullable arrays.
+        // Create array with nullable inner field to match dest_type()
         let len = source.len();
         let inner = Arc::new(Float32Array::from(vec![Some(1.0); len * self.dim]));
-        let field = Field::new("item", inner.data_type().clone(), false);
+        // The inner field must be nullable=true to match dest_type (new_fixed_size_list with true)
+        let field = Field::new("item", inner.data_type().clone(), true);
         let arr = FixedSizeListArray::new(
             Arc::new(field),
             self.dim as _,

@@ -73,6 +73,10 @@ impl ServerVersion {
     pub fn support_structural_fts(&self) -> bool {
         self.0 >= semver::Version::new(0, 3, 0)
     }
+
+    pub fn support_parallel_insert(&self) -> bool {
+        self.0 >= semver::Version::new(0, 4, 0)
+    }
 }
 
 pub const OPT_REMOTE_PREFIX: &str = "remote_database_";

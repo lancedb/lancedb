@@ -46,6 +46,7 @@ lance-arrow = { workspace = true }
 lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
 moka = { workspace = true }
+parking_lot = { workspace = true }
 pin-project = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 log.workspace = true

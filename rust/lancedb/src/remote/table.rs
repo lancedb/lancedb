@@ -12,11 +12,12 @@ use crate::table::DropColumnsResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
-use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
+use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics, WriteProgressState};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_ipc::reader::FileReader;
+use arrow_ipc::CompressionType;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use datafusion_common::DataFusionError;
@@ -28,7 +29,7 @@ use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
+use lance::dataset::{ColumnAlteration, NewColumnTransform, Version, WriteMode, WriteParams};
 use lance_datafusion::exec::{execute_plan, OneShotExec};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
@@ -55,6 +56,8 @@ use crate::{
         TableDefinition, UpdateBuilder,
     },
 };
+
+mod insert;
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 const METRIC_TYPE_KEY: &str = "metric_type";
@@ -261,8 +264,13 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
-        // TODO: Once Phalanx supports compression, we should use it here.
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
+        let options = arrow_ipc::writer::IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
+            Vec::new(),
+            &data.schema(),
+            options,
+        )?;
 
         //  Mutex is just here to make it sync. We shouldn't have any contention.
         let mut data = Mutex::new(data);
@@ -800,32 +808,52 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<AddResult> {
         self.check_mutable().await?;
-        let mut request = self
-            .client
-            .post(&format!("/v1/table/{}/insert/", self.identifier))
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
-        match add.mode {
-            AddDataMode::Append => {}
-            AddDataMode::Overwrite => {
-                request = request.query(&[("mode", "overwrite")]);
+        let overwrite = matches!(add.mode, AddDataMode::Overwrite);
+
+        // Convert RecordBatchReader to a stream
+        let schema = data.schema();
+        let stream = futures::stream::iter(data).map_err(DataFusionError::from);
+        let input_stream: SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(schema, stream));
+
+        // Wrap in OneShotExec as the input plan
+        let input_plan: Arc<dyn ExecutionPlan> = Arc::new(OneShotExec::new(input_stream));
+
+        // Create the RemoteInsertExec
+        let insert_exec = Arc::new(insert::RemoteInsertExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            input_plan,
+            overwrite,
+            &self.server_version,
+            None, // no progress for legacy add path
+        ));
+
+        // Execute the plan and drain the results
+        let stream = execute_plan(insert_exec.clone(), Default::default())?;
+        stream.try_collect::<Vec<_>>().await.map_err(|e| {
+            // Try to recover the original crate::Error from DataFusionError::External
+            if let DataFusionError::External(inner) = e {
+                match inner.downcast::<Error>() {
+                    Ok(err) => return *err,
+                    Err(inner) => {
+                        return Error::Runtime {
+                            message: format!("Insert execution failed: {}", inner),
+                        }
+                    }
+                }
             }
-        }
-
-        let (request_id, response) = self.send_streaming(request, data, true).await?;
-        let response = self.check_table_response(&request_id, response).await?;
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        if body.trim().is_empty() {
-            // Backward compatible with old servers
-            return Ok(AddResult { version: 0 });
-        }
-
-        let add_response: AddResult = serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse add response: {}", e).into(),
-            request_id,
-            status_code: None,
+            Error::Runtime {
+                message: format!("Insert execution failed: {}", e),
+            }
         })?;
-        Ok(add_response)
+
+        // Retrieve the result from the execution
+        insert_exec.add_result().ok_or_else(|| Error::Runtime {
+            message: "Insert execution completed but no result was returned".to_string(),
+        })
     }
 
     async fn create_plan(
@@ -1508,6 +1536,24 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })?;
         Ok(stats)
     }
+
+    async fn create_insert_exec(
+        &self,
+        input: Arc<dyn ExecutionPlan>,
+        write_params: WriteParams,
+        progress: Option<Arc<WriteProgressState>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let overwrite = matches!(write_params.mode, WriteMode::Overwrite);
+        Ok(Arc::new(insert::RemoteInsertExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            input,
+            overwrite,
+            &self.server_version,
+            progress,
+        )))
+    }
 }
 
 #[derive(Serialize)]
@@ -1744,10 +1790,17 @@ mod tests {
     }
 
     fn write_ipc_stream(data: &RecordBatch) -> Vec<u8> {
+        let options = arrow_ipc::writer::IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))
+            .unwrap();
         let mut body = Vec::new();
         {
-            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &data.schema())
-                .expect("Failed to create writer");
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
+                &mut body,
+                &data.schema(),
+                options,
+            )
+            .expect("Failed to create writer");
             writer.write(data).expect("Failed to write data");
             writer.finish().expect("Failed to finish");
         }
@@ -3420,5 +3473,144 @@ mod tests {
         let uri2 = table.uri().await.unwrap();
         assert_eq!(uri2, "gs://bucket/table");
         assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, no new call
+    }
+
+    #[tokio::test]
+    async fn test_parallel_insert() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use datafusion_execution::TaskContext;
+        use datafusion_physical_plan::union::UnionExec;
+        use lance_datafusion::exec::OneShotExec;
+
+        use crate::remote::client::test_utils::client_with_handler;
+        use crate::remote::db::ServerVersion;
+        use crate::remote::table::insert::RemoteInsertExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let insert_count_clone = insert_count.clone();
+
+        let client = client_with_handler(move |request| {
+            let path = request.url().path().to_string();
+            if path == "/v1/table/my_table/insert/" {
+                let has_uncommitted = request
+                    .url()
+                    .query_pairs()
+                    .any(|(k, v)| k == "uncommitted" && v == "true");
+                assert!(has_uncommitted, "insert should have uncommitted=true");
+
+                let idx = insert_count_clone.fetch_add(1, Ordering::SeqCst);
+                let txn = format!("txn_{}", idx);
+                let body = serde_json::json!({ "transaction": txn }).to_string();
+                http::Response::builder().status(200).body(body).unwrap()
+            } else if path == "/v1/table/my_table/commit/" {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 99}"#.to_string())
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", path);
+            }
+        });
+
+        // Build a multi-partition input using UnionExec of 3 OneShotExec plans
+        let partitions: Vec<Arc<dyn ExecutionPlan>> = (0..3)
+            .map(|i| {
+                let batch =
+                    RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![i]))])
+                        .unwrap();
+                let stream = Box::pin(RecordBatchStreamAdapter::new(
+                    schema.clone(),
+                    futures::stream::once(futures::future::ok(batch)),
+                ));
+                Arc::new(OneShotExec::new(stream)) as _
+            })
+            .collect();
+        let input = UnionExec::try_new(partitions).unwrap();
+
+        let server_version = ServerVersion(semver::Version::new(0, 4, 0));
+        let insert_exec = Arc::new(RemoteInsertExec::new(
+            "my_table".to_string(),
+            "my_table".to_string(),
+            client,
+            input,
+            false,
+            &server_version,
+            None,
+        ));
+
+        // Execute all partitions in parallel, same as the real insert path
+        let task_ctx = Arc::new(TaskContext::default());
+        let num_partitions = insert_exec.properties().partitioning.partition_count();
+        let mut handles = Vec::new();
+        for partition in 0..num_partitions {
+            let exec = insert_exec.clone();
+            let ctx = task_ctx.clone();
+            handles.push(tokio::spawn(async move {
+                let mut stream = exec.execute(partition, ctx).unwrap();
+                while let Some(batch) = stream.next().await {
+                    batch.unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        assert_eq!(insert_count.load(Ordering::SeqCst), 3);
+        let result = insert_exec.add_result().expect("should have add_result");
+        assert_eq!(result.version, 99);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_insert_disabled_for_old_server() {
+        use datafusion_physical_plan::union::UnionExec;
+        use lance_datafusion::exec::OneShotExec;
+
+        use crate::remote::db::ServerVersion;
+        use crate::remote::table::insert::RemoteInsertExec;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+
+        // Build a multi-partition input
+        let partitions: Vec<Arc<dyn ExecutionPlan>> = (0..3)
+            .map(|i| {
+                let batch =
+                    RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![i]))])
+                        .unwrap();
+                let stream = Box::pin(RecordBatchStreamAdapter::new(
+                    schema.clone(),
+                    futures::stream::once(futures::future::ok(batch)),
+                ));
+                Arc::new(OneShotExec::new(stream)) as _
+            })
+            .collect();
+        let input = UnionExec::try_new(partitions).unwrap();
+
+        // Old server version should disable parallel insert even with multi-partition input
+        let server_version = ServerVersion(semver::Version::new(0, 3, 0));
+        let insert_exec = RemoteInsertExec::new(
+            "my_table".to_string(),
+            "my_table".to_string(),
+            crate::remote::client::test_utils::client_with_handler(|_| -> http::Response<String> {
+                panic!("should not be called in this test");
+            }),
+            input,
+            false,
+            &server_version,
+            None,
+        );
+
+        // Should require single partition (legacy behavior)
+        let dist = insert_exec.required_input_distribution();
+        assert!(
+            matches!(
+                dist.as_slice(),
+                [datafusion_physical_plan::Distribution::SinglePartition]
+            ),
+            "old server should require SinglePartition"
+        );
     }
 }
