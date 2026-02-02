@@ -441,6 +441,13 @@ def test_filter_with_splits(mem_db):
     # Verify the permutation table only contains row_id and split_id
     assert set(permutation_tbl.schema.names) == {"row_id", "split_id"}
 
+    row_ids = permutation_tbl.search(None).to_arrow().to_pydict()["row_id"]
+    data = tbl.take_row_ids(row_ids).to_arrow().to_pydict()
+    categories = data["category"]
+
+    # All categories should be A or B
+    assert all(cat in ("A", "B") for cat in categories)
+
 
 def test_filter_with_shuffle(mem_db):
     """Test filtering combined with shuffling."""
