@@ -705,8 +705,11 @@ Create a query that returns a subset of the rows in the table.
 
 #### Parameters
 
-* **rowIds**: `number`[]
+* **rowIds**: readonly (`number` \| `bigint`)[]
     The row ids of the rows to return.
+    Row ids returned by `withRowId()` are `bigint`, so `bigint[]` is supported.
+    For convenience / backwards compatibility, `number[]` is also accepted (for
+    small row ids that fit in a safe integer).
 
 #### Returns
 
