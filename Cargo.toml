@@ -46,6 +46,7 @@ datafusion-common = { version = "50.1", default-features = false }
 datafusion-execution = "50.1"
 datafusion-expr = "50.1"
 datafusion-physical-plan = "50.1"
+datafusion-physical-expr = "50.1"
 env_logger = "0.11"
 half = { "version" = "2.6.0", default-features = false, features = [
     "num-traits",
