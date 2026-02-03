@@ -1057,6 +1057,11 @@ class Table(ABC):
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
         progress=None,
+        *,
+        compression: Optional[Literal["lz4", "zstd"]] = "lz4",
+        stream_upload: bool = True,
+        preprocessing_parallelism: Optional[int] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -1084,6 +1089,20 @@ class Table(ABC):
             ``rows_written``, ``bytes_written``, ``elapsed_secs``, or ``None``
             to disable progress reporting. See :mod:`lancedb.progress` for
             helpers.
+        compression: optional, default "lz4"
+            IPC compression to use when transmitting data to a remote server.
+            One of "lz4", "zstd", or None to disable compression.
+            Only applies to remote tables.
+        stream_upload: bool, default True
+            Whether to stream data to the server as it is produced.
+            When False, all data is collected into memory before sending.
+            Only applies to remote tables.
+        preprocessing_parallelism: optional int
+            Number of partitions used for CPU-bound preprocessing (embeddings, etc).
+            Defaults to the number of available CPUs.
+        write_parallelism: optional int
+            Number of partitions to use for writing. Each partition becomes a
+            separate output file. By default this is computed from the data size.
 
         Returns
         -------
@@ -2504,6 +2523,11 @@ class LanceTable(Table):
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
         progress=None,
+        *,
+        compression: Optional[Literal["lz4", "zstd"]] = "lz4",
+        stream_upload: bool = True,
+        preprocessing_parallelism: Optional[int] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -2524,6 +2548,20 @@ class LanceTable(Table):
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         progress: optional
             A progress reporter. See :meth:`Table.add` for details.
+        compression: optional, default "lz4"
+            IPC compression to use when transmitting data to a remote server.
+            One of "lz4", "zstd", or None to disable compression.
+            Only applies to remote tables.
+        stream_upload: bool, default True
+            Whether to stream data to the server as it is produced.
+            When False, all data is collected into memory before sending.
+            Only applies to remote tables.
+        preprocessing_parallelism: optional int
+            Number of partitions used for CPU-bound preprocessing (embeddings, etc).
+            Defaults to the number of available CPUs.
+        write_parallelism: optional int
+            Number of partitions to use for writing. Each partition becomes a
+            separate output file. By default this is computed from the data size.
 
         Returns
         -------
@@ -2537,6 +2575,10 @@ class LanceTable(Table):
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
                 progress=progress,
+                compression=compression,
+                stream_upload=stream_upload,
+                preprocessing_parallelism=preprocessing_parallelism,
+                write_parallelism=write_parallelism,
             )
         )
 
@@ -3732,6 +3774,10 @@ class AsyncTable:
         on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
         progress=None,
+        compression: Optional[Literal["lz4", "zstd"]] = "lz4",
+        stream_upload: bool = True,
+        preprocessing_parallelism: Optional[int] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -3755,6 +3801,20 @@ class AsyncTable:
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         progress: optional
             A progress reporter. See :meth:`Table.add` for details.
+        compression: optional, default "lz4"
+            IPC compression to use when transmitting data to a remote server.
+            One of "lz4", "zstd", or None to disable compression.
+            Only applies to remote tables.
+        stream_upload: bool, default True
+            Whether to stream data to the server as it is produced.
+            When False, all data is collected into memory before sending.
+            Only applies to remote tables.
+        preprocessing_parallelism: optional int
+            Number of partitions used for CPU-bound preprocessing (embeddings, etc).
+            Defaults to the number of available CPUs.
+        write_parallelism: optional int
+            Number of partitions to use for writing. Each partition becomes a
+            separate output file. By default this is computed from the data size.
 
         """
         from .source_data import to_source_data, _register_optional_converters
@@ -3778,9 +3838,12 @@ class AsyncTable:
             source.rescannable,
             on_bad_vectors or "error",  # passed to Rust PreprocessingExec
             fill_value if fill_value is not None else 0.0,  # fill value for bad vectors
-            None,  # target_partitions (use default)
+            write_parallelism,
             rust_registry,
             callback,
+            compression,
+            stream_upload,
+            preprocessing_parallelism,
         )
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:

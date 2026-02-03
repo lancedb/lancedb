@@ -27,7 +27,7 @@ use crate::{
         db::ServerVersion,
         ARROW_STREAM_CONTENT_TYPE,
     },
-    table::{AddResult, WriteProgressState},
+    table::{AddResult, InsertExecOptions, WriteProgressState},
     Error,
 };
 
@@ -65,6 +65,8 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     add_result: Arc<Mutex<Option<AddResult>>>,
     transactions: Arc<Mutex<Vec<String>>>,
     progress: Option<Arc<WriteProgressState>>,
+    compression: Option<CompressionType>,
+    stream_upload: bool,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RemoteInsertExec<S> {
@@ -85,6 +87,7 @@ impl<S: HttpSend> DisplayAs for RemoteInsertExec<S> {
 }
 
 impl<S: HttpSend> RemoteInsertExec<S> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         table_name: String,
         identifier: String,
@@ -93,6 +96,7 @@ impl<S: HttpSend> RemoteInsertExec<S> {
         overwrite: bool,
         server_version: &ServerVersion,
         progress: Option<Arc<WriteProgressState>>,
+        insert_options: InsertExecOptions,
     ) -> Self {
         let parallel_insert = server_version.support_parallel_insert()
             && input.output_partitioning().partition_count() > 1;
@@ -104,9 +108,12 @@ impl<S: HttpSend> RemoteInsertExec<S> {
             overwrite,
             parallel_insert,
             progress,
+            insert_options.compression,
+            insert_options.stream_upload,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_inner(
         table_name: String,
         identifier: String,
@@ -115,6 +122,8 @@ impl<S: HttpSend> RemoteInsertExec<S> {
         overwrite: bool,
         parallel_insert: bool,
         progress: Option<Arc<WriteProgressState>>,
+        compression: Option<CompressionType>,
+        stream_upload: bool,
     ) -> Self {
         let num_partitions = if parallel_insert {
             input.output_partitioning().partition_count()
@@ -139,6 +148,8 @@ impl<S: HttpSend> RemoteInsertExec<S> {
             add_result: Arc::new(Mutex::new(None)),
             transactions: Arc::new(Mutex::new(Vec::new())),
             progress,
+            compression,
+            stream_upload,
         }
     }
 
@@ -152,9 +163,10 @@ impl<S: HttpSend> RemoteInsertExec<S> {
     fn stream_as_body(
         data: SendableRecordBatchStream,
         progress: Option<Arc<WriteProgressState>>,
+        compression: Option<CompressionType>,
     ) -> DataFusionResult<reqwest::Body> {
-        let options = arrow_ipc::writer::IpcWriteOptions::default()
-            .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
+        let options =
+            arrow_ipc::writer::IpcWriteOptions::default().try_with_compression(compression)?;
         let writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
             Vec::new(),
             &data.schema(),
@@ -188,6 +200,37 @@ impl<S: HttpSend> RemoteInsertExec<S> {
         });
 
         Ok(reqwest::Body::wrap_stream(stream))
+    }
+
+    /// Collect all data into memory and return as a single body.
+    async fn collect_as_body(
+        mut data: SendableRecordBatchStream,
+        progress: Option<Arc<WriteProgressState>>,
+        compression: Option<CompressionType>,
+    ) -> DataFusionResult<reqwest::Body> {
+        let options =
+            arrow_ipc::writer::IpcWriteOptions::default().try_with_compression(compression)?;
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
+            Vec::new(),
+            &data.schema(),
+            options,
+        )?;
+
+        while let Some(batch) = data.next().await {
+            let batch = batch?;
+            if let Some(ref progress) = progress {
+                progress.report(batch.num_rows(), 0);
+            }
+            writer.write(&batch)?;
+        }
+        writer.finish()?;
+        let buffer = writer.into_inner()?;
+
+        if let Some(ref progress) = progress {
+            progress.report(0, buffer.len());
+        }
+
+        Ok(reqwest::Body::from(buffer))
     }
 }
 
@@ -225,6 +268,8 @@ impl<S: HttpSend> ExecutionPlan for RemoteInsertExec<S> {
             self.overwrite,
             self.parallel_insert,
             self.progress.clone(),
+            self.compression,
+            self.stream_upload,
         )))
     }
 
@@ -260,6 +305,8 @@ impl<S: HttpSend> ExecutionPlan for RemoteInsertExec<S> {
         let transactions = self.transactions.clone();
 
         let progress = self.progress.clone();
+        let compression = self.compression;
+        let stream_upload = self.stream_upload;
 
         let fut = async move {
             let mut request = client
@@ -274,7 +321,11 @@ impl<S: HttpSend> ExecutionPlan for RemoteInsertExec<S> {
                 request = request.query(&[("uncommitted", "true")]);
             }
 
-            let body = Self::stream_as_body(input_stream, progress)?;
+            let body = if stream_upload {
+                Self::stream_as_body(input_stream, progress, compression)?
+            } else {
+                Self::collect_as_body(input_stream, progress, compression).await?
+            };
             let request = request.body(body);
 
             let (request_id, response) = client

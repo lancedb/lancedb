@@ -52,8 +52,8 @@ use crate::{
     index::{IndexBuilder, IndexConfig},
     query::QueryExecutionOptions,
     table::{
-        merge::MergeInsertBuilder, AddDataBuilder, BaseTable, OptimizeAction, OptimizeStats,
-        TableDefinition, UpdateBuilder,
+        merge::MergeInsertBuilder, AddDataBuilder, BaseTable, InsertExecOptions, OptimizeAction,
+        OptimizeStats, TableDefinition, UpdateBuilder,
     },
 };
 
@@ -829,6 +829,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             overwrite,
             &self.server_version,
             None, // no progress for legacy add path
+            Default::default(),
         ));
 
         // Execute the plan and drain the results
@@ -1542,6 +1543,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         input: Arc<dyn ExecutionPlan>,
         write_params: WriteParams,
         progress: Option<Arc<WriteProgressState>>,
+        insert_options: InsertExecOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let overwrite = matches!(write_params.mode, WriteMode::Overwrite);
         Ok(Arc::new(insert::RemoteInsertExec::new(
@@ -1552,6 +1554,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             overwrite,
             &self.server_version,
             progress,
+            insert_options,
         )))
     }
 }
@@ -3539,6 +3542,7 @@ mod tests {
             false,
             &server_version,
             None,
+            Default::default(),
         ));
 
         // Execute all partitions in parallel, same as the real insert path
@@ -3601,6 +3605,7 @@ mod tests {
             false,
             &server_version,
             None,
+            Default::default(),
         );
 
         // Should require single partition (legacy behavior)

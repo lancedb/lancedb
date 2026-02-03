@@ -20,8 +20,8 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use lancedb::data_source::SourceData;
 use lancedb::embeddings::EmbeddingRegistry;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OnBadVectors, OptimizeAction,
-    OptimizeOptions, PreprocessingOptions, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, CompressionType, Duration, NewColumnTransform, OnBadVectors,
+    OptimizeAction, OptimizeOptions, PreprocessingOptions, Table as LanceDbTable,
 };
 use pyo3::{
     exceptions::{PyKeyError, PyRuntimeError, PyValueError},
@@ -376,9 +376,12 @@ impl Table {
         rescannable=true,
         on_bad_vectors="error",
         fill_value=0.0,
-        target_partitions=None,
+        write_parallelism=None,
         embedding_registry=None,
-        progress=None
+        progress=None,
+        compression="lz4",
+        stream_upload=true,
+        preprocessing_parallelism=None
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn add<'a>(
@@ -390,9 +393,12 @@ impl Table {
         rescannable: bool,
         on_bad_vectors: &str,
         fill_value: f32,
-        target_partitions: Option<usize>,
+        write_parallelism: Option<usize>,
         embedding_registry: Option<PyRef<'_, PyEmbeddingRegistry>>,
         progress: Option<Py<PyAny>>,
+        compression: Option<&str>,
+        stream_upload: bool,
+        preprocessing_parallelism: Option<usize>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let schema: SchemaRef = Arc::new(schema.0);
 
@@ -436,9 +442,27 @@ impl Table {
         };
         op = op.preprocessing(preprocessing);
 
-        if let Some(partitions) = target_partitions {
+        if let Some(partitions) = write_parallelism {
             op = op.target_partitions(partitions);
         }
+
+        if let Some(parallelism) = preprocessing_parallelism {
+            op = op.preprocessing_parallelism(parallelism);
+        }
+
+        let compression_type = match compression {
+            Some("lz4") => Some(CompressionType::LZ4_FRAME),
+            Some("zstd") => Some(CompressionType::ZSTD),
+            None => None,
+            Some(other) => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid compression: {}. Valid values are: lz4, zstd",
+                    other
+                )))
+            }
+        };
+        op = op.compression(compression_type);
+        op = op.stream_upload(stream_upload);
 
         // Clone registry for the async block if provided
         let registry: Option<Arc<dyn EmbeddingRegistry>> =

@@ -148,9 +148,12 @@ class Table:
         rescannable: bool = True,
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        target_partitions: Optional[int] = None,
+        write_parallelism: Optional[int] = None,
         embedding_registry: Optional[PyEmbeddingRegistry] = None,
         progress: Optional[Callable[[dict], None]] = None,
+        compression: Optional[str] = "lz4",
+        stream_upload: bool = True,
+        preprocessing_parallelism: Optional[int] = None,
     ) -> AddResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]

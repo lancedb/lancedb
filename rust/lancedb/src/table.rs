@@ -441,6 +441,30 @@ const DEFAULT_ESTIMATED_ROW_SIZE: usize = 1024;
 /// # }
 /// ```
 pub use self::datafusion::preprocessing::{OnBadVectors, PreprocessingOptions};
+pub use arrow_ipc::CompressionType;
+
+/// Options for the insert execution plan that are specific to certain backends.
+///
+/// These control how data is serialized and transmitted during insert operations.
+/// For example, the remote backend uses these to configure IPC compression and
+/// whether to stream data or collect it before sending.
+#[derive(Debug, Clone)]
+pub struct InsertExecOptions {
+    /// Compression to apply to the IPC stream. `None` means no compression.
+    pub compression: Option<CompressionType>,
+    /// When true, data is streamed to the server as it is produced.
+    /// When false, all data is collected into memory before sending.
+    pub stream_upload: bool,
+}
+
+impl Default for InsertExecOptions {
+    fn default() -> Self {
+        Self {
+            compression: Some(CompressionType::LZ4_FRAME),
+            stream_upload: true,
+        }
+    }
+}
 
 pub struct AddDataBuilder2 {
     parent: Arc<dyn BaseTable>,
@@ -449,8 +473,10 @@ pub struct AddDataBuilder2 {
     write_options: WriteOptions,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     target_partitions: Option<usize>,
+    preprocessing_parallelism: Option<usize>,
     preprocessing_options: Option<PreprocessingOptions>,
     progress_callback: Option<Arc<dyn Fn(WriteProgress) + Send + Sync>>,
+    insert_exec_options: InsertExecOptions,
 }
 
 impl std::fmt::Debug for AddDataBuilder2 {
@@ -461,7 +487,9 @@ impl std::fmt::Debug for AddDataBuilder2 {
             .field("mode", &self.mode)
             .field("write_options", &self.write_options)
             .field("target_partitions", &self.target_partitions)
+            .field("preprocessing_parallelism", &self.preprocessing_parallelism)
             .field("preprocessing_options", &self.preprocessing_options)
+            .field("insert_exec_options", &self.insert_exec_options)
             .field(
                 "progress_callback",
                 &self.progress_callback.as_ref().map(|_| "..."),
@@ -503,6 +531,33 @@ impl AddDataBuilder2 {
     ///   becomes a separate output file.
     pub fn target_partitions(mut self, partitions: usize) -> Self {
         self.target_partitions = Some(partitions);
+        self
+    }
+
+    /// Set the number of partitions used for CPU-bound preprocessing (embeddings, etc).
+    ///
+    /// By default, this is set to the number of available CPUs. Set to 1 to disable
+    /// parallel preprocessing.
+    pub fn preprocessing_parallelism(mut self, parallelism: usize) -> Self {
+        self.preprocessing_parallelism = Some(parallelism);
+        self
+    }
+
+    /// Set the IPC compression used when transmitting data to the server.
+    ///
+    /// Only applies to remote tables. Pass `None` to disable compression.
+    /// Defaults to `Some(CompressionType::LZ4_FRAME)`.
+    pub fn compression(mut self, compression: Option<CompressionType>) -> Self {
+        self.insert_exec_options.compression = compression;
+        self
+    }
+
+    /// Set whether to stream data to the server as it is produced.
+    ///
+    /// Only applies to remote tables. When `false`, all data is collected into
+    /// memory before sending. Defaults to `true`.
+    pub fn stream_upload(mut self, stream: bool) -> Self {
+        self.insert_exec_options.stream_upload = stream;
         self
     }
 
@@ -584,28 +639,31 @@ impl AddDataBuilder2 {
         use datafusion_physical_plan::Partitioning;
 
         let num_rows = self.source.num_rows();
-        // Get CPU count for preprocessing parallelism
-        let cpu_partitions = std::thread::available_parallelism()
+        let cpu_count = std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(1);
+        let preprocessing_parallelism = self.preprocessing_parallelism.unwrap_or(cpu_count);
         // Want to split into parallel writes, but there's not much benefit to having
         // more writers than CPU cores, since writers have to do encoding work.
         let target_write_partitions = self
             .target_partitions
             .unwrap_or_else(|| Self::compute_optimal_partitions(num_rows))
-            .min(cpu_partitions);
+            .min(cpu_count);
 
         // Create SourceDataExec - streams data lazily without collecting into memory
         let mut input_plan: Arc<dyn ExecutionPlan> = Arc::new(SourceDataExec::new(self.source));
 
         // Repartition for CPU parallelism BEFORE preprocessing steps.
         // This allows embedding computation and preprocessing to run in parallel.
-        if cpu_partitions > 1 {
+        if preprocessing_parallelism > 1 {
             input_plan = Arc::new(
-                RepartitionExec::try_new(input_plan, Partitioning::RoundRobinBatch(cpu_partitions))
-                    .map_err(|e| Error::Runtime {
-                        message: format!("Failed to create CPU repartition: {}", e),
-                    })?,
+                RepartitionExec::try_new(
+                    input_plan,
+                    Partitioning::RoundRobinBatch(preprocessing_parallelism),
+                )
+                .map_err(|e| Error::Runtime {
+                    message: format!("Failed to create CPU repartition: {}", e),
+                })?,
             );
         }
 
@@ -667,7 +725,7 @@ impl AddDataBuilder2 {
         // Create and execute the insert plan
         let insert_exec = self
             .parent
-            .create_insert_exec(input_plan, lance_params, progress)
+            .create_insert_exec(input_plan, lance_params, progress, self.insert_exec_options)
             .await?;
 
         let task_ctx = Arc::new(TaskContext::default());
@@ -1020,6 +1078,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _input: Arc<dyn ExecutionPlan>,
         _write_params: WriteParams,
         _progress: Option<Arc<WriteProgressState>>,
+        _insert_options: InsertExecOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Err(Error::NotSupported {
             message: "create_insert_exec not implemented".to_string(),
@@ -1294,8 +1353,10 @@ impl Table {
             write_options: WriteOptions::default(),
             embedding_registry: Some(self.embedding_registry.clone()),
             target_partitions: None,
+            preprocessing_parallelism: None,
             preprocessing_options: None,
             progress_callback: None,
+            insert_exec_options: InsertExecOptions::default(),
         }
     }
 
@@ -3327,7 +3388,7 @@ impl BaseTable for NativeTable {
 
         // Create InsertExec (no progress callback for legacy add path)
         let insert_exec = self
-            .create_insert_exec(input_plan, lance_params, None)
+            .create_insert_exec(input_plan, lance_params, None, Default::default())
             .await?;
 
         // Execute the plan
@@ -3964,6 +4025,7 @@ impl BaseTable for NativeTable {
         input: Arc<dyn ExecutionPlan>,
         write_params: WriteParams,
         progress: Option<Arc<WriteProgressState>>,
+        _insert_options: InsertExecOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         // Ensure the dataset is not in time travel mode
         self.dataset.ensure_mutable().await?;

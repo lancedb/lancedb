@@ -316,6 +316,11 @@ class RemoteTable(Table):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         progress=None,
+        *,
+        compression: Optional[Literal["lz4", "zstd"]] = "lz4",
+        stream_upload: bool = True,
+        preprocessing_parallelism: Optional[int] = None,
+        write_parallelism: Optional[int] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table). It has the same API signature as
         the OSS version.
@@ -340,6 +345,18 @@ class RemoteTable(Table):
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         progress: optional
             A progress reporter. See :meth:`Table.add` for details.
+        compression: optional, default "lz4"
+            IPC compression to use when transmitting data to the remote server.
+            One of "lz4", "zstd", or None to disable compression.
+        stream_upload: bool, default True
+            Whether to stream data to the server as it is produced.
+            When False, all data is collected into memory before sending.
+        preprocessing_parallelism: optional int
+            Number of partitions used for CPU-bound preprocessing (embeddings, etc).
+            Defaults to the number of available CPUs.
+        write_parallelism: optional int
+            Number of partitions to use for writing. Each partition becomes a
+            separate output file. By default this is computed from the data size.
 
         Returns
         -------
@@ -353,6 +370,10 @@ class RemoteTable(Table):
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
                 progress=progress,
+                compression=compression,
+                stream_upload=stream_upload,
+                preprocessing_parallelism=preprocessing_parallelism,
+                write_parallelism=write_parallelism,
             )
         )
 
