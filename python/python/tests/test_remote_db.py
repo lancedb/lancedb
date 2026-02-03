@@ -601,7 +601,6 @@ def test_head():
 def test_query_sync_minimal():
     def handler(body):
         assert body == {
-            "distance_type": "l2",
             "k": 10,
             "prefilter": True,
             "refine_factor": None,
@@ -685,7 +684,6 @@ def test_query_sync_maximal():
 def test_query_sync_nprobes():
     def handler(body):
         assert body == {
-            "distance_type": "l2",
             "k": 10,
             "prefilter": True,
             "fast_search": True,
@@ -715,7 +713,6 @@ def test_query_sync_nprobes():
 def test_query_sync_no_max_nprobes():
     def handler(body):
         assert body == {
-            "distance_type": "l2",
             "k": 10,
             "prefilter": True,
             "fast_search": True,
@@ -838,7 +835,6 @@ def test_query_sync_hybrid():
         else:
             # Vector query
             assert body == {
-                "distance_type": "l2",
                 "k": 42,
                 "prefilter": True,
                 "refine_factor": None,
