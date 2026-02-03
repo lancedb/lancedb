@@ -1880,8 +1880,13 @@ async def test_optimize_delete_unverified(tmp_db_async: AsyncConnection, tmp_pat
         ],
     )
     version = await table.version()
-    path = tmp_path / "test.lance" / "_versions" / f"{version - 1}.manifest"
+    assert version == 2
+
+    # By removing a manifest file, we make the data files we just inserted unverified
+    version_name = 18446744073709551615 - (version - 1)
+    path = tmp_path / "test.lance" / "_versions" / f"{version_name:020}.manifest"
     os.remove(path)
+
     stats = await table.optimize(delete_unverified=False)
     assert stats.prune.old_versions_removed == 0
     stats = await table.optimize(
