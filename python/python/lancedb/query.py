@@ -1428,6 +1428,19 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._bypass_vector_index = True
         return self
 
+    def fast_search(self) -> LanceVectorQueryBuilder:
+        """
+        Skip a flat search of unindexed data. This will improve
+        search performance but search results will not include unindexed data.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceVectorQueryBuilder object.
+        """
+        self._fast_search = True
+        return self
+
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     """A builder for full text search for LanceDB."""
