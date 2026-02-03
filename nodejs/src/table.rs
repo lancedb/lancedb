@@ -214,10 +214,14 @@ impl Table {
                 row_ids
                     .into_iter()
                     .map(|id| {
-                        let (negative, value) = id.get_u64();
+                        let (negative, value, lossless) = id.get_u64();
                         if negative {
                             Err(napi::Error::from_reason(
                                 "Row id cannot be negative".to_string(),
+                            ))
+                        } else if !lossless {
+                            Err(napi::Error::from_reason(
+                                "Row id is too large to fit in u64".to_string(),
                             ))
                         } else {
                             Ok(value)

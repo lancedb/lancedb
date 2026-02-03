@@ -367,9 +367,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
     it("should reject negative bigint in takeRowIds", async () => {
       await table.add([{ id: 1 }]);
       // Negative bigint should be rejected by the Rust layer
-      await expect(table.takeRowIds([-1n]).toArray()).rejects.toThrow(
-        "Row id cannot be negative",
-      );
+      expect(() => {
+        table.takeRowIds([-1n]);
+      }).toThrow("Row id cannot be negative");
     });
 
     it("should return the table as an instance of an arrow table", async () => {
