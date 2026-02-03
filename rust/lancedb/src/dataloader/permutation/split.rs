@@ -12,6 +12,8 @@ use datafusion_common::hash_utils::create_hashes;
 use futures::{StreamExt, TryStreamExt};
 use lance_arrow::SchemaExt;
 
+use lance_core::ROW_ID;
+
 use crate::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     dataloader::{
@@ -360,11 +362,15 @@ impl Splitter {
 
     pub fn project(&self, query: Query) -> Query {
         match &self.strategy {
-            SplitStrategy::Calculated { calculation } => query.select(Select::Dynamic(vec![(
-                SPLIT_ID_COLUMN.to_string(),
-                calculation.clone(),
-            )])),
-            SplitStrategy::Hash { columns, .. } => query.select(Select::Columns(columns.clone())),
+            SplitStrategy::Calculated { calculation } => query.select(Select::Dynamic(vec![
+                (SPLIT_ID_COLUMN.to_string(), calculation.clone()),
+                (ROW_ID.to_string(), ROW_ID.to_string()),
+            ])),
+            SplitStrategy::Hash { columns, .. } => {
+                let mut cols = columns.clone();
+                cols.push(ROW_ID.to_string());
+                query.select(Select::Columns(cols))
+            }
             _ => query,
         }
     }

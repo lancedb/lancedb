@@ -71,8 +71,8 @@ class OpenClipEmbeddings(EmbeddingFunction):
         if isinstance(query, str):
             return [self.generate_text_embeddings(query)]
         else:
-            PIL = attempt_import_or_raise("PIL", "pillow")
-            if isinstance(query, PIL.Image.Image):
+            PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
+            if isinstance(query, PIL_Image.Image):
                 return [self.generate_image_embedding(query)]
             else:
                 raise TypeError("OpenClip supports str or PIL Image as query")
@@ -145,20 +145,20 @@ class OpenClipEmbeddings(EmbeddingFunction):
             return self._encode_and_normalize_image(image)
 
     def _to_pil(self, image: Union[str, bytes]):
-        PIL = attempt_import_or_raise("PIL", "pillow")
+        PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
         if isinstance(image, bytes):
-            return PIL.Image.open(io.BytesIO(image))
-        if isinstance(image, PIL.Image.Image):
+            return PIL_Image.open(io.BytesIO(image))
+        if isinstance(image, PIL_Image.Image):
             return image
         elif isinstance(image, str):
             parsed = urlparse.urlparse(image)
             # TODO handle drive letter on windows.
             if parsed.scheme == "file":
-                return PIL.Image.open(parsed.path)
+                return PIL_Image.open(parsed.path)
             elif parsed.scheme == "":
-                return PIL.Image.open(image if os.name == "nt" else parsed.path)
+                return PIL_Image.open(image if os.name == "nt" else parsed.path)
             elif parsed.scheme.startswith("http"):
-                return PIL.Image.open(io.BytesIO(url_retrieve(image)))
+                return PIL_Image.open(io.BytesIO(url_retrieve(image)))
             else:
                 raise NotImplementedError("Only local and http(s) urls are supported")
 

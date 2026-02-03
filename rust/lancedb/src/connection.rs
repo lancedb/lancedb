@@ -251,8 +251,36 @@ impl CreateTableBuilder<false> {
     /// Execute the create table operation
     pub async fn execute(self) -> Result<Table> {
         let parent = self.parent.clone();
-        let table = parent.create_table(self.request).await?;
-        Ok(Table::new(table, parent))
+        let embedding_registry = self.embedding_registry.clone();
+        let request = self.into_request()?;
+        Ok(Table::new_with_embedding_registry(
+            parent.create_table(request).await?,
+            parent,
+            embedding_registry,
+        ))
+    }
+
+    fn into_request(self) -> Result<CreateTableRequest> {
+        if self.embeddings.is_empty() {
+            return Ok(self.request);
+        }
+
+        let CreateTableData::Empty(table_def) = self.request.data else {
+            unreachable!("CreateTableBuilder<false> should always have Empty data")
+        };
+
+        let schema = table_def.schema.clone();
+        let empty_batch = arrow_array::RecordBatch::new_empty(schema.clone());
+
+        let reader = Box::new(std::iter::once(Ok(empty_batch)).collect::<Vec<_>>());
+        let reader = arrow_array::RecordBatchIterator::new(reader.into_iter(), schema);
+        let with_embeddings = WithEmbeddings::new(reader, self.embeddings);
+        let table_definition = with_embeddings.table_definition()?;
+
+        Ok(CreateTableRequest {
+            data: CreateTableData::Empty(table_definition),
+            ..self.request
+        })
     }
 }
 
@@ -1691,5 +1719,129 @@ mod tests {
         let source_count = source_table.count_rows(None).await.unwrap();
         let cloned_count = cloned_table.count_rows(None).await.unwrap();
         assert_eq!(source_count, cloned_count);
+    }
+
+    #[tokio::test]
+    async fn test_create_empty_table_with_embeddings() {
+        use crate::embeddings::{EmbeddingDefinition, EmbeddingFunction};
+        use arrow_array::{
+            Array, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator, StringArray,
+        };
+        use std::borrow::Cow;
+
+        #[derive(Debug, Clone)]
+        struct MockEmbedding {
+            dim: usize,
+        }
+
+        impl EmbeddingFunction for MockEmbedding {
+            fn name(&self) -> &str {
+                "test_embedding"
+            }
+
+            fn source_type(&self) -> Result<Cow<'_, DataType>> {
+                Ok(Cow::Owned(DataType::Utf8))
+            }
+
+            fn dest_type(&self) -> Result<Cow<'_, DataType>> {
+                Ok(Cow::Owned(DataType::new_fixed_size_list(
+                    DataType::Float32,
+                    self.dim as i32,
+                    true,
+                )))
+            }
+
+            fn compute_source_embeddings(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+                let len = source.len();
+                let values = vec![1.0f32; len * self.dim];
+                let values = Arc::new(Float32Array::from(values));
+                let field = Arc::new(Field::new("item", DataType::Float32, true));
+                Ok(Arc::new(FixedSizeListArray::new(
+                    field,
+                    self.dim as i32,
+                    values,
+                    None,
+                )))
+            }
+
+            fn compute_query_embeddings(&self, _input: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+                unimplemented!()
+            }
+        }
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = connect(uri).execute().await.unwrap();
+
+        let embed_func = Arc::new(MockEmbedding { dim: 128 });
+        db.embedding_registry()
+            .register("test_embedding", embed_func.clone())
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)]));
+        let ed = EmbeddingDefinition {
+            source_column: "name".to_owned(),
+            dest_column: Some("name_embedding".to_owned()),
+            embedding_name: "test_embedding".to_owned(),
+        };
+
+        let table = db
+            .create_empty_table("test", schema)
+            .mode(CreateTableMode::Overwrite)
+            .add_embedding(ed)
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+
+        let table_schema = table.schema().await.unwrap();
+        assert!(table_schema.column_with_name("name").is_some());
+        assert!(table_schema.column_with_name("name_embedding").is_some());
+
+        let embedding_field = table_schema.field_with_name("name_embedding").unwrap();
+        assert_eq!(
+            embedding_field.data_type(),
+            &DataType::new_fixed_size_list(DataType::Float32, 128, true)
+        );
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)]));
+        let input_batch = RecordBatch::try_new(
+            input_schema.clone(),
+            vec![Arc::new(StringArray::from(vec![
+                Some("Alice"),
+                Some("Bob"),
+                Some("Charlie"),
+            ]))],
+        )
+        .unwrap();
+
+        let input_reader = Box::new(RecordBatchIterator::new(
+            vec![Ok(input_batch)].into_iter(),
+            input_schema,
+        ));
+
+        table.add(input_reader).execute().await.unwrap();
+
+        let results = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        let batch = &results[0];
+        assert_eq!(batch.num_rows(), 3);
+        assert!(batch.column_by_name("name_embedding").is_some());
+
+        let embedding_col = batch
+            .column_by_name("name_embedding")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .unwrap();
+        assert_eq!(embedding_col.len(), 3);
     }
 }

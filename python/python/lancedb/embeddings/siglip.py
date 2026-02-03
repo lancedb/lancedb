@@ -56,8 +56,8 @@ class SigLipEmbeddings(EmbeddingFunction):
         if isinstance(query, str):
             return [self.generate_text_embeddings(query)]
         else:
-            PIL = attempt_import_or_raise("PIL", "pillow")
-            if isinstance(query, PIL.Image.Image):
+            PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
+            if isinstance(query, PIL_Image.Image):
                 return [self.generate_image_embedding(query)]
             else:
                 raise TypeError("SigLIP supports str or PIL Image as query")
@@ -127,21 +127,21 @@ class SigLipEmbeddings(EmbeddingFunction):
             return image_features.cpu().detach().numpy().squeeze()
 
     def _to_pil(self, image: Union[str, bytes, "PIL.Image.Image"]):
-        PIL = attempt_import_or_raise("PIL", "pillow")
-        if isinstance(image, PIL.Image.Image):
+        PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
+        if isinstance(image, PIL_Image.Image):
             return image.convert("RGB") if image.mode != "RGB" else image
         elif isinstance(image, bytes):
-            return PIL.Image.open(io.BytesIO(image)).convert("RGB")
+            return PIL_Image.open(io.BytesIO(image)).convert("RGB")
         elif isinstance(image, str):
             parsed = urlparse.urlparse(image)
             if parsed.scheme == "file":
-                return PIL.Image.open(parsed.path).convert("RGB")
+                return PIL_Image.open(parsed.path).convert("RGB")
             elif parsed.scheme == "":
                 path = image if os.name == "nt" else parsed.path
-                return PIL.Image.open(path).convert("RGB")
+                return PIL_Image.open(path).convert("RGB")
             elif parsed.scheme.startswith("http"):
                 image_bytes = url_retrieve(image)
-                return PIL.Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                return PIL_Image.open(io.BytesIO(image_bytes)).convert("RGB")
             else:
                 raise NotImplementedError("Only local and http(s) urls are supported")
         else:
