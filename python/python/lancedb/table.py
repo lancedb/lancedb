@@ -2222,6 +2222,37 @@ class LanceTable(Table):
     def uri(self) -> str:
         return LOOP.run(self._table.uri())
 
+    def initial_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the initial storage options that were passed in when opening this table.
+
+        For dynamically refreshed options (e.g., credential vending), use
+        :meth:`latest_storage_options`.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return LOOP.run(self._table.initial_storage_options())
+
+    def latest_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the latest storage options, refreshing from provider if configured.
+
+        This method is useful for credential vending scenarios where storage options
+        may be refreshed dynamically. If no dynamic provider is configured, this
+        returns the initial static options.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return LOOP.run(self._table.latest_storage_options())
+
     def create_scalar_index(
         self,
         column: str,
@@ -3623,6 +3654,37 @@ class AsyncTable:
             The full storage location of the table (e.g., S3/GCS path).
         """
         return await self._inner.uri()
+
+    async def initial_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the initial storage options that were passed in when opening this table.
+
+        For dynamically refreshed options (e.g., credential vending), use
+        :meth:`latest_storage_options`.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return await self._inner.initial_storage_options()
+
+    async def latest_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the latest storage options, refreshing from provider if configured.
+
+        This method is useful for credential vending scenarios where storage options
+        may be refreshed dynamically. If no dynamic provider is configured, this
+        returns the initial static options.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return await self._inner.latest_storage_options()
 
     async def add(
         self,

@@ -527,7 +527,17 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Get the table URI (storage location)
     async fn uri(&self) -> Result<String>;
     /// Get the storage options used when opening this table, if any.
+    #[deprecated(since = "0.25.0", note = "Use initial_storage_options() instead")]
     async fn storage_options(&self) -> Option<HashMap<String, String>>;
+    /// Get the initial storage options that were passed in when opening this table.
+    ///
+    /// For dynamically refreshed options (e.g., credential vending), use [`Self::latest_storage_options`].
+    async fn initial_storage_options(&self) -> Option<HashMap<String, String>>;
+    /// Get the latest storage options, refreshing from provider if configured.
+    ///
+    /// Returns `Ok(Some(options))` if storage options are available (static or refreshed),
+    /// `Ok(None)` if no storage options were configured, or `Err(...)` if refresh failed.
+    async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>>;
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
     /// are not fully indexed within the timeout.
     async fn wait_for_index(
@@ -1257,8 +1267,30 @@ impl Table {
     /// Get the storage options used when opening this table, if any.
     ///
     /// Warning: This is an internal API and the return value is subject to change.
+    #[deprecated(since = "0.25.0", note = "Use initial_storage_options() instead")]
     pub async fn storage_options(&self) -> Option<HashMap<String, String>> {
+        #[allow(deprecated)]
         self.inner.storage_options().await
+    }
+
+    /// Get the initial storage options that were passed in when opening this table.
+    ///
+    /// For dynamically refreshed options (e.g., credential vending), use [`Self::latest_storage_options`].
+    ///
+    /// Warning: This is an internal API and the return value is subject to change.
+    pub async fn initial_storage_options(&self) -> Option<HashMap<String, String>> {
+        self.inner.initial_storage_options().await
+    }
+
+    /// Get the latest storage options, refreshing from provider if configured.
+    ///
+    /// This method is useful for credential vending scenarios where storage options
+    /// may be refreshed dynamically. If no dynamic provider is configured, this
+    /// returns the initial static options.
+    ///
+    /// Warning: This is an internal API and the return value is subject to change.
+    pub async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
+        self.inner.latest_storage_options().await
     }
 
     /// Get statistics about an index.
@@ -3142,11 +3174,20 @@ impl BaseTable for NativeTable {
     }
 
     async fn storage_options(&self) -> Option<HashMap<String, String>> {
+        self.initial_storage_options().await
+    }
+
+    async fn initial_storage_options(&self) -> Option<HashMap<String, String>> {
         self.dataset
             .get()
             .await
             .ok()
             .and_then(|dataset| dataset.initial_storage_options().cloned())
+    }
+
+    async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
+        let dataset = self.dataset.get().await?;
+        Ok(dataset.latest_storage_options().await?.map(|o| o.0))
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {

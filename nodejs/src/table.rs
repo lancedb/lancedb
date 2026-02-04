@@ -167,6 +167,19 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn initial_storage_options(&self) -> napi::Result<Option<HashMap<String, String>>> {
+        Ok(self.inner_ref()?.initial_storage_options().await)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn latest_storage_options(&self) -> napi::Result<Option<HashMap<String, String>>> {
+        self.inner_ref()?
+            .latest_storage_options()
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn update(
         &self,
         only_if: Option<String>,

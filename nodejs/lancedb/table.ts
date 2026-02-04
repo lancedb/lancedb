@@ -542,6 +542,35 @@ export abstract class Table {
    *
    */
   abstract stats(): Promise<TableStatistics>;
+
+  /**
+   * Get the initial storage options that were passed in when opening this table.
+   *
+   * For dynamically refreshed options (e.g., credential vending), use
+   * {@link Table.latestStorageOptions}.
+   *
+   * Warning: This is an internal API and the return value is subject to change.
+   *
+   * @returns The storage options, or undefined if no storage options were configured.
+   */
+  abstract initialStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  >;
+
+  /**
+   * Get the latest storage options, refreshing from provider if configured.
+   *
+   * This method is useful for credential vending scenarios where storage options
+   * may be refreshed dynamically. If no dynamic provider is configured, this
+   * returns the initial static options.
+   *
+   * Warning: This is an internal API and the return value is subject to change.
+   *
+   * @returns The storage options, or undefined if no storage options were configured.
+   */
+  abstract latestStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  >;
 }
 
 export class LocalTable extends Table {
@@ -876,6 +905,18 @@ export class LocalTable extends Table {
 
   async stats(): Promise<TableStatistics> {
     return await this.inner.stats();
+  }
+
+  async initialStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  > {
+    return await this.inner.initialStorageOptions();
+  }
+
+  async latestStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  > {
+    return await this.inner.latestStorageOptions();
   }
 
   mergeInsert(on: string | string[]): MergeInsertBuilder {
