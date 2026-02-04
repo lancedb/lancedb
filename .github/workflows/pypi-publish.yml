@@ -181,7 +181,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-    if: always() && (github.event_name == 'release' || github.event_name == 'workflow_dispatch')
+    if: always() && failure() && startsWith(github.ref, 'refs/tags/python-v')
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/create-failure-issue
