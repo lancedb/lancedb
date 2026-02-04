@@ -618,6 +618,20 @@ export abstract class Table {
   >;
 }
 
+function toUpdateEntries(
+  updates: Map<string, string | null> | Record<string, string | null>,
+): UpdateMapEntry[] {
+  const iterable =
+    updates instanceof Map
+      ? updates.entries()
+      : Object.entries(updates).values();
+
+  return Array.from(iterable, ([key, value]) => ({
+    key,
+    value: value ?? undefined,
+  }));
+}
+
 export class LocalTable extends Table {
   private readonly inner: _NativeTable;
 
@@ -727,38 +741,17 @@ export class LocalTable extends Table {
     updates: Map<string, string | null> | Record<string, string | null>,
     replace: boolean = false,
   ): Promise<Record<string, string>> {
-    const entries: UpdateMapEntry[] = [];
-
-    if (updates instanceof Map) {
-      for (const [key, value] of updates.entries()) {
-        entries.push({ key, value: value ?? undefined });
-      }
-    } else {
-      for (const [key, value] of Object.entries(updates)) {
-        entries.push({ key, value: value ?? undefined });
-      }
-    }
-
-    return await this.inner.updateMetadata(entries, replace);
+    return await this.inner.updateMetadata(toUpdateEntries(updates), replace);
   }
 
   async updateSchemaMetadata(
     updates: Map<string, string | null> | Record<string, string | null>,
     replace: boolean = false,
   ): Promise<Record<string, string>> {
-    const entries: UpdateMapEntry[] = [];
-
-    if (updates instanceof Map) {
-      for (const [key, value] of updates.entries()) {
-        entries.push({ key, value: value ?? undefined });
-      }
-    } else {
-      for (const [key, value] of Object.entries(updates)) {
-        entries.push({ key, value: value ?? undefined });
-      }
-    }
-
-    return await this.inner.updateSchemaMetadata(entries, replace);
+    return await this.inner.updateSchemaMetadata(
+      toUpdateEntries(updates),
+      replace,
+    );
   }
 
   async countRows(filter?: string): Promise<number> {

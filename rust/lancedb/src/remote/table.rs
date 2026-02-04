@@ -639,6 +639,38 @@ impl<S: HttpSend> RemoteTable<S> {
             AnyQuery::VectorQuery(query) => self.apply_vector_query_params(base_body, query),
         }
     }
+
+    async fn post_metadata_update(
+        &self,
+        endpoint: &str,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let request_data = serde_json::json!({
+            "updates": values.into_iter().map(|entry| {
+                serde_json::json!({
+                    "key": entry.key,
+                    "value": entry.value
+                })
+            }).collect::<Vec<_>>(),
+            "replace": replace
+        });
+
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/{}/", self.name, endpoint))
+            .json(&request_data);
+
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+
+        serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse {} response: {}", endpoint, e).into(),
+            request_id,
+            status_code: None,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -1541,32 +1573,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         values: Vec<UpdateMapEntry>,
         replace: bool,
     ) -> Result<HashMap<String, String>> {
-        let request_data = serde_json::json!({
-            "updates": values.into_iter().map(|entry| {
-                serde_json::json!({
-                    "key": entry.key,
-                    "value": entry.value
-                })
-            }).collect::<Vec<_>>(),
-            "replace": replace
-        });
-
-        let request = self
-            .client
-            .post(&format!("/v1/table/{}/update_metadata/", self.name))
-            .json(&request_data);
-
-        let (request_id, response) = self.send(request, true).await?;
-        let response = self.check_table_response(&request_id, response).await?;
-        let body = response.text().await.err_to_http(request_id.clone())?;
-
-        let result = serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse metadata update response: {}", e).into(),
-            request_id,
-            status_code: None,
-        })?;
-
-        Ok(result)
+        self.post_metadata_update("update_metadata", values, replace)
+            .await
     }
 
     async fn update_config(
@@ -1574,32 +1582,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         values: Vec<UpdateMapEntry>,
         replace: bool,
     ) -> Result<HashMap<String, String>> {
-        let request_data = serde_json::json!({
-            "updates": values.into_iter().map(|entry| {
-                serde_json::json!({
-                    "key": entry.key,
-                    "value": entry.value
-                })
-            }).collect::<Vec<_>>(),
-            "replace": replace
-        });
-
-        let request = self
-            .client
-            .post(&format!("/v1/table/{}/update_config/", self.name))
-            .json(&request_data);
-
-        let (request_id, response) = self.send(request, true).await?;
-        let response = self.check_table_response(&request_id, response).await?;
-        let body = response.text().await.err_to_http(request_id.clone())?;
-
-        let result = serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse config update response: {}", e).into(),
-            request_id,
-            status_code: None,
-        })?;
-
-        Ok(result)
+        self.post_metadata_update("update_config", values, replace)
+            .await
     }
 
     async fn update_schema_metadata(
@@ -1607,32 +1591,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         values: Vec<UpdateMapEntry>,
         replace: bool,
     ) -> Result<HashMap<String, String>> {
-        let request_data = serde_json::json!({
-            "updates": values.into_iter().map(|entry| {
-                serde_json::json!({
-                    "key": entry.key,
-                    "value": entry.value
-                })
-            }).collect::<Vec<_>>(),
-            "replace": replace
-        });
-
-        let request = self
-            .client
-            .post(&format!("/v1/table/{}/update_schema_metadata/", self.name))
-            .json(&request_data);
-
-        let (request_id, response) = self.send(request, true).await?;
-        let response = self.check_table_response(&request_id, response).await?;
-        let body = response.text().await.err_to_http(request_id.clone())?;
-
-        let result = serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse schema metadata update response: {}", e).into(),
-            request_id,
-            status_code: None,
-        })?;
-
-        Ok(result)
+        self.post_metadata_update("update_schema_metadata", values, replace)
+            .await
     }
 }
 
@@ -3545,5 +3505,98 @@ mod tests {
         let uri2 = table.uri().await.unwrap();
         assert_eq!(uri2, "gs://bucket/table");
         assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, no new call
+    }
+
+    #[tokio::test]
+    async fn test_update_metadata() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/update_metadata/");
+
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["replace"], false);
+            let updates = body["updates"].as_array().unwrap();
+            assert_eq!(updates.len(), 1);
+            assert_eq!(updates[0]["key"], "description");
+            assert_eq!(updates[0]["value"], "test table");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"description": "test table"}"#)
+                .unwrap()
+        });
+
+        let result = table
+            .update_metadata([("description", "test table")])
+            .await
+            .unwrap();
+        assert_eq!(result.get("description"), Some(&"test table".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_metadata_replace() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/update_metadata/");
+
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(body["replace"], true);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"new_key": "new_value"}"#)
+                .unwrap()
+        });
+
+        let result = table
+            .update_metadata([("new_key", "new_value")])
+            .replace()
+            .await
+            .unwrap();
+        assert_eq!(result.get("new_key"), Some(&"new_value".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_config() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/update_config/");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"config_key": "config_value"}"#)
+                .unwrap()
+        });
+
+        let result = table
+            .update_config([("config_key", "config_value")])
+            .await
+            .unwrap();
+        assert_eq!(result.get("config_key"), Some(&"config_value".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_schema_metadata() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/update_schema_metadata/"
+            );
+
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let updates = body["updates"].as_array().unwrap();
+            assert_eq!(updates.len(), 1);
+            assert_eq!(updates[0]["key"], "format");
+            assert!(updates[0]["value"].is_null());
+
+            http::Response::builder().status(200).body(r#"{}"#).unwrap()
+        });
+
+        let result = table
+            .update_schema_metadata([("format", None)])
+            .await
+            .unwrap();
+        assert!(result.is_empty());
     }
 }

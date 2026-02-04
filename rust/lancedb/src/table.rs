@@ -1545,16 +1545,6 @@ impl Table {
     ) -> metadata::UpdateMetadataBuilder<'_> {
         metadata::UpdateMetadataBuilder::new(self, values, metadata::MetadataType::SchemaMetadata)
     }
-
-    /// Update field metadata using the builder pattern (NativeTable only)
-    ///
-    /// This method is only available for native tables and requires mutable access.
-    /// For now, this functionality is only available directly on NativeTable instances.
-    pub async fn update_field_metadata(&self) -> Result<()> {
-        Err(Error::InvalidInput {
-            message: "Field metadata builder requires mutable access to NativeTable. Use table.as_native() to get a NativeTable reference and call update_field_metadata() on it directly.".to_string(),
-        })
-    }
 }
 
 pub struct NativeTags {
@@ -2775,10 +2765,6 @@ impl NativeTable {
         dataset.replace_field_metadata(new_values).await?;
         Ok(())
     }
-
-    // Note: update_field_metadata with builder pattern is not exposed here
-    // because Lance's metadata module is private. Users can access it directly
-    // through the underlying dataset if needed.
 }
 
 #[async_trait::async_trait]

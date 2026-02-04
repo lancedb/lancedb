@@ -55,32 +55,18 @@ impl<'a> std::future::IntoFuture for UpdateMetadataBuilder<'a> {
         Box::pin(async move {
             match self.metadata_type {
                 MetadataType::Config => {
-                    // For NativeTable, we need to access the dataset and use its builder
-                    if let Some(native_table) = self.table.as_native() {
-                        let mut dataset = native_table.dataset.get_mut().await?;
-                        let result = if self.replace {
-                            dataset.update_config(self.values).replace().await?
-                        } else {
-                            dataset.update_config(self.values).await?
-                        };
-                        Ok(result)
-                    } else {
-                        // For RemoteTable, use the BaseTable trait method
-                        self.table
-                            .inner
-                            .update_config(self.values, self.replace)
-                            .await
-                    }
+                    self.table
+                        .inner
+                        .update_config(self.values, self.replace)
+                        .await
                 }
                 MetadataType::TableMetadata => {
-                    // Call the BaseTable trait method which handles both Native and Remote
                     self.table
                         .inner
                         .update_metadata(self.values, self.replace)
                         .await
                 }
                 MetadataType::SchemaMetadata => {
-                    // Call the BaseTable trait method which handles both Native and Remote
                     self.table
                         .inner
                         .update_schema_metadata(self.values, self.replace)

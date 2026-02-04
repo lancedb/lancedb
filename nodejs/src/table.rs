@@ -488,17 +488,7 @@ impl Table {
         values: Vec<UpdateMapEntry>,
         replace: bool,
     ) -> napi::Result<HashMap<String, String>> {
-        use lancedb::table::UpdateMapEntry as LanceUpdateMapEntry;
-
-        let lance_entries: Vec<LanceUpdateMapEntry> = values
-            .into_iter()
-            .map(|entry| LanceUpdateMapEntry {
-                key: entry.key,
-                value: entry.value,
-            })
-            .collect();
-
-        let mut builder = self.inner_ref()?.update_metadata(lance_entries);
+        let mut builder = self.inner_ref()?.update_metadata(to_lance_entries(values));
         if replace {
             builder = builder.replace();
         }
@@ -517,17 +507,9 @@ impl Table {
         values: Vec<UpdateMapEntry>,
         replace: bool,
     ) -> napi::Result<HashMap<String, String>> {
-        use lancedb::table::UpdateMapEntry as LanceUpdateMapEntry;
-
-        let lance_entries: Vec<LanceUpdateMapEntry> = values
-            .into_iter()
-            .map(|entry| LanceUpdateMapEntry {
-                key: entry.key,
-                value: entry.value,
-            })
-            .collect();
-
-        let mut builder = self.inner_ref()?.update_schema_metadata(lance_entries);
+        let mut builder = self
+            .inner_ref()?
+            .update_schema_metadata(to_lance_entries(values));
         if replace {
             builder = builder.replace();
         }
@@ -542,6 +524,16 @@ pub struct UpdateMapEntry {
     pub key: String,
     /// The value to set for the key. Use `null` to remove the key.
     pub value: Option<String>,
+}
+
+fn to_lance_entries(values: Vec<UpdateMapEntry>) -> Vec<lancedb::table::UpdateMapEntry> {
+    values
+        .into_iter()
+        .map(|entry| lancedb::table::UpdateMapEntry {
+            key: entry.key,
+            value: entry.value,
+        })
+        .collect()
 }
 
 #[napi(object)]
