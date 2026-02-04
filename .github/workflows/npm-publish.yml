@@ -1,8 +1,8 @@
 name: NPM Publish
 
 env:
-  MACOSX_DEPLOYMENT_TARGET: '10.13'
-  CARGO_INCREMENTAL: '0'
+  MACOSX_DEPLOYMENT_TARGET: "10.13"
+  CARGO_INCREMENTAL: "0"
 
 permissions:
   contents: write
@@ -19,6 +19,12 @@ on:
     paths:
       - .github/workflows/npm-publish.yml
       - Cargo.toml # Change in dependency frequently breaks builds
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run the release"
+        required: false
+        default: "false"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -114,8 +120,8 @@ jobs:
             host: windows-latest
             features: ","
             pre_build: |-
-                choco install --no-progress protoc
-                rustup target add aarch64-pc-windows-msvc
+              choco install --no-progress protoc
+              rustup target add aarch64-pc-windows-msvc
           - target: x86_64-unknown-linux-gnu
             host: ubuntu-latest
             features: fp16kernels
@@ -203,10 +209,11 @@ jobs:
         if: ${{ matrix.settings.docker }}
         with:
           image: ${{ matrix.settings.docker }}
-          options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
-                    -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache \
-                    -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index \
-                    -v ${{ github.workspace }}:/build -w /build/nodejs"
+          options:
+            "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
+            -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache \
+            -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index \
+            -v ${{ github.workspace }}:/build -w /build/nodejs"
           run: |
             set -e
             ${{ matrix.settings.pre_build }}
@@ -267,7 +274,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             host: buildjet-16vcpu-ubuntu-2204-arm
         node:
-          - '20'
+          - "20"
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
