@@ -240,14 +240,11 @@ mod tests {
             .unwrap();
 
         let batch = &batches[0];
-        let values: Vec<i64> = batch
-            .column(0)
+        let values = batch["constant"]
             .as_any()
             .downcast_ref::<arrow_array::Int64Array>()
             .unwrap()
-            .iter()
-            .map(|v| v.unwrap())
-            .collect();
+            .values();
         assert!(values.iter().all(|&v| v == 42));
     }
 
@@ -358,6 +355,23 @@ mod tests {
             schema.field_with_name("num").unwrap().data_type(),
             &DataType::Int64
         );
+
+        // Query the data and verify the returned type is correct
+        let batches = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = &batches[0];
+        let values = batch["num"]
+            .as_any()
+            .downcast_ref::<arrow_array::Int64Array>()
+            .unwrap()
+            .values();
+        assert_eq!(values.as_ref(), &[1i64, 2, 3]);
     }
 
     #[tokio::test]
@@ -380,7 +394,12 @@ mod tests {
         let result = table
             .alter_columns(&[ColumnAlteration::new("num".into()).cast_to(DataType::Float64)])
             .await;
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("cast"),
+            "Expected error message to contain 'cast', got: {}",
+            err
+        );
     }
 
     #[tokio::test]
@@ -561,7 +580,12 @@ mod tests {
 
         // Try to drop a column that doesn't exist
         let result = table.drop_columns(&["nonexistent"]).await;
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("nonexistent"),
+            "Expected error message to contain column name 'nonexistent', got: {}",
+            err
+        );
     }
 
     #[tokio::test]
@@ -584,7 +608,12 @@ mod tests {
         let result = table
             .alter_columns(&[ColumnAlteration::new("nonexistent".into()).rename("new".into())])
             .await;
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("nonexistent"),
+            "Expected error message to contain column name 'nonexistent', got: {}",
+            err
+        );
     }
 
     // Version Tracking Tests
