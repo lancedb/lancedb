@@ -2934,15 +2934,10 @@ class LanceTable(Table):
         >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1.0, 2], [3, 4], [5, 6]]})
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
-        >>> # Add some metadata
-        >>> table.update_metadata({"description": "My test table", "version": "1.0"})
-        {"description": "My test table", "version": "1.0"}
-        >>> # Update metadata
-        >>> table.update_metadata({"version": "1.1", "author": "me"})
-        {"description": "My test table", "version": "1.1", "author": "me"}
-        >>> # Remove a key
-        >>> table.update_metadata({"author": None})
-        {"description": "My test table", "version": "1.1"}
+        >>> table.update_metadata({"description": "My test table"})
+        {'description': 'My test table'}
+        >>> table.update_metadata({"author": None})  # remove a key
+        {'description': 'My test table'}
         """
         return LOOP.run(self._table.update_metadata(updates, replace))
 
@@ -2975,7 +2970,7 @@ class LanceTable(Table):
         >>> table = db.create_table("my_table", data)
         >>> # Add schema metadata
         >>> table.update_schema_metadata({"format_version": "2.0"})
-        {"format_version": "2.0"}
+        {'format_version': '2.0'}
         """
         return LOOP.run(self._table.update_schema_metadata(updates, replace))
 
@@ -4423,10 +4418,10 @@ class AsyncTable:
         ...     data = pd.DataFrame({"x": [1, 2], "vector": [[1, 2], [3, 4]]})
         ...     db = await lancedb.connect_async("./.lancedb")
         ...     table = await db.create_table("my_table", data)
-        ...     # Add metadata
         ...     result = await table.update_metadata({"description": "My test table"})
-        ...     print(result)  # {"description": "My test table"}
+        ...     print(result)
         >>> asyncio.run(demo_metadata())
+        {'description': 'My test table'}
         """
         return await self._inner.update_metadata(updates, replace)
 
@@ -4459,10 +4454,10 @@ class AsyncTable:
         ...     data = pd.DataFrame({"x": [1, 2], "vector": [[1, 2], [3, 4]]})
         ...     db = await lancedb.connect_async("./.lancedb")
         ...     table = await db.create_table("my_table", data)
-        ...     # Add schema metadata
         ...     result = await table.update_schema_metadata({"format_version": "2.0"})
-        ...     print(result)  # {"format_version": "2.0"}
+        ...     print(result)
         >>> asyncio.run(demo_schema_metadata())
+        {'format_version': '2.0'}
         """
         return await self._inner.update_schema_metadata(updates, replace)
 

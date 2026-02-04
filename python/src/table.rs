@@ -879,7 +879,7 @@ impl Table {
                 builder = builder.replace();
             }
             let result = builder.await.infer_error()?;
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let dict = PyDict::new(py);
                 for (k, v) in result {
                     dict.set_item(k, v)?;
@@ -921,7 +921,7 @@ impl Table {
                 builder = builder.replace();
             }
             let result = builder.await.infer_error()?;
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let dict = PyDict::new(py);
                 for (k, v) in result {
                     dict.set_item(k, v)?;
