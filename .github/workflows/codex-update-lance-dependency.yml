@@ -92,7 +92,7 @@ jobs:
           4. Ensure the repository is clean except for intentional changes. Inspect "git status --short" and "git diff" to confirm the dependency update and any required fixes.
           5. Create and switch to a new branch named "${BRANCH_NAME}" (replace any duplicated hyphens if necessary).
           6. Stage all relevant files with "git add -A". Commit using the message "${COMMIT_TYPE}: update lance dependency to v${VERSION}".
-          7. Push the branch to origin. If the branch already exists, force-push your changes.
+          7. Push the branch to origin. If the remote branch already exists, delete it first with "gh api -X DELETE repos/lancedb/lancedb/git/refs/heads/${BRANCH_NAME}" then push with "git push origin ${BRANCH_NAME}". Do NOT use "git push --force" or "git push -f".
           8. env "GH_TOKEN" is available, use "gh" tools for github related operations like creating pull request.
           9. Create a pull request targeting "main" with title "${COMMIT_TYPE}: update lance dependency to v${VERSION}". First, write the PR body to /tmp/pr-body.md using a heredoc (cat <<'EOF' > /tmp/pr-body.md). The body should summarize the dependency bump, clippy/fmt verification, and link the triggering tag (${TAG}). Then run "gh pr create --body-file /tmp/pr-body.md".
           10. After creating the PR, display the PR URL, "git status --short", and a concise summary of the commands run and their results.
