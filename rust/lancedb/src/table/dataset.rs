@@ -35,87 +35,8 @@ enum DatasetRef {
 }
 
 impl DatasetRef {
-    /// Reload the dataset to the appropriate version.
-    async fn reload(&mut self) -> Result<()> {
-        match self {
-            Self::Latest {
-                dataset,
-                last_consistency_check,
-                ..
-            } => {
-                dataset.checkout_latest().await?;
-                last_consistency_check.replace(Instant::now());
-            }
-            Self::TimeTravel { dataset, version } => {
-                dataset.checkout_version(*version).await?;
-            }
-        }
-        Ok(())
-    }
-
     fn is_latest(&self) -> bool {
         matches!(self, Self::Latest { .. })
-    }
-
-    async fn need_reload(&self) -> Result<bool> {
-        Ok(match self {
-            Self::Latest { dataset, .. } => {
-                dataset.latest_version_id().await? != dataset.version().version
-            }
-            Self::TimeTravel { dataset, version } => dataset.version().version != *version,
-        })
-    }
-
-    async fn as_latest(&mut self, read_consistency_interval: Option<Duration>) -> Result<()> {
-        match self {
-            Self::Latest { .. } => Ok(()),
-            Self::TimeTravel { dataset, .. } => {
-                dataset
-                    .checkout_version(dataset.latest_version_id().await?)
-                    .await?;
-                *self = Self::Latest {
-                    dataset: dataset.clone(),
-                    read_consistency_interval,
-                    last_consistency_check: Some(Instant::now()),
-                };
-                Ok(())
-            }
-        }
-    }
-
-    async fn as_time_travel(&mut self, target_version: impl Into<refs::Ref>) -> Result<()> {
-        let target_ref = target_version.into();
-
-        match self {
-            Self::Latest { dataset, .. } => {
-                let new_dataset = dataset.checkout_version(target_ref.clone()).await?;
-                let version_value = new_dataset.version().version;
-
-                *self = Self::TimeTravel {
-                    dataset: new_dataset,
-                    version: version_value,
-                };
-            }
-            Self::TimeTravel { dataset, version } => {
-                let should_checkout = match &target_ref {
-                    refs::Ref::Version(_, Some(target_ver)) => version != target_ver,
-                    refs::Ref::Version(_, None) => true, // No specific version, always checkout
-                    refs::Ref::VersionNumber(target_ver) => version != target_ver,
-                    refs::Ref::Tag(_) => true, // Always checkout for tags
-                };
-
-                if should_checkout {
-                    let new_dataset = dataset.checkout_version(target_ref).await?;
-                    let version_value = new_dataset.version().version;
-
-                    *self = Self::TimeTravel {
-                        dataset: new_dataset,
-                        version: version_value,
-                    };
-                }
-            }
-        }
-        Ok(())
     }
 
     fn time_travel_version(&self) -> Option<u64> {
