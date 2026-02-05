@@ -367,6 +367,27 @@ Use [Table.listIndices](Table.md#listindices) to find the names of the indices.
 
 ***
 
+### initialStorageOptions()
+
+```ts
+abstract initialStorageOptions(): Promise<undefined | null | Record<string, string>>
+```
+
+Get the initial storage options that were passed in when opening this table.
+
+For dynamically refreshed options (e.g., credential vending), use
+[Table.latestStorageOptions](Table.md#lateststorageoptions).
+
+Warning: This is an internal API and the return value is subject to change.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| `null` \| `Record`&lt;`string`, `string`&gt;&gt;
+
+The storage options, or undefined if no storage options were configured.
+
+***
+
 ### isOpen()
 
 ```ts
@@ -378,6 +399,28 @@ Return true if the table has not been closed
 #### Returns
 
 `boolean`
+
+***
+
+### latestStorageOptions()
+
+```ts
+abstract latestStorageOptions(): Promise<undefined | null | Record<string, string>>
+```
+
+Get the latest storage options, refreshing from provider if configured.
+
+This method is useful for credential vending scenarios where storage options
+may be refreshed dynamically. If no dynamic provider is configured, this
+returns the initial static options.
+
+Warning: This is an internal API and the return value is subject to change.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| `null` \| `Record`&lt;`string`, `string`&gt;&gt;
+
+The storage options, or undefined if no storage options were configured.
 
 ***
 
