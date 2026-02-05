@@ -713,6 +713,28 @@ class RemoteTable(Table):
         """
         return LOOP.run(self._table.update_schema_metadata(updates, replace))
 
+    def update_config(
+        self, updates: Dict[str, Optional[str]], replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update config.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            Dictionary of config keys and values to update.
+            Set a value to None to remove that key.
+        replace : bool, optional
+            If True, replace the entire config map.
+            If False (default), merge updates.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated config map after the operation.
+        """
+        return LOOP.run(self._table.update_config(updates, replace))
+
     def uses_v2_manifest_paths(self) -> bool:
         raise NotImplementedError(
             "uses_v2_manifest_paths() is not supported on the LanceDB Cloud"

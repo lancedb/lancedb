@@ -1459,6 +1459,29 @@ class Table(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def update_config(
+        self, updates: Dict[str, Optional[str]], replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update config.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            The config updates to apply. Keys are config keys, values are
+            the new values. Use None as a value to remove that key.
+        replace : bool, default False
+            If True, replace the entire config map with the provided updates.
+            If False, merge the updates with existing config.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated config map after the operation.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def cleanup_old_versions(
         self,
         older_than: Optional[timedelta] = None,
@@ -2974,6 +2997,38 @@ class LanceTable(Table):
         """
         return LOOP.run(self._table.update_schema_metadata(updates, replace))
 
+    def update_config(
+        self, updates: Dict[str, Optional[str]], replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update config.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            The config updates to apply. Keys are config keys, values are
+            the new values. Use None as a value to remove that key.
+        replace : bool, default False
+            If True, replace the entire config map with the provided updates.
+            If False, merge the updates with existing config.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated config map after the operation.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1.0, 2], [3, 4], [5, 6]]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> table.update_config({"my_config": "my_value"})['my_config']
+        'my_value'
+        """
+        return LOOP.run(self._table.update_config(updates, replace))
+
     def _execute_query(
         self,
         query: Query,
@@ -4460,6 +4515,28 @@ class AsyncTable:
         {'format_version': '2.0'}
         """
         return await self._inner.update_schema_metadata(updates, replace)
+
+    async def update_config(
+        self, updates: Dict[str, Optional[str]], replace: bool = False
+    ) -> Dict[str, str]:
+        """
+        Update config.
+
+        Parameters
+        ----------
+        updates : Dict[str, Optional[str]]
+            The config updates to apply. Keys are config keys, values are
+            the new values. Use None as a value to remove that key.
+        replace : bool, default False
+            If True, replace the entire config map with the provided updates.
+            If False, merge the updates with existing config.
+
+        Returns
+        -------
+        Dict[str, str]
+            The updated config map after the operation.
+        """
+        return await self._inner.update_config(updates, replace)
 
     async def add_columns(
         self, transforms: dict[str, str] | pa.field | List[pa.field] | pa.Schema

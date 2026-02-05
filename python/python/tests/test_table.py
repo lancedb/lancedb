@@ -2068,3 +2068,31 @@ async def test_update_schema_metadata_async(mem_db_async: AsyncConnection):
     # Replace schema metadata
     result = await table.update_schema_metadata({"new_format": "json"}, replace=True)
     assert result == {"new_format": "json"}
+
+
+def test_update_config(mem_db: DBConnection):
+    """Test updating config."""
+    table = mem_db.create_table(
+        "test_config",
+        data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
+    )
+
+    result = table.update_config({"my_key": "my_value"})
+    assert result["my_key"] == "my_value"
+
+    # Replace config
+    result = table.update_config({"new_key": "new_value"}, replace=True)
+    assert "my_key" not in result
+    assert result["new_key"] == "new_value"
+
+
+@pytest.mark.asyncio
+async def test_update_config_async(mem_db_async: AsyncConnection):
+    """Test updating config asynchronously."""
+    table = await mem_db_async.create_table(
+        "test_config_async",
+        data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
+    )
+
+    result = await table.update_config({"my_key": "my_value"})
+    assert result["my_key"] == "my_value"

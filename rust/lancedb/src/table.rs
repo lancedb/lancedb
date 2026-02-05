@@ -2706,6 +2706,7 @@ impl NativeTable {
         Ok(dataset.manifest().clone())
     }
 
+    #[deprecated(note = "Use Table::update_config() builder instead")]
     pub async fn update_config(
         &self,
         values: impl IntoIterator<Item = impl Into<UpdateMapEntry>>,
@@ -4616,6 +4617,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_update_dataset_config() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();

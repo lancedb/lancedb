@@ -9,8 +9,7 @@ use lance::dataset::transaction::UpdateMapEntry;
 use crate::error::Result;
 use crate::table::Table;
 
-/// Builder for metadata update operations that supports optional replace semantics.
-/// This provides backward compatibility while adding new functionality.
+/// Builder for metadata update operations with optional replace semantics.
 pub struct UpdateMetadataBuilder<'a> {
     table: &'a Table,
     values: Vec<UpdateMapEntry>,

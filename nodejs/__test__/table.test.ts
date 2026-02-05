@@ -273,6 +273,23 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       });
     });
 
+    it("should update config", async () => {
+      let result = await table.updateConfig({
+        myConfig: "my_value",
+      });
+      expect(result["myConfig"]).toBe("my_value");
+
+      // Replace config
+      result = await table.updateConfig(
+        {
+          newConfig: "new_value",
+        },
+        true,
+      );
+      expect(result["myConfig"]).toBeUndefined();
+      expect(result["newConfig"]).toBe("new_value");
+    });
+
     it("should update schema metadata with replace", async () => {
       // Add initial metadata
       await table.updateSchemaMetadata({

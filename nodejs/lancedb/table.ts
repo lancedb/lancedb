@@ -251,6 +251,24 @@ export abstract class Table {
     replace?: boolean,
   ): Promise<Record<string, string>>;
 
+  /**
+   * Update config.
+   *
+   * @param updates - The config updates to apply. Keys are config keys,
+   *                  values are the new values. Use `null` to remove a key.
+   * @param replace - If true, replace the entire config map. If false, merge
+   *                  updates with existing config. Defaults to false.
+   * @returns A promise that resolves to the updated config map.
+   * @example
+   * ```ts
+   * await table.updateConfig({"my_config": "my_value"});
+   * ```
+   */
+  abstract updateConfig(
+    updates: Map<string, string | null> | Record<string, string | null>,
+    replace?: boolean,
+  ): Promise<Record<string, string>>;
+
   /** Count the total number of rows in the dataset. */
   abstract countRows(filter?: string): Promise<number>;
   /**
@@ -752,6 +770,13 @@ export class LocalTable extends Table {
       toUpdateEntries(updates),
       replace,
     );
+  }
+
+  async updateConfig(
+    updates: Map<string, string | null> | Record<string, string | null>,
+    replace: boolean = false,
+  ): Promise<Record<string, string>> {
+    return await this.inner.updateConfig(toUpdateEntries(updates), replace);
   }
 
   async countRows(filter?: string): Promise<number> {

@@ -515,6 +515,25 @@ impl Table {
         }
         builder.await.default_error()
     }
+
+    /// Update config
+    ///
+    /// Pass `null` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire config map.
+    ///
+    /// Returns the updated config map after the operation.
+    #[napi(catch_unwind)]
+    pub async fn update_config(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> napi::Result<HashMap<String, String>> {
+        let mut builder = self.inner_ref()?.update_config(to_lance_entries(values));
+        if replace {
+            builder = builder.replace();
+        }
+        builder.await.default_error()
+    }
 }
 
 /// An entry for updating metadata maps

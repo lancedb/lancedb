@@ -873,6 +873,38 @@ based on the row being updated (e.g. "my_col + 1")
 
 ***
 
+### updateConfig()
+
+```ts
+abstract updateConfig(updates, replace?): Promise<Record<string, string>>
+```
+
+Update config.
+
+#### Parameters
+
+* **updates**: `Map`&lt;`string`, `null` \| `string`&gt; \| `Record`&lt;`string`, `null` \| `string`&gt;
+    The config updates to apply. Keys are config keys,
+    values are the new values. Use `null` to remove a key.
+
+* **replace?**: `boolean`
+    If true, replace the entire config map. If false, merge
+    updates with existing config. Defaults to false.
+
+#### Returns
+
+`Promise`&lt;`Record`&lt;`string`, `string`&gt;&gt;
+
+A promise that resolves to the updated config map.
+
+#### Example
+
+```ts
+await table.updateConfig({"my_config": "my_value"});
+```
+
+***
+
 ### updateMetadata()
 
 ```ts
