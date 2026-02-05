@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use arrow_ipc::CompressionType;
-use arrow_schema::ArrowError;
 use futures::{Stream, StreamExt};
 use reqwest::Response;
 
@@ -19,27 +18,28 @@ pub fn stream_as_ipc(
     let buf = Vec::with_capacity(WRITE_BUF_SIZE);
     let writer =
         arrow_ipc::writer::StreamWriter::try_new_with_options(buf, &data.schema(), options)?;
-    let stream = futures::stream::try_unfold((data, writer), move |(mut data, mut writer)| {
-        async move {
+    let stream = futures::stream::try_unfold(
+        (data, writer, false),
+        move |(mut data, mut writer, finished)| async move {
+            if finished {
+                return Ok(None);
+            }
             match data.next().await {
                 Some(Ok(batch)) => {
                     writer.write(&batch)?;
                     let buffer = std::mem::take(writer.get_mut());
-                    Ok(Some((bytes::Bytes::from(buffer), (data, writer))))
+                    Ok(Some((bytes::Bytes::from(buffer), (data, writer, false))))
                 }
                 Some(Err(e)) => Err(e),
                 None => {
-                    if let Err(ArrowError::IpcError(_msg)) = writer.finish() {
-                        // Will error if already closed.
-                        return Ok(None);
-                    };
+                    writer.finish()?;
                     let buffer = std::mem::take(writer.get_mut());
-                    Ok(Some((bytes::Bytes::from(buffer), (data, writer))))
+                    Ok(Some((bytes::Bytes::from(buffer), (data, writer, true))))
                 }
             }
-        }
-    });
-    Ok(stream.fuse())
+        },
+    );
+    Ok(stream)
 }
 
 pub fn stream_as_body(data: SendableRecordBatchStream) -> Result<reqwest::Body> {

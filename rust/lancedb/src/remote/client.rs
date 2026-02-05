@@ -555,7 +555,9 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             message: "Attempted to retry a request that cannot be cloned".to_string(),
         })?;
         let (_, r) = tmp_req.build_split();
-        let mut r = r.unwrap();
+        let mut r = r.map_err(|e| Error::Runtime {
+            message: format!("Failed to build request: {}", e),
+        })?;
         let request_id = self.extract_request_id(&mut r);
         let mut retry_counter = RetryCounter::new(retry_config, request_id.clone());
 
@@ -571,7 +573,9 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             }
 
             let (c, request) = req_builder.build_split();
-            let mut request = request.unwrap();
+            let mut request = request.map_err(|e| Error::Runtime {
+                message: format!("Failed to build request: {}", e),
+            })?;
             self.set_request_id(&mut request, &request_id.clone());
 
             // Apply dynamic headers before each retry attempt

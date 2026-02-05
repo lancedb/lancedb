@@ -152,9 +152,11 @@ mod tests {
             record_batch!(("id", Int64, [5])).unwrap(),
         ];
         let schema = data[0].schema();
-        let stream = futures::stream::iter(data.into_iter().map(Ok));
-        let stream: SendableRecordBatchStream =
-            Box::pin(SimpleRecordBatchStream { schema, stream });
+        let inner = futures::stream::iter(data.into_iter().map(Ok));
+        let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+            schema,
+            stream: inner,
+        });
         test_add_with_data(stream).await;
     }
 
@@ -178,10 +180,9 @@ mod tests {
             Ok(first_batch),
             Err(ArrowError::ExternalError(Box::new(MyError))),
         ];
-        let reader = Box::new(RecordBatchIterator::new(
-            iterator.into_iter(),
-            schema.clone(),
-        )) as Box<dyn arrow_array::RecordBatchReader + Send>;
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
+            RecordBatchIterator::new(iterator.into_iter(), schema.clone()),
+        );
 
         let result = table.add(reader).execute().await;
 

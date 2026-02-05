@@ -9,9 +9,8 @@
 
 use std::sync::Arc;
 
-use arrow_array::RecordBatchIterator;
-use arrow_array::{RecordBatch, RecordBatchReader};
-use arrow_schema::SchemaRef;
+use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
+use arrow_schema::{ArrowError, SchemaRef};
 use async_trait::async_trait;
 use futures::stream::once;
 use futures::StreamExt;
@@ -36,8 +35,8 @@ pub trait Scannable: Send {
     /// For rescannable sources (in-memory data like RecordBatch, Vec<RecordBatch>),
     /// this can be called multiple times and returns cloned data each time.
     ///
-    /// For non-rescannable sources (streams, readers), the first call returns data
-    /// and subsequent calls return an empty stream.
+    /// For non-rescannable sources (streams, readers), this can only be called once.
+    /// Calling it a second time returns a stream whose first item is an error.
     fn scan_as_stream(&mut self) -> SendableRecordBatchStream;
 
     /// Optional hint about the number of rows.
@@ -102,6 +101,17 @@ impl Scannable for Vec<RecordBatch> {
     }
 
     fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        if self.is_empty() {
+            let schema = Scannable::schema(self);
+            return Box::pin(SimpleRecordBatchStream {
+                schema,
+                stream: once(async {
+                    Err(Error::InvalidInput {
+                        message: "Cannot scan an empty Vec<RecordBatch>".to_string(),
+                    })
+                }),
+            });
+        }
         let schema = Scannable::schema(self);
         let batches = self.clone();
         let stream = futures::stream::iter(batches.into_iter().map(Ok));
@@ -117,54 +127,41 @@ impl Scannable for Vec<RecordBatch> {
     }
 }
 
-/// Helper to box a RecordBatchReader so it can implement Scannable.
-pub fn box_reader(
-    reader: impl RecordBatchReader + Send + 'static,
-) -> Box<dyn RecordBatchReader + Send> {
-    Box::new(reader) as Box<dyn RecordBatchReader + Send>
-}
-
 impl Scannable for Box<dyn RecordBatchReader + Send> {
     fn schema(&self) -> SchemaRef {
         RecordBatchReader::schema(self.as_ref())
     }
 
     fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
-        let schema = RecordBatchReader::schema(self.as_ref());
-        let empty_reader = box_reader(RecordBatchIterator::new(std::iter::empty(), schema.clone()));
-        let reader = std::mem::replace(self, empty_reader);
+        let schema = Scannable::schema(self);
 
-        // Use a channel to bridge blocking RecordBatchReader to async stream.
-        // Buffer size of 2 provides some pipelining while limiting memory use.
+        // Swap self with a reader that errors on iteration, so a second call
+        // produces a clear error instead of silently returning empty data.
+        let err_reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            vec![Err(ArrowError::InvalidArgumentError(
+                "Reader has already been consumed".into(),
+            ))],
+            schema.clone(),
+        ));
+        let reader = std::mem::replace(self, err_reader);
+
+        // Bridge the blocking RecordBatchReader to an async stream via a channel.
         let (tx, rx) = tokio::sync::mpsc::channel::<crate::Result<RecordBatch>>(2);
-
-        // Spawn blocking task to read from the reader
         tokio::task::spawn_blocking(move || {
-            let mut reader = reader;
-            for batch_result in reader.by_ref() {
+            for batch_result in reader {
                 let result = batch_result.map_err(Into::into);
-                // If receiver is dropped, stop reading
                 if tx.blocking_send(result).is_err() {
                     break;
                 }
             }
         });
 
-        // Convert the receiver into a stream using unfold
         let stream = futures::stream::unfold(rx, |mut rx| async move {
             rx.recv().await.map(|batch| (batch, rx))
         })
         .fuse();
 
         Box::pin(SimpleRecordBatchStream { schema, stream })
-    }
-
-    fn num_rows(&self) -> Option<usize> {
-        None
-    }
-
-    fn rescannable(&self) -> bool {
-        false
     }
 }
 
@@ -174,20 +171,18 @@ impl Scannable for SendableRecordBatchStream {
     }
 
     fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
-        let schema = self.as_ref().schema();
-        let empty_stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+        let schema = Scannable::schema(self);
+
+        // Swap self with an error stream so a second call produces a clear error.
+        let error_stream = Box::pin(SimpleRecordBatchStream {
             schema: schema.clone(),
-            stream: futures::stream::empty(),
+            stream: once(async {
+                Err(Error::InvalidInput {
+                    message: "Stream has already been consumed".to_string(),
+                })
+            }),
         });
-        std::mem::replace(self, empty_stream)
-    }
-
-    fn num_rows(&self) -> Option<usize> {
-        None
-    }
-
-    fn rescannable(&self) -> bool {
-        false
+        std::mem::replace(self, error_stream)
     }
 }
 
@@ -206,7 +201,7 @@ impl StreamingWriteSource for Box<dyn Scannable> {
 pub struct WithEmbeddingsScannable {
     inner: Box<dyn Scannable>,
     embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
-    table_definition: TableDefinition,
+    output_schema: SchemaRef,
 }
 
 impl WithEmbeddingsScannable {
@@ -231,31 +226,30 @@ impl WithEmbeddingsScannable {
             .collect();
 
         let table_definition = TableDefinition::new(output_schema, column_definitions);
+        let output_schema = table_definition.into_rich_schema();
 
         Ok(Self {
             inner,
             embeddings,
-            table_definition,
+            output_schema,
         })
     }
 }
 
 impl Scannable for WithEmbeddingsScannable {
     fn schema(&self) -> SchemaRef {
-        self.table_definition.clone().into_rich_schema()
+        self.output_schema.clone()
     }
 
     fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
         let inner_stream = self.inner.scan_as_stream();
         let embeddings = self.embeddings.clone();
-        // Use the rich schema with column definitions metadata
-        let output_schema = self.schema();
+        let output_schema = self.output_schema.clone();
 
         let mapped_stream = inner_stream.then(move |batch_result| {
             let embeddings = embeddings.clone();
             async move {
                 let batch = batch_result?;
-                // Run embedding computation in a blocking task to avoid blocking async runtime
                 let result = tokio::task::spawn_blocking(move || {
                     compute_embeddings_for_batch(batch, &embeddings)
                 })
@@ -362,13 +356,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_vec_batch_empty_errors() {
+        let mut empty: Vec<RecordBatch> = vec![];
+        let mut stream = empty.scan_as_stream();
+        let result = stream.next().await;
+        assert!(result.is_some());
+        assert!(result.unwrap().is_err());
+    }
+
+    #[tokio::test]
     async fn test_reader_not_rescannable() {
         let batch = record_batch!(("id", Int64, [0, 1, 2])).unwrap();
         let schema = batch.schema();
-        let mut reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
-            vec![Ok(batch.clone())],
-            schema.clone(),
-        ));
+        let mut reader: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
+            RecordBatchIterator::new(vec![Ok(batch.clone())], schema.clone()),
+        );
 
         let stream1 = reader.scan_as_stream();
         let result1: Vec<RecordBatch> = stream1.try_collect().await.unwrap();
@@ -376,9 +378,11 @@ mod tests {
         assert_eq!(result1[0], batch);
 
         assert!(!reader.rescannable());
-        let stream2 = reader.scan_as_stream();
-        let result2: Vec<RecordBatch> = stream2.try_collect().await.unwrap();
-        assert_eq!(result2.len(), 0);
+        // Second call returns a stream whose first item is an error
+        let mut stream2 = reader.scan_as_stream();
+        let result2 = stream2.next().await;
+        assert!(result2.is_some());
+        assert!(result2.unwrap().is_err());
     }
 
     #[tokio::test]
@@ -397,77 +401,21 @@ mod tests {
         assert_eq!(result1[0], batch);
 
         assert!(!stream.rescannable());
-        let stream2 = stream.scan_as_stream();
-        let result2: Vec<RecordBatch> = stream2.try_collect().await.unwrap();
-        assert_eq!(result2.len(), 0);
+        // Second call returns a stream whose first item is an error
+        let mut stream2 = stream.scan_as_stream();
+        let result2 = stream2.next().await;
+        assert!(result2.is_some());
+        assert!(result2.unwrap().is_err());
     }
 
     mod embedding_tests {
         use super::*;
         use crate::embeddings::MemoryRegistry;
         use crate::table::{ColumnDefinition, ColumnKind};
+        use crate::test_utils::embeddings::MockEmbed;
         use arrow_array::Array as _;
-        use arrow_array::{ArrayRef, FixedSizeListArray, Float32Array, StringArray};
+        use arrow_array::{ArrayRef, StringArray};
         use arrow_schema::{DataType, Field, Schema};
-        use std::borrow::Cow;
-
-        /// A mock embedding function that returns a fixed-size vector for each input string.
-        #[derive(Debug)]
-        struct MockEmbeddingFunction {
-            dim: usize,
-        }
-
-        impl MockEmbeddingFunction {
-            fn new(dim: usize) -> Self {
-                Self { dim }
-            }
-        }
-
-        impl EmbeddingFunction for MockEmbeddingFunction {
-            fn name(&self) -> &str {
-                "mock"
-            }
-
-            fn source_type(&self) -> crate::Result<Cow<'_, DataType>> {
-                Ok(Cow::Owned(DataType::Utf8))
-            }
-
-            fn dest_type(&self) -> crate::Result<Cow<'_, DataType>> {
-                Ok(Cow::Owned(DataType::FixedSizeList(
-                    Arc::new(Field::new("item", DataType::Float32, true)),
-                    self.dim as i32,
-                )))
-            }
-
-            fn compute_source_embeddings(
-                &self,
-                source: Arc<dyn arrow_array::Array>,
-            ) -> crate::Result<Arc<dyn arrow_array::Array>> {
-                let strings = source.as_any().downcast_ref::<StringArray>().unwrap();
-                let num_rows = strings.len();
-
-                // Create a vector of length dim for each row, filled with 1.0
-                let values: Vec<f32> = (0..num_rows * self.dim).map(|_| 1.0f32).collect();
-                let values_array = Float32Array::from(values);
-
-                let list = FixedSizeListArray::try_new(
-                    Arc::new(Field::new("item", DataType::Float32, true)),
-                    self.dim as i32,
-                    Arc::new(values_array) as ArrayRef,
-                    None,
-                )
-                .unwrap();
-
-                Ok(Arc::new(list))
-            }
-
-            fn compute_query_embeddings(
-                &self,
-                input: Arc<dyn arrow_array::Array>,
-            ) -> crate::Result<Arc<dyn arrow_array::Array>> {
-                self.compute_source_embeddings(input)
-            }
-        }
 
         #[tokio::test]
         async fn test_with_embeddings_scannable() {
@@ -477,7 +425,7 @@ mod tests {
                 RecordBatch::try_new(schema.clone(), vec![Arc::new(text_array) as ArrayRef])
                     .unwrap();
 
-            let mock_embedding = Arc::new(MockEmbeddingFunction::new(4));
+            let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
             let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_embedding"));
 
             let mut scannable = WithEmbeddingsScannable::try_new(
@@ -565,8 +513,7 @@ mod tests {
 
             // Register the mock embedding function
             let registry: Arc<dyn EmbeddingRegistry> = Arc::new(MemoryRegistry::new());
-            let mock_embedding: Arc<dyn EmbeddingFunction> =
-                Arc::new(MockEmbeddingFunction::new(4));
+            let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
             registry.register("mock", mock_embedding).unwrap();
 
             let mut scannable =

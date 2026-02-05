@@ -381,7 +381,9 @@ impl<S: HttpSend> RemoteTable<S> {
             message: "Attempted to retry a request that cannot be cloned".to_string(),
         })?;
         let (_, r) = tmp_req.build_split();
-        let mut r = r.unwrap();
+        let mut r = r.map_err(|e| Error::Runtime {
+            message: format!("Failed to build request: {}", e),
+        })?;
         let request_id = self.client.extract_request_id(&mut r);
         let mut retry_counter = RetryCounter::new(&self.client.retry_config, request_id.clone());
 
@@ -396,7 +398,9 @@ impl<S: HttpSend> RemoteTable<S> {
             req_builder = req_builder.body(body);
 
             let (c, request) = req_builder.build_split();
-            let mut request = request.unwrap();
+            let mut request = request.map_err(|e| Error::Runtime {
+                message: format!("Failed to build request: {}", e),
+            })?;
             self.client.set_request_id(&mut request, &request_id);
 
             // Apply dynamic headers
@@ -1694,7 +1698,6 @@ mod tests {
     use rstest::rstest;
     use serde_json::json;
 
-    use crate::data::scannable::box_reader;
     use crate::index::vector::{IvfFlatIndexBuilder, IvfHnswSqIndexBuilder};
     use crate::remote::db::DEFAULT_SERVER_VERSION;
     use crate::remote::JSON_CONTENT_TYPE;
@@ -2132,7 +2135,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data = box_reader(RecordBatchIterator::new(
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -2184,7 +2187,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data = box_reader(RecordBatchIterator::new(
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -3116,7 +3119,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data = box_reader(RecordBatchIterator::new(
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -3603,10 +3606,9 @@ mod tests {
 
         // RecordBatchReader is NOT rescannable - should NOT retry
         let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
-        let reader = box_reader(RecordBatchIterator::new(
-            vec![Ok(batch.clone())],
-            batch.schema(),
-        ));
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
+            RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+        );
 
         let result = table.add(reader).execute().await;
 

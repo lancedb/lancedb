@@ -8,13 +8,12 @@
 use std::sync::Arc;
 
 use arrow_array::types::Float32Type;
-use arrow_array::{
-    FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader,
-};
+use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator};
 use arrow_schema::{DataType, Field, Schema};
 
 use futures::TryStreamExt;
 use lancedb::connection::Connection;
+
 use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -34,7 +33,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
+fn create_some_records() -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
     const TOTAL: usize = 1000;
     const DIM: usize = 128;
 

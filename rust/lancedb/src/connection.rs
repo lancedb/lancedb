@@ -994,7 +994,6 @@ mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::RecordBatchReader;
     use arrow_schema::{DataType, Field, Schema};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
     use tempfile::tempdir;
@@ -1154,7 +1153,8 @@ mod tests {
         let mut batch_gen = BatchGenerator::new()
             .col(Box::new(IncrementingInt32::new().named("id")))
             .col(Box::new(IncrementingInt32::new().named("value")));
-        let reader: Box<dyn RecordBatchReader + Send> = Box::new(batch_gen.batches(5, 100));
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(batch_gen.batches(5, 100));
 
         let source_table = db
             .create_table("source_table", reader)

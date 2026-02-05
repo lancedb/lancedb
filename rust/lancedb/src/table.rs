@@ -4205,7 +4205,7 @@ mod tests {
         Ok(FixedSizeListArray::from(data))
     }
 
-    fn some_sample_data() -> Box<dyn RecordBatchReader + Send> {
+    fn some_sample_data() -> Box<dyn arrow_array::RecordBatchReader + Send> {
         let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1]))],

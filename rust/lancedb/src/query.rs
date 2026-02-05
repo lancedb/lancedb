@@ -1381,7 +1381,7 @@ mod tests {
     use arrow::{array::downcast_array, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{
         cast::AsArray, types::Float32Type, FixedSizeListArray, Float32Array, Int32Array,
-        RecordBatch, RecordBatchReader, StringArray,
+        RecordBatch, StringArray,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
@@ -1599,7 +1599,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    fn make_non_empty_batches() -> Box<dyn RecordBatchReader + Send> {
+    fn make_non_empty_batches() -> Box<dyn arrow_array::RecordBatchReader + Send> {
         let vec = Box::new(RandomVector::new().named("vector".to_string()));
         let id = Box::new(IncrementingInt32::new().named("id".to_string()));
         Box::new(BatchGenerator::new().col(vec).col(id).batch(512))
