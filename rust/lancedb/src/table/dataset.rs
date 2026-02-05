@@ -205,7 +205,7 @@ impl DatasetConsistencyWrapper {
         let need_reload = if is_latest {
             dataset.latest_version_id().await? != current_version
         } else {
-            target_version.map_or(false, |v| current_version != v)
+            target_version.is_some_and(|v| current_version != v)
         };
         if !need_reload {
             return Ok(());
