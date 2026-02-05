@@ -2709,19 +2709,15 @@ impl NativeTable {
     #[deprecated(note = "Use Table::update_config() builder instead")]
     pub async fn update_config(
         &self,
-        values: impl IntoIterator<Item = impl Into<UpdateMapEntry>>,
-        replace: bool,
-    ) -> Result<HashMap<String, String>> {
+        upsert_values: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<()> {
         let mut dataset = self.dataset.get_mut().await?;
-        let result = if replace {
-            dataset.update_config(values).replace().await?
-        } else {
-            dataset.update_config(values).await?
-        };
-        Ok(result)
+        dataset.update_config(upsert_values).await?;
+        Ok(())
     }
 
     /// Delete keys from the config
+    #[deprecated(note = "Use Table::update_config() builder with None values instead")]
     pub async fn delete_config_keys(&self, delete_keys: &[&str]) -> Result<()> {
         let mut dataset = self.dataset.get_mut().await?;
         let entries: Vec<UpdateMapEntry> = delete_keys
@@ -2735,7 +2731,7 @@ impl NativeTable {
         Ok(())
     }
 
-    /// Update schema metadata
+    #[deprecated(note = "Use Table::update_schema_metadata() builder instead")]
     pub async fn replace_schema_metadata(
         &self,
         upsert_values: impl IntoIterator<Item = (String, String)>,
@@ -4639,10 +4635,7 @@ mod tests {
         let base_config_len = manifest.config.len();
 
         native_tbl
-            .update_config(
-                vec![("test_key1".to_string(), "test_val1".to_string())],
-                false,
-            )
+            .update_config(vec![("test_key1".to_string(), "test_val1".to_string())])
             .await
             .unwrap();
 
@@ -4654,10 +4647,7 @@ mod tests {
         );
 
         native_tbl
-            .update_config(
-                vec![("test_key2".to_string(), "test_val2".to_string())],
-                false,
-            )
+            .update_config(vec![("test_key2".to_string(), "test_val2".to_string())])
             .await
             .unwrap();
         let manifest = native_tbl.manifest().await.unwrap();
@@ -4672,10 +4662,10 @@ mod tests {
         );
 
         native_tbl
-            .update_config(
-                vec![("test_key2".to_string(), "test_val2_update".to_string())],
-                false,
-            )
+            .update_config(vec![(
+                "test_key2".to_string(),
+                "test_val2_update".to_string(),
+            )])
             .await
             .unwrap();
         let manifest = native_tbl.manifest().await.unwrap();

@@ -18,14 +18,14 @@ pub struct UpdateMetadataBuilder<'a> {
 }
 
 /// Type of metadata being updated
-pub enum MetadataType {
+pub(crate) enum MetadataType {
     Config,
     TableMetadata,
     SchemaMetadata,
 }
 
 impl<'a> UpdateMetadataBuilder<'a> {
-    pub fn new(
+    pub(crate) fn new(
         table: &'a Table,
         values: impl IntoIterator<Item = impl Into<UpdateMapEntry>>,
         metadata_type: MetadataType,
