@@ -178,22 +178,77 @@ impl DatasetConsistencyWrapper {
         })
     }
 
-    /// Convert into a wrapper in latest version mode
+    /// Convert into a wrapper in latest version mode.
+    ///
+    /// This method is designed to avoid holding the lock during async I/O operations,
+    /// which could block the event loop for extended periods.
     pub async fn as_latest(&self, read_consistency_interval: Option<Duration>) -> Result<()> {
-        if self.0.read().await.is_latest() {
-            return Ok(());
-        }
+        // Step 1: Check if already latest, get clone if not
+        let dataset = {
+            let guard = self.0.read().await;
+            match &*guard {
+                DatasetRef::Latest { .. } => return Ok(()),
+                DatasetRef::TimeTravel { dataset, .. } => dataset.clone(),
+            }
+        }; // Lock released
 
+        // Step 2: I/O OUTSIDE lock
+        let latest_version = dataset.latest_version_id().await?;
+        let new_dataset = dataset.checkout_version(latest_version).await?;
+
+        // Step 3: Quick state update (only memory ops under lock)
         let mut write_guard = self.0.write().await;
+        // Re-check in case another task already converted to Latest
         if write_guard.is_latest() {
             return Ok(());
         }
-
-        write_guard.as_latest(read_consistency_interval).await
+        *write_guard = DatasetRef::Latest {
+            dataset: new_dataset,
+            read_consistency_interval,
+            last_consistency_check: Some(Instant::now()),
+        };
+        Ok(())
     }
 
+    /// Convert into a wrapper in time travel mode.
+    ///
+    /// This method is designed to avoid holding the lock during async I/O operations,
+    /// which could block the event loop for extended periods.
     pub async fn as_time_travel(&self, target_version: impl Into<refs::Ref>) -> Result<()> {
-        self.0.write().await.as_time_travel(target_version).await
+        let target_ref = target_version.into();
+
+        // Step 1: Get clone, check if checkout is needed
+        let (dataset, should_checkout) = {
+            let guard = self.0.read().await;
+            match &*guard {
+                DatasetRef::Latest { dataset, .. } => (dataset.clone(), true),
+                DatasetRef::TimeTravel { dataset, version } => {
+                    let needs = match &target_ref {
+                        refs::Ref::Version(_, Some(target_ver)) => version != target_ver,
+                        refs::Ref::Version(_, None) => true, // No specific version, always checkout
+                        refs::Ref::VersionNumber(target_ver) => version != target_ver,
+                        refs::Ref::Tag(_) => true, // Always checkout for tags
+                    };
+                    (dataset.clone(), needs)
+                }
+            }
+        }; // Lock released
+
+        if !should_checkout {
+            return Ok(());
+        }
+
+        // Step 2: I/O OUTSIDE lock
+        let new_dataset = dataset.checkout_version(target_ref).await?;
+        let new_version = new_dataset.version().version;
+
+        // Step 3: Quick state update (only memory ops under lock)
+        let mut write_guard = self.0.write().await;
+        *write_guard = DatasetRef::TimeTravel {
+            dataset: new_dataset,
+            version: new_version,
+        };
+        Ok(())
     }
 
     /// Provide a known latest version of the dataset.
@@ -204,19 +259,74 @@ impl DatasetConsistencyWrapper {
         self.0.write().await.set_latest(dataset);
     }
 
+    /// Reload the dataset to the latest version.
+    ///
+    /// This method is designed to avoid holding the lock during async I/O operations,
+    /// which could block the event loop for extended periods.
     pub async fn reload(&self) -> Result<()> {
-        if !self.0.read().await.need_reload().await? {
+        // Step 1: Quick read, clone dataset and get parameters (no I/O under lock)
+        let (dataset, is_latest, target_version, read_consistency_interval) = {
+            let guard = self.0.read().await;
+            match &*guard {
+                DatasetRef::Latest {
+                    dataset,
+                    read_consistency_interval,
+                    ..
+                } => (dataset.clone(), true, None, *read_consistency_interval),
+                DatasetRef::TimeTravel { dataset, version } => {
+                    (dataset.clone(), false, Some(*version), None)
+                }
+            }
+        }; // Lock released
+
+        // Step 2: Check if reload needed (I/O OUTSIDE lock)
+        let current_version = dataset.version().version;
+        let need_reload = if is_latest {
+            dataset.latest_version_id().await? != current_version
+        } else {
+            target_version.map_or(false, |v| current_version != v)
+        };
+        if !need_reload {
             return Ok(());
         }
 
+        // Step 3: Do reload (I/O OUTSIDE lock)
+        let new_dataset = if is_latest {
+            let latest = dataset.latest_version_id().await?;
+            dataset.checkout_version(latest).await?
+        } else {
+            dataset.checkout_version(target_version.unwrap()).await?
+        };
+
+        // Step 4: Quick state update (only memory ops under lock)
         let mut write_guard = self.0.write().await;
-        // on lock escalation -- check if someone else has already reloaded
-        if !write_guard.need_reload().await? {
-            return Ok(());
+        let should_update = match &*write_guard {
+            DatasetRef::Latest {
+                dataset: current, ..
+            } => new_dataset.version().version > current.version().version,
+            DatasetRef::TimeTravel {
+                dataset: current,
+                version,
+            } => current.version().version != *version,
+        };
+        if should_update {
+            match &mut *write_guard {
+                DatasetRef::Latest {
+                    dataset,
+                    last_consistency_check,
+                    read_consistency_interval: rci,
+                    ..
+                } => {
+                    *dataset = new_dataset;
+                    *rci = read_consistency_interval;
+                    last_consistency_check.replace(Instant::now());
+                }
+                DatasetRef::TimeTravel { dataset, .. } => {
+                    *dataset = new_dataset;
+                }
+            }
         }
-
-        // actually need reloading
-        write_guard.reload().await
+        Ok(())
     }
 
     /// Returns the version, if in time travel mode, or None otherwise
