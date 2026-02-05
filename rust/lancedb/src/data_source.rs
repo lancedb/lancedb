@@ -31,6 +31,7 @@ use arrow_schema::SchemaRef;
 use datafusion_common::exec_datafusion_err;
 use datafusion_execution::SendableRecordBatchStream;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+use futures::StreamExt;
 use futures::stream::once;
 
 use crate::Result;
@@ -172,7 +173,7 @@ impl SourceData for Box<dyn RecordBatchReader + Send> {
                 Some(Err(e)) => Some((Err(exec_datafusion_err!("Arrow error: {}", e)), reader)),
                 None => None,
             }
-        });
+        }).fuse();
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
@@ -265,7 +266,7 @@ impl SourceData for ReaderWithMetadata {
                 Some(Err(e)) => Some((Err(exec_datafusion_err!("Arrow error: {}", e)), reader)),
                 None => None,
             }
-        });
+        }).fuse();
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 

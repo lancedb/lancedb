@@ -742,12 +742,15 @@ impl AddDataBuilder2 {
                     message: format!("Failed to execute insert partition {}: {}", partition, e),
                 })?;
                 while let Some(batch) = stream.next().await {
-                    batch.map_err(|e| Error::Runtime {
+                    batch.map_err(|e| {
+                        let report = snafu::Report::from_error(e);
+                        let e = report.to_string();
+                        Error::Runtime {
                         message: format!(
                             "Insert execution failed for partition {}: {}",
                             partition, e
                         ),
-                    })?;
+                    }})?;
                 }
                 Ok::<_, Error>(())
             }));

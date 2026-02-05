@@ -48,7 +48,7 @@ async def embeddings(request: Request) -> JSONResponse:
 
 
 app = Starlette(routes=[
-    Route("/", embeddings, methods=["POST"]),
+    Route("/embeddings", embeddings, methods=["POST"]),
 ])
 
 

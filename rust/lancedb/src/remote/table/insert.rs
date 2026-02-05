@@ -173,13 +173,51 @@ impl<S: HttpSend> RemoteInsertExec<S> {
             options,
         )?;
 
+
+        struct Stats {
+            serializing_time: std::sync::atomic::AtomicU64,
+            pulling_time: std::sync::atomic::AtomicU64,
+            num_batches: std::sync::atomic::AtomicU64,
+        }
+        impl Drop for Stats {
+            fn drop(&mut self) {
+                let serializing_time = self.serializing_time.load(std::sync::atomic::Ordering::SeqCst);
+                let pulling_time = self.pulling_time.load(std::sync::atomic::Ordering::SeqCst);
+                // Report in seconds with up to two decimal places
+                eprintln!(
+                    "Uploaded {} batches: serializing_time={:.2}s, pulling_time={:.2}s",
+                    self.num_batches.load(std::sync::atomic::Ordering::SeqCst),
+                    serializing_time as f64 / 1_000_000.0,
+                    pulling_time as f64 / 1_000_000.0,
+                );
+            }
+        }
+        let stats = Arc::new(Stats {
+            serializing_time: std::sync::atomic::AtomicU64::new(0),
+            pulling_time: std::sync::atomic::AtomicU64::new(0),
+            num_batches: std::sync::atomic::AtomicU64::new(0),
+        });
+
         let stream = futures::stream::try_unfold((data, writer), move |(mut data, mut writer)| {
             let progress = progress.clone();
+            let stats_clone = stats.clone();
             async move {
-                match data.next().await {
+                let start_pull = std::time::Instant::now();
+                let next_batch = data.next().await;
+                let elapsed_pull = start_pull.elapsed().as_micros() as u64;
+                stats_clone.pulling_time.fetch_add(elapsed_pull, std::sync::atomic::Ordering::SeqCst);
+                match next_batch {
                     Some(Ok(batch)) => {
                         let num_rows = batch.num_rows();
+                        stats_clone.num_batches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+                        let start_serialize = std::time::Instant::now();
                         writer.write(&batch)?;
+                        let elapsed_serialize =
+                            start_serialize.elapsed().as_micros() as u64;
+                        stats_clone.serializing_time
+                            .fetch_add(elapsed_serialize, std::sync::atomic::Ordering::SeqCst);
+
                         let buffer = std::mem::take(writer.get_mut());
                         if let Some(ref progress) = progress {
                             progress.report(num_rows, buffer.len());
@@ -197,7 +235,7 @@ impl<S: HttpSend> RemoteInsertExec<S> {
                     }
                 }
             }
-        });
+        }).fuse();
 
         Ok(reqwest::Body::wrap_stream(stream))
     }
