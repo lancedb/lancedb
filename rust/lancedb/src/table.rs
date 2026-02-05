@@ -16,8 +16,6 @@ use datafusion_physical_plan::union::UnionExec;
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{FutureExt, StreamExt, TryFutureExt};
 use lance::dataset::builder::DatasetBuilder;
-use lance::dataset::cleanup::RemovalStats;
-use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
 use lance::dataset::scanner::Scanner;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
@@ -46,7 +44,6 @@ use lance_namespace::models::{
 use lance_namespace::LanceNamespace;
 use lance_table::format::Manifest;
 use lance_table::io::commit::ManifestNamingScheme;
-use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::format;
@@ -79,18 +76,19 @@ pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
 pub mod merge;
+pub mod optimize;
 pub mod update;
 
 use crate::index::waiter::wait_for_index;
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::{join_all, Either};
-pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
 pub use lance_index::optimize::OptimizeOptions;
+pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
 use serde_with::skip_serializing_none;
 pub use update::{UpdateBuilder, UpdateResult};
 
@@ -165,85 +163,6 @@ impl TableDefinition {
             .insert("lancedb::column_definitions".to_string(), lancedb_metadata);
         Arc::new(schema_with_metadata)
     }
-}
-
-/// Optimize the dataset.
-///
-/// Similar to `VACUUM` in PostgreSQL, it offers different options to
-/// optimize different parts of the table on disk.
-///
-/// By default, it optimizes everything, as [`OptimizeAction::All`].
-pub enum OptimizeAction {
-    /// Run all optimizations with default values
-    All,
-    /// Compacts files in the dataset
-    ///
-    /// LanceDb uses a readonly filesystem for performance and safe concurrency.  Every time
-    /// new data is added it will be added into new files.  Small files
-    /// can hurt both read and write performance.  Compaction will merge small files
-    /// into larger ones.
-    ///
-    /// All operations that modify data (add, delete, update, merge insert, etc.) will create
-    /// new files.  If these operations are run frequently then compaction should run frequently.
-    ///
-    /// If these operations are never run (search only) then compaction is not necessary.
-    Compact {
-        options: CompactionOptions,
-        remap_options: Option<Arc<dyn IndexRemapperOptions>>,
-    },
-    /// Prune old version of datasets
-    ///
-    /// Every change in LanceDb is additive.  When data is removed from a dataset a new version is
-    /// created that doesn't contain the removed data.  However, the old version, which does contain
-    /// the removed data, is left in place.  This is necessary for consistency and concurrency and
-    /// also enables time travel functionality like the ability to checkout an older version of the
-    /// dataset to undo changes.
-    ///
-    /// Over time, these old versions can consume a lot of disk space.  The prune operation will
-    /// remove versions of the dataset that are older than a certain age.  This will free up the
-    /// space used by that old data.
-    ///
-    /// Once a version is pruned it can no longer be checked out.
-    Prune {
-        /// The duration of time to keep versions of the dataset.
-        older_than: Option<Duration>,
-        /// Because they may be part of an in-progress transaction, files newer than 7 days old are not deleted by default.
-        /// If you are sure that there are no in-progress transactions, then you can set this to True to delete all files older than `older_than`.
-        delete_unverified: Option<bool>,
-        /// If true, an error will be returned if there are any old versions that are still tagged.
-        error_if_tagged_old_versions: Option<bool>,
-    },
-    /// Optimize the indices
-    ///
-    /// This operation optimizes all indices in the table.  When new data is added to LanceDb
-    /// it is not added to the indices.  However, it can still turn up in searches because the search
-    /// function will scan both the indexed data and the unindexed data in parallel.  Over time, the
-    /// unindexed data can become large enough that the search performance is slow.  This operation
-    /// will add the unindexed data to the indices without rerunning the full index creation process.
-    ///
-    /// Optimizing an index is faster than re-training the index but it does not typically adjust the
-    /// underlying model relied upon by the index.  This can eventually lead to poor search accuracy
-    /// and so users may still want to occasionally retrain the index after adding a large amount of
-    /// data.
-    ///
-    /// For example, when using IVF, an index will create clusters.  Optimizing an index assigns unindexed
-    /// data to the existing clusters, but it does not move the clusters or create new clusters.
-    Index(OptimizeOptions),
-}
-
-impl Default for OptimizeAction {
-    fn default() -> Self {
-        Self::All
-    }
-}
-
-/// Statistics about the optimization.
-pub struct OptimizeStats {
-    /// Stats of the file compaction.
-    pub compaction: Option<CompactionMetrics>,
-
-    /// Stats of the version pruning
-    pub prune: Option<RemovalStats>,
 }
 
 /// Describes what happens when a vector either contains NaN or
@@ -1884,16 +1803,6 @@ impl NativeTable {
         })
     }
 
-    async fn optimize_indices(&self, options: &OptimizeOptions) -> Result<()> {
-        info!("LanceDB: optimizing indices: {:?}", options);
-        self.dataset
-            .get_mut()
-            .await?
-            .optimize_indices(options)
-            .await?;
-        Ok(())
-    }
-
     /// Merge new data into this table.
     pub async fn merge(
         &mut self,
@@ -1907,47 +1816,6 @@ impl NativeTable {
             .merge(batches, left_on, right_on)
             .await?;
         Ok(())
-    }
-
-    /// Remove old versions of the dataset from disk.
-    ///
-    /// # Arguments
-    /// * `older_than` - The duration of time to keep versions of the dataset.
-    /// * `delete_unverified` - Because they may be part of an in-progress
-    ///   transaction, files newer than 7 days old are not deleted by default.
-    ///   If you are sure that there are no in-progress transactions, then you
-    ///   can set this to True to delete all files older than `older_than`.
-    ///
-    /// This calls into [lance::dataset::Dataset::cleanup_old_versions] and
-    /// returns the result.
-    async fn cleanup_old_versions(
-        &self,
-        older_than: Duration,
-        delete_unverified: Option<bool>,
-        error_if_tagged_old_versions: Option<bool>,
-    ) -> Result<RemovalStats> {
-        Ok(self
-            .dataset
-            .get_mut()
-            .await?
-            .cleanup_old_versions(older_than, delete_unverified, error_if_tagged_old_versions)
-            .await?)
-    }
-
-    /// Compact files in the dataset.
-    ///
-    /// This can be run after making several small appends to optimize the table
-    /// for faster reads.
-    ///
-    /// This calls into [lance::dataset::optimize::compact_files].
-    async fn compact_files(
-        &self,
-        options: CompactionOptions,
-        remap_options: Option<Arc<dyn IndexRemapperOptions>>,
-    ) -> Result<CompactionMetrics> {
-        let mut dataset_mut = self.dataset.get_mut().await?;
-        let metrics = compact_files(&mut dataset_mut, options, remap_options).await?;
-        Ok(metrics)
     }
 
     // TODO: why are these individual methods and not some single "get_stats" method?
@@ -3035,55 +2903,8 @@ impl BaseTable for NativeTable {
     }
 
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
-        let mut stats = OptimizeStats {
-            compaction: None,
-            prune: None,
-        };
-        match action {
-            OptimizeAction::All => {
-                stats.compaction = self
-                    .optimize(OptimizeAction::Compact {
-                        options: CompactionOptions::default(),
-                        remap_options: None,
-                    })
-                    .await?
-                    .compaction;
-                stats.prune = self
-                    .optimize(OptimizeAction::Prune {
-                        older_than: None,
-                        delete_unverified: None,
-                        error_if_tagged_old_versions: None,
-                    })
-                    .await?
-                    .prune;
-                self.optimize(OptimizeAction::Index(OptimizeOptions::default()))
-                    .await?;
-            }
-            OptimizeAction::Compact {
-                options,
-                remap_options,
-            } => {
-                stats.compaction = Some(self.compact_files(options, remap_options).await?);
-            }
-            OptimizeAction::Prune {
-                older_than,
-                delete_unverified,
-                error_if_tagged_old_versions,
-            } => {
-                stats.prune = Some(
-                    self.cleanup_old_versions(
-                        older_than.unwrap_or(Duration::try_days(7).expect("valid delta")),
-                        delete_unverified,
-                        error_if_tagged_old_versions,
-                    )
-                    .await?,
-                );
-            }
-            OptimizeAction::Index(options) => {
-                self.optimize_indices(&options).await?;
-            }
-        }
-        Ok(stats)
+        // Delegate to the submodule implementation
+        optimize::execute_optimize(self, action).await
     }
 
     async fn add_columns(
