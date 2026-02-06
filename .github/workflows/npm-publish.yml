@@ -318,7 +318,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: nodejs/package-lock.json
           registry-url: "https://registry.npmjs.org"
@@ -350,6 +350,7 @@ jobs:
         env:
           DRY_RUN: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
+          npm config set provenance true
           ARGS="--access public"
           if [[ $DRY_RUN == "true" ]]; then
             ARGS="$ARGS --dry-run"
