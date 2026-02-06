@@ -1978,3 +1978,121 @@ def test_table_uri(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("my_table", data=[{"x": 0}])
     assert table.uri == str(tmp_path / "my_table.lance")
+
+
+def test_update_metadata(mem_db: DBConnection):
+    """Test updating table metadata."""
+    table = mem_db.create_table(
+        "test_metadata",
+        data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
+    )
+
+    # Add initial metadata
+    result = table.update_metadata({"description": "Test table", "version": "1.0"})
+    assert result == {"description": "Test table", "version": "1.0"}
+
+    # Update existing and add new metadata
+    result = table.update_metadata({"version": "1.1", "author": "test_user"})
+    assert result == {
+        "description": "Test table",
+        "version": "1.1",
+        "author": "test_user",
+    }
+
+    # Remove a key
+    result = table.update_metadata({"author": None})
+    assert result == {"description": "Test table", "version": "1.1"}
+
+    # Replace all metadata
+    result = table.update_metadata({"new_field": "new_value"}, replace=True)
+    assert result == {"new_field": "new_value"}
+
+
+def test_update_schema_metadata(mem_db: DBConnection):
+    """Test updating schema metadata."""
+    table = mem_db.create_table(
+        "test_schema_metadata",
+        data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
+    )
+
+    # Add schema metadata
+    result = table.update_schema_metadata(
+        {"format_version": "2.0", "encoding": "utf-8"}
+    )
+    assert result == {"format_version": "2.0", "encoding": "utf-8"}
+
+    # Update existing metadata
+    result = table.update_schema_metadata({"format_version": "2.1"})
+    assert result == {"format_version": "2.1", "encoding": "utf-8"}
+
+    # Remove a key
+    result = table.update_schema_metadata({"encoding": None})
+    assert result == {"format_version": "2.1"}
+
+
+@pytest.mark.asyncio
+async def test_update_metadata_async(mem_db_async: AsyncConnection):
+    """Test updating table metadata asynchronously."""
+    table = await mem_db_async.create_table(
+        "test_metadata_async",
+        data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
+    )
+
+    # Add initial metadata
+    result = await table.update_metadata(
+        {"description": "Async test table", "version": "1.0"}
+    )
+    assert result == {"description": "Async test table", "version": "1.0"}
+
+    # Update metadata
+    result = await table.update_metadata({"version": "2.0", "async": "true"})
+    assert result == {
+        "description": "Async test table",
+        "version": "2.0",
+        "async": "true",
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_schema_metadata_async(mem_db_async: AsyncConnection):
+    """Test updating schema metadata asynchronously."""
+    table = await mem_db_async.create_table(
+        "test_schema_metadata_async",
+        data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
+    )
+
+    # Add schema metadata
+    result = await table.update_schema_metadata({"format_version": "3.0"})
+    assert result == {"format_version": "3.0"}
+
+    # Replace schema metadata
+    result = await table.update_schema_metadata({"new_format": "json"}, replace=True)
+    assert result == {"new_format": "json"}
+
+
+def test_update_config(mem_db: DBConnection):
+    """Test updating config."""
+    table = mem_db.create_table(
+        "test_config",
+        data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
+    )
+
+    result = table.update_config({"my_key": "my_value"})
+    assert result["my_key"] == "my_value"
+
+    # Replace config
+    result = table.update_config({"new_key": "new_value"}, replace=True)
+    assert "my_key" not in result
+    assert result["new_key"] == "new_value"
+
+
+@pytest.mark.asyncio
+async def test_update_config_async(mem_db_async: AsyncConnection):
+    """Test updating config asynchronously."""
+    table = await mem_db_async.create_table(
+        "test_config_async",
+        data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
+    )
+
+    result = await table.update_config({"my_key": "my_value"})
+    assert result["my_key"] == "my_value"

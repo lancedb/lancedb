@@ -29,6 +29,7 @@ import {
   OptimizeStats,
   TableStatistics,
   Tags,
+  UpdateMapEntry,
   UpdateResult,
   Table as _NativeTable,
 } from "./native";
@@ -205,6 +206,68 @@ export abstract class Table {
     updates: Map<string, string> | Record<string, string>,
     options?: Partial<UpdateOptions>,
   ): Promise<UpdateResult>;
+
+  /**
+   * Update table metadata.
+   *
+   * @param updates - The metadata updates to apply. Keys are metadata keys,
+   *                  values are the new values. Use `null` to remove a key.
+   * @param replace - If true, replace the entire metadata map. If false, merge
+   *                  updates with existing metadata. Defaults to false.
+   * @returns A promise that resolves to the updated metadata map.
+   * @example
+   * ```ts
+   * // Add metadata
+   * await table.updateMetadata({"description": "My test table", "version": "1.0"});
+   *
+   * // Update specific keys
+   * await table.updateMetadata({"version": "1.1", "author": "me"});
+   *
+   * // Remove a key
+   * await table.updateMetadata({"author": null});
+   * ```
+   */
+  abstract updateMetadata(
+    updates: Map<string, string | null> | Record<string, string | null>,
+    replace?: boolean,
+  ): Promise<Record<string, string>>;
+
+  /**
+   * Update schema metadata.
+   *
+   * @param updates - The schema metadata updates to apply. Keys are metadata keys,
+   *                  values are the new values. Use `null` to remove a key.
+   * @param replace - If true, replace the entire schema metadata map. If false,
+   *                  merge updates with existing metadata. Defaults to false.
+   * @returns A promise that resolves to the updated schema metadata map.
+   * @example
+   * ```ts
+   * // Add schema metadata
+   * await table.updateSchemaMetadata({"format_version": "2.0"});
+   * ```
+   */
+  abstract updateSchemaMetadata(
+    updates: Map<string, string | null> | Record<string, string | null>,
+    replace?: boolean,
+  ): Promise<Record<string, string>>;
+
+  /**
+   * Update config.
+   *
+   * @param updates - The config updates to apply. Keys are config keys,
+   *                  values are the new values. Use `null` to remove a key.
+   * @param replace - If true, replace the entire config map. If false, merge
+   *                  updates with existing config. Defaults to false.
+   * @returns A promise that resolves to the updated config map.
+   * @example
+   * ```ts
+   * await table.updateConfig({"my_config": "my_value"});
+   * ```
+   */
+  abstract updateConfig(
+    updates: Map<string, string | null> | Record<string, string | null>,
+    replace?: boolean,
+  ): Promise<Record<string, string>>;
 
   /** Count the total number of rows in the dataset. */
   abstract countRows(filter?: string): Promise<number>;
@@ -573,6 +636,20 @@ export abstract class Table {
   >;
 }
 
+function toUpdateEntries(
+  updates: Map<string, string | null> | Record<string, string | null>,
+): UpdateMapEntry[] {
+  const iterable =
+    updates instanceof Map
+      ? updates.entries()
+      : Object.entries(updates).values();
+
+  return Array.from(iterable, ([key, value]) => ({
+    key,
+    value: value ?? undefined,
+  }));
+}
+
 export class LocalTable extends Table {
   private readonly inner: _NativeTable;
 
@@ -676,6 +753,30 @@ export class LocalTable extends Table {
         predicate = options?.where;
     }
     return await this.inner.update(predicate, columns);
+  }
+
+  async updateMetadata(
+    updates: Map<string, string | null> | Record<string, string | null>,
+    replace: boolean = false,
+  ): Promise<Record<string, string>> {
+    return await this.inner.updateMetadata(toUpdateEntries(updates), replace);
+  }
+
+  async updateSchemaMetadata(
+    updates: Map<string, string | null> | Record<string, string | null>,
+    replace: boolean = false,
+  ): Promise<Record<string, string>> {
+    return await this.inner.updateSchemaMetadata(
+      toUpdateEntries(updates),
+      replace,
+    );
+  }
+
+  async updateConfig(
+    updates: Map<string, string | null> | Record<string, string | null>,
+    replace: boolean = false,
+  ): Promise<Record<string, string>> {
+    return await this.inner.updateConfig(toUpdateEntries(updates), replace);
   }
 
   async countRows(filter?: string): Promise<number> {

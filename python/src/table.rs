@@ -846,6 +846,103 @@ impl Table {
             Ok(())
         })
     }
+
+    /// Update table metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=True` to replace the entire metadata map.
+    ///
+    /// Returns the updated metadata map after the operation.
+    #[pyo3(signature = (updates, replace=false))]
+    pub fn update_metadata<'a>(
+        self_: PyRef<'a, Self>,
+        updates: &Bound<'_, PyDict>,
+        replace: bool,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let entries = extract_update_entries(updates)?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.update_metadata(entries);
+            if replace {
+                builder = builder.replace();
+            }
+            metadata_result_to_py(builder.await.infer_error()?)
+        })
+    }
+
+    /// Update schema metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=True` to replace the entire schema metadata map.
+    ///
+    /// Returns the updated schema metadata map after the operation.
+    #[pyo3(signature = (updates, replace=false))]
+    pub fn update_schema_metadata<'a>(
+        self_: PyRef<'a, Self>,
+        updates: &Bound<'_, PyDict>,
+        replace: bool,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let entries = extract_update_entries(updates)?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.update_schema_metadata(entries);
+            if replace {
+                builder = builder.replace();
+            }
+            metadata_result_to_py(builder.await.infer_error()?)
+        })
+    }
+
+    /// Update config
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=True` to replace the entire config map.
+    ///
+    /// Returns the updated config map after the operation.
+    #[pyo3(signature = (updates, replace=false))]
+    pub fn update_config<'a>(
+        self_: PyRef<'a, Self>,
+        updates: &Bound<'_, PyDict>,
+        replace: bool,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let entries = extract_update_entries(updates)?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let mut builder = inner.update_config(entries);
+            if replace {
+                builder = builder.replace();
+            }
+            metadata_result_to_py(builder.await.infer_error()?)
+        })
+    }
+}
+
+fn extract_update_entries(
+    updates: &Bound<'_, PyDict>,
+) -> PyResult<Vec<lancedb::table::UpdateMapEntry>> {
+    use lancedb::table::UpdateMapEntry;
+
+    let mut entries = Vec::new();
+    for (key, value) in updates.into_iter() {
+        let key: String = key.extract()?;
+        let value: Option<String> = if value.is_none() {
+            None
+        } else {
+            Some(value.extract()?)
+        };
+        entries.push(UpdateMapEntry { key, value });
+    }
+    Ok(entries)
+}
+
+fn metadata_result_to_py(result: HashMap<String, String>) -> PyResult<pyo3::Py<PyDict>> {
+    Python::attach(|py| {
+        let dict = PyDict::new(py);
+        for (k, v) in result {
+            dict.set_item(k, v)?;
+        }
+        Ok(dict.unbind())
+    })
 }
 
 #[derive(FromPyObject)]

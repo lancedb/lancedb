@@ -475,6 +475,84 @@ impl Table {
             .await
             .default_error()
     }
+
+    /// Update table metadata
+    ///
+    /// Pass `null` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire metadata map.
+    ///
+    /// Returns the updated metadata map after the operation.
+    #[napi(catch_unwind)]
+    pub async fn update_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> napi::Result<HashMap<String, String>> {
+        let mut builder = self.inner_ref()?.update_metadata(to_lance_entries(values));
+        if replace {
+            builder = builder.replace();
+        }
+        builder.await.default_error()
+    }
+
+    /// Update schema metadata
+    ///
+    /// Pass `null` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire schema metadata map.
+    ///
+    /// Returns the updated schema metadata map after the operation.
+    #[napi(catch_unwind)]
+    pub async fn update_schema_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> napi::Result<HashMap<String, String>> {
+        let mut builder = self
+            .inner_ref()?
+            .update_schema_metadata(to_lance_entries(values));
+        if replace {
+            builder = builder.replace();
+        }
+        builder.await.default_error()
+    }
+
+    /// Update config
+    ///
+    /// Pass `null` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire config map.
+    ///
+    /// Returns the updated config map after the operation.
+    #[napi(catch_unwind)]
+    pub async fn update_config(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> napi::Result<HashMap<String, String>> {
+        let mut builder = self.inner_ref()?.update_config(to_lance_entries(values));
+        if replace {
+            builder = builder.replace();
+        }
+        builder.await.default_error()
+    }
+}
+
+/// An entry for updating metadata maps
+#[napi(object)]
+pub struct UpdateMapEntry {
+    /// The key of the map entry to update
+    pub key: String,
+    /// The value to set for the key. Use `null` to remove the key.
+    pub value: Option<String>,
+}
+
+fn to_lance_entries(values: Vec<UpdateMapEntry>) -> Vec<lancedb::table::UpdateMapEntry> {
+    values
+        .into_iter()
+        .map(|entry| lancedb::table::UpdateMapEntry {
+            key: entry.key,
+            value: entry.value,
+        })
+        .collect()
 }
 
 #[napi(object)]

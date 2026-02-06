@@ -79,6 +79,7 @@ pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
 pub mod merge;
+pub mod metadata;
 pub mod update;
 
 use crate::index::waiter::wait_for_index;
@@ -89,6 +90,7 @@ pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
+pub use lance::dataset::transaction::UpdateMapEntry;
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
 pub use lance_index::optimize::OptimizeOptions;
 use serde_with::skip_serializing_none;
@@ -560,6 +562,42 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "create_insert_exec not implemented".to_string(),
         })
     }
+
+    /// Update table metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire metadata map.
+    ///
+    /// Returns the updated metadata map after the operation.
+    async fn update_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>>;
+
+    /// Update config
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire config map.
+    ///
+    /// Returns the updated config map after the operation.
+    async fn update_config(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>>;
+
+    /// Update schema metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    /// Pass `replace=true` to replace the entire schema metadata map.
+    ///
+    /// Returns the updated schema metadata map after the operation.
+    async fn update_schema_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>>;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -1401,6 +1439,111 @@ impl Table {
     /// Retrieve statistics on the table
     pub async fn stats(&self) -> Result<TableStatistics> {
         self.inner.stats().await
+    }
+
+    /// Update table metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    ///
+    /// Use `.replace()` to replace the entire metadata map instead of merging.
+    ///
+    /// Returns the updated metadata map after the operation.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use lancedb::{Table, Result};
+    /// # use lance::dataset::transaction::UpdateMapEntry;
+    /// # async fn example(table: &Table) -> Result<()> {
+    /// // Update single key
+    /// table.update_metadata([("key", "value")]).await?;
+    ///
+    /// // Remove a key
+    /// table.update_metadata([("to_delete", None)]).await?;
+    ///
+    /// // Clear all metadata
+    /// table.update_metadata([] as [UpdateMapEntry; 0]).replace().await?;
+    ///
+    /// // Replace full metadata
+    /// table.update_metadata([("k1", "v1"), ("k2", "v2")]).replace().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn update_metadata(
+        &self,
+        values: impl IntoIterator<Item = impl Into<UpdateMapEntry>>,
+    ) -> metadata::UpdateMetadataBuilder<'_> {
+        metadata::UpdateMetadataBuilder::new(self, values, metadata::MetadataType::TableMetadata)
+    }
+
+    /// Update config
+    ///
+    /// Pass `None` for a value to remove that key.
+    ///
+    /// Use `.replace()` to replace the entire config map instead of merging.
+    ///
+    /// Returns the updated config map after the operation.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use lancedb::{Table, Result};
+    /// # use lance::dataset::transaction::UpdateMapEntry;
+    /// # async fn example(table: &Table) -> Result<()> {
+    /// // Update single key
+    /// table.update_config([("key", "value")]).await?;
+    ///
+    /// // Remove a key
+    /// table.update_config([("to_delete", None)]).await?;
+    ///
+    /// // Clear all config
+    /// table.update_config([] as [UpdateMapEntry; 0]).replace().await?;
+    ///
+    /// // Replace full config
+    /// table.update_config([("k1", "v1"), ("k2", "v2")]).replace().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn update_config(
+        &self,
+        values: impl IntoIterator<Item = impl Into<UpdateMapEntry>>,
+    ) -> metadata::UpdateMetadataBuilder<'_> {
+        metadata::UpdateMetadataBuilder::new(self, values, metadata::MetadataType::Config)
+    }
+
+    /// Update schema metadata
+    ///
+    /// Pass `None` for a value to remove that key.
+    ///
+    /// Use `.replace()` to replace the entire schema metadata map instead of merging.
+    ///
+    /// Returns the updated schema metadata map after the operation.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use lancedb::{Table, Result};
+    /// # use lance::dataset::transaction::UpdateMapEntry;
+    /// # async fn example(table: &Table) -> Result<()> {
+    /// // Update single key
+    /// table.update_schema_metadata([("key", "value")]).await?;
+    ///
+    /// // Remove a key
+    /// table.update_schema_metadata([("to_delete", None)]).await?;
+    ///
+    /// // Clear all schema metadata
+    /// table.update_schema_metadata([] as [UpdateMapEntry; 0]).replace().await?;
+    ///
+    /// // Replace full schema metadata
+    /// table.update_schema_metadata([("k1", "v1"), ("k2", "v2")]).replace().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn update_schema_metadata(
+        &self,
+        values: impl IntoIterator<Item = impl Into<UpdateMapEntry>>,
+    ) -> metadata::UpdateMetadataBuilder<'_> {
+        metadata::UpdateMetadataBuilder::new(self, values, metadata::MetadataType::SchemaMetadata)
     }
 }
 
@@ -2563,7 +2706,7 @@ impl NativeTable {
         Ok(dataset.manifest().clone())
     }
 
-    /// Update key-value pairs in config.
+    #[deprecated(note = "Use Table::update_config() builder instead")]
     pub async fn update_config(
         &self,
         upsert_values: impl IntoIterator<Item = (String, String)>,
@@ -2574,29 +2717,39 @@ impl NativeTable {
     }
 
     /// Delete keys from the config
+    #[deprecated(note = "Use Table::update_config() builder with None values instead")]
     pub async fn delete_config_keys(&self, delete_keys: &[&str]) -> Result<()> {
         let mut dataset = self.dataset.get_mut().await?;
-        // TODO: update this when we implement metadata APIs
-        #[allow(deprecated)]
-        dataset.delete_config_keys(delete_keys).await?;
+        let entries: Vec<UpdateMapEntry> = delete_keys
+            .iter()
+            .map(|key| UpdateMapEntry {
+                key: key.to_string(),
+                value: None,
+            })
+            .collect();
+        dataset.update_config(entries).await?;
         Ok(())
     }
 
-    /// Update schema metadata
+    #[deprecated(note = "Use Table::update_schema_metadata() builder instead")]
     pub async fn replace_schema_metadata(
         &self,
         upsert_values: impl IntoIterator<Item = (String, String)>,
     ) -> Result<()> {
         let mut dataset = self.dataset.get_mut().await?;
-        // TODO: update this when we implement metadata APIs
-        #[allow(deprecated)]
-        dataset.replace_schema_metadata(upsert_values).await?;
+        let entries: Vec<UpdateMapEntry> = upsert_values
+            .into_iter()
+            .map(|(key, value)| UpdateMapEntry {
+                key,
+                value: Some(value),
+            })
+            .collect();
+        dataset.update_schema_metadata(entries).replace().await?;
         Ok(())
     }
 
     /// Update field metadata
     ///
-    /// # Arguments:
     /// * `new_values` - An iterator of tuples where the first element is the
     ///   field id and the second element is a hashmap of metadata key-value
     ///   pairs.
@@ -3317,6 +3470,48 @@ impl BaseTable for NativeTable {
             input,
             write_params,
         )))
+    }
+
+    async fn update_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let mut dataset = self.dataset.get_mut().await?;
+        let result = if replace {
+            dataset.update_metadata(values).replace().await?
+        } else {
+            dataset.update_metadata(values).await?
+        };
+        Ok(result)
+    }
+
+    async fn update_config(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let mut dataset = self.dataset.get_mut().await?;
+        let result = if replace {
+            dataset.update_config(values).replace().await?
+        } else {
+            dataset.update_config(values).await?
+        };
+        Ok(result)
+    }
+
+    async fn update_schema_metadata(
+        &self,
+        values: Vec<UpdateMapEntry>,
+        replace: bool,
+    ) -> Result<HashMap<String, String>> {
+        let mut dataset = self.dataset.get_mut().await?;
+        let result = if replace {
+            dataset.update_schema_metadata(values).replace().await?
+        } else {
+            dataset.update_schema_metadata(values).await?
+        };
+        Ok(result)
     }
 }
 
@@ -4418,6 +4613,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_update_dataset_config() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
@@ -4870,5 +5066,96 @@ mod tests {
 
         // Should have an empty vector
         assert!(ns_request.vector.single_vector.as_ref().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_metadata_update_builder() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        let table = conn
+            .create_table("test_builder", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+
+        // Test update_metadata with builder pattern
+        // 1. Update single key
+        let result = table.update_metadata([("key1", "value1")]).await.unwrap();
+        assert_eq!(result.get("key1"), Some(&"value1".to_string()));
+
+        // 2. Add another key (merge)
+        let result = table.update_metadata([("key2", "value2")]).await.unwrap();
+        assert_eq!(result.get("key1"), Some(&"value1".to_string()));
+        assert_eq!(result.get("key2"), Some(&"value2".to_string()));
+
+        // 3. Update and remove keys
+        let result = table
+            .update_metadata([("key1", Some("updated")), ("key2", None)])
+            .await
+            .unwrap();
+        assert_eq!(result.get("key1"), Some(&"updated".to_string()));
+        assert!(!result.contains_key("key2"));
+
+        // 4. Replace entire metadata
+        let result = table
+            .update_metadata([("new1", "val1"), ("new2", "val2")])
+            .replace()
+            .await
+            .unwrap();
+        assert!(!result.contains_key("key1"));
+        assert_eq!(result.get("new1"), Some(&"val1".to_string()));
+        assert_eq!(result.get("new2"), Some(&"val2".to_string()));
+
+        // 5. Clear all metadata
+        let result = table
+            .update_metadata([] as [UpdateMapEntry; 0])
+            .replace()
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+
+        // Test update_config with builder pattern
+        // 1. Add config
+        let result = table
+            .update_config([("config.key", "config.value")])
+            .await
+            .unwrap();
+        assert!(result.contains_key("config.key"));
+
+        // 2. Replace config
+        let result = table
+            .update_config([("new.config", "new.value")])
+            .replace()
+            .await
+            .unwrap();
+        assert!(!result.contains_key("config.key"));
+        assert_eq!(result.get("new.config"), Some(&"new.value".to_string()));
+
+        // Test update_schema_metadata with builder pattern
+        // 1. Add schema metadata
+        let result = table
+            .update_schema_metadata([("schema.key", "schema.value")])
+            .await
+            .unwrap();
+        assert_eq!(result.get("schema.key"), Some(&"schema.value".to_string()));
+
+        // 2. Replace schema metadata
+        let result = table
+            .update_schema_metadata([("new.schema", "new.schema.value")])
+            .replace()
+            .await
+            .unwrap();
+        assert!(!result.contains_key("schema.key"));
+        assert_eq!(
+            result.get("new.schema"),
+            Some(&"new.schema.value".to_string())
+        );
     }
 }
