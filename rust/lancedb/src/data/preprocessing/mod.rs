@@ -10,8 +10,9 @@
 //!    converts them to [`FixedSizeList`](arrow_schema::DataType::FixedSizeList) columns.
 //!    Mismatched-length vectors are handled via [`BadVectorStrategy`].
 //!
-//! 2. [`nan_handling`] — scans ALL `FixedSizeList` float columns (regardless of name)
-//!    and handles rows containing NaN values via [`NanStrategy`].
+//! 2. [`nan_handling`] — scans ALL float vector columns (`FixedSizeList`, `List`,
+//!    and `LargeList`) regardless of name and handles rows containing NaN values
+//!    via [`NanStrategy`].
 
 mod nan_handling;
 mod schema_inference;
