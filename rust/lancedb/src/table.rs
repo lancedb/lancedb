@@ -77,6 +77,7 @@ pub(crate) mod dataset;
 pub mod delete;
 pub mod merge;
 pub mod optimize;
+pub mod schema_evolution;
 pub mod update;
 
 use crate::index::waiter::wait_for_index;
@@ -89,6 +90,7 @@ use lance::dataset::statistics::DatasetStatisticsExt;
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
 pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
+pub use schema_evolution::{AddColumnsResult, AlterColumnsResult, DropColumnsResult};
 use serde_with::skip_serializing_none;
 pub use update::{UpdateBuilder, UpdateResult};
 
@@ -313,33 +315,6 @@ pub struct MergeResult {
     /// A value of 1 means the operation succeeded on the first try.
     #[serde(default)]
     pub num_attempts: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AddColumnsResult {
-    // The commit version associated with the operation.
-    // A version of `0` indicates compatibility with legacy servers that do not return
-    /// a commit version.
-    #[serde(default)]
-    pub version: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AlterColumnsResult {
-    // The commit version associated with the operation.
-    // A version of `0` indicates compatibility with legacy servers that do not return
-    /// a commit version.
-    #[serde(default)]
-    pub version: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct DropColumnsResult {
-    // The commit version associated with the operation.
-    // A version of `0` indicates compatibility with legacy servers that do not return
-    /// a commit version.
-    #[serde(default)]
-    pub version: u64,
 }
 
 /// A trait for anything "table-like".  This is used for both native tables (which target
@@ -2912,27 +2887,15 @@ impl BaseTable for NativeTable {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
-        let mut dataset = self.dataset.get_mut().await?;
-        dataset.add_columns(transforms, read_columns, None).await?;
-        Ok(AddColumnsResult {
-            version: dataset.version().version,
-        })
+        schema_evolution::execute_add_columns(self, transforms, read_columns).await
     }
 
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
-        let mut dataset = self.dataset.get_mut().await?;
-        dataset.alter_columns(alterations).await?;
-        Ok(AlterColumnsResult {
-            version: dataset.version().version,
-        })
+        schema_evolution::execute_alter_columns(self, alterations).await
     }
 
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
-        let mut dataset = self.dataset.get_mut().await?;
-        dataset.drop_columns(columns).await?;
-        Ok(DropColumnsResult {
-            version: dataset.version().version,
-        })
+        schema_evolution::execute_drop_columns(self, columns).await
     }
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {

@@ -11,7 +11,7 @@
     "ann"
   ],
   "private": false,
-  "version": "0.25.0-beta.0",
+  "version": "0.26.0",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
@@ -25,7 +25,6 @@
     "triples": {
       "defaults": false,
       "additional": [
-        "x86_64-apple-darwin",
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
