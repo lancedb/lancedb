@@ -214,8 +214,8 @@ pub(crate) async fn execute_optimize(
 mod tests {
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
     use arrow_schema::{DataType, Field, Schema};
+    use rstest::rstest;
     use std::sync::Arc;
-    use tempfile::tempdir;
 
     use crate::connect;
     use crate::index::{scalar::BTreeIndexBuilder, Index};
@@ -225,9 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_optimize_compact_simple() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
 
         // Create a table with initial data
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
@@ -313,9 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_optimize_prune_versions() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
 
         // Create a table
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
@@ -364,8 +360,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify prune stats are returned
-        assert!(stats.prune.is_some());
+        // Prune-only operation should not have compaction stats
+        assert!(stats.compaction.is_none());
+
+        // Verify prune stats
+        let prune_stats = stats.prune.unwrap();
+        assert!(prune_stats.bytes_removed > 0);
+        assert_eq!(prune_stats.old_versions, 5);
 
         // Verify data is still intact
         let final_row_count = table.count_rows(None).await.unwrap();
@@ -393,9 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_optimize_index() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
 
         // Create a table with data
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
@@ -433,6 +432,14 @@ mod tests {
             .await
             .unwrap();
 
+        // Verify index stats before optimization
+        let indices = table.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        let index_name = indices[0].name.clone();
+        let stats_before = table.index_stats(&index_name).await.unwrap().unwrap();
+        assert_eq!(stats_before.num_indexed_rows, 100);
+        assert_eq!(stats_before.num_unindexed_rows, 100);
+
         // Run index optimization
         let stats = table
             .optimize(OptimizeAction::Index(Default::default()))
@@ -443,35 +450,20 @@ mod tests {
         assert!(stats.compaction.is_none());
         assert!(stats.prune.is_none());
 
+        // Verify index stats after optimization
+        let stats_after = table.index_stats(&index_name).await.unwrap().unwrap();
+        assert_eq!(stats_after.num_indexed_rows, 200);
+        assert_eq!(stats_after.num_unindexed_rows, 0);
+        assert!(stats_after.num_indices.is_some());
+
         // Verify data integrity
         let final_row_count = table.count_rows(None).await.unwrap();
         assert_eq!(final_row_count, 200);
-
-        // Verify data content
-        let batches = table
-            .query()
-            .execute()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-
-        let mut all_values: Vec<i32> = Vec::new();
-        for batch in &batches {
-            let array = batch["i"].as_any().downcast_ref::<Int32Array>().unwrap();
-            all_values.extend(array.values().iter().copied());
-        }
-        all_values.sort();
-        let expected: Vec<i32> = (0..200).collect();
-        assert_eq!(all_values, expected);
     }
 
     #[tokio::test]
     async fn test_optimize_all() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
 
         // Create a table with data
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
@@ -554,9 +546,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_compact_with_deferred_index_remap() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+        // Smoke test: verifies compaction with deferred index remap doesn't error.
+        // We don't currently assert that remap is actually deferred.
+        let conn = connect("memory://").execute().await.unwrap();
 
         // Create a table with data
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
@@ -634,9 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_compaction_preserves_schema() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
 
         // Create a table with multiple columns
         let schema = Arc::new(Schema::new(vec![
@@ -702,9 +692,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_optimize_empty_table() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+        let conn = connect("memory://").execute().await.unwrap();
 
         // Create a table and delete all data
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
@@ -740,13 +728,22 @@ mod tests {
         assert_eq!(current_schema, schema);
     }
 
+    #[rstest]
+    #[case::all(OptimizeAction::All)]
+    #[case::compact(OptimizeAction::Compact {
+        options: CompactionOptions::default(),
+        remap_options: None,
+    })]
+    #[case::prune(OptimizeAction::Prune {
+        older_than: Some(chrono::Duration::try_days(0).unwrap()),
+        delete_unverified: Some(true),
+        error_if_tagged_old_versions: None,
+    })]
+    #[case::index(OptimizeAction::Index(Default::default()))]
     #[tokio::test]
-    async fn test_optimize_fails_on_checked_out_table() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
+    async fn test_optimize_fails_on_checked_out_table(#[case] action: OptimizeAction) {
+        let conn = connect("memory://").execute().await.unwrap();
 
-        // Create a table with some data
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -763,53 +760,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Add more data to create a second version
-        table
-            .add(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
-            .execute()
-            .await
-            .unwrap();
-
-        // Checkout version 1 (making table read-only)
-        table.checkout(1).await.unwrap();
-
-        // Try to optimize - should fail because table is checked out
-        let result = table.optimize(OptimizeAction::All).await;
-        assert!(result.is_err());
-
-        // Assert the error message contains the expected text
-        let err = result.unwrap_err();
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains("cannot be modified when a specific version is checked out"),
-            "Expected error message about checked out table, got: {}",
-            err_msg
-        );
-    }
-
-    #[tokio::test]
-    async fn test_compact_fails_on_checked_out_table() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
-
-        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from_iter_values(0..10))],
-        )
-        .unwrap();
-
-        let table = conn
-            .create_table(
-                "test_checkout_compact",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], schema.clone()),
-            )
-            .execute()
-            .await
-            .unwrap();
-
-        // Add data and checkout old version
         table
             .add(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
             .execute()
@@ -818,113 +768,10 @@ mod tests {
 
         table.checkout(1).await.unwrap();
 
-        // Try to compact - should fail
-        let result = table
-            .optimize(OptimizeAction::Compact {
-                options: CompactionOptions::default(),
-                remap_options: None,
-            })
-            .await;
+        let result = table.optimize(action).await;
         assert!(result.is_err());
 
-        let err = result.unwrap_err();
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains("cannot be modified when a specific version is checked out"),
-            "Expected error message about checked out table, got: {}",
-            err_msg
-        );
-    }
-
-    #[tokio::test]
-    async fn test_prune_fails_on_checked_out_table() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
-
-        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from_iter_values(0..10))],
-        )
-        .unwrap();
-
-        let table = conn
-            .create_table(
-                "test_checkout_prune",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], schema.clone()),
-            )
-            .execute()
-            .await
-            .unwrap();
-
-        // Add data and checkout old version
-        table
-            .add(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
-            .execute()
-            .await
-            .unwrap();
-
-        table.checkout(1).await.unwrap();
-
-        // Try to prune - should fail
-        let result = table
-            .optimize(OptimizeAction::Prune {
-                older_than: Some(chrono::Duration::try_days(0).unwrap()),
-                delete_unverified: Some(true),
-                error_if_tagged_old_versions: None,
-            })
-            .await;
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains("cannot be modified when a specific version is checked out"),
-            "Expected error message about checked out table, got: {}",
-            err_msg
-        );
-    }
-
-    #[tokio::test]
-    async fn test_index_optimize_fails_on_checked_out_table() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let conn = connect(uri).execute().await.unwrap();
-
-        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from_iter_values(0..10))],
-        )
-        .unwrap();
-
-        let table = conn
-            .create_table(
-                "test_checkout_index",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], schema.clone()),
-            )
-            .execute()
-            .await
-            .unwrap();
-
-        // Add data and checkout old version
-        table
-            .add(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
-            .execute()
-            .await
-            .unwrap();
-
-        table.checkout(1).await.unwrap();
-
-        // Try to optimize indices - should fail
-        let result = table
-            .optimize(OptimizeAction::Index(Default::default()))
-            .await;
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        let err_msg = err.to_string();
+        let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("cannot be modified when a specific version is checked out"),
             "Expected error message about checked out table, got: {}",
