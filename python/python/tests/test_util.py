@@ -292,18 +292,14 @@ class TestModel(lancedb.pydantic.LanceModel):
         lambda: pa.table({"a": [1], "b": [2]}),
         lambda: pa.table({"a": [1], "b": [2]}).to_reader(),
         lambda: iter(pa.table({"a": [1], "b": [2]}).to_batches()),
-        lambda: (
-            lance.write_dataset(
-                pa.table({"a": [1], "b": [2]}),
-                "memory://test",
-            )
+        lambda: lance.write_dataset(
+            pa.table({"a": [1], "b": [2]}),
+            "memory://test",
         ),
-        lambda: (
-            lance.write_dataset(
-                pa.table({"a": [1], "b": [2]}),
-                "memory://test",
-            ).scanner()
-        ),
+        lambda: lance.write_dataset(
+            pa.table({"a": [1], "b": [2]}),
+            "memory://test",
+        ).scanner(),
         lambda: pd.DataFrame({"a": [1], "b": [2]}),
         lambda: pl.DataFrame({"a": [1], "b": [2]}),
         lambda: pl.LazyFrame({"a": [1], "b": [2]}),
