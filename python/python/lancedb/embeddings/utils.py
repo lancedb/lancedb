@@ -269,6 +269,11 @@ def retry_with_exponential_backoff(
             # and say that it is assumed that if this portion errors out, it's due
             # to rate limit but the user should check the error message to be sure.
             except Exception as e:  # noqa: PERF203
+                # Don't retry on authentication errors (e.g., OpenAI 401)
+                # These are permanent failures that won't be fixed by retrying
+                if _is_non_retryable_error(e):
+                    raise
+
                 num_retries += 1
 
                 if num_retries > max_retries:
@@ -287,6 +292,29 @@ def retry_with_exponential_backoff(
                 time.sleep(delay)
 
     return wrapper
+
+
+def _is_non_retryable_error(error: Exception) -> bool:
+    """Check if an error should not be retried.
+
+    Args:
+        error: The exception to check
+
+    Returns:
+        True if the error should not be retried, False otherwise
+    """
+    # Check for OpenAI authentication errors
+    error_type = type(error).__name__
+    if error_type == "AuthenticationError":
+        return True
+
+    # Check for other common non-retryable HTTP status codes
+    # 401 Unauthorized, 403 Forbidden
+    if hasattr(error, "status_code"):
+        if error.status_code in (401, 403):
+            return True
+
+    return False
 
 
 def url_retrieve(url: str):
