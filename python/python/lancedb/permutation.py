@@ -754,7 +754,22 @@ class Permutation:
         processing use [iter](#iter) or a torch data loader to perform batched
         processing.
         """
-        pass
+        num_rows = self.num_rows
+        if index < 0:
+            index += num_rows
+        if index < 0 or index >= num_rows:
+            raise IndexError(
+                f"index {index} is out of range for permutation with {num_rows} rows"
+            )
+
+        async def do_getitem():
+            reader = await self.reader.with_offset(index)
+            reader = await reader.with_limit(1)
+            stream = await reader.read(self.selection, batch_size=1)
+            batch = await stream.__anext__()
+            return {col: batch.column(col)[0].as_py() for col in batch.schema.names}
+
+        return LOOP.run(do_getitem())
 
     @deprecated(details="Use with_skip instead")
     def skip(self, skip: int) -> "Permutation":

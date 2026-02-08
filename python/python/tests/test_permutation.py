@@ -945,3 +945,70 @@ def test_custom_transform(mem_db):
     batch = batches[0]
 
     assert batch == pa.record_batch([range(10)], ["id"])
+
+
+def test_getitem(mem_db):
+    """Test that __getitem__ returns a single row as a python dictionary."""
+    tbl = mem_db.create_table(
+        "test_table", pa.table({"id": range(10), "value": range(10, 20)})
+    )
+    permutation = Permutation.identity(tbl)
+
+    # Test basic indexing
+    row = permutation[0]
+    assert isinstance(row, dict)
+    assert row == {"id": 0, "value": 10}
+
+    row = permutation[5]
+    assert row == {"id": 5, "value": 15}
+
+    # Test last element
+    row = permutation[9]
+    assert row == {"id": 9, "value": 19}
+
+    # Test negative indexing
+    row = permutation[-1]
+    assert row == {"id": 9, "value": 19}
+
+    row = permutation[-10]
+    assert row == {"id": 0, "value": 10}
+
+    # Test out of range
+    with pytest.raises(IndexError):
+        permutation[10]
+
+    with pytest.raises(IndexError):
+        permutation[-11]
+
+
+def test_getitem_with_select_columns(mem_db):
+    """Test __getitem__ works after select_columns."""
+    tbl = mem_db.create_table(
+        "test_table", pa.table({"id": range(5), "value": range(5), "extra": range(5)})
+    )
+    permutation = Permutation.identity(tbl).select_columns(["id", "value"])
+
+    row = permutation[2]
+    assert row == {"id": 2, "value": 2}
+    assert "extra" not in row
+
+
+def test_getitem_with_torch_dataloader(mem_db):
+    """Test that __getitem__ works with torch DataLoader (issue #2996)."""
+    tbl = mem_db.create_table(
+        "test_table",
+        pa.table(
+            {
+                "video": [f"video-{i}" for i in range(6)],
+                "caption": [f"caption-{i}" for i in range(6)],
+            }
+        ),
+    )
+    permutation = Permutation.identity(tbl).select_columns(["video", "caption"])
+
+    # Verify __getitem__ returns valid data (not None)
+    for i in range(len(permutation)):
+        row = permutation[i]
+        assert row is not None
+        assert row["video"] == f"video-{i}"
+        assert row["caption"] == f"caption-{i}"
