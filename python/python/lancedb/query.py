@@ -1747,34 +1747,39 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         raise NotImplementedError("to_query_object not yet supported on a hybrid query")
 
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
-        # Save and strip user's column selection so it doesn't get pushed
-        # into the sub-queries (which would cause contradictory errors
-        # since FTS has _score and vector has _distance).
+        # Strip column-name lists so they don't get pushed into the
+        # sub-queries (which would cause contradictory errors since FTS has
+        # _score and vector has _distance). Dict (dynamic) selects are left
+        # alone — they contain SQL expressions evaluated during the scan.
         saved_columns = self._columns
-        self._columns = None
+        if isinstance(saved_columns, list):
+            self._columns = None
 
-        self._create_query_builders()
-        with ThreadPoolExecutor() as executor:
-            fts_future = executor.submit(
-                self._fts_query.with_row_id(True).to_arrow, timeout=timeout
+        try:
+            self._create_query_builders()
+            with ThreadPoolExecutor() as executor:
+                fts_future = executor.submit(
+                    self._fts_query.with_row_id(True).to_arrow, timeout=timeout
+                )
+                vector_future = executor.submit(
+                    self._vector_query.with_row_id(True).to_arrow, timeout=timeout
+                )
+                fts_results = fts_future.result()
+                vector_results = vector_future.result()
+
+            result = self._combine_hybrid_results(
+                fts_results=fts_results,
+                vector_results=vector_results,
+                norm=self._norm,
+                fts_query=self._fts_query._query,
+                reranker=self._reranker,
+                limit=self._limit,
+                with_row_ids=self._with_row_id,
             )
-            vector_future = executor.submit(
-                self._vector_query.with_row_id(True).to_arrow, timeout=timeout
-            )
-            fts_results = fts_future.result()
-            vector_results = vector_future.result()
+        finally:
+            self._columns = saved_columns
 
-        result = self._combine_hybrid_results(
-            fts_results=fts_results,
-            vector_results=vector_results,
-            norm=self._norm,
-            fts_query=self._fts_query._query,
-            reranker=self._reranker,
-            limit=self._limit,
-            with_row_ids=self._with_row_id,
-        )
-
-        if saved_columns is not None:
+        if isinstance(saved_columns, list):
             result = self._apply_hybrid_select(result, saved_columns)
 
         return result
@@ -1854,18 +1859,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     @staticmethod
     def _apply_hybrid_select(
         result: pa.Table,
-        columns: Union[List[str], Dict[str, str]],
+        columns: List[str],
     ) -> pa.Table:
         """Apply user-specified column selection to hybrid search results.
 
-        This is done after reranking because the sub-queries produce
-        _score / _distance which get fused into _relevance_score. Pushing the
-        user's select into sub-queries would cause contradictory errors.
+        Only column-name lists are handled here. Dict (dynamic) selects are
+        pushed to sub-queries directly and never reach this method.
         """
-        if isinstance(columns, dict):
-            raise ValueError(
-                "Dynamic column selection (dict) is not supported with hybrid search"
-            )
 
         for col in columns:
             if col in ("_score", "_distance"):
@@ -3131,10 +3131,15 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
     def select(self, columns: Union[List[str], dict[str, str]]) -> "AsyncHybridQuery":
         """Intercept column selection for hybrid queries.
 
-        The selection is applied after reranking rather than being pushed to
-        the sub-queries, which would cause contradictory errors because FTS
+        Column-name lists are applied after reranking rather than being pushed
+        to the sub-queries, which would cause contradictory errors because FTS
         produces ``_score`` and vector search produces ``_distance``.
+
+        Dict (dynamic) selects are still pushed to sub-queries since they
+        contain SQL expressions that are evaluated during the scan.
         """
+        if isinstance(columns, dict):
+            return super().select(columns)
         self._hybrid_columns = columns
         return self
 

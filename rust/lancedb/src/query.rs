@@ -940,9 +940,9 @@ fn apply_hybrid_select(batch: RecordBatch, select: &Select) -> Result<RecordBatc
 
             Ok(batch.project(&indices)?)
         }
-        Select::Dynamic(_) => Err(Error::InvalidInput {
-            message: "Dynamic column selection is not yet supported with hybrid search".to_string(),
-        }),
+        // Dynamic selects are evaluated by the sub-queries directly (not
+        // post-rerank), so by this point they've already been applied.
+        Select::Dynamic(_) => Ok(batch),
     }
 }
 
@@ -1178,11 +1178,17 @@ impl VectorQuery {
         // clone query and specify we want to include row IDs, which can be needed for reranking
         let mut fts_query = Query::new(self.parent.clone());
         fts_query.request = self.request.base.clone();
-        fts_query.request.select = Select::All;
         fts_query = fts_query.with_row_id();
 
         let mut vector_query = self.clone().with_row_id();
-        vector_query.request.base.select = Select::All;
+
+        // Only strip column-name selects; dynamic selects contain SQL
+        // expressions that are evaluated by the sub-queries and can't easily
+        // be applied post-rerank, so we leave them pushed down as before.
+        if matches!(user_select, Select::Columns(_)) {
+            fts_query.request.select = Select::All;
+            vector_query.request.base.select = Select::All;
+        }
 
         vector_query.request.base.full_text_search = None;
         let (fts_results, vec_results) = try_join!(
