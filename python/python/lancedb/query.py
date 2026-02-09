@@ -2167,8 +2167,16 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.limit(self._limit)
             self._fts_query.limit(self._limit)
         if self._columns:
-            self._vector_query.select(self._columns)
-            self._fts_query.select(self._columns)
+            # Filter out score/distance columns that only exist in one sub-query.
+            # Vector search produces _distance but not _score; FTS produces _score
+            # but not _distance. Passing them through causes misleading errors
+            # where each sub-query claims the other's field is valid (#3001).
+            vector_columns = [c for c in self._columns if c != "_score"]
+            fts_columns = [c for c in self._columns if c != "_distance"]
+            if vector_columns:
+                self._vector_query.select(vector_columns)
+            if fts_columns:
+                self._fts_query.select(fts_columns)
         if self._where:
             self._vector_query.where(self._where, self._postfilter)
             self._fts_query.where(self._where, self._postfilter)
