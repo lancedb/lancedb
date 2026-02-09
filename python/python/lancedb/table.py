@@ -2298,7 +2298,13 @@ class LanceTable(Table):
     ):
         if not use_tantivy:
             if not isinstance(field_names, str):
-                raise ValueError("field_names must be a string when use_tantivy=False")
+                raise ValueError(
+                    "Native FTS index only supports a single field. "
+                    "To search over multiple text fields, create a separate "
+                    "FTS index for each field. For example:\n"
+                    "  table.create_fts_index('field1')\n"
+                    "  table.create_fts_index('field2')"
+                )
 
             if tokenizer_name is None:
                 tokenizer_configs = {
