@@ -1,4 +1,5 @@
 .idea
+*.swp
 **/*.whl
 *.egg-info
 **/__pycache__
@@ -31,9 +32,6 @@ python/dist
 *.node
 **/node_modules
 **/.DS_Store
-node/dist
-node/examples/**/package-lock.json
-node/examples/**/dist
 nodejs/lancedb/native*
 dist
 

@@ -10,6 +10,9 @@ on:
       - .github/workflows/pypi-publish.yml
       - Cargo.toml # Change in dependency frequently breaks builds
 
+env:
+  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/"
+
 jobs:
   linux:
     name: Python ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
@@ -41,12 +44,12 @@ jobs:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
-          python-version: 3.8
+          python-version: "3.10"
       - uses: ./.github/workflows/build_linux_wheel
         with:
-          python-minor-version: 8
+          python-minor-version: 10
           args: "--release --strip ${{ matrix.config.extra_args }}"
           arm-build: ${{ matrix.config.platform == 'aarch64' }}
           manylinux: ${{ matrix.config.manylinux }}
@@ -56,15 +59,13 @@ jobs:
           pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           fury_token: ${{ secrets.FURY_TOKEN }}
   mac:
-    timeout-minutes: 60
+    timeout-minutes: 90
     runs-on: ${{ matrix.config.runner }}
     strategy:
       matrix:
         config:
-          - target: x86_64-apple-darwin
-            runner: macos-13
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: warp-macos-14-arm64-6x
     env:
       MACOSX_DEPLOYMENT_TARGET: 10.15
     steps:
@@ -73,12 +74,12 @@ jobs:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
-          python-version: 3.12
+          python-version: "3.13"
       - uses: ./.github/workflows/build_mac_wheel
         with:
-          python-minor-version: 8
+          python-minor-version: 10
           args: "--release --strip --target ${{ matrix.config.target }} --features fp16kernels"
       - uses: ./.github/workflows/upload_wheel
         if: startsWith(github.ref, 'refs/tags/python-v')
@@ -94,12 +95,12 @@ jobs:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
-          python-version: 3.12
+          python-version: "3.13"
       - uses: ./.github/workflows/build_windows_wheel
         with:
-          python-minor-version: 8
+          python-minor-version: 10
           args: "--release --strip"
           vcpkg_token: ${{ secrets.VCPKG_GITHUB_PACKAGES }}
       - uses: ./.github/workflows/upload_wheel
@@ -173,3 +174,17 @@ jobs:
           generate_release_notes: false
           name: Python LanceDB v${{ steps.extract_version.outputs.version }}
           body: ${{ steps.python_release_notes.outputs.changelog }}
+  report-failure:
+    name: Report Workflow Failure
+    runs-on: ubuntu-latest
+    needs: [linux, mac, windows]
+    permissions:
+      contents: read
+      issues: write
+    if: always() && failure() && startsWith(github.ref, 'refs/tags/python-v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/create-failure-issue
+        with:
+          job-results: ${{ toJSON(needs) }}
+          workflow-name: ${{ github.workflow }}

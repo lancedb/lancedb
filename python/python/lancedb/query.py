@@ -15,6 +15,7 @@ from typing import (
     Optional,
     Tuple,
     Type,
+    TypeVar,
     Union,
     Any,
 )
@@ -28,6 +29,7 @@ import pyarrow.fs as pa_fs
 import pydantic
 
 from lancedb.pydantic import PYDANTIC_VERSION
+from lancedb.background_loop import LOOP
 
 from . import __version__
 from .arrow import AsyncRecordBatchReader
@@ -36,7 +38,7 @@ from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .util import flatten_columns
-
+from lancedb._lancedb import fts_query_to_json
 from typing_extensions import Annotated
 
 if TYPE_CHECKING:
@@ -48,6 +50,7 @@ if TYPE_CHECKING:
     from ._lancedb import FTSQuery as LanceFTSQuery
     from ._lancedb import HybridQuery as LanceHybridQuery
     from ._lancedb import VectorQuery as LanceVectorQuery
+    from ._lancedb import TakeQuery as LanceTakeQuery
     from ._lancedb import PyQueryRequest
     from .common import VEC
     from .pydantic import LanceModel
@@ -57,6 +60,8 @@ if TYPE_CHECKING:
         from typing import Self
     else:
         from typing_extensions import Self
+
+T = TypeVar("T", bound="LanceModel")
 
 
 # Pydantic validation function for vector queries
@@ -119,6 +124,24 @@ class FullTextQuery(ABC):
             The type of the query.
         """
         pass
+
+    def to_json(self) -> str:
+        """
+        Convert the query to a JSON string.
+
+        Returns
+        -------
+        str
+            A JSON string representation of the query.
+
+        Examples
+        --------
+        >>> from lancedb.query import MatchQuery
+        >>> query = MatchQuery("puppy", "text", fuzziness=2)
+        >>> query.to_json()
+        '{"match":{"column":"text","terms":"puppy","boost":1.0,"fuzziness":2,"max_expansions":50,"operator":"Or","prefix_length":0}}'
+        """
+        return fts_query_to_json(self)
 
     def __and__(self, other: "FullTextQuery") -> "FullTextQuery":
         """
@@ -284,6 +307,8 @@ class BooleanQuery(FullTextQuery):
     ----------
     queries : list[tuple(Occur, FullTextQuery)]
         The list of queries with their occurrence requirements.
+        Each tuple contains an Occur value (MUST, SHOULD, or MUST_NOT)
+        and a FullTextQuery to apply.
     """
 
     queries: list[tuple[Occur, FullTextQuery]]
@@ -746,8 +771,8 @@ class LanceQueryBuilder(ABC):
         return self.to_arrow(timeout=timeout).to_pylist()
 
     def to_pydantic(
-        self, model: Type[LanceModel], *, timeout: Optional[timedelta] = None
-    ) -> List[LanceModel]:
+        self, model: type[T], *, timeout: Optional[timedelta] = None
+    ) -> list[T]:
         """Return the table as a list of pydantic models.
 
         Parameters
@@ -762,10 +787,7 @@ class LanceQueryBuilder(ABC):
         -------
         List[LanceModel]
         """
-        return [
-            model(**{k: v for k, v in row.items() if k in model.field_names()})
-            for row in self.to_arrow(timeout=timeout).to_pylist()
-        ]
+        return [model(**row) for row in self.to_arrow(timeout=timeout).to_pylist()]
 
     def to_polars(self, *, timeout: Optional[timedelta] = None) -> "pl.DataFrame":
         """
@@ -861,7 +883,7 @@ class LanceQueryBuilder(ABC):
         ----------
         where: str
             The where clause which is a valid SQL where clause. See
-            `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
+            `Lance filter pushdown <https://lance.org/guide/read_and_write#filter-push-down>`_
             for valid SQL expressions.
         prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
@@ -906,11 +928,11 @@ class LanceQueryBuilder(ABC):
         >>> plan = table.search(query).explain_plan(True)
         >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
-        GlobalLimitExec: skip=0, fetch=10
-          FilterExec: _distance@2 IS NOT NULL
-            SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
-              KNNVectorDistance: metric=l2
-                LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+          GlobalLimitExec: skip=0, fetch=10
+            FilterExec: _distance@2 IS NOT NULL
+              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+                KNNVectorDistance: metric=l2
+                  LanceRead: uri=..., projection=[vector], ...
 
         Parameters
         ----------
@@ -939,20 +961,27 @@ class LanceQueryBuilder(ABC):
         >>> query = [100, 100]
         >>> plan = table.search(query).analyze_plan()
         >>> print(plan)  # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
-        AnalyzeExec verbose=true, metrics=[]
-          ProjectionExec: expr=[...], metrics=[...]
-            GlobalLimitExec: skip=0, fetch=10, metrics=[...]
-              FilterExec: _distance@2 IS NOT NULL,
-              metrics=[output_rows=..., elapsed_compute=...]
-                SortExec: TopK(fetch=10), expr=[...],
-                preserve_partitioning=[...],
-                metrics=[output_rows=..., elapsed_compute=..., row_replacements=...]
-                  KNNVectorDistance: metric=l2,
-                  metrics=[output_rows=..., elapsed_compute=..., output_batches=...]
-                    LanceScan: uri=..., projection=[vector], row_id=true,
-                    row_addr=false, ordered=false,
+        AnalyzeExec verbose=true, elapsed=..., metrics=...
+          TracedExec, elapsed=..., metrics=...
+            ProjectionExec: elapsed=..., expr=[...],
+            metrics=[output_rows=..., elapsed_compute=..., output_bytes=...]
+              GlobalLimitExec: elapsed=..., skip=0, fetch=10,
+              metrics=[output_rows=..., elapsed_compute=..., output_bytes=...]
+                FilterExec: elapsed=..., _distance@2 IS NOT NULL, metrics=[...]
+                  SortExec: elapsed=..., TopK(fetch=10), expr=[...],
+                  preserve_partitioning=[...],
+                  metrics=[output_rows=..., elapsed_compute=...,
+                  output_bytes=..., row_replacements=...]
+                    KNNVectorDistance: elapsed=..., metric=l2,
                     metrics=[output_rows=..., elapsed_compute=...,
-                    bytes_read=..., iops=..., requests=...]
+                    output_bytes=..., output_batches=...]
+                      LanceRead: elapsed=..., uri=..., projection=[vector],
+                      num_fragments=..., range_before=None, range_after=None,
+                      row_id=true, row_addr=false,
+                      full_filter=--, refine_filter=--,
+                      metrics=[output_rows=..., elapsed_compute=..., output_bytes=...,
+                      fragments_scanned=..., ranges_scanned=1, rows_scanned=1,
+                      bytes_read=..., iops=..., requests=..., task_wait_time=...]
 
         Returns
         -------
@@ -1231,6 +1260,14 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._refine_factor = refine_factor
         return self
 
+    def output_schema(self) -> pa.Schema:
+        """
+        Return the output schema for the query
+
+        This does not execute the query.
+        """
+        return self._table._output_schema(self.to_query_object())
+
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         """
         Execute the query and return the results as an
@@ -1324,7 +1361,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         ----------
         where: str
             The where clause which is a valid SQL where clause. See
-            `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
+            `Lance filter pushdown <https://lance.org/guide/read_and_write#filter-push-down>`_
             for valid SQL expressions.
         prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
@@ -1396,6 +1433,19 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._bypass_vector_index = True
         return self
 
+    def fast_search(self) -> LanceVectorQueryBuilder:
+        """
+        Skip a flat search of unindexed data. This will improve
+        search performance but search results will not include unindexed data.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceVectorQueryBuilder object.
+        """
+        self._fast_search = True
+        return self
+
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     """A builder for full text search for LanceDB."""
@@ -1446,6 +1496,14 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             offset=self._offset,
         )
 
+    def output_schema(self) -> pa.Schema:
+        """
+        Return the output schema for the query
+
+        This does not execute the query.
+        """
+        return self._table._output_schema(self.to_query_object())
+
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         path, fs, exist = self._table._get_fts_index_path()
         if exist:
@@ -1455,7 +1513,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if self._phrase_query:
             if isinstance(query, str):
                 if not query.startswith('"') or not query.endswith('"'):
-                    query = f'"{query}"'
+                    self._query = f'"{query}"'
             elif isinstance(query, FullTextQuery) and not isinstance(
                 query, PhraseQuery
             ):
@@ -1588,6 +1646,10 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             with_row_id=self._with_row_id,
             offset=self._offset,
         )
+
+    def output_schema(self) -> pa.Schema:
+        query = self.to_query_object()
+        return self._table._output_schema(query)
 
     def to_batches(
         self, /, batch_size: Optional[int] = None, timeout: Optional[timedelta] = None
@@ -2039,11 +2101,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         >>> plan = table.search(query).explain_plan(True)
         >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
-        GlobalLimitExec: skip=0, fetch=10
-          FilterExec: _distance@2 IS NOT NULL
-            SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
-              KNNVectorDistance: metric=l2
-                LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+          GlobalLimitExec: skip=0, fetch=10
+            FilterExec: _distance@2 IS NOT NULL
+              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+                KNNVectorDistance: metric=l2
+                  LanceRead: uri=..., projection=[vector], ...
 
         Parameters
         ----------
@@ -2137,7 +2199,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
 
 class AsyncQueryBase(object):
-    def __init__(self, inner: Union[LanceQuery, LanceVectorQuery]):
+    """
+    Base class for all async queries (take, scan, vector, fts, hybrid)
+    """
+
+    def __init__(self, inner: Union[LanceQuery, LanceVectorQuery, LanceTakeQuery]):
         """
         Construct an AsyncQueryBase
 
@@ -2147,26 +2213,13 @@ class AsyncQueryBase(object):
         self._inner = inner
 
     def to_query_object(self) -> Query:
+        """
+        Convert the query into a query object
+
+        This is currently experimental but can be useful as the query object is pure
+        python and more easily serializable.
+        """
         return Query.from_inner(self._inner.to_query_request())
-
-    def where(self, predicate: str) -> Self:
-        """
-        Only return rows matching the given predicate
-
-        The predicate should be supplied as an SQL query string.
-
-        Examples
-        --------
-
-        >>> predicate = "x > 10"
-        >>> predicate = "y > 0 AND y < 100"
-        >>> predicate = "x > 5 OR y = 'test'"
-
-        Filtering performance can often be improved by creating a scalar index
-        on the filter column(s).
-        """
-        self._inner.where(predicate)
-        return self
 
     def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
         """
@@ -2206,68 +2259,11 @@ class AsyncQueryBase(object):
             raise TypeError("columns must be a list of column names or a dict")
         return self
 
-    def limit(self, limit: int) -> Self:
-        """
-        Set the maximum number of results to return.
-
-        By default, a plain search has no limit.  If this method is not
-        called then every valid row from the table will be returned.
-        """
-        self._inner.limit(limit)
-        return self
-
-    def offset(self, offset: int) -> Self:
-        """
-        Set the offset for the results.
-
-        Parameters
-        ----------
-        offset: int
-            The offset to start fetching results from.
-        """
-        self._inner.offset(offset)
-        return self
-
-    def fast_search(self) -> Self:
-        """
-        Skip searching un-indexed data.
-
-        This can make queries faster, but will miss any data that has not been
-        indexed.
-
-        !!! tip
-            You can add new data into an existing index by calling
-            [AsyncTable.optimize][lancedb.table.AsyncTable.optimize].
-        """
-        self._inner.fast_search()
-        return self
-
     def with_row_id(self) -> Self:
         """
         Include the _rowid column in the results.
         """
         self._inner.with_row_id()
-        return self
-
-    def postfilter(self) -> Self:
-        """
-        If this is called then filtering will happen after the search instead of
-        before.
-        By default filtering will be performed before the search.  This is how
-        filtering is typically understood to work.  This prefilter step does add some
-        additional latency.  Creating a scalar index on the filter column(s) can
-        often improve this latency.  However, sometimes a filter is too complex or
-        scalar indices cannot be applied to the column.  In these cases postfiltering
-        can be used instead of prefiltering to improve latency.
-        Post filtering applies the filter to the results of the search.  This
-        means we only run the filter on a much smaller set of data.  However, it can
-        cause the query to return fewer than `limit` results (or even no results) if
-        none of the nearest results match the filter.
-        Post filtering happens during the "refine stage" (described in more detail in
-        @see {@link VectorQuery#refineFactor}).  This means that setting a higher refine
-        factor can often help restore some of the results lost by post filtering.
-        """
-        self._inner.postfilter()
         return self
 
     async def to_batches(
@@ -2293,8 +2289,18 @@ class AsyncQueryBase(object):
             complete within the specified time, an error will be raised.
         """
         return AsyncRecordBatchReader(
-            await self._inner.execute(max_batch_length, timeout)
+            await self._inner.execute(
+                max_batch_length=max_batch_length, timeout=timeout
+            )
         )
+
+    async def output_schema(self) -> pa.Schema:
+        """
+        Return the output schema for the query
+
+        This does not execute the query.
+        """
+        return await self._inner.output_schema()
 
     async def to_arrow(self, timeout: Optional[timedelta] = None) -> pa.Table:
         """
@@ -2410,6 +2416,28 @@ class AsyncQueryBase(object):
 
         return pl.from_arrow(await self.to_arrow(timeout=timeout))
 
+    async def to_pydantic(
+        self, model: Type[LanceModel], *, timeout: Optional[timedelta] = None
+    ) -> List[LanceModel]:
+        """
+        Convert results to a list of pydantic models.
+
+        Parameters
+        ----------
+        model : Type[LanceModel]
+            The pydantic model to use.
+        timeout : timedelta, optional
+            The maximum time to wait for the query to complete.
+            If None, wait indefinitely.
+
+        Returns
+        -------
+        list[LanceModel]
+        """
+        return [
+            model(**row) for row in (await self.to_arrow(timeout=timeout)).to_pylist()
+        ]
+
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
 
@@ -2419,17 +2447,17 @@ class AsyncQueryBase(object):
         >>> from lancedb import connect_async
         >>> async def doctest_example():
         ...     conn = await connect_async("./.lancedb")
-        ...     table = await conn.create_table("my_table", [{"vector": [99, 99]}])
-        ...     query = [100, 100]
-        ...     plan = await table.query().nearest_to([1, 2]).explain_plan(True)
+        ...     table = await conn.create_table("my_table", [{"vector": [99.0, 99.0]}])
+        ...     plan = await table.query().nearest_to([1.0, 2.0]).explain_plan(True)
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
           GlobalLimitExec: skip=0, fetch=10
             FilterExec: _distance@2 IS NOT NULL
-              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
-                  LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+                  LanceRead: uri=..., projection=[vector], ...
+        <BLANKLINE>
 
         Parameters
         ----------
@@ -2452,7 +2480,98 @@ class AsyncQueryBase(object):
         return await self._inner.analyze_plan()
 
 
-class AsyncQuery(AsyncQueryBase):
+class AsyncStandardQuery(AsyncQueryBase):
+    """
+    Base class for "standard" async queries (all but take currently)
+    """
+
+    def __init__(self, inner: Union[LanceQuery, LanceVectorQuery]):
+        """
+        Construct an AsyncStandardQuery
+
+        This method is not intended to be called directly.  Instead, use the
+        [AsyncTable.query][lancedb.table.AsyncTable.query] method to create a query.
+        """
+        super().__init__(inner)
+
+    def where(self, predicate: str) -> Self:
+        """
+        Only return rows matching the given predicate
+
+        The predicate should be supplied as an SQL query string.
+
+        Examples
+        --------
+
+        >>> predicate = "x > 10"
+        >>> predicate = "y > 0 AND y < 100"
+        >>> predicate = "x > 5 OR y = 'test'"
+
+        Filtering performance can often be improved by creating a scalar index
+        on the filter column(s).
+        """
+        self._inner.where(predicate)
+        return self
+
+    def limit(self, limit: int) -> Self:
+        """
+        Set the maximum number of results to return.
+
+        By default, a plain search has no limit.  If this method is not
+        called then every valid row from the table will be returned.
+        """
+        self._inner.limit(limit)
+        return self
+
+    def offset(self, offset: int) -> Self:
+        """
+        Set the offset for the results.
+
+        Parameters
+        ----------
+        offset: int
+            The offset to start fetching results from.
+        """
+        self._inner.offset(offset)
+        return self
+
+    def fast_search(self) -> Self:
+        """
+        Skip searching un-indexed data.
+
+        This can make queries faster, but will miss any data that has not been
+        indexed.
+
+        !!! tip
+            You can add new data into an existing index by calling
+            [AsyncTable.optimize][lancedb.table.AsyncTable.optimize].
+        """
+        self._inner.fast_search()
+        return self
+
+    def postfilter(self) -> Self:
+        """
+        If this is called then filtering will happen after the search instead of
+        before.
+        By default filtering will be performed before the search.  This is how
+        filtering is typically understood to work.  This prefilter step does add some
+        additional latency.  Creating a scalar index on the filter column(s) can
+        often improve this latency.  However, sometimes a filter is too complex or
+        scalar indices cannot be applied to the column.  In these cases postfiltering
+        can be used instead of prefiltering to improve latency.
+        Post filtering applies the filter to the results of the search.  This
+        means we only run the filter on a much smaller set of data.  However, it can
+        cause the query to return fewer than `limit` results (or even no results) if
+        none of the nearest results match the filter.
+        Post filtering happens during the "refine stage" (described in more detail in
+        @see {@link VectorQuery#refineFactor}).  This means that setting a higher refine
+        factor can often help restore some of the results lost by post filtering.
+        """
+        self._inner.postfilter()
+        return self
+
+
+class AsyncQuery(AsyncStandardQuery):
     def __init__(self, inner: LanceQuery):
         """
         Construct an AsyncQuery
@@ -2586,7 +2705,7 @@ class AsyncQuery(AsyncQueryBase):
         return AsyncFTSQuery(self._inner.nearest_to_text({"query": query}))
 
 
-class AsyncFTSQuery(AsyncQueryBase):
+class AsyncFTSQuery(AsyncStandardQuery):
     """A query for full text search for LanceDB."""
 
     def __init__(self, inner: LanceFTSQuery):
@@ -2865,7 +2984,7 @@ class AsyncVectorQueryBase:
         return self
 
 
-class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
+class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
     def __init__(self, inner: LanceVectorQuery):
         """
         Construct an AsyncVectorQuery
@@ -2948,7 +3067,7 @@ class AsyncVectorQuery(AsyncQueryBase, AsyncVectorQueryBase):
         return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
-class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
+class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
     """
     A query builder that performs hybrid vector and full text search.
     Results are combined and reranked based on the specified reranker.
@@ -3040,10 +3159,9 @@ class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
         >>> from lancedb.index import FTS
         >>> async def doctest_example():
         ...     conn = await connect_async("./.lancedb")
-        ...     table = await conn.create_table("my_table", [{"vector": [99, 99], "text": "hello world"}])
+        ...     table = await conn.create_table("my_table", [{"vector": [99.0, 99.0], "text": "hello world"}])
         ...     await table.create_index("text", config=FTS(with_position=False))
-        ...     query = [100, 100]
-        ...     plan = await table.query().nearest_to([1, 2]).nearest_to_text("hello").explain_plan(True)
+        ...     plan = await table.query().nearest_to([1.0, 2.0]).nearest_to_text("hello").explain_plan(True)
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         Vector Search Plan:
@@ -3052,16 +3170,16 @@ class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
             CoalesceBatchesExec: target_batch_size=1024
               GlobalLimitExec: skip=0, fetch=10
                 FilterExec: _distance@2 IS NOT NULL
-                  SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+                  SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                     KNNVectorDistance: metric=l2
-                      LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+                      LanceRead: uri=..., projection=[vector], ...
         <BLANKLINE>
         FTS Search Plan:
         ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
           Take: columns="_rowid, _score, (vector), (text)"
             CoalesceBatchesExec: target_batch_size=1024
               GlobalLimitExec: skip=0, fetch=10
-                MatchQuery: query=hello
+                MatchQuery: column=text, query=hello
         <BLANKLINE>
 
         Parameters
@@ -3100,3 +3218,260 @@ class AsyncHybridQuery(AsyncQueryBase, AsyncVectorQueryBase):
         results.append(await self._inner.to_fts_query().analyze_plan())
 
         return "\n".join(results)
+
+
+class AsyncTakeQuery(AsyncQueryBase):
+    """
+    Builder for parameterizing and executing take queries.
+    """
+
+    def __init__(self, inner: LanceTakeQuery):
+        super().__init__(inner)
+
+
+class BaseQueryBuilder(object):
+    """
+    Wraps AsyncQueryBase and provides a synchronous interface
+    """
+
+    def __init__(self, inner: AsyncQueryBase):
+        self._inner = inner
+
+    def to_query_object(self) -> Query:
+        return self._inner.to_query_object()
+
+    def select(self, columns: Union[List[str], dict[str, str]]) -> Self:
+        """
+        Return only the specified columns.
+
+        By default a query will return all columns from the table.  However, this can
+        have a very significant impact on latency.  LanceDb stores data in a columnar
+        fashion.  This
+        means we can finely tune our I/O to select exactly the columns we need.
+
+        As a best practice you should always limit queries to the columns that you need.
+        If you pass in a list of column names then only those columns will be
+        returned.
+
+        You can also use this method to create new "dynamic" columns based on your
+        existing columns. For example, you may not care about "a" or "b" but instead
+        simply want "a + b".  This is often seen in the SELECT clause of an SQL query
+        (e.g. `SELECT a+b FROM my_table`).
+
+        To create dynamic columns you can pass in a dict[str, str].  A column will be
+        returned for each entry in the map.  The key provides the name of the column.
+        The value is an SQL string used to specify how the column is calculated.
+
+        For example, an SQL query might state `SELECT a + b AS combined, c`.  The
+        equivalent input to this method would be `{"combined": "a + b", "c": "c"}`.
+
+        Columns will always be returned in the order given, even if that order is
+        different than the order used when adding the data.
+        """
+        self._inner.select(columns)
+        return self
+
+    def with_row_id(self) -> Self:
+        """
+        Include the _rowid column in the results.
+        """
+        self._inner.with_row_id()
+        return self
+
+    def output_schema(self) -> pa.Schema:
+        """
+        Return the output schema for the query
+
+        This does not execute the query.
+        """
+        return LOOP.run(self._inner.output_schema())
+
+    def to_batches(
+        self,
+        *,
+        max_batch_length: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> pa.RecordBatchReader:
+        """
+        Execute the query and return the results as an Apache Arrow RecordBatchReader.
+
+        Parameters
+        ----------
+
+        max_batch_length: Optional[int]
+            The maximum number of selected records in a single RecordBatch object.
+            If not specified, a default batch length is used.
+            It is possible for batches to be smaller than the provided length if the
+            underlying data is stored in smaller chunks.
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If not specified, no timeout is applied. If the query does not
+            complete within the specified time, an error will be raised.
+        """
+        async_iter = LOOP.run(self._inner.execute(max_batch_length, timeout))
+
+        def iter_sync():
+            try:
+                while True:
+                    yield LOOP.run(async_iter.__anext__())
+            except StopAsyncIteration:
+                return
+
+        return pa.RecordBatchReader.from_batches(async_iter.schema, iter_sync())
+
+    def to_arrow(self, timeout: Optional[timedelta] = None) -> pa.Table:
+        """
+        Execute the query and collect the results into an Apache Arrow Table.
+
+        This method will collect all results into memory before returning.  If
+        you expect a large number of results, you may want to use
+        [to_batches][lancedb.query.AsyncQueryBase.to_batches]
+
+        Parameters
+        ----------
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If not specified, no timeout is applied. If the query does not
+            complete within the specified time, an error will be raised.
+        """
+        return LOOP.run(self._inner.to_arrow(timeout))
+
+    def to_list(self, timeout: Optional[timedelta] = None) -> List[dict]:
+        """
+        Execute the query and return the results as a list of dictionaries.
+
+        Each list entry is a dictionary with the selected column names as keys,
+        or all table columns if `select` is not called. The vector and the "_distance"
+        fields are returned whether or not they're explicitly selected.
+
+        Parameters
+        ----------
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If not specified, no timeout is applied. If the query does not
+            complete within the specified time, an error will be raised.
+        """
+        return LOOP.run(self._inner.to_list(timeout))
+
+    def to_pandas(
+        self,
+        flatten: Optional[Union[int, bool]] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> "pd.DataFrame":
+        """
+        Execute the query and collect the results into a pandas DataFrame.
+
+        This method will collect all results into memory before returning.  If you
+        expect a large number of results, you may want to use
+        [to_batches][lancedb.query.AsyncQueryBase.to_batches] and convert each batch to
+        pandas separately.
+
+        Examples
+        --------
+
+        >>> import asyncio
+        >>> from lancedb import connect_async
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", data=[{"a": 1, "b": 2}])
+        ...     async for batch in await table.query().to_batches():
+        ...         batch_df = batch.to_pandas()
+        >>> asyncio.run(doctest_example())
+
+        Parameters
+        ----------
+        flatten: Optional[Union[int, bool]]
+            If flatten is True, flatten all nested columns.
+            If flatten is an integer, flatten the nested columns up to the
+            specified depth.
+            If unspecified, do not flatten the nested columns.
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If not specified, no timeout is applied. If the query does not
+            complete within the specified time, an error will be raised.
+        """
+        return LOOP.run(self._inner.to_pandas(flatten, timeout))
+
+    def to_polars(
+        self,
+        timeout: Optional[timedelta] = None,
+    ) -> "pl.DataFrame":
+        """
+        Execute the query and collect the results into a Polars DataFrame.
+
+        This method will collect all results into memory before returning.  If you
+        expect a large number of results, you may want to use
+        [to_batches][lancedb.query.AsyncQueryBase.to_batches] and convert each batch to
+        polars separately.
+
+        Parameters
+        ----------
+        timeout: Optional[timedelta]
+            The maximum time to wait for the query to complete.
+            If not specified, no timeout is applied. If the query does not
+            complete within the specified time, an error will be raised.
+
+        Examples
+        --------
+
+        >>> import asyncio
+        >>> import polars as pl
+        >>> from lancedb import connect_async
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", data=[{"a": 1, "b": 2}])
+        ...     async for batch in await table.query().to_batches():
+        ...         batch_df = pl.from_arrow(batch)
+        >>> asyncio.run(doctest_example())
+        """
+        return LOOP.run(self._inner.to_polars(timeout))
+
+    def explain_plan(self, verbose: Optional[bool] = False):
+        """Return the execution plan for this query.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> from lancedb import connect_async
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", [{"vector": [99.0, 99.0]}])
+        ...     plan = await table.query().nearest_to([1.0, 2.0]).explain_plan(True)
+        ...     print(plan)
+        >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+        ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
+          GlobalLimitExec: skip=0, fetch=10
+            FilterExec: _distance@2 IS NOT NULL
+              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+                KNNVectorDistance: metric=l2
+                  LanceRead: uri=..., projection=[vector], ...
+        <BLANKLINE>
+
+        Parameters
+        ----------
+        verbose : bool, default False
+            Use a verbose output format.
+
+        Returns
+        -------
+        plan : str
+        """  # noqa: E501
+        return LOOP.run(self._inner.explain_plan(verbose))
+
+    def analyze_plan(self):
+        """Execute the query and display with runtime metrics.
+
+        Returns
+        -------
+        plan : str
+        """
+        return LOOP.run(self._inner.analyze_plan())
+
+
+class LanceTakeQueryBuilder(BaseQueryBuilder):
+    """
+    Builder for parameterizing and executing take queries.
+    """
+
+    def __init__(self, inner: AsyncTakeQuery):
+        super().__init__(inner)

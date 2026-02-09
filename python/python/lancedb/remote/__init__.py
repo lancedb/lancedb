@@ -8,7 +8,15 @@ from typing import List, Optional
 
 from lancedb import __version__
 
-__all__ = ["TimeoutConfig", "RetryConfig", "ClientConfig"]
+from .header import HeaderProvider
+
+__all__ = [
+    "TimeoutConfig",
+    "RetryConfig",
+    "TlsConfig",
+    "ClientConfig",
+    "HeaderProvider",
+]
 
 
 @dataclass
@@ -17,6 +25,12 @@ class TimeoutConfig:
 
     Attributes
     ----------
+    timeout: Optional[timedelta]
+        The overall timeout for the entire request. This includes connection,
+        send, and read time. If the entire request doesn't complete within
+        this time, it will fail. Default is None (no overall timeout).
+        This can also be set via the environment variable
+        `LANCE_CLIENT_TIMEOUT`, as an integer number of seconds.
     connect_timeout: Optional[timedelta]
         The timeout for establishing a connection. Default is 120 seconds (2 minutes).
         This can also be set via the environment variable
@@ -31,6 +45,7 @@ class TimeoutConfig:
         `LANCE_CLIENT_CONNECTION_TIMEOUT`, as an integer number of seconds.
     """
 
+    timeout: Optional[timedelta] = None
     connect_timeout: Optional[timedelta] = None
     read_timeout: Optional[timedelta] = None
     pool_idle_timeout: Optional[timedelta] = None
@@ -50,6 +65,7 @@ class TimeoutConfig:
             )
 
     def __post_init__(self):
+        self.timeout = self.__to_timedelta(self.timeout)
         self.connect_timeout = self.__to_timedelta(self.connect_timeout)
         self.read_timeout = self.__to_timedelta(self.read_timeout)
         self.pool_idle_timeout = self.__to_timedelta(self.pool_idle_timeout)
@@ -105,14 +121,42 @@ class RetryConfig:
 
 
 @dataclass
+class TlsConfig:
+    """TLS/mTLS configuration for the remote HTTP client.
+
+    Attributes
+    ----------
+    cert_file: Optional[str]
+        Path to the client certificate file (PEM format) for mTLS authentication.
+    key_file: Optional[str]
+        Path to the client private key file (PEM format) for mTLS authentication.
+    ssl_ca_cert: Optional[str]
+        Path to the CA certificate file (PEM format) for server verification.
+    assert_hostname: bool
+        Whether to verify the hostname in the server's certificate. Default is True.
+        Set to False to disable hostname verification (use with caution).
+    """
+
+    cert_file: Optional[str] = None
+    key_file: Optional[str] = None
+    ssl_ca_cert: Optional[str] = None
+    assert_hostname: bool = True
+
+
+@dataclass
 class ClientConfig:
     user_agent: str = f"LanceDB-Python-Client/{__version__}"
     retry_config: RetryConfig = field(default_factory=RetryConfig)
     timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
     extra_headers: Optional[dict] = None
+    id_delimiter: Optional[str] = None
+    tls_config: Optional[TlsConfig] = None
+    header_provider: Optional["HeaderProvider"] = None
 
     def __post_init__(self):
         if isinstance(self.retry_config, dict):
             self.retry_config = RetryConfig(**self.retry_config)
         if isinstance(self.timeout_config, dict):
             self.timeout_config = TimeoutConfig(**self.timeout_config)
+        if isinstance(self.tls_config, dict):
+            self.tls_config = TlsConfig(**self.tls_config)

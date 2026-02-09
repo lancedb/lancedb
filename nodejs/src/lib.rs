@@ -8,12 +8,15 @@ use napi_derive::*;
 
 mod connection;
 mod error;
+mod header;
 mod index;
 mod iterator;
 pub mod merge;
+pub mod permutation;
 mod query;
 pub mod remote;
 mod rerankers;
+mod session;
 mod table;
 mod util;
 
@@ -32,8 +35,11 @@ pub struct ConnectionOptions {
     pub read_consistency_interval: Option<f64>,
     /// (For LanceDB OSS only): configuration for object storage.
     ///
-    /// The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+    /// The available options are described at https://lancedb.com/docs/storage/
     pub storage_options: Option<HashMap<String, String>>,
+    /// (For LanceDB OSS only): the session to use for this connection. Holds
+    /// shared caches and other session-specific state.
+    pub session: Option<session::Session>,
 
     /// (For LanceDB cloud only): configuration for the remote HTTP client.
     pub client_config: Option<remote::ClientConfig>,

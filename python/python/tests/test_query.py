@@ -5,6 +5,7 @@ from typing import List, Union
 import unittest.mock as mock
 from datetime import timedelta
 from pathlib import Path
+import random
 
 import lancedb
 from lancedb.db import AsyncConnection
@@ -445,13 +446,31 @@ def test_invalid_nprobes_sync(table):
     with pytest.raises(ValueError, match="minimum_nprobes must be greater than 0"):
         LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(0).to_list()
     with pytest.raises(
-        ValueError, match="maximum_nprobes must be greater than minimum_nprobes"
+        ValueError,
+        match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
         LanceVectorQueryBuilder(table, [0, 0], "vector").maximum_nprobes(5).to_list()
     with pytest.raises(
-        ValueError, match="minimum_nprobes must be less or equal to maximum_nprobes"
+        ValueError,
+        match="minimum_nprobes must be less than or equal to maximum_nprobes",
     ):
         LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(100).to_list()
+
+
+def test_nprobes_works_sync(table):
+    LanceVectorQueryBuilder(table, [0, 0], "vector").nprobes(30).to_list()
+
+
+def test_nprobes_min_max_works_sync(table):
+    LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(2).maximum_nprobes(
+        4
+    ).to_list()
+
+
+def test_multiple_nprobes_calls_works_sync(table):
+    LanceVectorQueryBuilder(table, [0, 0], "vector").nprobes(30).maximum_nprobes(
+        20
+    ).minimum_nprobes(20).to_list()
 
 
 @pytest.mark.asyncio
@@ -459,11 +478,13 @@ async def test_invalid_nprobes_async(table_async: AsyncTable):
     with pytest.raises(ValueError, match="minimum_nprobes must be greater than 0"):
         await table_async.vector_search([0, 0]).minimum_nprobes(0).to_list()
     with pytest.raises(
-        ValueError, match="maximum_nprobes must be greater than minimum_nprobes"
+        ValueError,
+        match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
         await table_async.vector_search([0, 0]).maximum_nprobes(5).to_list()
     with pytest.raises(
-        ValueError, match="minimum_nprobes must be less or equal to maximum_nprobes"
+        ValueError,
+        match="minimum_nprobes must be less than or equal to maximum_nprobes",
     ):
         await table_async.vector_search([0, 0]).minimum_nprobes(100).to_list()
 
@@ -789,7 +810,7 @@ async def test_explain_plan_fts(table_async: AsyncTable):
     query = await table_async.search("dog", query_type="fts", fts_columns="text")
     plan = await query.explain_plan()
     # Should show FTS details (issue #2465 is now fixed)
-    assert "MatchQuery: query=dog" in plan
+    assert "MatchQuery: column=text, query=dog" in plan
     assert "GlobalLimitExec" in plan  # Default limit
 
     # Test FTS query with limit
@@ -797,7 +818,7 @@ async def test_explain_plan_fts(table_async: AsyncTable):
         "dog", query_type="fts", fts_columns="text"
     )
     plan_with_limit = await query_with_limit.limit(1).explain_plan()
-    assert "MatchQuery: query=dog" in plan_with_limit
+    assert "MatchQuery: column=text, query=dog" in plan_with_limit
     assert "GlobalLimitExec: skip=0, fetch=1" in plan_with_limit
 
     # Test FTS query with offset and limit
@@ -805,7 +826,7 @@ async def test_explain_plan_fts(table_async: AsyncTable):
         "dog", query_type="fts", fts_columns="text"
     )
     plan_with_offset = await query_with_offset.offset(1).limit(1).explain_plan()
-    assert "MatchQuery: query=dog" in plan_with_offset
+    assert "MatchQuery: column=text, query=dog" in plan_with_offset
     assert "GlobalLimitExec: skip=1, fetch=1" in plan_with_offset
 
 
@@ -839,7 +860,7 @@ async def test_explain_plan_with_filters(table_async: AsyncTable):
         table_async.query().nearest_to(pa.array([1, 2])).where("id = 1").explain_plan()
     )
     assert "KNN" in plan_with_filter
-    assert "FilterExec" in plan_with_filter
+    assert "LanceRead" in plan_with_filter
 
     # Test FTS query with filter
     from lancedb.index import FTS
@@ -849,8 +870,9 @@ async def test_explain_plan_with_filters(table_async: AsyncTable):
         "dog", query_type="fts", fts_columns="text"
     )
     plan_fts_filter = await query_fts_filter.where("id = 1").explain_plan()
-    assert "MatchQuery: query=dog" in plan_fts_filter
-    assert "FilterExec: id@" in plan_fts_filter  # Should show filter details
+    assert "MatchQuery: column=text, query=dog" in plan_fts_filter
+    assert "LanceRead" in plan_fts_filter
+    assert "full_filter=id = Int64(1)" in plan_fts_filter  # Should show filter details
 
 
 @pytest.mark.asyncio
@@ -1276,6 +1298,79 @@ async def test_query_serialization_async(table_async: AsyncTable):
     )
 
 
+def test_query_schema(tmp_path):
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table(
+        "test",
+        pa.table(
+            {
+                "a": [1, 2, 3],
+                "text": ["a", "b", "c"],
+                "vec": pa.array(
+                    [[1, 2], [3, 4], [5, 6]], pa.list_(pa.float32(), list_size=2)
+                ),
+            }
+        ),
+    )
+
+    assert tbl.search(None).output_schema() == pa.schema(
+        {
+            "a": pa.int64(),
+            "text": pa.string(),
+            "vec": pa.list_(pa.float32(), list_size=2),
+        }
+    )
+    assert tbl.search(None).select({"bl": "a * 2"}).output_schema() == pa.schema(
+        {"bl": pa.int64()}
+    )
+    assert tbl.search([1, 2]).select(["a"]).output_schema() == pa.schema(
+        {"a": pa.int64(), "_distance": pa.float32()}
+    )
+    assert tbl.search("blah").select(["a"]).output_schema() == pa.schema(
+        {"a": pa.int64()}
+    )
+    assert tbl.take_offsets([0]).select(["text"]).output_schema() == pa.schema(
+        {"text": pa.string()}
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_schema_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    tbl = await db.create_table(
+        "test",
+        pa.table(
+            {
+                "a": [1, 2, 3],
+                "text": ["a", "b", "c"],
+                "vec": pa.array(
+                    [[1, 2], [3, 4], [5, 6]], pa.list_(pa.float32(), list_size=2)
+                ),
+            }
+        ),
+    )
+
+    assert await tbl.query().output_schema() == pa.schema(
+        {
+            "a": pa.int64(),
+            "text": pa.string(),
+            "vec": pa.list_(pa.float32(), list_size=2),
+        }
+    )
+    assert await tbl.query().select({"bl": "a * 2"}).output_schema() == pa.schema(
+        {"bl": pa.int64()}
+    )
+    assert await tbl.vector_search([1, 2]).select(["a"]).output_schema() == pa.schema(
+        {"a": pa.int64(), "_distance": pa.float32()}
+    )
+    assert await (await tbl.search("blah")).select(["a"]).output_schema() == pa.schema(
+        {"a": pa.int64()}
+    )
+    assert await tbl.take_offsets([0]).select(["text"]).output_schema() == pa.schema(
+        {"text": pa.string()}
+    )
+
+
 def test_query_timeout(tmp_path):
     # Use local directory instead of memory:// to add a bit of latency to
     # operations so a timeout of zero will trigger exceptions.
@@ -1304,6 +1399,55 @@ def test_query_timeout(tmp_path):
         table.search(query_type="hybrid").vector([0.0, 0.0]).text("a").to_arrow(
             timeout=timedelta(0)
         )
+
+
+def test_take_queries(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pa.table(
+        {
+            "idx": range(100),
+        }
+    )
+    table = db.create_table("test", data)
+
+    # Take by offset
+    assert list(
+        sorted(table.take_offsets([5, 2, 17]).to_pandas()["idx"].to_list())
+    ) == [
+        2,
+        5,
+        17,
+    ]
+
+    # Take by row id
+    assert list(
+        sorted(table.take_row_ids([5, 2, 17]).to_pandas()["idx"].to_list())
+    ) == [
+        2,
+        5,
+        17,
+    ]
+
+
+def test_getitems(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pa.table(
+        {
+            "idx": range(100),
+        }
+    )
+    # Make two fragments
+    table = db.create_table("test", data)
+    table.add(pa.table({"idx": range(100, 200)}))
+
+    assert table.__getitems__([5, 2, 117]) == pa.table(
+        {
+            "idx": [5, 2, 117],
+        }
+    )
+
+    offsets = random.sample(range(200), 10)
+    assert table.__getitems__(offsets) == pa.table({"idx": offsets})
 
 
 @pytest.mark.asyncio
@@ -1338,3 +1482,47 @@ async def test_query_timeout_async(tmp_path):
             .nearest_to([0.0, 0.0])
             .to_list(timeout=timedelta(0))
         )
+
+
+def test_search_empty_table(mem_db):
+    """Test searching on empty table should not crash
+
+    Regression test for issue #303:
+    https://github.com/lancedb/lancedb/issues/303
+    Searching on empty table produces scary error message
+    """
+    schema = pa.schema(
+        [pa.field("vector", pa.list_(pa.float32(), 2)), pa.field("id", pa.int64())]
+    )
+    table = mem_db.create_table("test_empty_search", schema=schema)
+
+    # Search on empty table should return empty results, not crash
+    results = table.search([1.0, 2.0]).limit(5).to_list()
+    assert results == []
+
+
+def test_fast_search(tmp_path):
+    db = lancedb.connect(tmp_path)
+
+    # Generate data matching the async test style
+    vectors = pa.FixedShapeTensorArray.from_numpy_ndarray(
+        np.random.rand(256, 32)
+    ).storage
+
+    table = db.create_table("test", pa.table({"vector": vectors}))
+
+    # FIX: Pass arguments directly instead of using 'config=IvfPq(...)'
+    table.create_index(vector_column_name="vector", num_partitions=1, num_sub_vectors=1)
+
+    # Add data to ensure table has enough segments/rows
+    table.add(pa.table({"vector": vectors}))
+
+    q = [1.0] * 32
+
+    # 1. Normal Search -> Should include "LanceScan" (Brute Force / Scan)
+    plan = table.search(q).explain_plan(True)
+    assert "LanceScan" in plan
+
+    # 2. Fast Search -> Should NOT include "LanceScan" (Uses Index)
+    plan = table.search(q).fast_search().explain_plan(True)
+    assert "LanceScan" not in plan

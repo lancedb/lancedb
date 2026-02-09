@@ -18,7 +18,17 @@ from lancedb._lancedb import (
     UpdateResult,
 )
 from lancedb.embeddings.base import EmbeddingFunctionConfig
-from lancedb.index import FTS, BTree, Bitmap, HnswSq, IvfFlat, IvfPq, LabelList
+from lancedb.index import (
+    FTS,
+    BTree,
+    Bitmap,
+    HnswSq,
+    IvfFlat,
+    IvfPq,
+    IvfRq,
+    IvfSq,
+    LabelList,
+)
 from lancedb.remote.db import LOOP
 import pyarrow as pa
 
@@ -26,7 +36,7 @@ from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 
-from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
+from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
 from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
 
 
@@ -114,7 +124,8 @@ class RemoteTable(Table):
         index_type: Literal["BTREE", "BITMAP", "LABEL_LIST", "scalar"] = "scalar",
         *,
         replace: bool = False,
-        wait_timeout: timedelta = None,
+        wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
     ):
         """Creates a scalar index
         Parameters
@@ -139,7 +150,11 @@ class RemoteTable(Table):
 
         LOOP.run(
             self._table.create_index(
-                column, config=config, replace=replace, wait_timeout=wait_timeout
+                column,
+                config=config,
+                replace=replace,
+                wait_timeout=wait_timeout,
+                name=name,
             )
         )
 
@@ -148,7 +163,7 @@ class RemoteTable(Table):
         column: str,
         *,
         replace: bool = False,
-        wait_timeout: timedelta = None,
+        wait_timeout: Optional[timedelta] = None,
         with_position: bool = False,
         # tokenizer configs:
         base_tokenizer: str = "simple",
@@ -161,6 +176,7 @@ class RemoteTable(Table):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        name: Optional[str] = None,
     ):
         config = FTS(
             with_position=with_position,
@@ -177,7 +193,11 @@ class RemoteTable(Table):
         )
         LOOP.run(
             self._table.create_index(
-                column, config=config, replace=replace, wait_timeout=wait_timeout
+                column,
+                config=config,
+                replace=replace,
+                wait_timeout=wait_timeout,
+                name=name,
             )
         )
 
@@ -194,6 +214,8 @@ class RemoteTable(Table):
         wait_timeout: Optional[timedelta] = None,
         *,
         num_bits: int = 8,
+        name: Optional[str] = None,
+        train: bool = True,
     ):
         """Create an index on the table.
         Currently, the only parameters that matter are
@@ -253,6 +275,14 @@ class RemoteTable(Table):
                 num_sub_vectors=num_sub_vectors,
                 num_bits=num_bits,
             )
+        elif index_type == "IVF_RQ":
+            config = IvfRq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                num_bits=num_bits,
+            )
+        elif index_type == "IVF_SQ":
+            config = IvfSq(distance_type=metric, num_partitions=num_partitions)
         elif index_type == "IVF_HNSW_PQ":
             raise ValueError(
                 "IVF_HNSW_PQ is not supported on LanceDB cloud."
@@ -265,12 +295,17 @@ class RemoteTable(Table):
         else:
             raise ValueError(
                 f"Unknown vector index type: {index_type}. Valid options are"
-                " 'IVF_FLAT', 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
+                " 'IVF_FLAT', 'IVF_PQ', 'IVF_RQ', 'IVF_SQ',"
+                " 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
             )
 
         LOOP.run(
             self._table.create_index(
-                vector_column_name, config=config, wait_timeout=wait_timeout
+                vector_column_name,
+                config=config,
+                wait_timeout=wait_timeout,
+                name=name,
+                train=train,
             )
         )
 
@@ -419,6 +454,9 @@ class RemoteTable(Table):
 
     def _analyze_plan(self, query: Query) -> str:
         return LOOP.run(self._table._analyze_plan(query))
+
+    def _output_schema(self, query: Query) -> pa.Schema:
+        return LOOP.run(self._table._output_schema(query))
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
@@ -617,6 +655,20 @@ class RemoteTable(Table):
     def stats(self):
         return LOOP.run(self._table.stats())
 
+    @property
+    def uri(self) -> str:
+        """The table URI (storage location).
+
+        For remote tables, this fetches the location from the server via describe.
+        """
+        return LOOP.run(self._table.uri())
+
+    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
+        return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+
+    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
+        return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+
     def uses_v2_manifest_paths(self) -> bool:
         raise NotImplementedError(
             "uses_v2_manifest_paths() is not supported on the LanceDB Cloud"
@@ -626,6 +678,17 @@ class RemoteTable(Table):
         raise NotImplementedError(
             "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
         )
+
+    def head(self, n=5) -> pa.Table:
+        """
+        Return the first `n` rows of the table.
+
+        Parameters
+        ----------
+        n: int, default 5
+            The number of rows to return.
+        """
+        return LOOP.run(self._table.query().limit(n).to_arrow())
 
 
 def add_index(tbl: pa.Table, i: int) -> pa.Table:

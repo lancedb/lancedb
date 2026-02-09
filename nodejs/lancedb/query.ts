@@ -15,42 +15,33 @@ import {
   RecordBatchIterator as NativeBatchIterator,
   Query as NativeQuery,
   Table as NativeTable,
+  TakeQuery as NativeTakeQuery,
   VectorQuery as NativeVectorQuery,
 } from "./native";
 import { Reranker } from "./rerankers";
 
-export class RecordBatchIterator implements AsyncIterator<RecordBatch> {
-  private promisedInner?: Promise<NativeBatchIterator>;
-  private inner?: NativeBatchIterator;
+export async function* RecordBatchIterator(
+  promisedInner: Promise<NativeBatchIterator>,
+) {
+  const inner = await promisedInner;
 
-  constructor(promise?: Promise<NativeBatchIterator>) {
-    // TODO: check promise reliably so we dont need to pass two arguments.
-    this.promisedInner = promise;
+  if (inner === undefined) {
+    throw new Error("Invalid iterator state");
   }
 
-  // biome-ignore lint/suspicious/noExplicitAny: skip
-  async next(): Promise<IteratorResult<RecordBatch<any>>> {
-    if (this.inner === undefined) {
-      this.inner = await this.promisedInner;
-    }
-    if (this.inner === undefined) {
-      throw new Error("Invalid iterator state state");
-    }
-    const n = await this.inner.next();
-    if (n == null) {
-      return Promise.resolve({ done: true, value: null });
-    }
-    const tbl = tableFromIPC(n);
-    if (tbl.batches.length != 1) {
+  for (let buffer = await inner.next(); buffer; buffer = await inner.next()) {
+    const { batches } = tableFromIPC(buffer);
+
+    if (batches.length !== 1) {
       throw new Error("Expected only one batch");
     }
-    return Promise.resolve({ done: false, value: tbl.batches[0] });
+
+    yield batches[0];
   }
 }
-/* eslint-enable */
 
 class RecordBatchIterable<
-  NativeQueryType extends NativeQuery | NativeVectorQuery,
+  NativeQueryType extends NativeQuery | NativeVectorQuery | NativeTakeQuery,
 > implements AsyncIterable<RecordBatch>
 {
   private inner: NativeQueryType;
@@ -63,7 +54,7 @@ class RecordBatchIterable<
 
   // biome-ignore lint/suspicious/noExplicitAny: skip
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
-    return new RecordBatchIterator(
+    return RecordBatchIterator(
       this.inner.execute(this.options?.maxBatchLength, this.options?.timeoutMs),
     );
   }
@@ -107,8 +98,9 @@ export interface FullTextSearchOptions {
  *
  * @hideconstructor
  */
-export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
-  implements AsyncIterable<RecordBatch>
+export class QueryBase<
+  NativeQueryType extends NativeQuery | NativeVectorQuery | NativeTakeQuery,
+> implements AsyncIterable<RecordBatch>
 {
   /**
    * @hidden
@@ -132,56 +124,6 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     } else {
       fn(this.inner);
     }
-  }
-  /**
-   * A filter statement to be applied to this query.
-   *
-   * The filter should be supplied as an SQL query string.  For example:
-   * @example
-   * x > 10
-   * y > 0 AND y < 100
-   * x > 5 OR y = 'test'
-   *
-   * Filtering performance can often be improved by creating a scalar index
-   * on the filter column(s).
-   */
-  where(predicate: string): this {
-    this.doCall((inner: NativeQueryType) => inner.onlyIf(predicate));
-    return this;
-  }
-  /**
-   * A filter statement to be applied to this query.
-   * @see where
-   * @deprecated Use `where` instead
-   */
-  filter(predicate: string): this {
-    return this.where(predicate);
-  }
-
-  fullTextSearch(
-    query: string | FullTextQuery,
-    options?: Partial<FullTextSearchOptions>,
-  ): this {
-    let columns: string[] | null = null;
-    if (options) {
-      if (typeof options.columns === "string") {
-        columns = [options.columns];
-      } else if (Array.isArray(options.columns)) {
-        columns = options.columns;
-      }
-    }
-
-    this.doCall((inner: NativeQueryType) => {
-      if (typeof query === "string") {
-        inner.fullTextSearch({
-          query: query,
-          columns: columns,
-        });
-      } else {
-        inner.fullTextSearch({ query: query.inner });
-      }
-    });
-    return this;
   }
 
   /**
@@ -242,33 +184,6 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
   }
 
   /**
-   * Set the maximum number of results to return.
-   *
-   * By default, a plain search has no limit.  If this method is not
-   * called then every valid row from the table will be returned.
-   */
-  limit(limit: number): this {
-    this.doCall((inner: NativeQueryType) => inner.limit(limit));
-    return this;
-  }
-
-  offset(offset: number): this {
-    this.doCall((inner: NativeQueryType) => inner.offset(offset));
-    return this;
-  }
-
-  /**
-   * Skip searching un-indexed data. This can make search faster, but will miss
-   * any data that is not yet indexed.
-   *
-   * Use {@link Table#optimize} to index all un-indexed data.
-   */
-  fastSearch(): this {
-    this.doCall((inner: NativeQueryType) => inner.fastSearch());
-    return this;
-  }
-
-  /**
    * Whether to return the row id in the results.
    *
    * This column can be used to match results between different queries. For
@@ -306,10 +221,8 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
    * single query)
    *
    */
-  protected execute(
-    options?: Partial<QueryExecutionOptions>,
-  ): RecordBatchIterator {
-    return new RecordBatchIterator(this.nativeExecute(options));
+  protected execute(options?: Partial<QueryExecutionOptions>) {
+    return RecordBatchIterator(this.nativeExecute(options));
   }
 
   /**
@@ -317,8 +230,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
    */
   // biome-ignore lint/suspicious/noExplicitAny: skip
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>> {
-    const promise = this.nativeExecute();
-    return new RecordBatchIterator(promise);
+    return RecordBatchIterator(this.nativeExecute());
   }
 
   /** Collect the results as an Arrow @see {@link ArrowTable}. */
@@ -401,6 +313,119 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
       return this.inner.analyzePlan();
     }
   }
+
+  /**
+   * Returns the schema of the output that will be returned by this query.
+   *
+   * This can be used to inspect the types and names of the columns that will be
+   * returned by the query before executing it.
+   *
+   * @returns An Arrow Schema describing the output columns.
+   */
+  async outputSchema(): Promise<import("./arrow").Schema> {
+    let schemaBuffer: Buffer;
+    if (this.inner instanceof Promise) {
+      schemaBuffer = await this.inner.then((inner) => inner.outputSchema());
+    } else {
+      schemaBuffer = await this.inner.outputSchema();
+    }
+    const schema = tableFromIPC(schemaBuffer).schema;
+    return schema;
+  }
+}
+
+export class StandardQueryBase<
+    NativeQueryType extends NativeQuery | NativeVectorQuery,
+  >
+  extends QueryBase<NativeQueryType>
+  implements ExecutableQuery
+{
+  constructor(inner: NativeQueryType | Promise<NativeQueryType>) {
+    super(inner);
+  }
+
+  /**
+   * A filter statement to be applied to this query.
+   *
+   * The filter should be supplied as an SQL query string.  For example:
+   * @example
+   * x > 10
+   * y > 0 AND y < 100
+   * x > 5 OR y = 'test'
+   *
+   * Filtering performance can often be improved by creating a scalar index
+   * on the filter column(s).
+   */
+  where(predicate: string): this {
+    this.doCall((inner: NativeQueryType) => inner.onlyIf(predicate));
+    return this;
+  }
+  /**
+   * A filter statement to be applied to this query.
+   * @see where
+   * @deprecated Use `where` instead
+   */
+  filter(predicate: string): this {
+    return this.where(predicate);
+  }
+
+  fullTextSearch(
+    query: string | FullTextQuery,
+    options?: Partial<FullTextSearchOptions>,
+  ): this {
+    let columns: string[] | null = null;
+    if (options) {
+      if (typeof options.columns === "string") {
+        columns = [options.columns];
+      } else if (Array.isArray(options.columns)) {
+        columns = options.columns;
+      }
+    }
+
+    this.doCall((inner: NativeQueryType) => {
+      if (typeof query === "string") {
+        inner.fullTextSearch({
+          query: query,
+          columns: columns,
+        });
+      } else {
+        inner.fullTextSearch({ query: query.inner });
+      }
+    });
+    return this;
+  }
+
+  /**
+   * Set the maximum number of results to return.
+   *
+   * By default, a plain search has no limit.  If this method is not
+   * called then every valid row from the table will be returned.
+   */
+  limit(limit: number): this {
+    this.doCall((inner: NativeQueryType) => inner.limit(limit));
+    return this;
+  }
+
+  /**
+   * Set the number of rows to skip before returning results.
+   *
+   * This is useful for pagination.
+   */
+  offset(offset: number): this {
+    this.doCall((inner: NativeQueryType) => inner.offset(offset));
+    return this;
+  }
+
+  /**
+   * Skip searching un-indexed data. This can make search faster, but will miss
+   * any data that is not yet indexed.
+   *
+   * Use {@link Table#optimize} to index all un-indexed data.
+   */
+  fastSearch(): this {
+    this.doCall((inner: NativeQueryType) => inner.fastSearch());
+    return this;
+  }
 }
 
 /**
@@ -419,7 +444,7 @@ export interface ExecutableQuery {}
  *
  * @hideconstructor
  */
-export class VectorQuery extends QueryBase<NativeVectorQuery> {
+export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   /**
    * @hidden
    */
@@ -679,13 +704,24 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
   }
 }
 
+/**
+ * A query that returns a subset of the rows in the table.
+ *
+ * @hideconstructor
+ */
+export class TakeQuery extends QueryBase<NativeTakeQuery> {
+  constructor(inner: NativeTakeQuery) {
+    super(inner);
+  }
+}
+
 /** A builder for LanceDB queries.
  *
  * @see {@link Table#query}, {@link Table#search}
  *
  * @hideconstructor
  */
-export class Query extends QueryBase<NativeQuery> {
+export class Query extends StandardQueryBase<NativeQuery> {
   /**
    * @hidden
    */

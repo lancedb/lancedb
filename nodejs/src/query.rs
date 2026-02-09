@@ -12,6 +12,7 @@ use lancedb::query::Query as LanceDbQuery;
 use lancedb::query::QueryBase;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::Select;
+use lancedb::query::TakeQuery as LanceDbTakeQuery;
 use lancedb::query::VectorQuery as LanceDbVectorQuery;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -21,7 +22,7 @@ use crate::error::NapiErrorExt;
 use crate::iterator::RecordBatchIterator;
 use crate::rerankers::Reranker;
 use crate::rerankers::RerankerCallbacks;
-use crate::util::parse_distance_type;
+use crate::util::{parse_distance_type, schema_to_buffer};
 
 #[napi]
 pub struct Query {
@@ -85,6 +86,12 @@ impl Query {
     #[napi]
     pub fn with_row_id(&mut self) {
         self.inner = self.inner.clone().with_row_id();
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn output_schema(&self) -> napi::Result<Buffer> {
+        let schema = self.inner.output_schema().await.default_error()?;
+        schema_to_buffer(&schema)
     }
 
     #[napi(catch_unwind)]
@@ -273,6 +280,91 @@ impl VectorQuery {
     }
 
     #[napi(catch_unwind)]
+    pub async fn output_schema(&self) -> napi::Result<Buffer> {
+        let schema = self.inner.output_schema().await.default_error()?;
+        schema_to_buffer(&schema)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn execute(
+        &self,
+        max_batch_length: Option<u32>,
+        timeout_ms: Option<u32>,
+    ) -> napi::Result<RecordBatchIterator> {
+        let mut execution_opts = QueryExecutionOptions::default();
+        if let Some(max_batch_length) = max_batch_length {
+            execution_opts.max_batch_length = max_batch_length;
+        }
+        if let Some(timeout_ms) = timeout_ms {
+            execution_opts.timeout = Some(std::time::Duration::from_millis(timeout_ms as u64))
+        }
+        let inner_stream = self
+            .inner
+            .execute_with_options(execution_opts)
+            .await
+            .map_err(|e| {
+                napi::Error::from_reason(format!(
+                    "Failed to execute query stream: {}",
+                    convert_error(&e)
+                ))
+            })?;
+        Ok(RecordBatchIterator::new(inner_stream))
+    }
+
+    #[napi]
+    pub async fn explain_plan(&self, verbose: bool) -> napi::Result<String> {
+        self.inner.explain_plan(verbose).await.map_err(|e| {
+            napi::Error::from_reason(format!(
+                "Failed to retrieve the query plan: {}",
+                convert_error(&e)
+            ))
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn analyze_plan(&self) -> napi::Result<String> {
+        self.inner.analyze_plan().await.map_err(|e| {
+            napi::Error::from_reason(format!(
+                "Failed to execute analyze plan: {}",
+                convert_error(&e)
+            ))
+        })
+    }
+}
+
+#[napi]
+pub struct TakeQuery {
+    inner: LanceDbTakeQuery,
+}
+
+#[napi]
+impl TakeQuery {
+    pub fn new(query: LanceDbTakeQuery) -> Self {
+        Self { inner: query }
+    }
+
+    #[napi]
+    pub fn select(&mut self, columns: Vec<(String, String)>) {
+        self.inner = self.inner.clone().select(Select::dynamic(&columns));
+    }
+
+    #[napi]
+    pub fn select_columns(&mut self, columns: Vec<String>) {
+        self.inner = self.inner.clone().select(Select::columns(&columns));
+    }
+
+    #[napi]
+    pub fn with_row_id(&mut self) {
+        self.inner = self.inner.clone().with_row_id();
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn output_schema(&self) -> napi::Result<Buffer> {
+        let schema = self.inner.output_schema().await.default_error()?;
+        schema_to_buffer(&schema)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn execute(
         &self,
         max_batch_length: Option<u32>,
@@ -406,6 +498,7 @@ impl JsFullTextQuery {
     }
 
     #[napi(factory)]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn boolean_query(queries: Vec<(String, &JsFullTextQuery)>) -> napi::Result<Self> {
         let mut sub_queries = Vec::with_capacity(queries.len());
         for (occur, q) in queries {

@@ -2,6 +2,7 @@
   "intentionallyNotExported": [
     "lancedb/native.d.ts:Query",
     "lancedb/native.d.ts:VectorQuery",
+    "lancedb/native.d.ts:TakeQuery",
     "lancedb/native.d.ts:RecordBatchIterator",
     "lancedb/native.d.ts:NativeMergeInsertBuilder"
   ],

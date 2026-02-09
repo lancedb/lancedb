@@ -15,12 +15,11 @@ Common methods supported by all query types
 
 ## Extended by
 
-- [`Query`](Query.md)
-- [`VectorQuery`](VectorQuery.md)
+- [`TakeQuery`](TakeQuery.md)
 
 ## Type Parameters
 
-• **NativeQueryType** *extends* `NativeQuery` \| `NativeVectorQuery`
+• **NativeQueryType** *extends* `NativeQuery` \| `NativeVectorQuery` \| `NativeTakeQuery`
 
 ## Implements
 
@@ -82,7 +81,7 @@ AnalyzeExec verbose=true, metrics=[]
 ### execute()
 
 ```ts
-protected execute(options?): RecordBatchIterator
+protected execute(options?): AsyncGenerator<RecordBatch<any>, void, unknown>
 ```
 
 Execute the query and return the results as an
@@ -93,7 +92,7 @@ Execute the query and return the results as an
 
 #### Returns
 
-[`RecordBatchIterator`](RecordBatchIterator.md)
+`AsyncGenerator`&lt;`RecordBatch`&lt;`any`&gt;, `void`, `unknown`&gt;
 
 #### See
 
@@ -141,101 +140,22 @@ const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
 
 ***
 
-### fastSearch()
+### outputSchema()
 
 ```ts
-fastSearch(): this
+outputSchema(): Promise<Schema<any>>
 ```
 
-Skip searching un-indexed data. This can make search faster, but will miss
-any data that is not yet indexed.
+Returns the schema of the output that will be returned by this query.
 
-Use [Table#optimize](Table.md#optimize) to index all un-indexed data.
+This can be used to inspect the types and names of the columns that will be
+returned by the query before executing it.
 
 #### Returns
 
-`this`
+`Promise`&lt;`Schema`&lt;`any`&gt;&gt;
 
-***
-
-### ~~filter()~~
-
-```ts
-filter(predicate): this
-```
-
-A filter statement to be applied to this query.
-
-#### Parameters
-
-* **predicate**: `string`
-
-#### Returns
-
-`this`
-
-#### See
-
-where
-
-#### Deprecated
-
-Use `where` instead
-
-***
-
-### fullTextSearch()
-
-```ts
-fullTextSearch(query, options?): this
-```
-
-#### Parameters
-
-* **query**: `string` \| [`FullTextQuery`](../interfaces/FullTextQuery.md)
-
-* **options?**: `Partial`&lt;[`FullTextSearchOptions`](../interfaces/FullTextSearchOptions.md)&gt;
-
-#### Returns
-
-`this`
-
-***
-
-### limit()
-
-```ts
-limit(limit): this
-```
-
-Set the maximum number of results to return.
-
-By default, a plain search has no limit.  If this method is not
-called then every valid row from the table will be returned.
-
-#### Parameters
-
-* **limit**: `number`
-
-#### Returns
-
-`this`
-
-***
-
-### offset()
-
-```ts
-offset(offset): this
-```
-
-#### Parameters
-
-* **offset**: `number`
-
-#### Returns
-
-`this`
+An Arrow Schema describing the output columns.
 
 ***
 
@@ -325,37 +245,6 @@ Collect the results as an Arrow
 #### See
 
 ArrowTable.
-
-***
-
-### where()
-
-```ts
-where(predicate): this
-```
-
-A filter statement to be applied to this query.
-
-The filter should be supplied as an SQL query string.  For example:
-
-#### Parameters
-
-* **predicate**: `string`
-
-#### Returns
-
-`this`
-
-#### Example
-
-```ts
-x > 10
-y > 0 AND y < 100
-x > 5 OR y = 'test'
-
-Filtering performance can often be improved by creating a scalar index
-on the filter column(s).
-```
 
 ***
 

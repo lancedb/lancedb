@@ -46,6 +46,39 @@ def test_basic(mem_db: DBConnection):
     assert table.to_arrow() == expected_data
 
 
+def test_create_table_infers_large_int_vectors(mem_db: DBConnection):
+    data = [{"vector": [0, 300]}]
+
+    table = mem_db.create_table(
+        "int_vector_overflow", data=data, mode="overwrite", exist_ok=True
+    )
+
+    vector_field = table.schema.field("vector")
+    assert vector_field.type == pa.list_(pa.float32(), 2)
+
+    vector_column = table.to_arrow().column("vector")
+    assert vector_column.type == pa.list_(pa.float32(), 2)
+    assert vector_column.to_pylist() == [[0.0, 300.0]]
+
+
+@pytest.mark.asyncio
+async def test_create_table_async_infers_large_int_vectors(
+    mem_db_async: AsyncConnection,
+):
+    data = [{"vector": [256, 257]}]
+
+    table = await mem_db_async.create_table(
+        "int_vector_overflow_async", data=data, mode="overwrite", exist_ok=True
+    )
+
+    schema = await table.schema()
+    assert schema.field("vector").type == pa.list_(pa.float32(), 2)
+
+    vector_column = (await table.to_arrow()).column("vector")
+    assert vector_column.type == pa.list_(pa.float32(), 2)
+    assert vector_column.to_pylist() == [[256.0, 257.0]]
+
+
 def test_input_data_type(mem_db: DBConnection, tmp_path):
     schema = pa.schema(
         {
@@ -290,7 +323,7 @@ def test_add_struct(mem_db: DBConnection):
         }
     )
     data = [{"s_list": [{"b": 1, "a": 2}, {"b": 4}]}]
-    table = mem_db.create_table("test", schema=schema)
+    table = mem_db.create_table("test2", schema=schema)
     table.add(data)
 
 
@@ -670,7 +703,48 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_sub_vectors=96,
         num_bits=4,
     )
-    mock_create_index.assert_called_with("vector", replace=True, config=expected_config)
+    mock_create_index.assert_called_with(
+        "vector", replace=True, config=expected_config, name=None, train=True
+    )
+
+    # Test with target_partition_size
+    table.create_index(
+        metric="l2",
+        num_sub_vectors=96,
+        vector_column_name="vector",
+        replace=True,
+        index_cache_size=256,
+        num_bits=4,
+        target_partition_size=8192,
+    )
+    expected_config = IvfPq(
+        distance_type="l2",
+        num_sub_vectors=96,
+        num_bits=4,
+        target_partition_size=8192,
+    )
+    mock_create_index.assert_called_with(
+        "vector", replace=True, config=expected_config, name=None, train=True
+    )
+
+    # target_partition_size has a default value,
+    # so `num_partitions` and `target_partition_size` are not required
+    table.create_index(
+        metric="l2",
+        num_sub_vectors=96,
+        vector_column_name="vector",
+        replace=True,
+        index_cache_size=256,
+        num_bits=4,
+    )
+    expected_config = IvfPq(
+        distance_type="l2",
+        num_sub_vectors=96,
+        num_bits=4,
+    )
+    mock_create_index.assert_called_with(
+        "vector", replace=True, config=expected_config, name=None, train=True
+    )
 
     table.create_index(
         vector_column_name="my_vector",
@@ -680,7 +754,7 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
     )
     expected_config = HnswPq(distance_type="dot")
     mock_create_index.assert_called_with(
-        "my_vector", replace=False, config=expected_config
+        "my_vector", replace=False, config=expected_config, name=None, train=True
     )
 
     table.create_index(
@@ -695,7 +769,44 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
     )
     mock_create_index.assert_called_with(
-        "my_vector", replace=True, config=expected_config
+        "my_vector", replace=True, config=expected_config, name=None, train=True
+    )
+
+
+@patch("lancedb.table.AsyncTable.create_index")
+def test_create_index_name_and_train_parameters(
+    mock_create_index, mem_db: DBConnection
+):
+    """Test that name and train parameters are passed correctly to AsyncTable"""
+    table = mem_db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "id": 1},
+            {"vector": [5.9, 26.5], "id": 2},
+        ],
+    )
+
+    # Test with custom name
+    table.create_index(vector_column_name="vector", name="my_custom_index")
+    expected_config = IvfPq()  # Default config
+    mock_create_index.assert_called_with(
+        "vector",
+        replace=True,
+        config=expected_config,
+        name="my_custom_index",
+        train=True,
+    )
+
+    # Test with train=False
+    table.create_index(vector_column_name="vector", train=False)
+    mock_create_index.assert_called_with(
+        "vector", replace=True, config=expected_config, name=None, train=False
+    )
+
+    # Test with both name and train
+    table.create_index(vector_column_name="vector", name="my_index_name", train=True)
+    mock_create_index.assert_called_with(
+        "vector", replace=True, config=expected_config, name="my_index_name", train=True
     )
 
 
@@ -1235,11 +1346,13 @@ def test_create_scalar_index(mem_db: DBConnection):
         "my_table",
         data=test_data,
     )
+    # Test with default name
     table.create_scalar_index("x")
     indices = table.list_indices()
     assert len(indices) == 1
     scalar_index = indices[0]
     assert scalar_index.index_type == "BTree"
+    assert scalar_index.name == "x_idx"  # Default name
 
     # Confirm that prefiltering still works with the scalar index column
     results = table.search().where("x = 'c'").to_arrow()
@@ -1252,6 +1365,14 @@ def test_create_scalar_index(mem_db: DBConnection):
     table.drop_index(scalar_index.name)
     indices = table.list_indices()
     assert len(indices) == 0
+
+    # Test with custom name
+    table.create_scalar_index("y", name="custom_y_index")
+    indices = table.list_indices()
+    assert len(indices) == 1
+    scalar_index = indices[0]
+    assert scalar_index.index_type == "BTree"
+    assert scalar_index.name == "custom_y_index"
 
 
 def test_empty_query(mem_db: DBConnection):
@@ -1399,7 +1520,7 @@ def setup_hybrid_search_table(db: DBConnection, embedding_func):
     table.add([{"text": p} for p in phrases])
 
     # Create a fts index
-    table.create_fts_index("text")
+    table.create_fts_index("text", with_position=True)
 
     return table, MyTable, emb
 
@@ -1759,8 +1880,13 @@ async def test_optimize_delete_unverified(tmp_db_async: AsyncConnection, tmp_pat
         ],
     )
     version = await table.version()
-    path = tmp_path / "test.lance" / "_versions" / f"{version - 1}.manifest"
+    assert version == 2
+
+    # By removing a manifest file, we make the data files we just inserted unverified
+    version_name = 18446744073709551615 - (version - 1)
+    path = tmp_path / "test.lance" / "_versions" / f"{version_name:020}.manifest"
     os.remove(path)
+
     stats = await table.optimize(delete_unverified=False)
     assert stats.prune.old_versions_removed == 0
     stats = await table.optimize(
@@ -1804,3 +1930,51 @@ def test_stats(mem_db: DBConnection):
             },
         },
     }
+
+
+def test_create_table_empty_list_with_schema(mem_db: DBConnection):
+    """Test creating table with empty list data and schema
+
+    Regression test for IndexError: list index out of range
+    when calling create_table(name, data=[], schema=schema)
+    """
+    schema = pa.schema(
+        [pa.field("vector", pa.list_(pa.float32(), 2)), pa.field("id", pa.int64())]
+    )
+    table = mem_db.create_table("test_empty_list", data=[], schema=schema)
+    assert table.count_rows() == 0
+    assert table.schema == schema
+
+
+def test_create_table_empty_list_no_schema_error(mem_db: DBConnection):
+    """Test that creating table with empty list and no schema raises error"""
+    with pytest.raises(
+        ValueError, match="Cannot create table from empty list without a schema"
+    ):
+        mem_db.create_table("test_empty_no_schema", data=[])
+
+
+def test_add_table_with_empty_embeddings(tmp_path):
+    """Test exact scenario from issue #1968
+
+    Regression test for issue #1968:
+    https://github.com/lancedb/lancedb/issues/1968
+    """
+    db = lancedb.connect(tmp_path)
+
+    class MySchema(LanceModel):
+        text: str
+        embedding: Vector(16)
+
+    table = db.create_table("test", schema=MySchema)
+    table.add(
+        [{"text": "bar", "embedding": [0.1] * 16}],
+        on_bad_vectors="drop",
+    )
+    assert table.count_rows() == 1
+
+
+def test_table_uri(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("my_table", data=[{"x": 0}])
+    assert table.uri == str(tmp_path / "my_table.lance")

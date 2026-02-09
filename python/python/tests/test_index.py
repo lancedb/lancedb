@@ -8,7 +8,20 @@ import pyarrow as pa
 import pytest
 import pytest_asyncio
 from lancedb import AsyncConnection, AsyncTable, connect_async
-from lancedb.index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from lancedb.index import (
+    BTree,
+    IvfFlat,
+    IvfPq,
+    IvfSq,
+    IvfHnswPq,
+    IvfHnswSq,
+    IvfRq,
+    Bitmap,
+    LabelList,
+    HnswPq,
+    HnswSq,
+    FTS,
+)
 
 
 @pytest_asyncio.fixture
@@ -35,6 +48,8 @@ async def some_table(db_async):
             "tags": [
                 [f"tag{random.randint(0, 8)}" for _ in range(2)] for _ in range(NROWS)
             ],
+            "is_active": [random.choice([True, False]) for _ in range(NROWS)],
+            "data": [random.randbytes(random.randint(0, 128)) for _ in range(NROWS)],
         }
     )
     return await db_async.create_table(
@@ -99,10 +114,17 @@ async def test_create_fixed_size_binary_index(some_table: AsyncTable):
 @pytest.mark.asyncio
 async def test_create_bitmap_index(some_table: AsyncTable):
     await some_table.create_index("id", config=Bitmap())
+    await some_table.create_index("is_active", config=Bitmap())
+    await some_table.create_index("data", config=Bitmap())
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(Bitmap, columns=["id"], name="id_idx")]'
-    indices = await some_table.list_indices()
-    assert len(indices) == 1
+    assert len(indices) == 3
+    assert indices[0].index_type == "Bitmap"
+    assert indices[0].columns == ["id"]
+    assert indices[1].index_type == "Bitmap"
+    assert indices[1].columns == ["is_active"]
+    assert indices[2].index_type == "Bitmap"
+    assert indices[2].columns == ["data"]
+
     index_name = indices[0].name
     stats = await some_table.index_stats(index_name)
     assert stats.index_type == "BITMAP"
@@ -110,6 +132,11 @@ async def test_create_bitmap_index(some_table: AsyncTable):
     assert stats.num_indexed_rows == await some_table.count_rows()
     assert stats.num_unindexed_rows == 0
     assert stats.num_indices == 1
+
+    assert (
+        "ScalarIndexQuery"
+        in await some_table.query().where("is_active = TRUE").explain_plan()
+    )
 
 
 @pytest.mark.asyncio
@@ -182,6 +209,16 @@ async def test_create_4bit_ivfpq_index(some_table: AsyncTable):
 
 
 @pytest.mark.asyncio
+async def test_create_ivfrq_index(some_table: AsyncTable):
+    await some_table.create_index("vector", config=IvfRq(num_bits=1))
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "IvfRq"
+    assert indices[0].columns == ["vector"]
+    assert indices[0].name == "vector_idx"
+
+
+@pytest.mark.asyncio
 async def test_create_hnswpq_index(some_table: AsyncTable):
     await some_table.create_index("vector", config=HnswPq(num_partitions=10))
     indices = await some_table.list_indices()
@@ -193,6 +230,35 @@ async def test_create_hnswsq_index(some_table: AsyncTable):
     await some_table.create_index("vector", config=HnswSq(num_partitions=10))
     indices = await some_table.list_indices()
     assert len(indices) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_hnswsq_alias_index(some_table: AsyncTable):
+    await some_table.create_index("vector", config=IvfHnswSq(num_partitions=5))
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type in {"HnswSq", "IvfHnswSq"}
+
+
+@pytest.mark.asyncio
+async def test_create_hnswpq_alias_index(some_table: AsyncTable):
+    await some_table.create_index("vector", config=IvfHnswPq(num_partitions=5))
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type in {"HnswPq", "IvfHnswPq"}
+
+
+@pytest.mark.asyncio
+async def test_create_ivfsq_index(some_table: AsyncTable):
+    await some_table.create_index("vector", config=IvfSq(num_partitions=10))
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "IvfSq"
+    stats = await some_table.index_stats(indices[0].name)
+    assert stats.index_type == "IVF_SQ"
+    assert stats.distance_type == "l2"
+    assert stats.num_indexed_rows == await some_table.count_rows()
+    assert stats.num_unindexed_rows == 0
 
 
 @pytest.mark.asyncio

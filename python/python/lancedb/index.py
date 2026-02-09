@@ -251,6 +251,13 @@ class HnswPq:
         results. In most cases, there is no benefit to setting this higher than 500.
         This value should be set to a value that is not less than `ef` in the
         search phase.
+
+    target_partition_size, default is 1,048,576
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
@@ -261,6 +268,7 @@ class HnswPq:
     sample_rate: int = 256
     m: int = 20
     ef_construction: int = 300
+    target_partition_size: Optional[int] = None
 
 
 @dataclass
@@ -351,6 +359,12 @@ class HnswSq:
         This value should be set to a value that is not less than `ef` in the search
         phase.
 
+    target_partition_size, default is 1,048,576
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
@@ -359,6 +373,12 @@ class HnswSq:
     sample_rate: int = 256
     m: int = 20
     ef_construction: int = 300
+    target_partition_size: Optional[int] = None
+
+
+# Backwards-compatible aliases
+IvfHnswPq = HnswPq
+IvfHnswSq = HnswSq
 
 
 @dataclass
@@ -444,12 +464,50 @@ class IvfFlat:
         cases the default should be sufficient.
 
         The default value is 256.
+
+    target_partition_size, default is 8192
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot", "hamming"] = "l2"
     num_partitions: Optional[int] = None
     max_iterations: int = 50
     sample_rate: int = 256
+    target_partition_size: Optional[int] = None
+
+
+@dataclass
+class IvfSq:
+    """Describes an IVF Scalar Quantization (SQ) index.
+
+    This index applies scalar quantization to compress vectors and organizes the
+    quantized vectors into IVF partitions. It offers a balance between search
+    speed and storage efficiency while keeping good recall.
+
+    Attributes
+    ----------
+    distance_type: str, default "l2"
+        The distance metric used to train and search the index. Supported values
+        are "l2", "cosine", and "dot".
+    num_partitions: int, default sqrt(num_rows)
+        Number of IVF partitions to create.
+    max_iterations: int, default 50
+        Maximum iterations for kmeans during partition training.
+    sample_rate: int, default 256
+        Controls the number of training vectors: sample_rate * num_partitions.
+    target_partition_size: int, optional
+        Target size for each partition; adjusts the balance between speed and accuracy.
+    """
+
+    distance_type: Literal["l2", "cosine", "dot"] = "l2"
+    num_partitions: Optional[int] = None
+    max_iterations: int = 50
+    sample_rate: int = 256
+    target_partition_size: Optional[int] = None
 
 
 @dataclass
@@ -564,6 +622,13 @@ class IvfPq:
         cases the default should be sufficient.
 
         The default value is 256.
+
+    target_partition_size, default is 8192
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
@@ -572,11 +637,69 @@ class IvfPq:
     num_bits: int = 8
     max_iterations: int = 50
     sample_rate: int = 256
+    target_partition_size: Optional[int] = None
+
+
+@dataclass
+class IvfRq:
+    """Describes an IVF RQ Index
+
+    IVF-RQ (RabitQ Quantization) compresses vectors using RabitQ quantization
+    and organizes them into IVF partitions.
+
+    The compression scheme is called RabitQ quantization. Each dimension is
+    quantized into a small number of bits. The parameters `num_bits` and
+    `num_partitions` control this process, providing a tradeoff between
+    index size (and thus search speed) and index accuracy.
+
+    The partitioning process is called IVF and the `num_partitions` parameter
+    controls how many groups to create.
+
+    Note that training an IVF RQ index on a large dataset is a slow operation
+    and currently is also a memory intensive operation.
+
+    Attributes
+    ----------
+    distance_type: str, default "l2"
+        Distance metric used to train the index and for quantization.
+
+        The following distance types are available:
+
+        "l2" - Euclidean distance.
+        "cosine" - Cosine distance.
+        "dot" - Dot product.
+
+    num_partitions: int, default sqrt(num_rows)
+        Number of IVF partitions to create.
+
+    num_bits: int, default 1
+        Number of bits to encode each dimension in the RabitQ codebook.
+
+    max_iterations: int, default 50
+        Max iterations to train kmeans when computing IVF partitions.
+
+    sample_rate: int, default 256
+        Controls the number of training vectors: sample_rate * num_partitions.
+
+    target_partition_size, default is 8192
+        Target size of each partition.
+    """
+
+    distance_type: Literal["l2", "cosine", "dot"] = "l2"
+    num_partitions: Optional[int] = None
+    num_bits: int = 1
+    max_iterations: int = 50
+    sample_rate: int = 256
+    target_partition_size: Optional[int] = None
 
 
 __all__ = [
     "BTree",
     "IvfPq",
+    "IvfHnswPq",
+    "IvfHnswSq",
+    "IvfSq",
+    "IvfRq",
     "IvfFlat",
     "HnswPq",
     "HnswSq",

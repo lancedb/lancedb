@@ -21,6 +21,36 @@ from ..dependencies import pandas as pd
 from ..util import attempt_import_or_raise
 
 
+def create_import_stub(module_name: str, package_name: str = None):
+    """
+    Create a stub module that allows class definition but fails when used.
+    This allows modules to be imported for doctest collection even when
+    optional dependencies are not available.
+
+    Parameters
+    ----------
+    module_name : str
+        The name of the module to create a stub for
+    package_name : str, optional
+        The package name to suggest in the error message
+
+    Returns
+    -------
+    object
+        A stub object that can be used in place of the module
+    """
+
+    class _ImportStub:
+        def __getattr__(self, name):
+            return _ImportStub  # Return stub for chained access like nn.Module
+
+        def __call__(self, *args, **kwargs):
+            pkg = package_name or module_name
+            raise ImportError(f"You need to install {pkg} to use this functionality")
+
+    return _ImportStub()
+
+
 # ruff: noqa: PERF203
 def retry(tries=10, delay=1, max_delay=30, backoff=3, jitter=1):
     def wrapper(fn):

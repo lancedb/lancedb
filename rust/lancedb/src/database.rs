@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::RecordBatchReader;
 use async_trait::async_trait;
@@ -23,20 +24,29 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::stream;
 use lance::dataset::ReadParams;
 use lance_datafusion::utils::StreamingWriteSource;
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
+    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+};
+use lance_namespace::LanceNamespace;
 
 use crate::arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt};
 use crate::error::Result;
 use crate::table::{BaseTable, TableDefinition, WriteOptions};
 
 pub mod listing;
+pub mod namespace;
 
 pub trait DatabaseOptions {
     fn serialize_into_map(&self, map: &mut HashMap<String, String>);
 }
 
-/// A request to list names of tables in the database
+/// A request to list names of tables in the database (deprecated, use ListTablesRequest)
 #[derive(Clone, Debug, Default)]
 pub struct TableNamesRequest {
+    /// The namespace to list tables in. Empty list represents root namespace.
+    pub namespace: Vec<String>,
     /// If present, only return names that come lexicographically after the supplied
     /// value.
     ///
@@ -48,11 +58,32 @@ pub struct TableNamesRequest {
 }
 
 /// A request to open a table
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OpenTableRequest {
     pub name: String,
+    /// The namespace to open the table from. Empty list represents root namespace.
+    pub namespace: Vec<String>,
     pub index_cache_size: Option<u32>,
     pub lance_read_params: Option<ReadParams>,
+    /// Optional custom location for the table. If not provided, the database will
+    /// derive a location based on its URI and the table name.
+    pub location: Option<String>,
+    /// Optional namespace client for server-side query execution.
+    /// When set, queries will be executed on the namespace server instead of locally.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
+}
+
+impl std::fmt::Debug for OpenTableRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenTableRequest")
+            .field("name", &self.name)
+            .field("namespace", &self.namespace)
+            .field("index_cache_size", &self.index_cache_size)
+            .field("lance_read_params", &self.lance_read_params)
+            .field("location", &self.location)
+            .field("namespace_client", &self.namespace_client)
+            .finish()
+    }
 }
 
 pub type TableBuilderCallback = Box<dyn FnOnce(OpenTableRequest) -> OpenTableRequest + Send>;
@@ -125,23 +156,84 @@ impl StreamingWriteSource for CreateTableData {
 pub struct CreateTableRequest {
     /// The name of the new table
     pub name: String,
+    /// The namespace to create the table in. Empty list represents root namespace.
+    pub namespace: Vec<String>,
     /// Initial data to write to the table, can be None to create an empty table
     pub data: CreateTableData,
     /// The mode to use when creating the table
     pub mode: CreateTableMode,
     /// Options to use when writing data (only used if `data` is not None)
     pub write_options: WriteOptions,
+    /// Optional custom location for the table. If not provided, the database will
+    /// derive a location based on its URI and the table name.
+    pub location: Option<String>,
+    /// Optional namespace client for server-side query execution.
+    /// When set, queries will be executed on the namespace server instead of locally.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
 }
 
 impl CreateTableRequest {
     pub fn new(name: String, data: CreateTableData) -> Self {
         Self {
             name,
+            namespace: vec![],
             data,
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
+            location: None,
+            namespace_client: None,
         }
     }
+}
+
+/// Request to clone a table from a source table.
+///
+/// A shallow clone creates a new table that shares the underlying data files
+/// with the source table but has its own independent manifest. This allows
+/// both the source and cloned tables to evolve independently while initially
+/// sharing the same data, deletion, and index files.
+#[derive(Clone, Debug)]
+pub struct CloneTableRequest {
+    /// The name of the target table to create
+    pub target_table_name: String,
+    /// The namespace for the target table. Empty list represents root namespace.
+    pub target_namespace: Vec<String>,
+    /// The URI of the source table to clone from.
+    pub source_uri: String,
+    /// Optional version of the source table to clone.
+    pub source_version: Option<u64>,
+    /// Optional tag of the source table to clone.
+    pub source_tag: Option<String>,
+    /// Whether to perform a shallow clone (true) or deep clone (false). Defaults to true.
+    /// Currently only shallow clone is supported.
+    pub is_shallow: bool,
+}
+
+impl CloneTableRequest {
+    pub fn new(target_table_name: String, source_uri: String) -> Self {
+        Self {
+            target_table_name,
+            target_namespace: vec![],
+            source_uri,
+            source_version: None,
+            source_tag: None,
+            is_shallow: true,
+        }
+    }
+}
+
+/// How long until a change is reflected from one Table instance to another
+///
+/// Tables are always internally consistent.  If a write method is called on
+/// a table instance it will be immediately visible in that same table instance.
+pub enum ReadConsistency {
+    /// Changes will not be automatically propagated until the checkout_latest
+    /// method is called on the target table
+    Manual,
+    /// Changes will be propagated automatically within the given duration
+    Eventual(Duration),
+    /// Changes are immediately visible in target tables
+    Strong,
 }
 
 /// The `Database` trait defines the interface for database implementations.
@@ -151,17 +243,63 @@ impl CreateTableRequest {
 pub trait Database:
     Send + Sync + std::any::Any + std::fmt::Debug + std::fmt::Display + 'static
 {
+    /// Get the uri of the database
+    fn uri(&self) -> &str;
+    /// Get the read consistency of the database
+    async fn read_consistency(&self) -> Result<ReadConsistency>;
+    /// List immediate child namespace names in the given namespace
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse>;
+    /// Create a new namespace
+    async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse>;
+    /// Drop a namespace
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse>;
+    /// Describe a namespace (get its properties)
+    async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse>;
     /// List the names of tables in the database
+    ///
+    /// # Deprecated
+    /// Use `list_tables` instead for pagination support
+    #[deprecated(note = "Use list_tables instead")]
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>>;
+    /// List tables in the database with pagination support
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse>;
     /// Create a table in the database
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>>;
+    /// Clone a table in the database.
+    ///
+    /// Creates a shallow clone of the source table, sharing underlying data files
+    /// but with an independent manifest. Both tables can evolve separately after cloning.
+    ///
+    /// See [`CloneTableRequest`] for detailed documentation and examples.
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database
-    async fn rename_table(&self, old_name: &str, new_name: &str) -> Result<()>;
+    async fn rename_table(
+        &self,
+        cur_name: &str,
+        new_name: &str,
+        cur_namespace: &[String],
+        new_namespace: &[String],
+    ) -> Result<()>;
     /// Drop a table in the database
-    async fn drop_table(&self, name: &str) -> Result<()>;
+    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()>;
     /// Drop all tables in the database
-    async fn drop_all_tables(&self) -> Result<()>;
+    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Get the equivalent namespace client of this database
+    /// For LanceNamespaceDatabase, it is the underlying LanceNamespace.
+    /// For ListingDatabase, it is the equivalent DirectoryNamespace.
+    /// For RemoteDatabase, it is the equivalent RestNamespace.
+    async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>>;
 }

@@ -175,6 +175,18 @@ def test_table_names(tmp_db: lancedb.DBConnection):
     tmp_db.create_table("test3", data=data)
     assert tmp_db.table_names() == ["test1", "test2", "test3"]
 
+    # Test that positional arguments for page_token and limit
+    result = list(tmp_db.table_names("test1", 1))  # page_token="test1", limit=1
+    assert result == ["test2"], f"Expected ['test2'], got {result}"
+
+    # Test mixed positional and keyword arguments
+    result = list(tmp_db.table_names("test2", limit=2))
+    assert result == ["test3"], f"Expected ['test3'], got {result}"
+
+    # Test that namespace parameter can be passed as keyword
+    result = list(tmp_db.table_names(namespace=[]))
+    assert len(result) == 3
+
 
 @pytest.mark.asyncio
 async def test_table_names_async(tmp_path):
@@ -256,6 +268,8 @@ async def test_create_table_from_iterator_async(mem_db_async: lancedb.AsyncConne
 
 
 def test_create_exist_ok(tmp_db: lancedb.DBConnection):
+    from conftest import pandas_string_type
+
     data = pd.DataFrame(
         {
             "vector": [[3.1, 4.1], [5.9, 26.5]],
@@ -274,10 +288,11 @@ def test_create_exist_ok(tmp_db: lancedb.DBConnection):
     assert tbl.schema == tbl2.schema
     assert len(tbl) == len(tbl2)
 
+    # pandas 3.0+ uses large_string, pandas 2.x uses string
     schema = pa.schema(
         [
             pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-            pa.field("item", pa.utf8()),
+            pa.field("item", pandas_string_type()),
             pa.field("price", pa.float64()),
         ]
     )
@@ -287,7 +302,7 @@ def test_create_exist_ok(tmp_db: lancedb.DBConnection):
     bad_schema = pa.schema(
         [
             pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-            pa.field("item", pa.utf8()),
+            pa.field("item", pandas_string_type()),
             pa.field("price", pa.float64()),
             pa.field("extra", pa.float32()),
         ]
@@ -353,6 +368,8 @@ async def test_create_mode_async(tmp_db_async: lancedb.AsyncConnection):
 
 @pytest.mark.asyncio
 async def test_create_exist_ok_async(tmp_db_async: lancedb.AsyncConnection):
+    from conftest import pandas_string_type
+
     data = pd.DataFrame(
         {
             "vector": [[3.1, 4.1], [5.9, 26.5]],
@@ -370,10 +387,11 @@ async def test_create_exist_ok_async(tmp_db_async: lancedb.AsyncConnection):
     assert tbl.name == tbl2.name
     assert await tbl.schema() == await tbl2.schema()
 
+    # pandas 3.0+ uses large_string, pandas 2.x uses string
     schema = pa.schema(
         [
             pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-            pa.field("item", pa.utf8()),
+            pa.field("item", pandas_string_type()),
             pa.field("price", pa.float64()),
         ]
     )
@@ -429,6 +447,150 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
         assert re.match(r"\d{20}\.manifest", manifest)
 
 
+@pytest.mark.asyncio
+async def test_create_table_stable_row_ids_via_storage_options(tmp_path):
+    """Test stable_row_ids via storage_options at connect time."""
+    import lance
+
+    # Connect with stable row IDs enabled as default for new tables
+    db_with = await lancedb.connect_async(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+    # Connect without stable row IDs (default)
+    db_without = await lancedb.connect_async(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "false"}
+    )
+
+    # Create table using connection with stable row IDs enabled
+    await db_with.create_table(
+        "with_stable_via_opts",
+        data=[{"id": i} for i in range(10)],
+    )
+    lance_ds_with = lance.dataset(tmp_path / "with_stable_via_opts.lance")
+    fragments_with = lance_ds_with.get_fragments()
+    assert len(fragments_with) > 0
+    assert fragments_with[0].metadata.row_id_meta is not None
+
+    # Create table using connection without stable row IDs
+    await db_without.create_table(
+        "without_stable_via_opts",
+        data=[{"id": i} for i in range(10)],
+    )
+    lance_ds_without = lance.dataset(tmp_path / "without_stable_via_opts.lance")
+    fragments_without = lance_ds_without.get_fragments()
+    assert len(fragments_without) > 0
+    assert fragments_without[0].metadata.row_id_meta is None
+
+
+def test_create_table_stable_row_ids_via_storage_options_sync(tmp_path):
+    """Test that enable_stable_row_ids can be set via storage_options (sync API)."""
+    # Connect with stable row IDs enabled as default for new tables
+    db_with = lancedb.connect(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+    # Connect without stable row IDs (default)
+    db_without = lancedb.connect(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "false"}
+    )
+
+    # Create table using connection with stable row IDs enabled
+    tbl_with = db_with.create_table(
+        "with_stable_sync",
+        data=[{"id": i} for i in range(10)],
+    )
+    lance_ds_with = tbl_with.to_lance()
+    fragments_with = lance_ds_with.get_fragments()
+    assert len(fragments_with) > 0
+    assert fragments_with[0].metadata.row_id_meta is not None
+
+    # Create table using connection without stable row IDs
+    tbl_without = db_without.create_table(
+        "without_stable_sync",
+        data=[{"id": i} for i in range(10)],
+    )
+    lance_ds_without = tbl_without.to_lance()
+    fragments_without = lance_ds_without.get_fragments()
+    assert len(fragments_without) > 0
+    assert fragments_without[0].metadata.row_id_meta is None
+
+
+@pytest.mark.asyncio
+async def test_create_table_stable_row_ids_table_level_override(tmp_path):
+    """Test that stable_row_ids can be enabled/disabled at create_table level."""
+    import lance
+
+    # Connect without any stable row ID setting
+    db_default = await lancedb.connect_async(tmp_path)
+
+    # Connect with stable row IDs enabled at connection level
+    db_with_stable = await lancedb.connect_async(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+
+    # Case 1: No connection setting, enable at table level
+    await db_default.create_table(
+        "table_level_enabled",
+        data=[{"id": i} for i in range(10)],
+        storage_options={"new_table_enable_stable_row_ids": "true"},
+    )
+    lance_ds = lance.dataset(tmp_path / "table_level_enabled.lance")
+    fragments = lance_ds.get_fragments()
+    assert len(fragments) > 0
+    assert fragments[0].metadata.row_id_meta is not None, (
+        "Table should have stable row IDs when enabled at table level"
+    )
+
+    # Case 2: Connection has stable row IDs, override with false at table level
+    await db_with_stable.create_table(
+        "table_level_disabled",
+        data=[{"id": i} for i in range(10)],
+        storage_options={"new_table_enable_stable_row_ids": "false"},
+    )
+    lance_ds = lance.dataset(tmp_path / "table_level_disabled.lance")
+    fragments = lance_ds.get_fragments()
+    assert len(fragments) > 0
+    assert fragments[0].metadata.row_id_meta is None, (
+        "Table should NOT have stable row IDs when disabled at table level"
+    )
+
+
+def test_create_table_stable_row_ids_table_level_override_sync(tmp_path):
+    """Test that stable_row_ids can be enabled/disabled at create_table level (sync)."""
+    # Connect without any stable row ID setting
+    db_default = lancedb.connect(tmp_path)
+
+    # Connect with stable row IDs enabled at connection level
+    db_with_stable = lancedb.connect(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+
+    # Case 1: No connection setting, enable at table level
+    tbl = db_default.create_table(
+        "table_level_enabled_sync",
+        data=[{"id": i} for i in range(10)],
+        storage_options={"new_table_enable_stable_row_ids": "true"},
+    )
+    lance_ds = tbl.to_lance()
+    fragments = lance_ds.get_fragments()
+    assert len(fragments) > 0
+    assert fragments[0].metadata.row_id_meta is not None, (
+        "Table should have stable row IDs when enabled at table level"
+    )
+
+    # Case 2: Connection has stable row IDs, override with false at table level
+    tbl = db_with_stable.create_table(
+        "table_level_disabled_sync",
+        data=[{"id": i} for i in range(10)],
+        storage_options={"new_table_enable_stable_row_ids": "false"},
+    )
+    lance_ds = tbl.to_lance()
+    fragments = lance_ds.get_fragments()
+    assert len(fragments) > 0
+    assert fragments[0].metadata.row_id_meta is None, (
+        "Table should NOT have stable row IDs when disabled at table level"
+    )
+
+
 def test_open_table_sync(tmp_db: lancedb.DBConnection):
     tmp_db.create_table("test", data=[{"id": 0}])
     assert tmp_db.open_table("test").count_rows() == 1
@@ -439,6 +601,8 @@ def test_open_table_sync(tmp_db: lancedb.DBConnection):
 
 @pytest.mark.asyncio
 async def test_open_table(tmp_path):
+    from conftest import pandas_string_type
+
     db = await lancedb.connect_async(tmp_path)
     data = pd.DataFrame(
         {
@@ -458,10 +622,11 @@ async def test_open_table(tmp_path):
         )
         is not None
     )
+    # pandas 3.0+ uses large_string, pandas 2.x uses string
     assert await tbl.schema() == pa.schema(
         {
             "vector": pa.list_(pa.float32(), list_size=2),
-            "item": pa.utf8(),
+            "item": pandas_string_type(),
             "price": pa.float64(),
         }
     )
@@ -728,3 +893,158 @@ def test_bypass_vector_index_sync(tmp_db: lancedb.DBConnection):
         table.search(sample_key).bypass_vector_index().explain_plan(verbose=True)
     )
     assert "KNN" in plan_without_index
+
+
+def test_local_namespace_operations(tmp_path):
+    """Test that local mode namespace operations behave as expected."""
+    # Create a local database connection
+    db = lancedb.connect(tmp_path)
+
+    # Test list_namespaces returns empty list for root namespace
+    namespaces = db.list_namespaces().namespaces
+    assert namespaces == []
+
+    # Test list_namespaces with non-empty namespace raises NotImplementedError
+    with pytest.raises(
+        NotImplementedError,
+        match="Namespace operations are not supported for listing database",
+    ):
+        db.list_namespaces(namespace=["test"])
+
+
+def test_local_create_namespace_not_supported(tmp_path):
+    """Test that create_namespace is not supported in local mode."""
+    db = lancedb.connect(tmp_path)
+
+    with pytest.raises(
+        NotImplementedError,
+        match="Namespace operations are not supported for listing database",
+    ):
+        db.create_namespace(["test_namespace"])
+
+
+def test_local_drop_namespace_not_supported(tmp_path):
+    """Test that drop_namespace is not supported in local mode."""
+    db = lancedb.connect(tmp_path)
+
+    with pytest.raises(
+        NotImplementedError,
+        match="Namespace operations are not supported for listing database",
+    ):
+        db.drop_namespace(["test_namespace"])
+
+
+def test_clone_table_latest_version(tmp_path):
+    """Test cloning a table with the latest version (default behavior)"""
+    import os
+
+    db = lancedb.connect(tmp_path)
+
+    # Create source table with some data
+    data = [
+        {"id": 1, "text": "hello", "vector": [1.0, 2.0]},
+        {"id": 2, "text": "world", "vector": [3.0, 4.0]},
+    ]
+    source_table = db.create_table("source", data=data)
+
+    # Add more data to create a new version
+    more_data = [{"id": 3, "text": "test", "vector": [5.0, 6.0]}]
+    source_table.add(more_data)
+
+    # Clone the table (should get latest version with 3 rows)
+    source_uri = os.path.join(tmp_path, "source.lance")
+    cloned_table = db.clone_table("cloned", source_uri)
+
+    # Verify cloned table has all 3 rows
+    assert cloned_table.count_rows() == 3
+    assert "cloned" in db.table_names()
+
+    # Verify data matches
+    cloned_data = cloned_table.to_pandas()
+    assert len(cloned_data) == 3
+    assert set(cloned_data["id"].tolist()) == {1, 2, 3}
+
+
+def test_clone_table_specific_version(tmp_path):
+    """Test cloning a table from a specific version"""
+    import os
+
+    db = lancedb.connect(tmp_path)
+
+    # Create source table with initial data
+    data = [
+        {"id": 1, "text": "hello", "vector": [1.0, 2.0]},
+        {"id": 2, "text": "world", "vector": [3.0, 4.0]},
+    ]
+    source_table = db.create_table("source", data=data)
+
+    # Get the initial version
+    initial_version = source_table.version
+
+    # Add more data to create a new version
+    more_data = [{"id": 3, "text": "test", "vector": [5.0, 6.0]}]
+    source_table.add(more_data)
+
+    # Verify source now has 3 rows
+    assert source_table.count_rows() == 3
+
+    # Clone from the initial version (should have only 2 rows)
+    source_uri = os.path.join(tmp_path, "source.lance")
+    cloned_table = db.clone_table("cloned", source_uri, source_version=initial_version)
+
+    # Verify cloned table has only the initial 2 rows
+    assert cloned_table.count_rows() == 2
+    cloned_data = cloned_table.to_pandas()
+    assert set(cloned_data["id"].tolist()) == {1, 2}
+
+
+def test_clone_table_with_tag(tmp_path):
+    """Test cloning a table from a tagged version"""
+    import os
+
+    db = lancedb.connect(tmp_path)
+
+    # Create source table with initial data
+    data = [
+        {"id": 1, "text": "hello", "vector": [1.0, 2.0]},
+        {"id": 2, "text": "world", "vector": [3.0, 4.0]},
+    ]
+    source_table = db.create_table("source", data=data)
+
+    # Create a tag for the current version
+    source_table.tags.create("v1.0", source_table.version)
+
+    # Add more data after the tag
+    more_data = [{"id": 3, "text": "test", "vector": [5.0, 6.0]}]
+    source_table.add(more_data)
+
+    # Verify source now has 3 rows
+    assert source_table.count_rows() == 3
+
+    # Clone from the tagged version (should have only 2 rows)
+    source_uri = os.path.join(tmp_path, "source.lance")
+    cloned_table = db.clone_table("cloned", source_uri, source_tag="v1.0")
+
+    # Verify cloned table has only the tagged version's 2 rows
+    assert cloned_table.count_rows() == 2
+    cloned_data = cloned_table.to_pandas()
+    assert set(cloned_data["id"].tolist()) == {1, 2}
+
+
+def test_clone_table_deep_clone_fails(tmp_path):
+    """Test that deep clone raises an unsupported error"""
+    import os
+
+    db = lancedb.connect(tmp_path)
+
+    # Create source table with some data
+    data = [
+        {"id": 1, "text": "hello", "vector": [1.0, 2.0]},
+        {"id": 2, "text": "world", "vector": [3.0, 4.0]},
+    ]
+    db.create_table("source", data=data)
+
+    # Try to create a deep clone (should fail)
+    source_uri = os.path.join(tmp_path, "source.lance")
+    with pytest.raises(Exception, match="Deep clone is not yet implemented"):
+        db.clone_table("cloned", source_uri, is_shallow=False)

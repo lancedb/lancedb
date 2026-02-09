@@ -9,17 +9,21 @@ use arrow::array::Array;
 use arrow::array::ArrayData;
 use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
+use arrow::pyarrow::ToPyArrow;
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
     Operator, PhraseQuery,
 };
+use lancedb::query::QueryBase;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::QueryFilter;
 use lancedb::query::{
-    ExecutableQuery, Query as LanceDbQuery, QueryBase, Select, VectorQuery as LanceDbVectorQuery,
+    ExecutableQuery, Query as LanceDbQuery, Select, TakeQuery as LanceDbTakeQuery,
+    VectorQuery as LanceDbVectorQuery,
 };
 use lancedb::table::AnyQuery;
 use pyo3::prelude::{PyAnyMethods, PyDictMethods};
+use pyo3::pyfunction;
 use pyo3::pymethods;
 use pyo3::types::PyList;
 use pyo3::types::{PyDict, PyString};
@@ -28,6 +32,7 @@ use pyo3::IntoPyObject;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
+use pyo3::Python;
 use pyo3::{exceptions::PyRuntimeError, FromPyObject};
 use pyo3::{
     exceptions::{PyNotImplementedError, PyValueError},
@@ -443,6 +448,94 @@ impl Query {
         })
     }
 
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
+    #[pyo3(signature = (max_batch_length=None, timeout=None))]
+    pub fn execute(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+        timeout: Option<Duration>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let mut opts = QueryExecutionOptions::default();
+            if let Some(max_batch_length) = max_batch_length {
+                opts.max_batch_length = max_batch_length;
+            }
+            if let Some(timeout) = timeout {
+                opts.timeout = Some(timeout);
+            }
+            let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
+            Ok(RecordBatchStream::new(inner_stream))
+        })
+    }
+
+    pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .explain_plan(verbose)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        })
+    }
+
+    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .analyze_plan()
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        })
+    }
+
+    pub fn to_query_request(&self) -> PyQueryRequest {
+        PyQueryRequest::from(AnyQuery::Query(self.inner.clone().into_request()))
+    }
+}
+
+#[pyclass]
+pub struct TakeQuery {
+    inner: LanceDbTakeQuery,
+}
+
+impl TakeQuery {
+    pub fn new(query: LanceDbTakeQuery) -> Self {
+        Self { inner: query }
+    }
+}
+
+#[pymethods]
+impl TakeQuery {
+    pub fn select(&mut self, columns: Vec<(String, String)>) {
+        self.inner = self.inner.clone().select(Select::dynamic(&columns));
+    }
+
+    pub fn select_columns(&mut self, columns: Vec<String>) {
+        self.inner = self.inner.clone().select(Select::columns(&columns));
+    }
+
+    pub fn with_row_id(&mut self) {
+        self.inner = self.inner.clone().with_row_id();
+    }
+
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
     #[pyo3(signature = (max_batch_length=None, timeout=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
@@ -529,6 +622,15 @@ impl FTSQuery {
         self.inner = self.inner.clone().postfilter();
     }
 
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
     #[pyo3(signature = (max_batch_length=None, timeout=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
@@ -588,7 +690,7 @@ impl FTSQuery {
     }
 
     pub fn get_query(&self) -> String {
-        self.fts_query.query.query().to_owned()
+        self.fts_query.query.query().clone()
     }
 
     pub fn to_query_request(&self) -> PyQueryRequest {
@@ -697,6 +799,15 @@ impl VectorQuery {
 
     pub fn bypass_vector_index(&mut self) {
         self.inner = self.inner.clone().bypass_vector_index()
+    }
+
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+        })
     }
 
     #[pyo3(signature = (max_batch_length=None, timeout=None))]
@@ -871,4 +982,16 @@ impl HybridQuery {
         req.upper_bound = vec_req.upper_bound;
         req
     }
+}
+
+/// Convert a Python FTS query to JSON string
+#[pyfunction]
+pub fn fts_query_to_json(query_obj: &Bound<'_, PyAny>) -> PyResult<String> {
+    let wrapped: PyLanceDB<FtsQuery> = query_obj.extract()?;
+    lancedb::table::datafusion::udtf::fts::to_json(&wrapped.0).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Failed to serialize FTS query to JSON: {}",
+            e
+        ))
+    })
 }

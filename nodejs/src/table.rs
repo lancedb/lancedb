@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 
-use arrow_ipc::writer::FileWriter;
 use lancedb::ipc::ipc_file_to_batches;
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
@@ -15,7 +14,8 @@ use napi_derive::napi;
 use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
-use crate::query::{Query, VectorQuery};
+use crate::query::{Query, TakeQuery, VectorQuery};
+use crate::util::schema_to_buffer;
 
 #[napi]
 pub struct Table {
@@ -26,7 +26,7 @@ pub struct Table {
 }
 
 impl Table {
-    fn inner_ref(&self) -> napi::Result<&LanceDbTable> {
+    pub(crate) fn inner_ref(&self) -> napi::Result<&LanceDbTable> {
         self.inner
             .as_ref()
             .ok_or_else(|| napi::Error::from_reason(format!("Table {} is closed", self.name)))
@@ -64,14 +64,7 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn schema(&self) -> napi::Result<Buffer> {
         let schema = self.inner_ref()?.schema().await.default_error()?;
-        let mut writer = FileWriter::try_new(vec![], &schema)
-            .map_err(|e| napi::Error::from_reason(format!("Failed to create IPC file: {}", e)))?;
-        writer
-            .finish()
-            .map_err(|e| napi::Error::from_reason(format!("Failed to finish IPC file: {}", e)))?;
-        Ok(Buffer::from(writer.into_inner().map_err(|e| {
-            napi::Error::from_reason(format!("Failed to get IPC file: {}", e))
-        })?))
+        schema_to_buffer(&schema)
     }
 
     #[napi(catch_unwind)]
@@ -114,6 +107,8 @@ impl Table {
         column: String,
         replace: Option<bool>,
         wait_timeout_s: Option<i64>,
+        name: Option<String>,
+        train: Option<bool>,
     ) -> napi::Result<()> {
         let lancedb_index = if let Some(index) = index {
             index.consume()?
@@ -127,6 +122,12 @@ impl Table {
         if let Some(timeout) = wait_timeout_s {
             builder =
                 builder.wait_timeout(std::time::Duration::from_secs(timeout.try_into().unwrap()));
+        }
+        if let Some(name) = name {
+            builder = builder.name(name);
+        }
+        if let Some(train) = train {
+            builder = builder.train(train);
         }
         builder.execute().await.default_error()
     }
@@ -166,6 +167,19 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn initial_storage_options(&self) -> napi::Result<Option<HashMap<String, String>>> {
+        Ok(self.inner_ref()?.initial_storage_options().await)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn latest_storage_options(&self) -> napi::Result<Option<HashMap<String, String>>> {
+        self.inner_ref()?
+            .latest_storage_options()
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn update(
         &self,
         only_if: Option<String>,
@@ -185,6 +199,50 @@ impl Table {
     #[napi(catch_unwind)]
     pub fn query(&self) -> napi::Result<Query> {
         Ok(Query::new(self.inner_ref()?.query()))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn take_offsets(&self, offsets: Vec<i64>) -> napi::Result<TakeQuery> {
+        Ok(TakeQuery::new(
+            self.inner_ref()?.take_offsets(
+                offsets
+                    .into_iter()
+                    .map(|o| {
+                        u64::try_from(o).map_err(|e| {
+                            napi::Error::from_reason(format!(
+                                "Failed to convert offset to u64: {}",
+                                e
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn take_row_ids(&self, row_ids: Vec<BigInt>) -> napi::Result<TakeQuery> {
+        Ok(TakeQuery::new(
+            self.inner_ref()?.take_row_ids(
+                row_ids
+                    .into_iter()
+                    .map(|id| {
+                        let (negative, value, lossless) = id.get_u64();
+                        if negative {
+                            Err(napi::Error::from_reason(
+                                "Row id cannot be negative".to_string(),
+                            ))
+                        } else if !lossless {
+                            Err(napi::Error::from_reason(
+                                "Row id is too large to fit in u64".to_string(),
+                            ))
+                        } else {
+                            Ok(value)
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ))
     }
 
     #[napi(catch_unwind)]
@@ -701,6 +759,7 @@ pub struct MergeResult {
     pub num_inserted_rows: i64,
     pub num_updated_rows: i64,
     pub num_deleted_rows: i64,
+    pub num_attempts: i64,
 }
 
 impl From<lancedb::table::MergeResult> for MergeResult {
@@ -710,6 +769,7 @@ impl From<lancedb::table::MergeResult> for MergeResult {
             num_inserted_rows: value.num_inserted_rows as i64,
             num_updated_rows: value.num_updated_rows as i64,
             num_deleted_rows: value.num_deleted_rows as i64,
+            num_attempts: value.num_attempts as i64,
         }
     }
 }

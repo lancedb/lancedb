@@ -10,7 +10,13 @@ import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
 import * as arrow18 from "apache-arrow-18";
 
-import { MatchQuery, PhraseQuery, Table, connect } from "../lancedb";
+import {
+  Connection,
+  MatchQuery,
+  PhraseQuery,
+  Table,
+  connect,
+} from "../lancedb";
 import {
   Table as ArrowTable,
   Field,
@@ -21,6 +27,8 @@ import {
   Int64,
   List,
   Schema,
+  SchemaLike,
+  Type,
   Uint8,
   Utf8,
   makeArrowTable,
@@ -39,7 +47,6 @@ import {
   Operator,
   instanceOfFullTextQuery,
 } from "../lancedb/query";
-import exp = require("constants");
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Given a table",
@@ -212,8 +219,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       },
     );
 
-    // TODO: https://github.com/lancedb/lancedb/issues/1832
-    it.skip("should be able to omit nullable fields", async () => {
+    it("should be able to omit nullable fields", async () => {
       const db = await connect(tmpDir.name);
       const schema = new arrow.Schema([
         new arrow.Field(
@@ -237,23 +243,36 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await table.add([data3]);
 
       let res = await table.query().limit(10).toArray();
-      const resVector = res.map((r) => r.get("vector").toArray());
+      const resVector = res.map((r) =>
+        r.vector ? Array.from(r.vector) : null,
+      );
       expect(resVector).toEqual([null, data2.vector, data3.vector]);
-      const resItem = res.map((r) => r.get("item").toArray());
+      const resItem = res.map((r) => r.item);
       expect(resItem).toEqual(["foo", null, "bar"]);
-      const resPrice = res.map((r) => r.get("price").toArray());
+      const resPrice = res.map((r) => r.price);
       expect(resPrice).toEqual([10.0, 2.0, 3.0]);
 
       const data4 = { item: "foo" };
       // We can't omit a column if it's not nullable
-      await expect(table.add([data4])).rejects.toThrow("Invalid user input");
+      await expect(table.add([data4])).rejects.toThrow(
+        "Append with different schema",
+      );
 
       // But we can alter columns to make them nullable
       await table.alterColumns([{ path: "price", nullable: true }]);
       await table.add([data4]);
 
-      res = (await table.query().limit(10).toArray()).map((r) => r.toJSON());
-      expect(res).toEqual([data1, data2, data3, data4]);
+      res = (await table.query().limit(10).toArray()).map((r) => ({
+        ...r.toJSON(),
+        vector: r.vector ? Array.from(r.vector) : null,
+      }));
+      // Rust fills missing nullable fields with null
+      expect(res).toEqual([
+        { ...data1, vector: null },
+        { ...data2, item: null },
+        data3,
+        { ...data4, price: null, vector: null },
+      ]);
     });
 
     it("should be able to insert nullable data for non-nullable fields", async () => {
@@ -285,6 +304,72 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(res2[0].id).toEqual(data1.id);
       expect(res2[1].x).toBeNull();
       expect(res2[1].id).toEqual(data2.id);
+    });
+
+    it("should support take queries", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      const res = await table.takeOffsets([1, 2]).toArrow();
+      expect(res.getChild("id")?.toJSON()).toEqual([2, 3]);
+    });
+
+    it("should support takeRowIds with bigint array", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Get actual row IDs using withRowId()
+      const allRows = await table.query().withRowId().toArray();
+      const rowIds = allRows.map((row) => row._rowid) as bigint[];
+
+      // Verify row IDs are bigint
+      expect(typeof rowIds[0]).toBe("bigint");
+
+      // Use takeRowIds with bigint array (the main use case from issue #2722)
+      const res = await table.takeRowIds([rowIds[0], rowIds[2]]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 3]);
+    });
+
+    it("should support takeRowIds with number array for backwards compatibility", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Small row IDs can be passed as numbers
+      const res = await table.takeRowIds([0, 2]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 3]);
+    });
+
+    it("should support takeRowIds with mixed bigint and number array", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Mixed array of bigint and number
+      const res = await table.takeRowIds([0n, 1, 2n]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 2, 3]);
+    });
+
+    it("should throw for non-integer number in takeRowIds", () => {
+      expect(() => table.takeRowIds([1.5])).toThrow(
+        "Row id must be an integer (or bigint)",
+      );
+      expect(() => table.takeRowIds([0, 1.1, 2])).toThrow(
+        "Row id must be an integer (or bigint)",
+      );
+    });
+
+    it("should throw for negative number in takeRowIds", () => {
+      expect(() => table.takeRowIds([-1])).toThrow("Row id cannot be negative");
+      expect(() => table.takeRowIds([0, -5, 2])).toThrow(
+        "Row id cannot be negative",
+      );
+    });
+
+    it("should throw for unsafe large number in takeRowIds", () => {
+      // Number.MAX_SAFE_INTEGER + 1 is not safe
+      const unsafeNumber = Number.MAX_SAFE_INTEGER + 1;
+      expect(() => table.takeRowIds([unsafeNumber])).toThrow(
+        "Row id is too large for number; use bigint instead",
+      );
+    });
+
+    it("should reject negative bigint in takeRowIds", async () => {
+      await table.add([{ id: 1 }]);
+      // Negative bigint should be rejected by the Rust layer
+      expect(() => {
+        table.takeRowIds([-1n]);
+      }).toThrow("Row id cannot be negative");
     });
 
     it("should return the table as an instance of an arrow table", async () => {
@@ -324,6 +409,43 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       const table = await db.createTable("my_table", data);
       expect(await table.countRows()).toEqual(2);
+    });
+
+    it("should allow undefined and omitted nullable vector fields", async () => {
+      // Test for the bug: can't pass undefined or omit vector column
+      const db = await connect("memory://");
+      const schema = new arrow.Schema([
+        new arrow.Field("id", new arrow.Int32(), true),
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(
+            32,
+            new arrow.Field("item", new arrow.Float32(), true),
+          ),
+          true, // nullable = true
+        ),
+      ]);
+      const table = await db.createEmptyTable("test_table", schema);
+
+      // Should not throw error for undefined value
+      await table.add([{ id: 0, vector: undefined }]);
+
+      // Should not throw error for omitted field
+      await table.add([{ id: 1 }]);
+
+      // Should still work for null
+      await table.add([{ id: 2, vector: null }]);
+
+      // Should still work for actual vector
+      const testVector = new Array(32).fill(0.5);
+      await table.add([{ id: 3, vector: testVector }]);
+      expect(await table.countRows()).toEqual(4);
+
+      const res = await table.query().limit(10).toArray();
+      const resVector = res.map((r) =>
+        r.vector ? Array.from(r.vector) : null,
+      );
+      expect(resVector).toEqual([null, null, null, testVector]);
     });
   },
 );
@@ -482,6 +604,32 @@ describe("merge insert", () => {
         .execute(newData, { timeoutMs: 0 }),
     ).rejects.toThrow("merge insert timed out");
   });
+
+  test("useIndex", async () => {
+    const newData = [
+      { a: 2, b: "x" },
+      { a: 4, b: "z" },
+    ];
+
+    // Test with useIndex(true) - should work fine
+    const result1 = await table
+      .mergeInsert("a")
+      .whenNotMatchedInsertAll()
+      .useIndex(true)
+      .execute(newData);
+
+    expect(result1.numInsertedRows).toBe(1); // Only a=4 should be inserted
+
+    // Test with useIndex(false) - should also work fine
+    const newData2 = [{ a: 5, b: "w" }];
+    const result2 = await table
+      .mergeInsert("a")
+      .whenNotMatchedInsertAll()
+      .useIndex(false)
+      .execute(newData2);
+
+    expect(result2.numInsertedRows).toBe(1); // a=5 should be inserted
+  });
 });
 
 describe("When creating an index", () => {
@@ -557,7 +705,7 @@ describe("When creating an index", () => {
 
     // test offset
     rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
-    expect(rst.numRows).toBe(1);
+    expect(rst.numRows).toBe(2);
 
     // test nprobes
     rst = await tbl.query().nearestTo(queryVec).limit(2).nprobes(50).toArrow();
@@ -582,7 +730,7 @@ describe("When creating an index", () => {
       "Invalid input, minimum_nprobes must be greater than 0",
     );
     expect(() => tbl.query().nearestTo(queryVec).maximumNprobes(5)).toThrow(
-      "Invalid input, maximum_nprobes must be greater than minimum_nprobes",
+      "Invalid input, maximum_nprobes must be greater than or equal to minimum_nprobes",
     );
 
     await tbl.dropIndex("vec_idx");
@@ -696,7 +844,7 @@ describe("When creating an index", () => {
 
     // test offset
     rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
-    expect(rst.numRows).toBe(1);
+    expect(rst.numRows).toBe(2);
 
     // test ef
     rst = await tbl.query().limit(2).nearestTo(queryVec).ef(100).toArrow();
@@ -769,6 +917,15 @@ describe("When creating an index", () => {
       config: Index.ivfPq({
         numPartitions: 10,
         numBits: 4,
+      }),
+    });
+  });
+
+  it("should be able to create IVF_RQ", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.ivfRq({
+        numPartitions: 10,
+        numBits: 1,
       }),
     });
   });
@@ -849,6 +1006,40 @@ describe("When creating an index", () => {
   test("when getting stats on non-existent index", async () => {
     const stats = await tbl.indexStats("some non-existent index");
     expect(stats).toBeUndefined();
+  });
+
+  test("should support name and train parameters", async () => {
+    // Test with custom name
+    await tbl.createIndex("vec", {
+      config: Index.ivfPq({ numPartitions: 4 }),
+      name: "my_custom_vector_index",
+    });
+
+    const indices = await tbl.listIndices();
+    expect(indices).toHaveLength(1);
+    expect(indices[0].name).toBe("my_custom_vector_index");
+
+    // Test scalar index with train=false
+    await tbl.createIndex("id", {
+      config: Index.btree(),
+      name: "btree_empty",
+      train: false,
+    });
+
+    const allIndices = await tbl.listIndices();
+    expect(allIndices).toHaveLength(2);
+    expect(allIndices.some((idx) => idx.name === "btree_empty")).toBe(true);
+
+    // Test with both name and train=true (use tags column)
+    await tbl.createIndex("tags", {
+      config: Index.labelList(),
+      name: "tags_trained",
+      train: true,
+    });
+
+    const finalIndices = await tbl.listIndices();
+    expect(finalIndices).toHaveLength(3);
+    expect(finalIndices.some((idx) => idx.name === "tags_trained")).toBe(true);
   });
 
   test("create ivf_flat with binary vectors", async () => {
@@ -1389,7 +1580,9 @@ describe("when optimizing a dataset", () => {
 
   it("delete unverified", async () => {
     const version = await table.version();
-    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${version - 1}.manifest`;
+    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${String(
+      18446744073709551615n - (BigInt(version) - 1n),
+    ).padStart(20, "0")}.manifest`;
     fs.rmSync(versionFile);
 
     let stats = await table.optimize({ deleteUnverified: false });
@@ -1862,5 +2055,93 @@ describe("column name options", () => {
     results.sort((a, b) => a.query_index - b.query_index);
     expect(results[0].query_index).toBe(0);
     expect(results[1].query_index).toBe(1);
+  });
+
+  test("index and search multivectors", async () => {
+    const db = await connect(tmpDir.name);
+    const data = [];
+    // generate 512 random multivectors
+    for (let i = 0; i < 256; i++) {
+      data.push({
+        multivector: Array.from({ length: 10 }, () =>
+          Array(2).fill(Math.random()),
+        ),
+      });
+    }
+    const table = await db.createTable("multivectors", data, {
+      schema: new Schema([
+        new Field(
+          "multivector",
+          new List(
+            new Field(
+              "item",
+              new FixedSizeList(2, new Field("item", new Float32())),
+            ),
+          ),
+        ),
+      ]),
+    });
+
+    const results = await table.search(data[0].multivector).limit(10).toArray();
+    expect(results.length).toBe(10);
+
+    await table.createIndex("multivector", {
+      config: Index.ivfPq({ numPartitions: 2, distanceType: "cosine" }),
+    });
+
+    const results2 = await table
+      .search(data[0].multivector)
+      .limit(10)
+      .toArray();
+    expect(results2.length).toBe(10);
+  });
+});
+
+describe("when creating an empty table", () => {
+  let con: Connection;
+  beforeEach(async () => {
+    const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    con = await connect(tmpDir.name);
+  });
+  afterEach(() => {
+    con.close();
+  });
+
+  it("can create an empty table from an arrow Schema", async () => {
+    const schema = new Schema([
+      new Field("id", new Int64()),
+      new Field("vector", new Float64()),
+    ]);
+    const table = await con.createEmptyTable("test", schema);
+    const actualSchema = await table.schema();
+    expect(actualSchema.fields[0].type.typeId).toBe(Type.Int);
+    expect((actualSchema.fields[0].type as Int64).bitWidth).toBe(64);
+    expect(actualSchema.fields[1].type.typeId).toBe(Type.Float);
+    expect((actualSchema.fields[1].type as Float64).precision).toBe(2);
+  });
+
+  it("can create an empty table from schema that specifies field types by name", async () => {
+    const schemaLike = {
+      fields: [
+        {
+          name: "id",
+          type: "int64",
+          nullable: true,
+        },
+        {
+          name: "vector",
+          type: "float64",
+          nullable: true,
+        },
+      ],
+      metadata: new Map(),
+      names: ["id", "vector"],
+    } satisfies SchemaLike;
+    const table = await con.createEmptyTable("test", schemaLike);
+    const actualSchema = await table.schema();
+    expect(actualSchema.fields[0].type.typeId).toBe(Type.Int);
+    expect((actualSchema.fields[0].type as Int64).bitWidth).toBe(64);
+    expect(actualSchema.fields[1].type.typeId).toBe(Type.Float);
+    expect((actualSchema.fields[1].type as Float64).precision).toBe(2);
   });
 });

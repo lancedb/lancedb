@@ -75,11 +75,11 @@ impl EmbeddingFunction for BedrockEmbeddingFunction {
         "bedrock"
     }
 
-    fn source_type(&self) -> Result<Cow<DataType>> {
+    fn source_type(&self) -> Result<Cow<'_, DataType>> {
         Ok(Cow::Owned(DataType::Utf8))
     }
 
-    fn dest_type(&self) -> Result<Cow<DataType>> {
+    fn dest_type(&self) -> Result<Cow<'_, DataType>> {
         let n_dims = self.model.ndims();
         Ok(Cow::Owned(DataType::new_fixed_size_list(
             DataType::Float32,

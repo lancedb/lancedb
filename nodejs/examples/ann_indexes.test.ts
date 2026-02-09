@@ -12,7 +12,7 @@ test("ann index examples", async () => {
     // --8<-- [start:ingest]
     const db = await lancedb.connect(databaseDir);
 
-    const data = Array.from({ length: 5_000 }, (_, i) => ({
+    const data = Array.from({ length: 1_000 }, (_, i) => ({
       vector: Array(128).fill(i),
       id: `${i}`,
       content: "",
@@ -24,8 +24,8 @@ test("ann index examples", async () => {
     });
     await table.createIndex("vector", {
       config: lancedb.Index.ivfPq({
-        numPartitions: 10,
-        numSubVectors: 16,
+        numPartitions: 30,
+        numSubVectors: 8,
       }),
     });
     // --8<-- [end:ingest]

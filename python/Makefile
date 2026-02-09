@@ -1,11 +1,11 @@
-PIP_EXTRA_INDEX_URL ?= https://pypi.fury.io/lancedb/
+PIP_EXTRA_INDEX_URL ?= https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/
 
 help:		## Show this help.
 	@sed -ne '/@sed/!s/## //p' $(MAKEFILE_LIST)
 
 .PHONY: develop
 develop:	## Install the package in development mode.
-	PIP_EXTRA_INDEX_URL=$(PIP_EXTRA_INDEX_URL) maturin develop --extras tests,dev,embeddings
+	PIP_EXTRA_INDEX_URL="$(PIP_EXTRA_INDEX_URL)" maturin develop --extras tests,dev,embeddings
 
 .PHONY: format
 format:		## Format the code.

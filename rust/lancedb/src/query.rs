@@ -6,15 +6,13 @@ use std::{future::Future, time::Duration};
 
 use arrow::compute::concat_batches;
 use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
-use arrow_schema::DataType;
+use arrow_schema::{DataType, SchemaRef};
 use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
-use futures::{stream, try_join, FutureExt, TryStreamExt};
+use futures::{stream, try_join, FutureExt, TryFutureExt, TryStreamExt};
 use half::f16;
-use lance::{
-    arrow::RecordBatchExt,
-    dataset::{scanner::DatasetRecordBatchStream, ROW_ID},
-};
+use lance::dataset::{scanner::DatasetRecordBatchStream, ROW_ID};
+use lance_arrow::RecordBatchExt;
 use lance_datafusion::exec::execute_plan;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::scalar::FullTextSearchQuery;
@@ -36,7 +34,7 @@ pub(crate) const DEFAULT_TOP_K: usize = 10;
 /// Which columns should be retrieved from the database
 #[derive(Debug, Clone)]
 pub enum Select {
-    /// Select all columns
+    /// Select all non-system columns
     ///
     /// Warning: This will always be slower than selecting only the columns you need.
     All,
@@ -582,16 +580,40 @@ pub trait ExecutableQuery {
         options: QueryExecutionOptions,
     ) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send;
 
+    /// Explain the plan for a query
+    ///
+    /// This will create a string representation of the plan that will be used to
+    /// execute the query.  This will not execute the query.
+    ///
+    /// This function can be used to get an understanding of what work will be done by the query
+    /// and is useful for debugging query performance.
     fn explain_plan(&self, verbose: bool) -> impl Future<Output = Result<String>> + Send;
 
+    /// Execute the query and display the runtime metrics
+    ///
+    /// This shows the same plan as [`ExecutableQuery::explain_plan`] but includes runtime metrics.
+    ///
+    /// This function will actually execute the query in order to get the runtime metrics.
     fn analyze_plan(&self) -> impl Future<Output = Result<String>> + Send {
         self.analyze_plan_with_options(QueryExecutionOptions::default())
     }
 
+    /// Execute the query and display the runtime metrics
+    ///
+    /// This is the same as [`ExecutableQuery::analyze_plan`] but allows for specifying the execution options.
     fn analyze_plan_with_options(
         &self,
         options: QueryExecutionOptions,
     ) -> impl Future<Output = Result<String>> + Send;
+
+    /// Return the output schema for data returned by the query without actually executing the query
+    ///
+    /// This can be useful when the selection for a query is built dynamically as it is not always
+    /// obvious what the output schema will be.
+    fn output_schema(&self) -> impl Future<Output = Result<SchemaRef>> + Send {
+        self.create_plan(QueryExecutionOptions::default())
+            .and_then(|plan| std::future::ready(Ok(plan.schema())))
+    }
 }
 
 /// A query filter that can be applied to a query
@@ -645,6 +667,12 @@ pub struct QueryRequest {
 
     /// Configure how query results are normalized when doing hybrid search
     pub norm: Option<NormalizeMethod>,
+
+    /// If set to true, disables automatic projection of scoring columns (_score, _distance).
+    /// When disabled, these columns are only included if explicitly requested in the projection.
+    ///
+    /// By default, this is false (scoring columns are auto-projected for backward compatibility).
+    pub disable_scoring_autoprojection: bool,
 }
 
 impl Default for QueryRequest {
@@ -660,6 +688,7 @@ impl Default for QueryRequest {
             prefilter: true,
             reranker: None,
             norm: None,
+            disable_scoring_autoprojection: false,
         }
     }
 }
@@ -958,7 +987,8 @@ impl VectorQuery {
         if let Some(maximum_nprobes) = self.request.maximum_nprobes {
             if minimum_nprobes > maximum_nprobes {
                 return Err(Error::InvalidInput {
-                    message: "minimum_nprobes must be less or equal to maximum_nprobes".to_string(),
+                    message: "minimum_nprobes must be less than or equal to maximum_nprobes"
+                        .to_string(),
                 });
             }
         }
@@ -989,7 +1019,8 @@ impl VectorQuery {
             }
             if maximum_nprobes < self.request.minimum_nprobes {
                 return Err(Error::InvalidInput {
-                    message: "maximum_nprobes must be greater than minimum_nprobes".to_string(),
+                    message: "maximum_nprobes must be greater than or equal to minimum_nprobes"
+                        .to_string(),
                 });
             }
         }
@@ -1204,6 +1235,144 @@ impl HasQuery for VectorQuery {
     }
 }
 
+/// A builder for LanceDB take queries.
+///
+/// See [`crate::Table::query`] for more details on queries
+///
+/// A `TakeQuery` is a query that is used to select a subset of rows
+/// from a table using dataset offsets or row ids.
+///
+/// See [`ExecutableQuery`] for methods that can be used to execute
+/// the query and retrieve results.
+///
+/// This query object can be reused to issue the same query multiple
+/// times.
+#[derive(Debug, Clone)]
+pub struct TakeQuery {
+    parent: Arc<dyn BaseTable>,
+    request: QueryRequest,
+}
+
+impl TakeQuery {
+    /// Create a new `TakeQuery` that will return rows at the given offsets.
+    ///
+    /// See [`crate::Table::take_offsets`] for more details.
+    pub fn from_offsets(parent: Arc<dyn BaseTable>, offsets: Vec<u64>) -> Self {
+        let filter = format!(
+            "_rowoffset in ({})",
+            offsets
+                .iter()
+                .map(|o| o.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        Self {
+            parent,
+            request: QueryRequest {
+                filter: Some(QueryFilter::Sql(filter)),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Create a new `TakeQuery` that will return rows with the given row ids.
+    ///
+    /// See [`crate::Table::take_row_ids`] for more details.
+    pub fn from_row_ids(parent: Arc<dyn BaseTable>, row_ids: Vec<u64>) -> Self {
+        let filter = format!(
+            "_rowid in ({})",
+            row_ids
+                .iter()
+                .map(|o| o.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        Self {
+            parent,
+            request: QueryRequest {
+                filter: Some(QueryFilter::Sql(filter)),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Convert the `TakeQuery` into a `QueryRequest`.
+    pub fn into_request(self) -> QueryRequest {
+        self.request
+    }
+
+    /// Return the current `QueryRequest` for the `TakeQuery`.
+    pub fn current_request(&self) -> &QueryRequest {
+        &self.request
+    }
+
+    /// Return only the specified columns.
+    ///
+    /// By default a query will return all columns from the table.  However, this can have
+    /// a very significant impact on latency.  LanceDb stores data in a columnar fashion.  This
+    /// means we can finely tune our I/O to select exactly the columns we need.
+    ///
+    /// As a best practice you should always limit queries to the columns that you need.
+    ///
+    /// You can also use this method to create new "dynamic" columns based on your existing columns.
+    /// For example, you may not care about "a" or "b" but instead simply want "a + b".  This is often
+    /// seen in the SELECT clause of an SQL query (e.g. `SELECT a+b FROM my_table`).
+    ///
+    /// To create dynamic columns use [`Select::Dynamic`] (it might be easier to create this with the
+    /// helper method [`Select::dynamic`]).  A column will be returned for each tuple provided.  The
+    /// first value in that tuple provides the name of the column.  The second value in the tuple is
+    /// an SQL string used to specify how the column is calculated.
+    ///
+    /// For example, an SQL query might state `SELECT a + b AS combined, c`.  The equivalent
+    /// input to [`Select::dynamic`] would be `&[("combined", "a + b"), ("c", "c")]`.
+    ///
+    /// Columns will always be returned in the order given, even if that order is different than
+    /// the order used when adding the data.
+    pub fn select(mut self, selection: Select) -> Self {
+        self.request.select = selection;
+        self
+    }
+
+    /// Return the `_rowid` meta column from the Table.
+    pub fn with_row_id(mut self) -> Self {
+        self.request.with_row_id = true;
+        self
+    }
+}
+
+impl HasQuery for TakeQuery {
+    fn mut_query(&mut self) -> &mut QueryRequest {
+        &mut self.request
+    }
+}
+
+impl ExecutableQuery for TakeQuery {
+    async fn create_plan(&self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
+        let req = AnyQuery::Query(self.request.clone());
+        self.parent.clone().create_plan(&req, options).await
+    }
+
+    async fn execute_with_options(
+        &self,
+        options: QueryExecutionOptions,
+    ) -> Result<SendableRecordBatchStream> {
+        let query = AnyQuery::Query(self.request.clone());
+        Ok(SendableRecordBatchStream::from(
+            self.parent.clone().query(&query, options).await?,
+        ))
+    }
+
+    async fn explain_plan(&self, verbose: bool) -> Result<String> {
+        let query = AnyQuery::Query(self.request.clone());
+        self.parent.explain_plan(&query, verbose).await
+    }
+
+    async fn analyze_plan_with_options(&self, options: QueryExecutionOptions) -> Result<String> {
+        let query = AnyQuery::Query(self.request.clone());
+        self.parent.analyze_plan(&query, options).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashSet, sync::Arc};
@@ -1217,9 +1386,10 @@ mod tests {
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
+    use rand::seq::IndexedRandom;
     use tempfile::tempdir;
 
-    use crate::{connect, database::CreateTableMode, Table};
+    use crate::{connect, database::CreateTableMode, index::Index, Table};
 
     #[tokio::test]
     async fn test_setters_getters() {
@@ -1325,7 +1495,7 @@ mod tests {
 
         while let Some(batch) = stream.next().await {
             // pre filter should return 10 rows
-            assert!(batch.expect("should be Ok").num_rows() == 10);
+            assert_eq!(batch.expect("should be Ok").num_rows(), 10);
         }
 
         let query = table
@@ -1340,7 +1510,7 @@ mod tests {
         // should only have one batch
         while let Some(batch) = stream.next().await {
             // pre filter should return 10 rows
-            assert!(batch.expect("should be Ok").num_rows() == 9);
+            assert_eq!(batch.expect("should be Ok").num_rows(), 10);
         }
     }
 
@@ -1364,6 +1534,16 @@ mod tests {
             .query()
             .limit(10)
             .select(Select::dynamic(&[("id2", "id * 2"), ("id", "id")]));
+
+        let schema = query.output_schema().await.unwrap();
+        assert_eq!(
+            schema,
+            Arc::new(ArrowSchema::new(vec![
+                ArrowField::new("id2", DataType::Int32, true),
+                ArrowField::new("id", DataType::Int32, true),
+            ]))
+        );
+
         let result = query.execute().await;
         let mut batches = result
             .expect("should have result")
@@ -1799,5 +1979,198 @@ mod tests {
         let batch = &results[0];
         assert_eq!(0, batch.num_rows());
         assert_eq!(2, batch.num_columns());
+    }
+
+    // TODO: Implement a good FTS test data generator in lance_datagen.
+    fn fts_test_data(nrows: usize) -> RecordBatch {
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("text", DataType::Utf8, false),
+            ArrowField::new("id", DataType::Int32, false),
+        ]));
+
+        let ids: Int32Array = (1..=nrows as i32).collect();
+
+        // Sample 1 - 3 tokens for each string value
+        let tokens = ["a", "b", "c", "d", "e"];
+        use rand::{rng, Rng};
+
+        let mut rng = rng();
+        let text: StringArray = (0..nrows)
+            .map(|_| {
+                let num_tokens = rng.random_range(1..=3); // 1 to 3 tokens
+                let selected_tokens: Vec<&str> = tokens
+                    .choose_multiple(&mut rng, num_tokens)
+                    .cloned()
+                    .collect();
+                Some(selected_tokens.join(" "))
+            })
+            .collect();
+
+        RecordBatch::try_new(schema, vec![Arc::new(text), Arc::new(ids)]).unwrap()
+    }
+
+    async fn run_query_request(table: &dyn BaseTable, query: AnyQuery) -> RecordBatch {
+        use lance::io::RecordBatchStream;
+        let stream = table.query(&query, Default::default()).await.unwrap();
+        let schema = stream.schema();
+        let batches = stream.try_collect::<Vec<_>>().await.unwrap();
+        arrow::compute::concat_batches(&schema, &batches).unwrap()
+    }
+
+    async fn test_pagination(table: &dyn BaseTable, full_query: AnyQuery, page_size: usize) {
+        // Get full results
+        let full_results = run_query_request(table, full_query.clone()).await;
+
+        // Then use limit & offset to do paginated queries, assert each
+        // is the same as a slice of the full results
+        let mut offset = 0;
+        while offset < full_results.num_rows() {
+            let mut paginated_query = full_query.clone();
+            let limit = page_size.min(full_results.num_rows() - offset);
+            match &mut paginated_query {
+                AnyQuery::Query(query)
+                | AnyQuery::VectorQuery(VectorQueryRequest { base: query, .. }) => {
+                    query.limit = Some(limit);
+                    query.offset = Some(offset);
+                }
+            }
+            let paginated_results = run_query_request(table, paginated_query).await;
+            let expected_slice = full_results.slice(offset, limit);
+            assert_eq!(
+                paginated_results, expected_slice,
+                "Paginated results do not match expected slice at offset {}, for page size {}",
+                offset, page_size
+            );
+            offset += page_size;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pagination_with_scan() {
+        let db = connect("memory://test").execute().await.unwrap();
+        let table = db
+            .create_table("test_table", make_non_empty_batches())
+            .execute()
+            .await
+            .unwrap();
+        let query = AnyQuery::Query(table.query().into_request());
+        test_pagination(table.base_table().as_ref(), query.clone(), 3).await;
+        test_pagination(table.base_table().as_ref(), query, 10).await;
+    }
+
+    #[tokio::test]
+    async fn test_pagination_with_fts() {
+        let db = connect("memory://test").execute().await.unwrap();
+        let data = fts_test_data(400);
+        let schema = data.schema();
+        let data = RecordBatchIterator::new(vec![Ok(data)], schema);
+        let table = db.create_table("test_table", data).execute().await.unwrap();
+
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+        let query = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("test".into()))
+            .into_request();
+        let query = AnyQuery::Query(query);
+        test_pagination(table.base_table().as_ref(), query.clone(), 3).await;
+        test_pagination(table.base_table().as_ref(), query, 10).await;
+    }
+
+    #[tokio::test]
+    async fn test_pagination_with_vector_query() {
+        let db = connect("memory://test").execute().await.unwrap();
+        let table = db
+            .create_table("test_table", make_non_empty_batches())
+            .execute()
+            .await
+            .unwrap();
+        let query_vector = vec![0.1_f32, 0.2, 0.3, 0.4];
+        let query = table
+            .query()
+            .nearest_to(query_vector.as_slice())
+            .unwrap()
+            .limit(50)
+            .into_request();
+        let query = AnyQuery::VectorQuery(query);
+        test_pagination(table.base_table().as_ref(), query.clone(), 3).await;
+        test_pagination(table.base_table().as_ref(), query, 10).await;
+    }
+
+    #[tokio::test]
+    async fn test_take_offsets() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let results = table
+            .take_offsets(vec![5, 1, 17])
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 3);
+        assert_eq!(results[0].num_columns(), 2);
+
+        let mut ids = results[0]
+            .column_by_name("id")
+            .unwrap()
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+        ids.sort();
+
+        assert_eq!(ids, vec![1, 5, 17]);
+
+        // Select specific columns
+        let results = table
+            .take_offsets(vec![5, 1, 17])
+            .select(Select::Columns(vec!["vector".to_string()]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 3);
+        assert_eq!(results[0].num_columns(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_take_row_ids() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+
+        let results = table
+            .take_row_ids(vec![5, 1, 17])
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 3);
+        assert_eq!(results[0].num_columns(), 2);
+
+        let mut ids = results[0]
+            .column_by_name("id")
+            .unwrap()
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+
+        ids.sort();
+
+        assert_eq!(ids, vec![1, 5, 17]);
     }
 }

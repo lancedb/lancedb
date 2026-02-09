@@ -7,6 +7,7 @@ pub use arrow_schema;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{Stream, StreamExt, TryStreamExt};
+use lance_datagen::{BatchCount, BatchGeneratorBuilder, RowCount};
 
 #[cfg(feature = "polars")]
 use {crate::polars_arrow_convertors, polars::frame::ArrowChunk, polars::prelude::DataFrame};
@@ -158,6 +159,26 @@ impl IntoArrowStream for datafusion_physical_plan::SendableRecordBatchStream {
             message: df_err.to_string(),
         });
         Ok(Box::pin(SimpleRecordBatchStream::new(stream, schema)))
+    }
+}
+
+pub trait LanceDbDatagenExt {
+    fn into_ldb_stream(
+        self,
+        batch_size: RowCount,
+        num_batches: BatchCount,
+    ) -> SendableRecordBatchStream;
+}
+
+impl LanceDbDatagenExt for BatchGeneratorBuilder {
+    fn into_ldb_stream(
+        self,
+        batch_size: RowCount,
+        num_batches: BatchCount,
+    ) -> SendableRecordBatchStream {
+        let (stream, schema) = self.into_reader_stream(batch_size, num_batches);
+        let stream = stream.map_err(|err| Error::Arrow { source: err });
+        Box::pin(SimpleRecordBatchStream::new(stream, schema))
     }
 }
 

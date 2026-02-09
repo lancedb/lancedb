@@ -10,12 +10,17 @@ use http::StatusCode;
 use lance_io::object_store::StorageOptions;
 use moka::future::Cache;
 use reqwest::header::CONTENT_TYPE;
-use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
+    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+};
+
 use crate::database::{
-    CreateTableData, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    OpenTableRequest, TableNamesRequest,
+    CloneTableRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
+    DatabaseOptions, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
 use crate::table::BaseTable;
@@ -25,6 +30,18 @@ use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClie
 use super::table::RemoteTable;
 use super::util::{batches_to_ipc_bytes, parse_server_version};
 use super::ARROW_STREAM_CONTENT_TYPE;
+
+// Request structure for the remote clone table API
+#[derive(serde::Serialize)]
+struct RemoteCloneTableRequest {
+    source_location: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_shallow: Option<bool>,
+}
 
 // the versions of the server that we support
 // for any new feature that we need to change the SDK behavior, we should bump the server version,
@@ -77,7 +94,7 @@ pub struct RemoteDatabaseOptions {
     pub host_override: Option<String>,
     /// Storage options configure the storage layer (e.g. S3, GCS, Azure, etc.)
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://lancedb.com/docs/storage/>
     ///
     /// These options are only used for LanceDB Enterprise and only a subset of options
     /// are supported.
@@ -167,15 +184,15 @@ impl RemoteDatabaseOptionsBuilder {
     }
 }
 
-#[derive(Deserialize)]
-struct ListTablesResponse {
-    tables: Vec<String>,
-}
-
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
     table_cache: Cache<String, Arc<RemoteTable<S>>>,
+    uri: String,
+    /// Headers to pass to the namespace client for authentication
+    namespace_headers: HashMap<String, String>,
+    /// TLS configuration for mTLS support
+    tls_config: Option<super::client::TlsConfig>,
 }
 
 impl RemoteDatabase {
@@ -187,13 +204,32 @@ impl RemoteDatabase {
         client_config: ClientConfig,
         options: RemoteOptions,
     ) -> Result<Self> {
-        let client = RestfulLanceDbClient::try_new(
-            uri,
+        let parsed = super::client::parse_db_url(uri)?;
+        let header_map = RestfulLanceDbClient::<Sender>::default_headers(
             api_key,
             region,
-            host_override,
-            client_config,
+            &parsed.db_name,
+            host_override.is_some(),
             &options,
+            parsed.db_prefix.as_deref(),
+            &client_config,
+        )?;
+
+        let namespace_headers: HashMap<String, String> = header_map
+            .iter()
+            .filter_map(|(k, v)| {
+                v.to_str()
+                    .ok()
+                    .map(|val| (k.as_str().to_string(), val.to_string()))
+            })
+            .collect();
+
+        let client = RestfulLanceDbClient::try_new(
+            &parsed,
+            region,
+            host_override,
+            header_map,
+            client_config.clone(),
         )?;
 
         let table_cache = Cache::builder()
@@ -204,6 +240,9 @@ impl RemoteDatabase {
         Ok(Self {
             client,
             table_cache,
+            uri: uri.to_owned(),
+            namespace_headers,
+            tls_config: client_config.tls_config,
         })
     }
 }
@@ -211,8 +250,9 @@ impl RemoteDatabase {
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
-    use crate::remote::client::test_utils::client_with_handler;
     use crate::remote::client::test_utils::MockSender;
+    use crate::remote::client::test_utils::{client_with_handler, client_with_handler_and_config};
+    use crate::remote::ClientConfig;
 
     impl RemoteDatabase<MockSender> {
         pub fn new_mock<F, T>(handler: F) -> Self
@@ -224,6 +264,24 @@ mod test_utils {
             Self {
                 client,
                 table_cache: Cache::new(0),
+                uri: "http://localhost".to_string(),
+                namespace_headers: HashMap::new(),
+                tls_config: None,
+            }
+        }
+
+        pub fn new_mock_with_config<F, T>(handler: F, config: ClientConfig) -> Self
+        where
+            F: Fn(reqwest::Request) -> http::Response<T> + Send + Sync + 'static,
+            T: Into<reqwest::Body>,
+        {
+            let client = client_with_handler_and_config(handler, config.clone());
+            Self {
+                client,
+                table_cache: Cache::new(0),
+                uri: "http://localhost".to_string(),
+                namespace_headers: config.extra_headers.clone(),
+                tls_config: config.tls_config.clone(),
             }
         }
     }
@@ -245,10 +303,71 @@ impl From<&CreateTableMode> for &'static str {
     }
 }
 
+fn build_table_identifier(name: &str, namespace: &[String], delimiter: &str) -> String {
+    if !namespace.is_empty() {
+        let mut parts = namespace.to_vec();
+        parts.push(name.to_string());
+        parts.join(delimiter)
+    } else {
+        name.to_string()
+    }
+}
+
+fn build_namespace_identifier(namespace: &[String], delimiter: &str) -> String {
+    if namespace.is_empty() {
+        // According to the namespace spec, use delimiter to represent root namespace
+        delimiter.to_string()
+    } else {
+        namespace.join(delimiter)
+    }
+}
+
+/// Build a secure cache key using length prefixes.
+/// This format is completely unambiguous regardless of delimiter or content.
+/// Format: [u32_len][namespace1][u32_len][namespace2]...[u32_len][table_name]
+/// Returns a hex-encoded string for use as a cache key.
+fn build_cache_key(name: &str, namespace: &[String]) -> String {
+    let mut key = Vec::new();
+
+    // Add each namespace component with length prefix
+    for ns in namespace {
+        let bytes = ns.as_bytes();
+        key.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        key.extend_from_slice(bytes);
+    }
+
+    // Add table name with length prefix
+    let name_bytes = name.as_bytes();
+    key.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+    key.extend_from_slice(name_bytes);
+
+    // Convert to hex string for use as a cache key
+    key.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 #[async_trait]
 impl<S: HttpSend> Database for RemoteDatabase<S> {
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    async fn read_consistency(&self) -> Result<ReadConsistency> {
+        Err(Error::NotSupported {
+            message: "Getting the read consistency of a remote database is not yet supported"
+                .to_string(),
+        })
+    }
+
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
-        let mut req = self.client.get("/v1/table/");
+        let mut req = if !request.namespace.is_empty() {
+            let namespace_id =
+                build_namespace_identifier(&request.namespace, &self.client.id_delimiter);
+            self.client
+                .get(&format!("/v1/namespace/{}/table/list", namespace_id))
+        } else {
+            self.client.get("/v1/table/")
+        };
+
         if let Some(limit) = request.limit {
             req = req.query(&[("limit", limit)]);
         }
@@ -264,14 +383,57 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .err_to_http(request_id)?
             .tables;
         for table in &tables {
+            let table_identifier =
+                build_table_identifier(table, &request.namespace, &self.client.id_delimiter);
+            let cache_key = build_cache_key(table, &request.namespace);
             let remote_table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 table.clone(),
+                request.namespace.clone(),
+                table_identifier.clone(),
                 version.clone(),
             ));
-            self.table_cache.insert(table.clone(), remote_table).await;
+            self.table_cache.insert(cache_key, remote_table).await;
         }
         Ok(tables)
+    }
+
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        let namespace_parts = request.id.as_deref().unwrap_or(&[]);
+        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let mut req = self
+            .client
+            .get(&format!("/v1/namespace/{}/table/list", namespace_id));
+
+        if let Some(limit) = request.limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(ref page_token) = request.page_token {
+            req = req.query(&[("page_token", page_token)]);
+        }
+
+        let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let version = parse_server_version(&request_id, &rsp)?;
+        let response: ListTablesResponse = rsp.json().await.err_to_http(request_id)?;
+
+        // Cache the tables for future use
+        let namespace_vec = namespace_parts.to_vec();
+        for table in &response.tables {
+            let table_identifier =
+                build_table_identifier(table, &namespace_vec, &self.client.id_delimiter);
+            let cache_key = build_cache_key(table, &namespace_vec);
+            let remote_table = Arc::new(RemoteTable::new(
+                self.client.clone(),
+                table.clone(),
+                namespace_vec.clone(),
+                table_identifier.clone(),
+                version.clone(),
+            ));
+            self.table_cache.insert(cache_key, remote_table).await;
+        }
+
+        Ok(response)
     }
 
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
@@ -295,9 +457,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .await
             .unwrap()?;
 
+        let identifier =
+            build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
         let req = self
             .client
-            .post(&format!("/v1/table/{}/create/", request.name))
+            .post(&format!("/v1/table/{}/create/", identifier))
             .query(&[("mode", Into::<&str>::into(&request.mode))])
             .body(data_buffer)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
@@ -314,8 +478,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                     CreateTableMode::ExistOk(callback) => {
                         let req = OpenTableRequest {
                             name: request.name.clone(),
+                            namespace: request.namespace.clone(),
                             index_cache_size: None,
                             lance_read_params: None,
+                            location: None,
+                            namespace_client: None,
                         };
                         let req = (callback)(req);
                         self.open_table(req).await
@@ -342,72 +509,278 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
         let rsp = self.client.check_response(&request_id, rsp).await?;
         let version = parse_server_version(&request_id, &rsp)?;
+        let table_identifier =
+            build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
+        let cache_key = build_cache_key(&request.name, &request.namespace);
         let table = Arc::new(RemoteTable::new(
             self.client.clone(),
             request.name.clone(),
+            request.namespace.clone(),
+            table_identifier,
             version,
         ));
-        self.table_cache
-            .insert(request.name.clone(), table.clone())
-            .await;
+        self.table_cache.insert(cache_key, table.clone()).await;
+
+        Ok(table)
+    }
+
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
+        let table_identifier = build_table_identifier(
+            &request.target_table_name,
+            &request.target_namespace,
+            &self.client.id_delimiter,
+        );
+
+        let remote_request = RemoteCloneTableRequest {
+            source_location: request.source_uri,
+            source_version: request.source_version,
+            source_tag: request.source_tag,
+            is_shallow: Some(request.is_shallow),
+        };
+
+        let req = self
+            .client
+            .post(&format!("/v1/table/{}/clone", table_identifier.clone()))
+            .json(&remote_request);
+
+        let (request_id, rsp) = self.client.send(req).await?;
+
+        let status = rsp.status();
+        if status != StatusCode::OK {
+            let body = rsp.text().await.err_to_http(request_id.clone())?;
+            return Err(crate::Error::Http {
+                source: format!("Failed to clone table: {}", body).into(),
+                request_id,
+                status_code: Some(status),
+            });
+        }
+
+        let version = parse_server_version(&request_id, &rsp)?;
+        let cache_key = build_cache_key(&request.target_table_name, &request.target_namespace);
+        let table = Arc::new(RemoteTable::new(
+            self.client.clone(),
+            request.target_table_name.clone(),
+            request.target_namespace.clone(),
+            table_identifier,
+            version,
+        ));
+        self.table_cache.insert(cache_key, table.clone()).await;
 
         Ok(table)
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        let identifier =
+            build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
+        let cache_key = build_cache_key(&request.name, &request.namespace);
+
         // We describe the table to confirm it exists before moving on.
-        if let Some(table) = self.table_cache.get(&request.name).await {
+        if let Some(table) = self.table_cache.get(&cache_key).await {
             Ok(table.clone())
         } else {
             let req = self
                 .client
-                .post(&format!("/v1/table/{}/describe/", request.name));
+                .post(&format!("/v1/table/{}/describe/", identifier));
             let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
-            if rsp.status() == StatusCode::NOT_FOUND {
-                return Err(crate::Error::TableNotFound { name: request.name });
-            }
+            let rsp =
+                RemoteTable::<S>::handle_table_not_found(&request.name, rsp, &request_id).await?;
             let rsp = self.client.check_response(&request_id, rsp).await?;
             let version = parse_server_version(&request_id, &rsp)?;
+            let table_identifier = build_table_identifier(
+                &request.name,
+                &request.namespace,
+                &self.client.id_delimiter,
+            );
             let table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 request.name.clone(),
+                request.namespace.clone(),
+                table_identifier,
                 version,
             ));
-            self.table_cache.insert(request.name, table.clone()).await;
+            let cache_key = build_cache_key(&request.name, &request.namespace);
+            self.table_cache.insert(cache_key, table.clone()).await;
             Ok(table)
         }
     }
 
-    async fn rename_table(&self, current_name: &str, new_name: &str) -> Result<()> {
+    async fn rename_table(
+        &self,
+        current_name: &str,
+        new_name: &str,
+        cur_namespace: &[String],
+        new_namespace: &[String],
+    ) -> Result<()> {
+        let current_identifier =
+            build_table_identifier(current_name, cur_namespace, &self.client.id_delimiter);
+        let current_cache_key = build_cache_key(current_name, cur_namespace);
+        let new_cache_key = build_cache_key(new_name, new_namespace);
+
+        let mut body = serde_json::json!({ "new_table_name": new_name });
+        if !new_namespace.is_empty() {
+            body["new_namespace"] = serde_json::Value::Array(
+                new_namespace
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect(),
+            );
+        }
         let req = self
             .client
-            .post(&format!("/v1/table/{}/rename/", current_name));
-        let req = req.json(&serde_json::json!({ "new_table_name": new_name }));
+            .post(&format!("/v1/table/{}/rename/", current_identifier))
+            .json(&body);
         let (request_id, resp) = self.client.send(req).await?;
         self.client.check_response(&request_id, resp).await?;
-        let table = self.table_cache.remove(current_name).await;
+        let table = self.table_cache.remove(&current_cache_key).await;
         if let Some(table) = table {
-            self.table_cache.insert(new_name.into(), table).await;
+            self.table_cache.insert(new_cache_key, table).await;
         }
         Ok(())
     }
 
-    async fn drop_table(&self, name: &str) -> Result<()> {
-        let req = self.client.post(&format!("/v1/table/{}/drop/", name));
+    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()> {
+        let identifier = build_table_identifier(name, namespace, &self.client.id_delimiter);
+        let cache_key = build_cache_key(name, namespace);
+        let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
         let (request_id, resp) = self.client.send(req).await?;
         self.client.check_response(&request_id, resp).await?;
-        self.table_cache.remove(name).await;
+        self.table_cache.remove(&cache_key).await;
         Ok(())
     }
 
-    async fn drop_all_tables(&self) -> Result<()> {
+    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
+        // TODO: Implement namespace-aware drop_all_tables
+        let _namespace = namespace; // Suppress unused warning for now
         Err(crate::Error::NotSupported {
-            message: "Dropping databases is not supported in the remote API".to_string(),
+            message: "Dropping all tables is not currently supported in the remote API".to_string(),
         })
+    }
+
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
+        let namespace_parts = request.id.as_deref().unwrap_or(&[]);
+        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let mut req = self
+            .client
+            .get(&format!("/v1/namespace/{}/list", namespace_id));
+        if let Some(limit) = request.limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(ref page_token) = request.page_token {
+            req = req.query(&[("page_token", page_token)]);
+        }
+
+        let (request_id, resp) = self.client.send(req).await?;
+        let resp = self.client.check_response(&request_id, resp).await?;
+
+        resp.json().await.err_to_http(request_id)
+    }
+
+    async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
+        let namespace_parts = request.id.as_deref().unwrap_or(&[]);
+        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let mut req = self
+            .client
+            .post(&format!("/v1/namespace/{}/create", namespace_id));
+
+        // Build request body with mode and properties if present
+        #[derive(serde::Serialize)]
+        struct CreateNamespaceRequestBody {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            mode: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            properties: Option<HashMap<String, String>>,
+        }
+
+        let body = CreateNamespaceRequestBody {
+            mode: request.mode.as_ref().map(|m| format!("{:?}", m)),
+            properties: request.properties,
+        };
+
+        req = req.json(&body);
+        let (request_id, resp) = self.client.send(req).await?;
+        let resp = self.client.check_response(&request_id, resp).await?;
+
+        resp.json().await.err_to_http(request_id)
+    }
+
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
+        let namespace_parts = request.id.as_deref().unwrap_or(&[]);
+        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let mut req = self
+            .client
+            .post(&format!("/v1/namespace/{}/drop", namespace_id));
+
+        // Build request body with mode and behavior if present
+        #[derive(serde::Serialize)]
+        struct DropNamespaceRequestBody {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            mode: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            behavior: Option<String>,
+        }
+
+        let body = DropNamespaceRequestBody {
+            mode: request.mode.as_ref().map(|m| format!("{:?}", m)),
+            behavior: request.behavior.as_ref().map(|b| format!("{:?}", b)),
+        };
+
+        req = req.json(&body);
+        let (request_id, resp) = self.client.send(req).await?;
+        let resp = self.client.check_response(&request_id, resp).await?;
+
+        resp.json().await.err_to_http(request_id)
+    }
+
+    async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse> {
+        let namespace_parts = request.id.as_deref().unwrap_or(&[]);
+        let namespace_id = build_namespace_identifier(namespace_parts, &self.client.id_delimiter);
+        let req = self
+            .client
+            .post(&format!("/v1/namespace/{}/describe", namespace_id))
+            .json(&DescribeNamespaceRequest::default());
+
+        let (request_id, resp) = self.client.send(req).await?;
+        let resp = self.client.check_response(&request_id, resp).await?;
+
+        resp.json().await.err_to_http(request_id)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
+        // Create a RestNamespace pointing to the same remote host with the same authentication headers
+        let mut builder = lance_namespace_impls::RestNamespaceBuilder::new(self.client.host())
+            .delimiter(&self.client.id_delimiter)
+            // TODO: support header provider
+            .headers(self.namespace_headers.clone());
+
+        // Apply mTLS configuration if present
+        if let Some(tls_config) = &self.tls_config {
+            if let Some(cert_file) = &tls_config.cert_file {
+                builder = builder.cert_file(cert_file);
+            }
+            if let Some(key_file) = &tls_config.key_file {
+                builder = builder.key_file(key_file);
+            }
+            if let Some(ssl_ca_cert) = &tls_config.ssl_ca_cert {
+                builder = builder.ssl_ca_cert(ssl_ca_cert);
+            }
+            builder = builder.assert_hostname(tls_config.assert_hostname);
+        }
+
+        let namespace = builder.build();
+        Ok(Arc::new(namespace) as Arc<dyn lance_namespace::LanceNamespace>)
     }
 }
 
@@ -427,7 +800,7 @@ impl From<StorageOptions> for RemoteOptions {
         let mut filtered = HashMap::new();
         for opt in supported_opts {
             if let Some(v) = options.0.get(opt) {
-                filtered.insert(opt.to_string(), v.to_string());
+                filtered.insert(opt.to_string(), v.clone());
             }
         }
         Self::new(filtered)
@@ -436,6 +809,8 @@ impl From<StorageOptions> for RemoteOptions {
 
 #[cfg(test)]
 mod tests {
+    use super::build_cache_key;
+    use std::collections::HashMap;
     use std::sync::{Arc, OnceLock};
 
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
@@ -444,9 +819,41 @@ mod tests {
     use crate::connection::ConnectBuilder;
     use crate::{
         database::CreateTableMode,
-        remote::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
+        remote::{ClientConfig, HeaderProvider, ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
         Connection, Error,
     };
+
+    #[test]
+    fn test_cache_key_security() {
+        // Test that cache keys are unique regardless of delimiter manipulation
+
+        // Case 1: Different delimiters should not affect cache key
+        let key1 = build_cache_key("table1", &["ns1".to_string(), "ns2".to_string()]);
+        let key2 = build_cache_key("table1", &["ns1$ns2".to_string()]);
+        assert_ne!(
+            key1, key2,
+            "Cache keys should differ for different namespace structures"
+        );
+
+        // Case 2: Table name containing delimiter should not cause collision
+        let key3 = build_cache_key("ns2$table1", &["ns1".to_string()]);
+        assert_ne!(
+            key1, key3,
+            "Cache key should be different when table name contains delimiter"
+        );
+
+        // Case 3: Empty namespace vs namespace with empty string
+        let key4 = build_cache_key("table1", &[]);
+        let key5 = build_cache_key("table1", &["".to_string()]);
+        assert_ne!(
+            key4, key5,
+            "Empty namespace should differ from namespace with empty string"
+        );
+
+        // Case 4: Verify same inputs produce same key (consistency)
+        let key6 = build_cache_key("table1", &["ns1".to_string(), "ns2".to_string()]);
+        assert_eq!(key1, key6, "Same inputs should produce same cache key");
+    }
 
     #[tokio::test]
     async fn test_retries() {
@@ -711,7 +1118,7 @@ mod tests {
 
             http::Response::builder().status(200).body("").unwrap()
         });
-        conn.drop_table("table1").await.unwrap();
+        conn.drop_table("table1", &[]).await.unwrap();
         // NOTE: the API will return 200 even if the table does not exist. So we shouldn't expect 404.
     }
 
@@ -731,7 +1138,9 @@ mod tests {
 
             http::Response::builder().status(200).body("").unwrap()
         });
-        conn.rename_table("table1", "table2").await.unwrap();
+        conn.rename_table("table1", "table2", &[], &[])
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -744,5 +1153,680 @@ mod tests {
             .execute()
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_table_names_with_root_namespace() {
+        // When namespace is empty (root namespace), should use /v1/table/ for backwards compatibility
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/table/");
+            assert_eq!(request.url().query(), None);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["table1", "table2"]}"#)
+                .unwrap()
+        });
+        let names = conn
+            .table_names()
+            .namespace(vec![])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(names, vec!["table1", "table2"]);
+    }
+
+    #[tokio::test]
+    async fn test_table_names_with_namespace() {
+        // When namespace is non-empty, should use /v1/namespace/{id}/table/list
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/namespace/test/table/list");
+            assert_eq!(request.url().query(), None);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["table1", "table2"]}"#)
+                .unwrap()
+        });
+        let names = conn
+            .table_names()
+            .namespace(vec!["test".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(names, vec!["table1", "table2"]);
+    }
+
+    #[tokio::test]
+    async fn test_table_names_with_nested_namespace() {
+        // When namespace is vec!["ns1", "ns2"], should use /v1/namespace/ns1$ns2/table/list
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/namespace/ns1$ns2/table/list");
+            assert_eq!(request.url().query(), None);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["ns1$ns2$table1", "ns1$ns2$table2"]}"#)
+                .unwrap()
+        });
+        let names = conn
+            .table_names()
+            .namespace(vec!["ns1".to_string(), "ns2".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(names, vec!["ns1$ns2$table1", "ns1$ns2$table2"]);
+    }
+
+    #[tokio::test]
+    async fn test_open_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/ns1$ns2$table1/describe/");
+            assert_eq!(request.url().query(), None);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"table": "table1"}"#)
+                .unwrap()
+        });
+        let table = conn
+            .open_table("table1")
+            .namespace(vec!["ns1".to_string(), "ns2".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_create_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/ns1$table1/create/");
+            assert_eq!(
+                request
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .unwrap(),
+                ARROW_STREAM_CONTENT_TYPE.as_bytes()
+            );
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let reader = RecordBatchIterator::new([Ok(data.clone())], data.schema());
+        let table = conn
+            .create_table("table1", reader)
+            .namespace(vec!["ns1".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_drop_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/ns1$ns2$table1/drop/");
+            assert_eq!(request.url().query(), None);
+            assert!(request.body().is_none());
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        conn.drop_table("table1", &["ns1".to_string(), "ns2".to_string()])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rename_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/ns1$table1/rename/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["new_table_name"], "table2");
+            assert_eq!(body["new_namespace"], serde_json::json!(["ns2"]));
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        conn.rename_table(
+            "table1",
+            "table2",
+            &["ns1".to_string()],
+            &["ns2".to_string()],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_empty_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/prod$data$metrics/create/");
+            assert_eq!(
+                request
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .unwrap(),
+                ARROW_STREAM_CONTENT_TYPE.as_bytes()
+            );
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        conn.create_empty_table("metrics", schema)
+            .namespace(vec!["prod".to_string(), "data".to_string()])
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_header_provider_in_request() {
+        // Test HeaderProvider implementation that adds custom headers
+        #[derive(Debug, Clone)]
+        struct TestHeaderProvider {
+            headers: HashMap<String, String>,
+        }
+
+        #[async_trait::async_trait]
+        impl HeaderProvider for TestHeaderProvider {
+            async fn get_headers(&self) -> crate::Result<HashMap<String, String>> {
+                Ok(self.headers.clone())
+            }
+        }
+
+        // Create a test header provider with custom headers
+        let mut headers = HashMap::new();
+        headers.insert("X-Custom-Auth".to_string(), "test-token".to_string());
+        headers.insert("X-Request-Id".to_string(), "test-123".to_string());
+        let provider = Arc::new(TestHeaderProvider { headers }) as Arc<dyn HeaderProvider>;
+
+        // Create client config with the header provider
+        let client_config = ClientConfig {
+            header_provider: Some(provider),
+            ..Default::default()
+        };
+
+        // Create connection with handler that verifies the headers are present
+        let conn = Connection::new_with_handler_and_config(
+            move |request| {
+                // Verify that our custom headers are present
+                assert_eq!(
+                    request.headers().get("X-Custom-Auth").unwrap(),
+                    "test-token"
+                );
+                assert_eq!(request.headers().get("X-Request-Id").unwrap(), "test-123");
+
+                // Also check standard headers are still there
+                assert_eq!(request.method(), &reqwest::Method::GET);
+                assert_eq!(request.url().path(), "/v1/table/");
+
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tables": ["table1", "table2"]}"#)
+                    .unwrap()
+            },
+            client_config,
+        );
+
+        // Make a request that should include the custom headers
+        let names = conn.table_names().execute().await.unwrap();
+        assert_eq!(names, vec!["table1", "table2"]);
+    }
+
+    #[tokio::test]
+    async fn test_header_provider_error_handling() {
+        // Test HeaderProvider that returns an error
+        #[derive(Debug)]
+        struct ErrorHeaderProvider;
+
+        #[async_trait::async_trait]
+        impl HeaderProvider for ErrorHeaderProvider {
+            async fn get_headers(&self) -> crate::Result<HashMap<String, String>> {
+                Err(crate::Error::Runtime {
+                    message: "Failed to fetch auth token".to_string(),
+                })
+            }
+        }
+
+        let provider = Arc::new(ErrorHeaderProvider) as Arc<dyn HeaderProvider>;
+        let client_config = ClientConfig {
+            header_provider: Some(provider),
+            ..Default::default()
+        };
+
+        // Create connection - handler won't be called because header provider fails
+        let conn = Connection::new_with_handler_and_config(
+            move |_request| -> http::Response<&'static str> {
+                panic!("Handler should not be called when header provider fails");
+            },
+            client_config,
+        );
+
+        // Request should fail due to header provider error
+        let result = conn.table_names().execute().await;
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            crate::Error::Runtime { message } => {
+                assert_eq!(message, "Failed to fetch auth token");
+            }
+            _ => panic!("Expected Runtime error from header provider"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_clone_table() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/cloned_table/clone");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["source_location"], "s3://bucket/source_table");
+            assert_eq!(body["is_shallow"], true);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let table = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "cloned_table");
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_version() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/cloned_table/clone");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["source_location"], "s3://bucket/source_table");
+            assert_eq!(body["source_version"], 42);
+            assert_eq!(body["is_shallow"], true);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let table = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .source_version(42)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "cloned_table");
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_tag() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/cloned_table/clone");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["source_location"], "s3://bucket/source_table");
+            assert_eq!(body["source_tag"], "v1.0");
+            assert_eq!(body["is_shallow"], true);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let table = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .source_tag("v1.0")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "cloned_table");
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_deep_clone() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/cloned_table/clone");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["source_location"], "s3://bucket/source_table");
+            assert_eq!(body["is_shallow"], false);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let table = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .is_shallow(false)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "cloned_table");
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_namespace() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/ns1$ns2$cloned_table/clone");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["source_location"], "s3://bucket/source_table");
+            assert_eq!(body["is_shallow"], true);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let table = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .target_namespace(vec!["ns1".to_string(), "ns2".to_string()])
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "cloned_table");
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_error() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(500)
+                .body("Internal server error")
+                .unwrap()
+        });
+
+        let result = conn
+            .clone_table("cloned_table", "s3://bucket/source_table")
+            .execute()
+            .await;
+
+        assert!(result.is_err());
+        if let Err(crate::Error::Http { source, .. }) = result {
+            assert!(source.to_string().contains("Failed to clone table"));
+        } else {
+            panic!("Expected HTTP error");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_namespace_client() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": []}"#)
+                .unwrap()
+        });
+
+        // Get the namespace client from the connection's internal database
+        let namespace_client = conn.namespace_client().await;
+        assert!(namespace_client.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_namespace_client_with_tls_config() {
+        use crate::remote::client::TlsConfig;
+
+        let tls_config = TlsConfig {
+            cert_file: Some("/path/to/cert.pem".to_string()),
+            key_file: Some("/path/to/key.pem".to_string()),
+            ssl_ca_cert: Some("/path/to/ca.pem".to_string()),
+            assert_hostname: true,
+        };
+
+        let client_config = ClientConfig {
+            tls_config: Some(tls_config),
+            ..Default::default()
+        };
+
+        let conn = Connection::new_with_handler_and_config(
+            |_| {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tables": []}"#)
+                    .unwrap()
+            },
+            client_config,
+        );
+
+        // Get the namespace client - it should be created with the TLS config
+        let namespace_client = conn.namespace_client().await;
+        assert!(namespace_client.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_namespace_client_with_headers() {
+        let mut extra_headers = HashMap::new();
+        extra_headers.insert("X-Custom-Header".to_string(), "custom-value".to_string());
+
+        let client_config = ClientConfig {
+            extra_headers,
+            ..Default::default()
+        };
+
+        let conn = Connection::new_with_handler_and_config(
+            |_| {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tables": []}"#)
+                    .unwrap()
+            },
+            client_config,
+        );
+
+        // Get the namespace client - it should be created with the extra headers
+        let namespace_client = conn.namespace_client().await;
+        assert!(namespace_client.is_ok());
+    }
+
+    /// Integration tests using RestAdapter to run RemoteDatabase against a real namespace server
+    mod rest_adapter_integration {
+        use super::*;
+        use lance_namespace::models::ListTablesRequest;
+        use lance_namespace_impls::{DirectoryNamespaceBuilder, RestAdapter, RestAdapterConfig};
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        /// Test fixture that manages a REST server backed by DirectoryNamespace
+        struct RestServerFixture {
+            _temp_dir: TempDir,
+            server_handle: lance_namespace_impls::RestAdapterHandle,
+            server_url: String,
+        }
+
+        impl RestServerFixture {
+            async fn new() -> Self {
+                let temp_dir = TempDir::new().unwrap();
+                let temp_path = temp_dir.path().to_str().unwrap().to_string();
+
+                // Create DirectoryNamespace backend
+                let backend = DirectoryNamespaceBuilder::new(&temp_path)
+                    .build()
+                    .await
+                    .unwrap();
+                let backend = Arc::new(backend);
+
+                // Start REST server with port 0 (OS assigns available port)
+                let config = RestAdapterConfig {
+                    port: 0,
+                    ..Default::default()
+                };
+
+                let server = RestAdapter::new(backend, config);
+                let server_handle = server.start().await.unwrap();
+
+                // Get the actual port assigned by OS
+                let actual_port = server_handle.port();
+                let server_url = format!("http://127.0.0.1:{}", actual_port);
+
+                Self {
+                    _temp_dir: temp_dir,
+                    server_handle,
+                    server_url,
+                }
+            }
+        }
+
+        impl Drop for RestServerFixture {
+            fn drop(&mut self) {
+                self.server_handle.shutdown();
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn test_remote_database_with_rest_adapter() {
+            use lance_namespace::models::CreateNamespaceRequest;
+
+            let fixture = RestServerFixture::new().await;
+
+            // Connect to the REST server using lancedb Connection
+            // Use db://dummy as URI and set actual server URL via host_override
+            let conn = ConnectBuilder::new("db://dummy")
+                .api_key("test-api-key")
+                .region("us-east-1")
+                .host_override(&fixture.server_url)
+                .execute()
+                .await
+                .unwrap();
+
+            // Create a child namespace first
+            let namespace = vec!["test_ns".to_string()];
+            conn.create_namespace(CreateNamespaceRequest {
+                id: Some(namespace.clone()),
+                ..Default::default()
+            })
+            .await
+            .expect("Failed to create namespace");
+
+            // Create a table in the child namespace
+            let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+            let data = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap();
+            let reader = RecordBatchIterator::new([Ok(data.clone())], schema.clone());
+
+            let table = conn
+                .create_table("test_table", reader)
+                .namespace(namespace.clone())
+                .execute()
+                .await;
+            assert!(table.is_ok(), "Failed to create table: {:?}", table.err());
+
+            // List tables in the child namespace
+            let list_response = conn
+                .list_tables(ListTablesRequest {
+                    id: Some(namespace.clone()),
+                    ..Default::default()
+                })
+                .await
+                .expect("Failed to list tables");
+            assert_eq!(list_response.tables, vec!["test_table"]);
+
+            // Get namespace client and verify it can also list tables
+            let namespace_client = conn.namespace_client().await.unwrap();
+            let list_response = namespace_client
+                .list_tables(ListTablesRequest {
+                    id: Some(namespace.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(list_response.tables, vec!["test_table"]);
+
+            // Open the table from the child namespace
+            let opened_table = conn
+                .open_table("test_table")
+                .namespace(namespace.clone())
+                .execute()
+                .await;
+            assert!(
+                opened_table.is_ok(),
+                "Failed to open table: {:?}",
+                opened_table.err()
+            );
+            assert_eq!(opened_table.unwrap().name(), "test_table");
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn test_remote_database_with_multiple_tables() {
+            use lance_namespace::models::CreateNamespaceRequest;
+
+            let fixture = RestServerFixture::new().await;
+
+            // Connect to the REST server
+            // Use db://dummy as URI and set actual server URL via host_override
+            let conn = ConnectBuilder::new("db://dummy")
+                .api_key("test-api-key")
+                .region("us-east-1")
+                .host_override(&fixture.server_url)
+                .execute()
+                .await
+                .unwrap();
+
+            // Create a child namespace first
+            let namespace = vec!["multi_table_ns".to_string()];
+            conn.create_namespace(CreateNamespaceRequest {
+                id: Some(namespace.clone()),
+                ..Default::default()
+            })
+            .await
+            .expect("Failed to create namespace");
+
+            // Create multiple tables in the child namespace
+            let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+            for i in 1..=3 {
+                let data =
+                    RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![i]))])
+                        .unwrap();
+                let reader = RecordBatchIterator::new([Ok(data.clone())], schema.clone());
+
+                conn.create_table(format!("table{}", i), reader)
+                    .namespace(namespace.clone())
+                    .execute()
+                    .await
+                    .unwrap_or_else(|e| panic!("Failed to create table{}: {:?}", i, e));
+            }
+
+            // List tables in the child namespace
+            let list_response = conn
+                .list_tables(ListTablesRequest {
+                    id: Some(namespace.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(list_response.tables.len(), 3);
+            assert!(list_response.tables.contains(&"table1".to_string()));
+            assert!(list_response.tables.contains(&"table2".to_string()));
+            assert!(list_response.tables.contains(&"table3".to_string()));
+        }
     }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@lancedb/lancedb-win32-arm64-msvc",
-  "version": "0.21.2-beta.0",
+  "version": "0.26.1",
   "os": [
     "win32"
   ],
@@ -11,7 +11,7 @@
   "files": [
     "lancedb.win32-arm64-msvc.node"
   ],
-  "license": "Apache 2.0",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">= 18"
   }

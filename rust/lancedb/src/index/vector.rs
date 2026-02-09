@@ -6,9 +6,7 @@
 //!
 //! Vector indices are only supported on fixed-size-list (tensor) columns of floating point
 //! values
-use std::cmp::max;
-
-use lance::table::format::{Index, Manifest};
+use lance::table::format::{IndexMetadata, Manifest};
 
 use crate::DistanceType;
 
@@ -19,7 +17,7 @@ pub struct VectorIndex {
 }
 
 impl VectorIndex {
-    pub fn new_from_format(manifest: &Manifest, index: &Index) -> Self {
+    pub fn new_from_format(manifest: &Manifest, index: &IndexMetadata) -> Self {
         let fields = index
             .fields
             .iter()
@@ -112,6 +110,15 @@ macro_rules! impl_ivf_params_setter {
             self.max_iterations = max_iterations;
             self
         }
+
+        /// The target size of each partition.
+        ///
+        /// This value controls the tradeoff between search performance and accuracy.
+        /// The higher the value the faster the search but the less accurate the results will be.
+        pub fn target_partition_size(mut self, target_partition_size: u32) -> Self {
+            self.target_partition_size = Some(target_partition_size);
+            self
+        }
     };
 }
 
@@ -182,6 +189,7 @@ pub struct IvfFlatIndexBuilder {
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
 }
 
 impl Default for IvfFlatIndexBuilder {
@@ -191,11 +199,44 @@ impl Default for IvfFlatIndexBuilder {
             num_partitions: None,
             sample_rate: 256,
             max_iterations: 50,
+            target_partition_size: None,
         }
     }
 }
 
 impl IvfFlatIndexBuilder {
+    impl_distance_type_setter!();
+    impl_ivf_params_setter!();
+}
+
+/// Builder for an IVF SQ index.
+///
+/// This index compresses vectors using scalar quantization and groups them into IVF partitions.
+/// It offers a balance between search performance and storage footprint.
+#[derive(Debug, Clone)]
+pub struct IvfSqIndexBuilder {
+    pub(crate) distance_type: DistanceType,
+
+    // IVF
+    pub(crate) num_partitions: Option<u32>,
+    pub(crate) sample_rate: u32,
+    pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
+}
+
+impl Default for IvfSqIndexBuilder {
+    fn default() -> Self {
+        Self {
+            distance_type: DistanceType::L2,
+            num_partitions: None,
+            sample_rate: 256,
+            max_iterations: 50,
+            target_partition_size: None,
+        }
+    }
+}
+
+impl IvfSqIndexBuilder {
     impl_distance_type_setter!();
     impl_ivf_params_setter!();
 }
@@ -228,6 +269,7 @@ pub struct IvfPqIndexBuilder {
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
 
     // PQ
     pub(crate) num_sub_vectors: Option<u32>,
@@ -243,6 +285,7 @@ impl Default for IvfPqIndexBuilder {
             num_bits: None,
             sample_rate: 256,
             max_iterations: 50,
+            target_partition_size: None,
         }
     }
 }
@@ -253,21 +296,11 @@ impl IvfPqIndexBuilder {
     impl_pq_params_setter!();
 }
 
-pub(crate) fn suggested_num_partitions(rows: usize) -> u32 {
-    let num_partitions = (rows as f64).sqrt() as u32;
-    max(1, num_partitions)
-}
-
-pub(crate) fn suggested_num_partitions_for_hnsw(rows: usize, dim: u32) -> u32 {
-    let num_partitions = (((rows as u64) * (dim as u64)) / (256 * 5_000_000)) as u32;
-    max(1, num_partitions)
-}
-
 pub(crate) fn suggested_num_sub_vectors(dim: u32) -> u32 {
-    if dim % 16 == 0 {
+    if dim.is_multiple_of(16) {
         // Should be more aggressive than this default.
         dim / 16
-    } else if dim % 8 == 0 {
+    } else if dim.is_multiple_of(8) {
         dim / 8
     } else {
         log::warn!(
@@ -275,6 +308,52 @@ pub(crate) fn suggested_num_sub_vectors(dim: u32) -> u32 {
                 which may cause performance degradation in PQ"
         );
         1
+    }
+}
+
+/// Builder for an IVF RQ index.
+///
+/// This index stores a compressed (quantized) copy of every vector. Each dimension
+/// is quantized into a small number of bits.
+/// The parameters `num_bits` control this process, providing a tradeoff
+/// between index size (and thus search speed) and index accuracy.
+///
+/// The partitioning process is called IVF and the `num_partitions` parameter controls how
+/// many groups to create.
+///
+/// Note that training an IVF RQ index on a large dataset is a slow operation and
+/// currently is also a memory intensive operation.
+#[derive(Debug, Clone)]
+pub struct IvfRqIndexBuilder {
+    // IVF
+    pub(crate) distance_type: DistanceType,
+    pub(crate) num_partitions: Option<u32>,
+    pub(crate) num_bits: Option<u32>,
+    pub(crate) sample_rate: u32,
+    pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
+}
+
+impl Default for IvfRqIndexBuilder {
+    fn default() -> Self {
+        Self {
+            distance_type: DistanceType::L2,
+            num_partitions: None,
+            num_bits: None,
+            sample_rate: 256,
+            max_iterations: 50,
+            target_partition_size: None,
+        }
+    }
+}
+
+impl IvfRqIndexBuilder {
+    impl_distance_type_setter!();
+    impl_ivf_params_setter!();
+
+    pub fn num_bits(mut self, num_bits: u32) -> Self {
+        self.num_bits = Some(num_bits);
+        self
     }
 }
 
@@ -293,6 +372,7 @@ pub struct IvfHnswPqIndexBuilder {
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
 
     // HNSW
     pub(crate) m: u32,
@@ -314,6 +394,7 @@ impl Default for IvfHnswPqIndexBuilder {
             max_iterations: 50,
             m: 20,
             ef_construction: 300,
+            target_partition_size: None,
         }
     }
 }
@@ -341,6 +422,7 @@ pub struct IvfHnswSqIndexBuilder {
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    pub(crate) target_partition_size: Option<u32>,
 
     // HNSW
     pub(crate) m: u32,
@@ -358,6 +440,7 @@ impl Default for IvfHnswSqIndexBuilder {
             max_iterations: 50,
             m: 20,
             ef_construction: 300,
+            target_partition_size: None,
         }
     }
 }

@@ -1,11 +1,5 @@
 [workspace]
-members = [
-    "rust/ffi/node",
-    "rust/lancedb",
-    "nodejs",
-    "python",
-    "java/core/lancedb-jni",
-]
+members = ["rust/lancedb", "nodejs", "python"]
 # Python package needs to be built by maturin.
 exclude = ["python"]
 resolver = "2"
@@ -18,37 +12,43 @@ repository = "https://github.com/lancedb/lancedb"
 description = "Serverless, low-latency vector database for AI applications"
 keywords = ["lancedb", "lance", "database", "vector", "search"]
 categories = ["database-implementations"]
-rust-version = "1.78.0"
+rust-version = "1.88.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.31.2", "features" = [
-    "dynamodb",
-], "tag" = "v0.31.2-beta.3", "git" = "https://github.com/lancedb/lance.git" }
-lance-io = { "version" = "=0.31.2", "tag" = "v0.31.2-beta.3", "git" = "https://github.com/lancedb/lance.git" }
-lance-index = { "version" = "=0.31.2", "tag" = "v0.31.2-beta.3", "git" = "https://github.com/lancedb/lance.git" }
-lance-linalg = { "version" = "=0.31.2", "tag" = "v0.31.2-beta.3", "git" = "https://github.com/lancedb/lance.git" }
-lance-table = { "version" = "=0.31.2", "tag" = "v0.31.2-beta.3", "git" = "https://github.com/lancedb/lance.git" }
-lance-testing = { "version" = "=0.31.2", "tag" = "v0.31.2-beta.3", "git" = "https://github.com/lancedb/lance.git" }
-lance-datafusion = { "version" = "=0.31.2", "tag" = "v0.31.2-beta.3", "git" = "https://github.com/lancedb/lance.git" }
-lance-encoding = { "version" = "=0.31.2", "tag" = "v0.31.2-beta.3", "git" = "https://github.com/lancedb/lance.git" }
+lance = { "version" = "=2.0.0", default-features = false }
+lance-core = "=2.0.0"
+lance-datagen = "=2.0.0"
+lance-file = "=2.0.0"
+lance-io = { "version" = "=2.0.0", default-features = false }
+lance-index = "=2.0.0"
+lance-linalg = "=2.0.0"
+lance-namespace = "=2.0.0"
+lance-namespace-impls = { "version" = "=2.0.0", default-features = false }
+lance-table = "=2.0.0"
+lance-testing = "=2.0.0"
+lance-datafusion = "=2.0.0"
+lance-encoding = "=2.0.0"
+lance-arrow = "=2.0.0"
+ahash = "0.8"
 # Note that this one does not include pyarrow
-arrow = { version = "55.1", optional = false }
-arrow-array = "55.1"
-arrow-data = "55.1"
-arrow-ipc = "55.1"
-arrow-ord = "55.1"
-arrow-schema = "55.1"
-arrow-arith = "55.1"
-arrow-cast = "55.1"
+arrow = { version = "57.2", optional = false }
+arrow-array = "57.2"
+arrow-data = "57.2"
+arrow-ipc = "57.2"
+arrow-ord = "57.2"
+arrow-schema = "57.2"
+arrow-select = "57.2"
+arrow-cast = "57.2"
 async-trait = "0"
-datafusion = { version = "48.0", default-features = false }
-datafusion-catalog = "48.0"
-datafusion-common = { version = "48.0", default-features = false }
-datafusion-execution = "48.0"
-datafusion-expr = "48.0"
-datafusion-physical-plan = "48.0"
+datafusion = { version = "51.0", default-features = false }
+datafusion-catalog = "51.0"
+datafusion-common = { version = "51.0", default-features = false }
+datafusion-execution = "51.0"
+datafusion-expr = "51.0"
+datafusion-physical-plan = "51.0"
+datafusion-physical-expr = "51.0"
 env_logger = "0.11"
-half = { "version" = "2.6.0", default-features = false, features = [
+half = { "version" = "2.7.1", default-features = false, features = [
     "num-traits",
 ] }
 futures = "0"
@@ -56,19 +56,25 @@ log = "0.4"
 moka = { version = "0.12", features = ["future"] }
 object_store = "0.12.0"
 pin-project = "1.0.7"
+rand = "0.9"
 snafu = "0.8"
 url = "2"
 num-traits = "0.2"
-rand = "0.9"
 regex = "1.10"
 lazy_static = "1"
 semver = "1.0.25"
-# Temporary pins to work around downstream issues
-# https://github.com/apache/arrow-rs/commit/2fddf85afcd20110ce783ed5b4cdeb82293da30b
-chrono = "=0.4.41"
-# https://github.com/RustCrypto/formats/issues/1684
-base64ct = "=1.6.0"
-# Workaround for: https://github.com/eira-fransham/crunchy/issues/13
-crunchy = "=0.2.2"
-# Workaround for: https://github.com/Lokathor/bytemuck/issues/306
-bytemuck_derive = ">=1.8.1, <1.9.0"
+chrono = "0.4"
+
+[profile.ci]
+debug = "line-tables-only"
+inherits = "dev"
+incremental = false
+
+# This rule applies to every package except workspace members (dependencies
+# such as `arrow` and `tokio`). It disables debug info and related features on
+# dependencies so their binaries stay smaller, improving cache reuse.
+[profile.ci.package."*"]
+debug = false
+debug-assertions = false
+strip = "debuginfo"
+incremental = false

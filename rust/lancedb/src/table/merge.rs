@@ -22,6 +22,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete: bool,
     pub(crate) when_not_matched_by_source_delete_filt: Option<String>,
     pub(crate) timeout: Option<Duration>,
+    pub(crate) use_index: bool,
 }
 
 impl MergeInsertBuilder {
@@ -35,6 +36,7 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete: false,
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
+            use_index: true,
         }
     }
 
@@ -98,6 +100,19 @@ impl MergeInsertBuilder {
     /// When this is set, the timeout is enforced on all attempts, including the first.
     pub fn timeout(&mut self, timeout: Duration) -> &mut Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// Controls whether to use indexes for the merge operation.
+    ///
+    /// When set to `true` (the default), the operation will use an index if available
+    /// on the join key for improved performance. When set to `false`, it forces a full
+    /// table scan even if an index exists. This can be useful for benchmarking or when
+    /// the query optimizer chooses a suboptimal path.
+    ///
+    /// If not set, defaults to `true` (use index if available).
+    pub fn use_index(&mut self, use_index: bool) -> &mut Self {
+        self.use_index = use_index;
         self
     }
 

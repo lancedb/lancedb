@@ -44,13 +44,25 @@ import numpy as np
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from .index import (
+    BTree,
+    IvfFlat,
+    IvfPq,
+    IvfSq,
+    Bitmap,
+    IvfRq,
+    LabelList,
+    HnswPq,
+    HnswSq,
+    FTS,
+)
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
     AsyncFTSQuery,
     AsyncHybridQuery,
     AsyncQuery,
+    AsyncTakeQuery,
     AsyncVectorQuery,
     FullTextQuery,
     LanceEmptyQueryBuilder,
@@ -58,6 +70,7 @@ from .query import (
     LanceHybridQueryBuilder,
     LanceQueryBuilder,
     LanceVectorQueryBuilder,
+    LanceTakeQueryBuilder,
     Query,
 )
 from .util import (
@@ -72,6 +85,8 @@ from .index import lang_mapping
 
 
 if TYPE_CHECKING:
+    from .db import LanceDBConnection
+    from .io import StorageOptionsProvider
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -86,7 +101,6 @@ if TYPE_CHECKING:
         MergeResult,
         UpdateResult,
     )
-    from .db import LanceDBConnection
     from .index import IndexConfig
     import pandas
     import PIL
@@ -102,7 +116,9 @@ if TYPE_CHECKING:
     )
 
 
-def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
+def _into_pyarrow_reader(
+    data, schema: Optional[pa.Schema] = None
+) -> pa.RecordBatchReader:
     from lancedb.dependencies import datasets
 
     if _check_for_hugging_face(data):
@@ -123,6 +139,12 @@ def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
         raise ValueError("Cannot add a single dictionary to a table. Use a list.")
 
     if isinstance(data, list):
+        # Handle empty list case
+        if not data:
+            if schema is None:
+                raise ValueError("Cannot create table from empty list without a schema")
+            return pa.Table.from_pylist(data, schema=schema).to_reader()
+
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
             schema = data[0].__class__.to_arrow_schema()
@@ -165,9 +187,9 @@ def _into_pyarrow_reader(data) -> pa.RecordBatchReader:
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
-            "Please check "
-            "https://lancedb.github.io/lancedb/python/python/ "
-            "to see supported types."
+            "Supported types: list of dicts, pandas DataFrame, polars DataFrame, "
+            "pyarrow Table/RecordBatch, or Pydantic models. "
+            "See https://lancedb.com/docs/tables/ for examples."
         )
 
 
@@ -236,7 +258,7 @@ def _sanitize_data(
     # 1. There might be embedding columns missing that will be added
     #    in the add_embeddings step.
     # 2. If `allow_subschemas` is True, there might be columns missing.
-    reader = _into_pyarrow_reader(data)
+    reader = _into_pyarrow_reader(data, target_schema)
 
     reader = _append_vector_columns(reader, target_schema, metadata=metadata)
 
@@ -662,6 +684,24 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def to_lance(self, **kwargs) -> lance.LanceDataset:
+        """Return the table as a lance.LanceDataset.
+
+        Returns
+        -------
+        lance.LanceDataset
+        """
+        raise NotImplementedError
+
+    def to_polars(self, **kwargs) -> "pl.DataFrame":
+        """Return the table as a polars.DataFrame.
+
+        Returns
+        -------
+        polars.DataFrame
+        """
+        raise NotImplementedError
+
     def create_index(
         self,
         metric="l2",
@@ -679,6 +719,9 @@ class Table(ABC):
         sample_rate: int = 256,
         m: int = 20,
         ef_construction: int = 300,
+        name: Optional[str] = None,
+        train: bool = True,
+        target_partition_size: Optional[int] = None,
     ):
         """Create an index on the table.
 
@@ -711,6 +754,11 @@ class Table(ABC):
             Only 4 and 8 are supported.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
+        name: str, optional
+            The name of the index. If not provided, a default name will be generated.
+        train: bool, default True
+            Whether to train the index with existing data. Vector indices always train
+            with existing data.
         """
         raise NotImplementedError
 
@@ -766,6 +814,7 @@ class Table(ABC):
         replace: bool = True,
         index_type: ScalarIndexType = "BTREE",
         wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
     ):
         """Create a scalar index on a column.
 
@@ -780,6 +829,8 @@ class Table(ABC):
             The type of index to create.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
+        name: str, optional
+            The name of the index. If not provided, a default name will be generated.
         Examples
         --------
 
@@ -842,6 +893,7 @@ class Table(ABC):
         ngram_max_length: int = 3,
         prefix_only: bool = False,
         wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
     ):
         """Create a full-text search index on the table.
 
@@ -906,6 +958,8 @@ class Table(ABC):
             Whether to only index the prefix of the token for ngram tokenizer.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
+        name: str, optional
+            The name of the index. If not provided, a default name will be generated.
         """
         raise NotImplementedError
 
@@ -993,7 +1047,7 @@ class Table(ABC):
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
         >>> res
-        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0)
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -1096,6 +1150,120 @@ class Table(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def take_offsets(
+        self, offsets: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        """
+        Take a list of offsets from the table.
+
+        Offsets are 0-indexed and relative to the current version of the table.  Offsets
+        are not stable.  A row with an offset of N may have a different offset in a
+        different version of the table (e.g. if an earlier row is deleted).
+
+        Offsets are mostly useful for sampling as the set of all valid offsets is easily
+        known in advance to be [0, len(table)).
+
+        No guarantees are made regarding the order in which results are returned.  If
+        you desire an output order that matches the order of the given offsets, you will
+        need to add the row offset column to the output and align it yourself.
+
+        Parameters
+        ----------
+        offsets: list[int]
+            The offsets to take.
+
+        Returns
+        -------
+        pa.RecordBatch
+            A record batch containing the rows at the given offsets.
+        """
+
+    def __getitems__(self, offsets: list[int]) -> pa.RecordBatch:
+        """
+        Take a list of offsets from the table and return as a record batch.
+
+        This method uses the `take_offsets` method to take the rows.  However, it
+        aligns the offsets to the passed in offsets.  This means the return type
+        is a record batch (and so users should take care not to pass in too many
+        offsets)
+
+        Note: this method is primarily intended to fulfill the Dataset contract
+        for pytorch.
+
+        Parameters
+        ----------
+        offsets: list[int]
+            The offsets to take.
+
+        Returns
+        -------
+        pa.RecordBatch
+            A record batch containing the rows at the given offsets.
+        """
+        # We don't know the order of the results at all.  So we calculate a permutation
+        # for ordering the given offsets.  Then we load the data with the _rowoffset
+        # column.  Then we sort by _rowoffset and apply the inverse of the permutation
+        # that we calculated.
+        #
+        # Note: this is potentially a lot of memory copy if we're operating on large
+        # batches :(
+        num_offsets = len(offsets)
+        indices = list(range(num_offsets))
+        permutation = sorted(indices, key=lambda idx: offsets[idx])
+        permutation_inv = [0] * num_offsets
+        for i in range(num_offsets):
+            permutation_inv[permutation[i]] = i
+
+        columns = self.schema.names
+        columns.append("_rowoffset")
+        tbl = (
+            self.take_offsets(offsets)
+            .select(columns)
+            .to_arrow()
+            .sort_by("_rowoffset")
+            .take(permutation_inv)
+            .combine_chunks()
+            .drop_columns(["_rowoffset"])
+        )
+
+        return tbl
+
+    @abstractmethod
+    def take_row_ids(
+        self, row_ids: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        """
+        Take a list of row ids from the table.
+
+        Row ids are not stable and are relative to the current version of the table.
+        They can change due to compaction and updates.
+
+        No guarantees are made regarding the order in which results are returned.  If
+        you desire an output order that matches the order of the given ids, you will
+        need to add the row id column to the output and align it yourself.
+
+        Unlike offsets, row ids are not 0-indexed and no assumptions should be made
+        about the possible range of row ids.  In order to use this method you must
+        first obtain the row ids by scanning or searching the table.
+
+        Even so, row ids are more stable than offsets and can be useful in some
+        situations.
+
+        There is an ongoing effort to make row ids stable which is tracked at
+        https://github.com/lancedb/lancedb/issues/1120
+
+        Parameters
+        ----------
+        row_ids: list[int]
+            The row ids to take.
+
+        Returns
+        -------
+        AsyncTakeQuery
+            A query object that can be executed to get the rows.
+        """
+
+    @abstractmethod
     def _execute_query(
         self,
         query: Query,
@@ -1109,6 +1277,9 @@ class Table(ABC):
 
     @abstractmethod
     def _analyze_plan(self, query: Query) -> str: ...
+
+    @abstractmethod
+    def _output_schema(self, query: Query) -> pa.Schema: ...
 
     @abstractmethod
     def _do_merge(
@@ -1332,10 +1503,7 @@ class Table(ABC):
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
         retrain: bool, default False
-            If True, retrain the vector indices, this would refine the IVF clustering
-            and quantization, which may improve the search accuracy. It's faster than
-            re-creating the index from scratch, so it's recommended to try this first,
-            when the data distribution has changed significantly.
+            This parameter is no longer used and is deprecated.
 
         Experimental API
         ----------------
@@ -1569,25 +1737,83 @@ class LanceTable(Table):
         connection: "LanceDBConnection",
         name: str,
         *,
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
+        _async: AsyncTable = None,
     ):
+        if namespace is None:
+            namespace = []
         self._conn = connection
-        self._table = LOOP.run(
-            connection._conn.open_table(
-                name,
-                storage_options=storage_options,
-                index_cache_size=index_cache_size,
+        self._namespace = namespace
+        self._location = location  # Store location for use in _dataset_path
+        if _async is not None:
+            self._table = _async
+        else:
+            self._table = LOOP.run(
+                connection._conn.open_table(
+                    name,
+                    namespace=namespace,
+                    storage_options=storage_options,
+                    storage_options_provider=storage_options_provider,
+                    index_cache_size=index_cache_size,
+                    location=location,
+                )
             )
-        )
 
     @property
     def name(self) -> str:
         return self._table.name
 
+    @property
+    def namespace(self) -> List[str]:
+        """Return the namespace path of the table."""
+        return self._namespace
+
+    @property
+    def id(self) -> str:
+        """Return the full identifier of the table (namespace$name)."""
+        if self._namespace:
+            return "$".join(self._namespace + [self.name])
+        return self.name
+
     @classmethod
-    def open(cls, db, name, **kwargs):
-        tbl = cls(db, name, **kwargs)
+    def from_inner(cls, tbl: LanceDBTable):
+        from .db import LanceDBConnection
+
+        async_tbl = AsyncTable(tbl)
+        conn = LanceDBConnection.from_inner(tbl.database())
+        return cls(
+            conn,
+            async_tbl.name,
+            _async=async_tbl,
+        )
+
+    @classmethod
+    def open(
+        cls,
+        db,
+        name,
+        *,
+        namespace: Optional[List[str]] = None,
+        storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
+        index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
+    ):
+        if namespace is None:
+            namespace = []
+        tbl = cls(
+            db,
+            name,
+            namespace=namespace,
+            storage_options=storage_options,
+            storage_options_provider=storage_options_provider,
+            index_cache_size=index_cache_size,
+            location=location,
+        )
 
         # check the dataset exists
         try:
@@ -1602,6 +1828,10 @@ class LanceTable(Table):
     @cached_property
     def _dataset_path(self) -> str:
         # Cacheable since it's deterministic
+        # If table was opened with explicit location (e.g., from namespace),
+        # use that location directly instead of constructing from base URI
+        if self._location is not None:
+            return self._location
         return _table_path(self._conn.uri, self.name)
 
     def to_lance(self, **kwargs) -> lance.LanceDataset:
@@ -1639,6 +1869,12 @@ class LanceTable(Table):
     def version(self) -> int:
         """Get the current version of the table"""
         return LOOP.run(self._table.version())
+
+    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
+        return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+
+    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
+        return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
 
     @property
     def tags(self) -> Tags:
@@ -1847,12 +2083,16 @@ class LanceTable(Table):
         index_cache_size: Optional[int] = None,
         num_bits: int = 8,
         index_type: Literal[
-            "IVF_FLAT", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+            "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
         ] = "IVF_PQ",
         max_iterations: int = 50,
         sample_rate: int = 256,
         m: int = 20,
         ef_construction: int = 300,
+        *,
+        name: Optional[str] = None,
+        train: bool = True,
+        target_partition_size: Optional[int] = None,
     ):
         """Create an index on the table."""
         if accelerator is not None:
@@ -1869,6 +2109,7 @@ class LanceTable(Table):
                 num_bits=num_bits,
                 m=m,
                 ef_construction=ef_construction,
+                target_partition_size=target_partition_size,
             )
             self.checkout_latest()
             return
@@ -1878,6 +2119,15 @@ class LanceTable(Table):
                 num_partitions=num_partitions,
                 max_iterations=max_iterations,
                 sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
+            )
+        elif index_type == "IVF_SQ":
+            config = IvfSq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
             )
         elif index_type == "IVF_PQ":
             config = IvfPq(
@@ -1887,6 +2137,16 @@ class LanceTable(Table):
                 num_bits=num_bits,
                 max_iterations=max_iterations,
                 sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
+            )
+        elif index_type == "IVF_RQ":
+            config = IvfRq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                num_bits=num_bits,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
             )
         elif index_type == "IVF_HNSW_PQ":
             config = HnswPq(
@@ -1898,6 +2158,7 @@ class LanceTable(Table):
                 sample_rate=sample_rate,
                 m=m,
                 ef_construction=ef_construction,
+                target_partition_size=target_partition_size,
             )
         elif index_type == "IVF_HNSW_SQ":
             config = HnswSq(
@@ -1907,6 +2168,7 @@ class LanceTable(Table):
                 sample_rate=sample_rate,
                 m=m,
                 ef_construction=ef_construction,
+                target_partition_size=target_partition_size,
             )
         else:
             raise ValueError(f"Unknown index type {index_type}")
@@ -1916,6 +2178,8 @@ class LanceTable(Table):
                 vector_column_name,
                 replace=replace,
                 config=config,
+                name=name,
+                train=train,
             )
         )
 
@@ -1954,12 +2218,48 @@ class LanceTable(Table):
     def stats(self) -> TableStatistics:
         return LOOP.run(self._table.stats())
 
+    @property
+    def uri(self) -> str:
+        return LOOP.run(self._table.uri())
+
+    def initial_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the initial storage options that were passed in when opening this table.
+
+        For dynamically refreshed options (e.g., credential vending), use
+        :meth:`latest_storage_options`.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return LOOP.run(self._table.initial_storage_options())
+
+    def latest_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the latest storage options, refreshing from provider if configured.
+
+        This method is useful for credential vending scenarios where storage options
+        may be refreshed dynamically. If no dynamic provider is configured, this
+        returns the initial static options.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return LOOP.run(self._table.latest_storage_options())
+
     def create_scalar_index(
         self,
         column: str,
         *,
         replace: bool = True,
         index_type: ScalarIndexType = "BTREE",
+        name: Optional[str] = None,
     ):
         if index_type == "BTREE":
             config = BTree()
@@ -1970,7 +2270,7 @@ class LanceTable(Table):
         else:
             raise ValueError(f"Unknown index type {index_type}")
         return LOOP.run(
-            self._table.create_index(column, replace=replace, config=config)
+            self._table.create_index(column, replace=replace, config=config, name=name)
         )
 
     def create_fts_index(
@@ -1994,6 +2294,7 @@ class LanceTable(Table):
         ngram_min_length: int = 3,
         ngram_max_length: int = 3,
         prefix_only: bool = False,
+        name: Optional[str] = None,
     ):
         if not use_tantivy:
             if not isinstance(field_names, str):
@@ -2031,6 +2332,7 @@ class LanceTable(Table):
                     field_names,
                     replace=replace,
                     config=config,
+                    name=name,
                 )
             )
             return
@@ -2397,9 +2699,12 @@ class LanceTable(Table):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str | bool]] = None,
+        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
+        location: Optional[str] = None,
     ):
         """
         Create a new table.
@@ -2454,8 +2759,12 @@ class LanceTable(Table):
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
         """
+        if namespace is None:
+            namespace = []
         self = cls.__new__(cls)
         self._conn = db
+        self._namespace = namespace
+        self._location = location
 
         if data_storage_version is not None:
             warnings.warn(
@@ -2488,7 +2797,10 @@ class LanceTable(Table):
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
                 embedding_functions=embedding_functions,
+                namespace=namespace,
                 storage_options=storage_options,
+                storage_options_provider=storage_options_provider,
+                location=location,
             )
         )
         return self
@@ -2575,6 +2887,9 @@ class LanceTable(Table):
     def _analyze_plan(self, query: Query) -> str:
         return LOOP.run(self._table._analyze_plan(query))
 
+    def _output_schema(self, query: Query) -> pa.Schema:
+        return LOOP.run(self._table._output_schema(query))
+
     def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
@@ -2585,6 +2900,10 @@ class LanceTable(Table):
         return LOOP.run(
             self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
         )
+
+    @property
+    def _inner(self) -> LanceDBTable:
+        return self._table._inner
 
     @deprecation.deprecated(
         deprecated_in="0.21.0",
@@ -2671,10 +2990,7 @@ class LanceTable(Table):
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
         retrain: bool, default False
-            If True, retrain the vector indices, this would refine the IVF clustering
-            and quantization, which may improve the search accuracy. It's faster than
-            re-creating the index from scratch, so it's recommended to try this first,
-            when the data distribution has changed significantly.
+            This parameter is no longer used and is deprecated.
 
         Experimental API
         ----------------
@@ -2918,6 +3234,12 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
     return pc.is_in(indices, has_nan_indices)
 
 
+def _name_suggests_vector_column(field_name: str) -> bool:
+    """Check if a field name indicates a vector column."""
+    name_lower = field_name.lower()
+    return "vector" in name_lower or "embedding" in name_lower
+
+
 def _infer_target_schema(
     reader: pa.RecordBatchReader,
 ) -> Tuple[pa.Schema, pa.RecordBatchReader]:
@@ -2925,35 +3247,47 @@ def _infer_target_schema(
     peeked = None
 
     for i, field in enumerate(schema):
-        if (
-            field.name == VECTOR_COLUMN_NAME
-            and (pa.types.is_list(field.type) or pa.types.is_large_list(field.type))
-            and pa.types.is_floating(field.type.value_type)
-        ):
+        is_list_type = pa.types.is_list(field.type) or pa.types.is_large_list(
+            field.type
+        )
+
+        if _name_suggests_vector_column(field.name) and is_list_type:
             if peeked is None:
                 peeked, reader = peek_reader(reader)
             # Use the most common length of the list as the dimensions
             dim = _modal_list_size(peeked.column(i))
 
-            new_field = pa.field(
-                VECTOR_COLUMN_NAME,
-                pa.list_(pa.float32(), dim),
-                nullable=field.nullable,
-            )
+            # Determine target type based on value type
+            if pa.types.is_floating(field.type.value_type):
+                target_type = pa.list_(pa.float32(), dim)
+            elif pa.types.is_integer(field.type.value_type):
+                values = peeked.column(i)
 
-            schema = schema.set(i, new_field)
-        elif (
-            field.name == VECTOR_COLUMN_NAME
-            and (pa.types.is_list(field.type) or pa.types.is_large_list(field.type))
-            and pa.types.is_integer(field.type.value_type)
-        ):
-            if peeked is None:
-                peeked, reader = peek_reader(reader)
-            # Use the most common length of the list as the dimensions
-            dim = _modal_list_size(peeked.column(i))
+                if isinstance(values, pa.ChunkedArray):
+                    values = values.combine_chunks()
+
+                flattened = values.flatten()
+                valid_count = pc.count(flattened, mode="only_valid").as_py()
+
+                if valid_count == 0:
+                    target_type = pa.list_(pa.uint8(), dim)
+                else:
+                    min_max = pc.min_max(flattened)
+                    min_value = min_max["min"].as_py()
+                    max_value = min_max["max"].as_py()
+
+                    if (min_value is not None and min_value < 0) or (
+                        max_value is not None and max_value > 255
+                    ):
+                        target_type = pa.list_(pa.float32(), dim)
+                    else:
+                        target_type = pa.list_(pa.uint8(), dim)
+            else:
+                continue  # Skip non-numeric types
+
             new_field = pa.field(
-                VECTOR_COLUMN_NAME,
-                pa.list_(pa.uint8(), dim),
+                field.name,  # preserve original field name
+                target_type,
                 nullable=field.nullable,
             )
 
@@ -3174,9 +3508,11 @@ class AsyncTable:
         *,
         replace: Optional[bool] = None,
         config: Optional[
-            Union[IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
+            Union[IvfFlat, IvfPq, IvfRq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
         ] = None,
         wait_timeout: Optional[timedelta] = None,
+        name: Optional[str] = None,
+        train: bool = True,
     ):
         """Create an index to speed up queries
 
@@ -3203,18 +3539,40 @@ class AsyncTable:
             creating an index object.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
+        name: str, optional
+            The name of the index. If not provided, a default name will be generated.
+        train: bool, default True
+            Whether to train the index with existing data. Vector indices always train
+            with existing data.
         """
         if config is not None:
             if not isinstance(
-                config, (IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS)
+                config,
+                (
+                    IvfFlat,
+                    IvfSq,
+                    IvfPq,
+                    IvfRq,
+                    HnswPq,
+                    HnswSq,
+                    BTree,
+                    Bitmap,
+                    LabelList,
+                    FTS,
+                ),
             ):
                 raise TypeError(
-                    "config must be an instance of IvfPq, HnswPq, HnswSq, BTree,"
-                    " Bitmap, LabelList, or FTS"
+                    "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
+                    " BTree, Bitmap, LabelList, or FTS, but got " + str(type(config))
                 )
         try:
             await self._inner.create_index(
-                column, index=config, replace=replace, wait_timeout=wait_timeout
+                column,
+                index=config,
+                replace=replace,
+                wait_timeout=wait_timeout,
+                name=name,
+                train=train,
             )
         except ValueError as e:
             if "not support the requested language" in str(e):
@@ -3282,6 +3640,51 @@ class AsyncTable:
         Retrieve table and fragment statistics.
         """
         return await self._inner.stats()
+
+    async def uri(self) -> str:
+        """
+        Get the table URI (storage location).
+
+        For remote tables, this fetches the location from the server via describe.
+        For local tables, this returns the dataset URI.
+
+        Returns
+        -------
+        str
+            The full storage location of the table (e.g., S3/GCS path).
+        """
+        return await self._inner.uri()
+
+    async def initial_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the initial storage options that were passed in when opening this table.
+
+        For dynamically refreshed options (e.g., credential vending), use
+        :meth:`latest_storage_options`.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return await self._inner.initial_storage_options()
+
+    async def latest_storage_options(self) -> Optional[Dict[str, str]]:
+        """Get the latest storage options, refreshing from provider if configured.
+
+        This method is useful for credential vending scenarios where storage options
+        may be refreshed dynamically. If no dynamic provider is configured, this
+        returns the initial static options.
+
+        Warning: This is an internal API and the return value is subject to change.
+
+        Returns
+        -------
+        Optional[Dict[str, str]]
+            The storage options, or None if no storage options were configured.
+        """
+        return await self._inner.latest_storage_options()
 
     async def add(
         self,
@@ -3379,7 +3782,7 @@ class AsyncTable:
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
         >>> res
-        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0)
+        MergeResult(version=2, num_updated_rows=2, num_inserted_rows=1, num_deleted_rows=0, num_attempts=1)
         >>> # The order of new rows is non-deterministic since we use
         >>> # a hash-join as part of this operation and so we sort here
         >>> table.to_arrow().sort_by("a").to_pandas()
@@ -3665,9 +4068,14 @@ class AsyncTable:
             )
             if query.distance_type is not None:
                 async_query = async_query.distance_type(query.distance_type)
-            if query.minimum_nprobes is not None:
+            if query.minimum_nprobes is not None and query.maximum_nprobes is not None:
+                # Set both to the minimum first to avoid min > max error.
+                async_query = async_query.nprobes(
+                    query.minimum_nprobes
+                ).maximum_nprobes(query.maximum_nprobes)
+            elif query.minimum_nprobes is not None:
                 async_query = async_query.minimum_nprobes(query.minimum_nprobes)
-            if query.maximum_nprobes is not None:
+            elif query.maximum_nprobes is not None:
                 async_query = async_query.maximum_nprobes(query.maximum_nprobes)
             if query.refine_factor is not None:
                 async_query = async_query.refine_factor(query.refine_factor)
@@ -3715,6 +4123,10 @@ class AsyncTable:
         async_query = self._sync_query_to_async(query)
         return await async_query.analyze_plan()
 
+    async def _output_schema(self, query: Query) -> pa.Schema:
+        async_query = self._sync_query_to_async(query)
+        return await async_query.output_schema()
+
     async def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
@@ -3747,6 +4159,7 @@ class AsyncTable:
                 when_not_matched_by_source_delete=merge._when_not_matched_by_source_delete,
                 when_not_matched_by_source_condition=merge._when_not_matched_by_source_condition,
                 timeout=merge._timeout,
+                use_index=merge._use_index,
             ),
         )
 
@@ -4019,6 +4432,58 @@ class AsyncTable:
         """
         await self._inner.restore(version)
 
+    def take_offsets(self, offsets: list[int]) -> AsyncTakeQuery:
+        """
+        Take a list of offsets from the table.
+
+        Offsets are 0-indexed and relative to the current version of the table.  Offsets
+        are not stable.  A row with an offset of N may have a different offset in a
+        different version of the table (e.g. if an earlier row is deleted).
+
+        Offsets are mostly useful for sampling as the set of all valid offsets is easily
+        known in advance to be [0, len(table)).
+
+        Parameters
+        ----------
+        offsets: list[int]
+            The offsets to take.
+
+        Returns
+        -------
+        pa.RecordBatch
+            A record batch containing the rows at the given offsets.
+        """
+        return AsyncTakeQuery(self._inner.take_offsets(offsets))
+
+    def take_row_ids(self, row_ids: list[int]) -> AsyncTakeQuery:
+        """
+        Take a list of row ids from the table.
+
+        Row ids are not stable and are relative to the current version of the table.
+        They can change due to compaction and updates.
+
+        Unlike offsets, row ids are not 0-indexed and no assumptions should be made
+        about the possible range of row ids.  In order to use this method you must
+        first obtain the row ids by scanning or searching the table.
+
+        Even so, row ids are more stable than offsets and can be useful in some
+        situations.
+
+        There is an ongoing effort to make row ids stable which is tracked at
+        https://github.com/lancedb/lancedb/issues/1120
+
+        Parameters
+        ----------
+        row_ids: list[int]
+            The row ids to take.
+
+        Returns
+        -------
+        AsyncTakeQuery
+            A query object that can be executed to get the rows.
+        """
+        return AsyncTakeQuery(self._inner.take_row_ids(row_ids))
+
     @property
     def tags(self) -> AsyncTags:
         """Tag management for the dataset.
@@ -4067,10 +4532,7 @@ class AsyncTable:
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
         retrain: bool, default False
-            If True, retrain the vector indices, this would refine the IVF clustering
-            and quantization, which may improve the search accuracy. It's faster than
-            re-creating the index from scratch, so it's recommended to try this first,
-            when the data distribution has changed significantly.
+            This parameter is no longer used and is deprecated.
 
         Experimental API
         ----------------
@@ -4093,10 +4555,19 @@ class AsyncTable:
         cleanup_since_ms: Optional[int] = None
         if cleanup_older_than is not None:
             cleanup_since_ms = round(cleanup_older_than.total_seconds() * 1000)
+
+        if retrain:
+            import warnings
+
+            warnings.warn(
+                "The 'retrain' parameter is deprecated and will be removed in a "
+                "future version.",
+                DeprecationWarning,
+            )
+
         return await self._inner.optimize(
             cleanup_since_ms=cleanup_since_ms,
             delete_unverified=delete_unverified,
-            retrain=retrain,
         )
 
     async def list_indices(self) -> Iterable[IndexConfig]:

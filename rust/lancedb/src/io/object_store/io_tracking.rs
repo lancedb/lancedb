@@ -11,7 +11,7 @@ use futures::stream::BoxStream;
 use lance::io::WrappingObjectStore;
 use object_store::{
     path::Path, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOpts, PutOptions, PutPayload, PutResult, Result as OSResult, UploadPart,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as OSResult, UploadPart,
 };
 
 #[derive(Debug, Default)]
@@ -50,7 +50,7 @@ impl IoStatsHolder {
 }
 
 impl WrappingObjectStore for IoStatsHolder {
-    fn wrap(&self, target: Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore> {
+    fn wrap(&self, _store_prefix: &str, target: Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore> {
         Arc::new(IoTrackingStore {
             target,
             stats: self.0.clone(),
@@ -106,7 +106,7 @@ impl ObjectStore for IoTrackingStore {
     async fn put_multipart_opts(
         &self,
         location: &Path,
-        opts: PutMultipartOpts,
+        opts: PutMultipartOptions,
     ) -> OSResult<Box<dyn MultipartUpload>> {
         let target = self.target.put_multipart_opts(location, opts).await?;
         Ok(Box::new(IoTrackingMultipartUpload {

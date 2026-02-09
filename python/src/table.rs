@@ -3,9 +3,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
+    connection::Connection,
     error::PythonErrorExt,
     index::{extract_index_params, IndexConfig},
-    query::Query,
+    query::{Query, TakeQuery},
 };
 use arrow::{
     datatypes::{DataType, Schema},
@@ -133,17 +134,19 @@ pub struct MergeResult {
     pub num_updated_rows: u64,
     pub num_inserted_rows: u64,
     pub num_deleted_rows: u64,
+    pub num_attempts: u32,
 }
 
 #[pymethods]
 impl MergeResult {
     pub fn __repr__(&self) -> String {
         format!(
-            "MergeResult(version={}, num_updated_rows={}, num_inserted_rows={}, num_deleted_rows={})",
+            "MergeResult(version={}, num_updated_rows={}, num_inserted_rows={}, num_deleted_rows={}, num_attempts={})",
             self.version,
             self.num_updated_rows,
             self.num_inserted_rows,
-            self.num_deleted_rows
+            self.num_deleted_rows,
+            self.num_attempts
         )
     }
 }
@@ -155,6 +158,7 @@ impl From<lancedb::table::MergeResult> for MergeResult {
             num_updated_rows: result.num_updated_rows,
             num_inserted_rows: result.num_inserted_rows,
             num_deleted_rows: result.num_deleted_rows,
+            num_attempts: result.num_attempts,
         }
     }
 }
@@ -249,7 +253,7 @@ impl Table {
 }
 
 impl Table {
-    fn inner_ref(&self) -> PyResult<&LanceDbTable> {
+    pub(crate) fn inner_ref(&self) -> PyResult<&LanceDbTable> {
         self.inner
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err(format!("Table {} is closed", self.name)))
@@ -272,11 +276,18 @@ impl Table {
         self.inner.take();
     }
 
+    pub fn database(&self) -> PyResult<Connection> {
+        let inner = self.inner_ref()?.clone();
+        let inner_connection =
+            lancedb::Connection::new(inner.database().clone(), inner.embedding_registry().clone());
+        Ok(Connection::new(inner_connection))
+    }
+
     pub fn schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.schema().await.infer_error()?;
-            Python::with_gil(|py| schema.to_pyarrow(py))
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
         })
     }
 
@@ -341,13 +352,15 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None))]
+    #[pyo3(signature = (column, index=None, replace=None, wait_timeout=None, *, name=None, train=None))]
     pub fn create_index<'a>(
         self_: PyRef<'a, Self>,
         column: String,
         index: Option<Bound<'_, PyAny>>,
         replace: Option<bool>,
         wait_timeout: Option<Bound<'_, PyAny>>,
+        name: Option<String>,
+        train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
         let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
@@ -356,6 +369,12 @@ impl Table {
             .create_index_with_timeout(&[column], index, timeout);
         if let Some(replace) = replace {
             op = op.replace(replace);
+        }
+        if let Some(name) = name {
+            op = op.name(name);
+        }
+        if let Some(train) = train {
+            op = op.train(train);
         }
 
         future_into_py(self_.py(), async move {
@@ -418,7 +437,7 @@ impl Table {
         future_into_py(self_.py(), async move {
             let stats = inner.index_stats(&index_name).await.infer_error()?;
             if let Some(stats) = stats {
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     let dict = PyDict::new(py);
                     dict.set_item("num_indexed_rows", stats.num_indexed_rows)?;
                     dict.set_item("num_unindexed_rows", stats.num_unindexed_rows)?;
@@ -448,7 +467,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let stats = inner.stats().await.infer_error()?;
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let dict = PyDict::new(py);
                 dict.set_item("total_bytes", stats.total_bytes)?;
                 dict.set_item("num_rows", stats.num_rows)?;
@@ -478,6 +497,25 @@ impl Table {
         })
     }
 
+    pub fn uri(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move { inner.uri().await.infer_error() })
+    }
+
+    pub fn initial_storage_options(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            Ok(inner.initial_storage_options().await)
+        })
+    }
+
+    pub fn latest_storage_options(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.latest_storage_options().await.infer_error()
+        })
+    }
+
     pub fn __repr__(&self) -> String {
         match &self.inner {
             None => format!("ClosedTable({})", self.name),
@@ -497,7 +535,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let versions = inner.list_versions().await.infer_error()?;
-            let versions_as_dict = Python::with_gil(|py| {
+            let versions_as_dict = Python::attach(|py| {
                 versions
                     .iter()
                     .map(|v| {
@@ -568,13 +606,26 @@ impl Table {
         Ok(Tags::new(self.inner_ref()?.clone()))
     }
 
+    #[pyo3(signature = (offsets))]
+    pub fn take_offsets(self_: PyRef<'_, Self>, offsets: Vec<u64>) -> PyResult<TakeQuery> {
+        Ok(TakeQuery::new(
+            self_.inner_ref()?.clone().take_offsets(offsets),
+        ))
+    }
+
+    #[pyo3(signature = (row_ids))]
+    pub fn take_row_ids(self_: PyRef<'_, Self>, row_ids: Vec<u64>) -> PyResult<TakeQuery> {
+        Ok(TakeQuery::new(
+            self_.inner_ref()?.clone().take_row_ids(row_ids),
+        ))
+    }
+
     /// Optimize the on-disk data by compacting and pruning old data, for better performance.
-    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None, retrain=None))]
+    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None))]
     pub fn optimize(
         self_: PyRef<'_, Self>,
         cleanup_since_ms: Option<u64>,
         delete_unverified: Option<bool>,
-        retrain: Option<bool>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let older_than = if let Some(ms) = cleanup_since_ms {
@@ -610,10 +661,9 @@ impl Table {
                 .prune
                 .unwrap();
             inner
-                .optimize(lancedb::table::OptimizeAction::Index(match retrain {
-                    Some(true) => OptimizeOptions::retrain(),
-                    _ => OptimizeOptions::default(),
-                }))
+                .optimize(lancedb::table::OptimizeAction::Index(
+                    OptimizeOptions::default(),
+                ))
                 .await
                 .infer_error()?;
             Ok(OptimizeStats {
@@ -651,6 +701,9 @@ impl Table {
         }
         if let Some(timeout) = parameters.timeout {
             builder.timeout(timeout);
+        }
+        if let Some(use_index) = parameters.use_index {
+            builder.use_index(use_index);
         }
 
         future_into_py(self_.py(), async move {
@@ -811,6 +864,7 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_delete: bool,
     when_not_matched_by_source_condition: Option<String>,
     timeout: Option<std::time::Duration>,
+    use_index: Option<bool>,
 }
 
 #[pyclass]
@@ -832,7 +886,7 @@ impl Tags {
             let tags = inner.tags().await.infer_error()?;
             let res = tags.list().await.infer_error()?;
 
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let py_dict = PyDict::new(py);
                 for (key, contents) in res {
                     let value_dict = PyDict::new(py);

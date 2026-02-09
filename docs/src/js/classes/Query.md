@@ -14,7 +14,7 @@ A builder for LanceDB queries.
 
 ## Extends
 
-- [`QueryBase`](QueryBase.md)&lt;`NativeQuery`&gt;
+- `StandardQueryBase`&lt;`NativeQuery`&gt;
 
 ## Properties
 
@@ -26,7 +26,7 @@ protected inner: Query | Promise<Query>;
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`inner`](QueryBase.md#inner)
+`StandardQueryBase.inner`
 
 ## Methods
 
@@ -73,14 +73,14 @@ AnalyzeExec verbose=true, metrics=[]
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`analyzePlan`](QueryBase.md#analyzeplan)
+`StandardQueryBase.analyzePlan`
 
 ***
 
 ### execute()
 
 ```ts
-protected execute(options?): RecordBatchIterator
+protected execute(options?): AsyncGenerator<RecordBatch<any>, void, unknown>
 ```
 
 Execute the query and return the results as an
@@ -91,7 +91,7 @@ Execute the query and return the results as an
 
 #### Returns
 
-[`RecordBatchIterator`](RecordBatchIterator.md)
+`AsyncGenerator`&lt;`RecordBatch`&lt;`any`&gt;, `void`, `unknown`&gt;
 
 #### See
 
@@ -107,7 +107,7 @@ single query)
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`execute`](QueryBase.md#execute)
+`StandardQueryBase.execute`
 
 ***
 
@@ -143,7 +143,7 @@ const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`explainPlan`](QueryBase.md#explainplan)
+`StandardQueryBase.explainPlan`
 
 ***
 
@@ -164,7 +164,7 @@ Use [Table#optimize](Table.md#optimize) to index all un-indexed data.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`fastSearch`](QueryBase.md#fastsearch)
+`StandardQueryBase.fastSearch`
 
 ***
 
@@ -194,7 +194,7 @@ Use `where` instead
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`filter`](QueryBase.md#filter)
+`StandardQueryBase.filter`
 
 ***
 
@@ -216,7 +216,7 @@ fullTextSearch(query, options?): this
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`fullTextSearch`](QueryBase.md#fulltextsearch)
+`StandardQueryBase.fullTextSearch`
 
 ***
 
@@ -241,7 +241,7 @@ called then every valid row from the table will be returned.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`limit`](QueryBase.md#limit)
+`StandardQueryBase.limit`
 
 ***
 
@@ -325,6 +325,10 @@ nearestToText(query, columns?): Query
 offset(offset): this
 ```
 
+Set the number of rows to skip before returning results.
+
+This is useful for pagination.
+
 #### Parameters
 
 * **offset**: `number`
@@ -335,7 +339,30 @@ offset(offset): this
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`offset`](QueryBase.md#offset)
+`StandardQueryBase.offset`
+
+***
+
+### outputSchema()
+
+```ts
+outputSchema(): Promise<Schema<any>>
+```
+
+Returns the schema of the output that will be returned by this query.
+
+This can be used to inspect the types and names of the columns that will be
+returned by the query before executing it.
+
+#### Returns
+
+`Promise`&lt;`Schema`&lt;`any`&gt;&gt;
+
+An Arrow Schema describing the output columns.
+
+#### Inherited from
+
+`StandardQueryBase.outputSchema`
 
 ***
 
@@ -388,7 +415,7 @@ object insertion order is easy to get wrong and `Map` is more foolproof.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`select`](QueryBase.md#select)
+`StandardQueryBase.select`
 
 ***
 
@@ -410,7 +437,7 @@ Collect the results as an array of objects.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`toArray`](QueryBase.md#toarray)
+`StandardQueryBase.toArray`
 
 ***
 
@@ -436,7 +463,7 @@ ArrowTable.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`toArrow`](QueryBase.md#toarrow)
+`StandardQueryBase.toArrow`
 
 ***
 
@@ -471,7 +498,7 @@ on the filter column(s).
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`where`](QueryBase.md#where)
+`StandardQueryBase.where`
 
 ***
 
@@ -493,4 +520,4 @@ order to perform hybrid search.
 
 #### Inherited from
 
-[`QueryBase`](QueryBase.md).[`withRowId`](QueryBase.md#withrowid)
+`StandardQueryBase.withRowId`

@@ -8,11 +8,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use vector::IvfFlatIndexBuilder;
 
+use crate::index::vector::IvfRqIndexBuilder;
 use crate::{table::BaseTable, DistanceType, Error, Result};
 
 use self::{
     scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder},
-    vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
+    vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, IvfSqIndexBuilder},
 };
 
 pub mod scalar;
@@ -53,6 +54,12 @@ pub enum Index {
     /// IVF index with Product Quantization
     IvfPq(IvfPqIndexBuilder),
 
+    /// IVF index with Scalar Quantization
+    IvfSq(IvfSqIndexBuilder),
+
+    /// IVF index with RabitQ Quantization
+    IvfRq(IvfRqIndexBuilder),
+
     /// IVF-HNSW index with Product Quantization
     /// It is a variant of the HNSW algorithm that uses product quantization to compress the vectors.
     IvfHnswPq(IvfHnswPqIndexBuilder),
@@ -65,12 +72,94 @@ pub enum Index {
 /// Builder for the create_index operation
 ///
 /// The methods on this builder are used to specify options common to all indices.
+///
+/// # Examples
+///
+/// Creating a basic vector index:
+///
+/// ```
+/// use lancedb::{connect, index::{Index, vector::IvfPqIndexBuilder}};
+///
+/// # async fn create_basic_vector_index() -> lancedb::Result<()> {
+/// let db = connect("data/sample-lancedb").execute().await?;
+/// let table = db.open_table("my_table").execute().await?;
+///
+/// // Create a vector index with default settings
+/// table
+///     .create_index(&["vector"], Index::IvfPq(IvfPqIndexBuilder::default()))
+///     .execute()
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Creating an index with a custom name:
+///
+/// ```
+/// use lancedb::{connect, index::{Index, vector::IvfPqIndexBuilder}};
+///
+/// # async fn create_named_index() -> lancedb::Result<()> {
+/// let db = connect("data/sample-lancedb").execute().await?;
+/// let table = db.open_table("my_table").execute().await?;
+///
+/// // Create a vector index with a custom name
+/// table
+///     .create_index(&["embeddings"], Index::IvfPq(IvfPqIndexBuilder::default()))
+///     .name("my_embeddings_index".to_string())
+///     .execute()
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Creating an untrained index (for scalar indices only):
+///
+/// ```
+/// use lancedb::{connect, index::{Index, scalar::BTreeIndexBuilder}};
+///
+/// # async fn create_untrained_index() -> lancedb::Result<()> {
+/// let db = connect("data/sample-lancedb").execute().await?;
+/// let table = db.open_table("my_table").execute().await?;
+///
+/// // Create a BTree index without training (creates empty index)
+/// table
+///     .create_index(&["category"], Index::BTree(BTreeIndexBuilder::default()))
+///     .train(false)
+///     .name("category_index".to_string())
+///     .execute()
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Creating a scalar index with all options:
+///
+/// ```
+/// use lancedb::{connect, index::{Index, scalar::BitmapIndexBuilder}};
+///
+/// # async fn create_full_options_index() -> lancedb::Result<()> {
+/// let db = connect("data/sample-lancedb").execute().await?;
+/// let table = db.open_table("my_table").execute().await?;
+///
+/// // Create a bitmap index with full configuration
+/// table
+///     .create_index(&["status"], Index::Bitmap(BitmapIndexBuilder::default()))
+///     .name("status_bitmap_index".to_string())
+///     .train(true)  // Train the index with existing data
+///     .replace(false)  // Don't replace if index already exists
+///     .execute()
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct IndexBuilder {
     parent: Arc<dyn BaseTable>,
     pub(crate) index: Index,
     pub(crate) columns: Vec<String>,
     pub(crate) replace: bool,
     pub(crate) wait_timeout: Option<Duration>,
+    pub(crate) train: bool,
+    pub(crate) name: Option<String>,
 }
 
 impl IndexBuilder {
@@ -80,7 +169,9 @@ impl IndexBuilder {
             index,
             columns,
             replace: true,
+            train: true,
             wait_timeout: None,
+            name: None,
         }
     }
 
@@ -91,6 +182,82 @@ impl IndexBuilder {
     /// that index is out of date.
     pub fn replace(mut self, v: bool) -> Self {
         self.replace = v;
+        self
+    }
+
+    /// The name of the index. If not set, a default name will be generated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use lancedb::{connect, index::{Index, scalar::BTreeIndexBuilder}};
+    ///
+    /// # async fn name_example() -> lancedb::Result<()> {
+    /// let db = connect("data/sample-lancedb").execute().await?;
+    /// let table = db.open_table("my_table").execute().await?;
+    ///
+    /// // Create an index with a custom name
+    /// table
+    ///     .create_index(&["user_id"], Index::BTree(BTreeIndexBuilder::default()))
+    ///     .name("user_id_btree_index".to_string())
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn name(mut self, v: String) -> Self {
+        self.name = Some(v);
+        self
+    }
+
+    /// Whether to train the index, the default is `true`.
+    ///
+    /// If this is false, the index will not be trained and just created empty.
+    ///
+    /// This is not supported for vector indices yet.
+    ///
+    /// # Examples
+    ///
+    /// Creating an empty index that will be populated later:
+    ///
+    /// ```
+    /// use lancedb::{connect, index::{Index, scalar::BitmapIndexBuilder}};
+    ///
+    /// # async fn train_false_example() -> lancedb::Result<()> {
+    /// let db = connect("data/sample-lancedb").execute().await?;
+    /// let table = db.open_table("my_table").execute().await?;
+    ///
+    /// // Create an empty bitmap index (not trained with existing data)
+    /// table
+    ///     .create_index(&["category"], Index::Bitmap(BitmapIndexBuilder::default()))
+    ///     .train(false)  // Create empty index
+    ///     .name("category_bitmap".to_string())
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Creating a trained index (default behavior):
+    ///
+    /// ```
+    /// use lancedb::{connect, index::{Index, scalar::BTreeIndexBuilder}};
+    ///
+    /// # async fn train_true_example() -> lancedb::Result<()> {
+    /// let db = connect("data/sample-lancedb").execute().await?;
+    /// let table = db.open_table("my_table").execute().await?;
+    ///
+    /// // Create a trained BTree index (includes existing data)
+    /// table
+    ///     .create_index(&["timestamp"], Index::BTree(BTreeIndexBuilder::default()))
+    ///     .train(true)  // Train with existing data (this is the default)
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn train(mut self, v: bool) -> Self {
+        self.train = v;
         self
     }
 
@@ -113,8 +280,12 @@ pub enum IndexType {
     // Vector
     #[serde(alias = "IVF_FLAT")]
     IvfFlat,
+    #[serde(alias = "IVF_SQ")]
+    IvfSq,
     #[serde(alias = "IVF_PQ")]
     IvfPq,
+    #[serde(alias = "IVF_RQ")]
+    IvfRq,
     #[serde(alias = "IVF_HNSW_PQ")]
     IvfHnswPq,
     #[serde(alias = "IVF_HNSW_SQ")]
@@ -135,7 +306,9 @@ impl std::fmt::Display for IndexType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::IvfFlat => write!(f, "IVF_FLAT"),
+            Self::IvfSq => write!(f, "IVF_SQ"),
             Self::IvfPq => write!(f, "IVF_PQ"),
+            Self::IvfRq => write!(f, "IVF_RQ"),
             Self::IvfHnswPq => write!(f, "IVF_HNSW_PQ"),
             Self::IvfHnswSq => write!(f, "IVF_HNSW_SQ"),
             Self::BTree => write!(f, "BTREE"),
@@ -156,7 +329,9 @@ impl std::str::FromStr for IndexType {
             "LABEL_LIST" | "LABELLIST" => Ok(Self::LabelList),
             "FTS" | "INVERTED" => Ok(Self::FTS),
             "IVF_FLAT" => Ok(Self::IvfFlat),
+            "IVF_SQ" => Ok(Self::IvfSq),
             "IVF_PQ" => Ok(Self::IvfPq),
+            "IVF_RQ" => Ok(Self::IvfRq),
             "IVF_HNSW_PQ" => Ok(Self::IvfHnswPq),
             "IVF_HNSW_SQ" => Ok(Self::IvfHnswSq),
             _ => Err(Error::InvalidInput {

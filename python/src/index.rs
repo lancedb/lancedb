@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use lancedb::index::vector::IvfFlatIndexBuilder;
+use lancedb::index::vector::{IvfFlatIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder};
 use lancedb::index::{
     scalar::{BTreeIndexBuilder, FtsIndexBuilder},
     vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
@@ -63,6 +63,9 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_partitions) = params.num_partitions {
                     ivf_flat_builder = ivf_flat_builder.num_partitions(num_partitions);
                 }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    ivf_flat_builder = ivf_flat_builder.target_partition_size(target_partition_size);
+                }
                 Ok(LanceDbIndex::IvfFlat(ivf_flat_builder))
             },
             "IvfPq" => {
@@ -76,10 +79,44 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_partitions) = params.num_partitions {
                     ivf_pq_builder = ivf_pq_builder.num_partitions(num_partitions);
                 }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    ivf_pq_builder = ivf_pq_builder.target_partition_size(target_partition_size);
+                }
                 if let Some(num_sub_vectors) = params.num_sub_vectors {
                     ivf_pq_builder = ivf_pq_builder.num_sub_vectors(num_sub_vectors);
                 }
                 Ok(LanceDbIndex::IvfPq(ivf_pq_builder))
+            },
+            "IvfSq" => {
+                let params = source.extract::<IvfSqParams>()?;
+                let distance_type = parse_distance_type(params.distance_type)?;
+                let mut ivf_sq_builder = IvfSqIndexBuilder::default()
+                    .distance_type(distance_type)
+                    .max_iterations(params.max_iterations)
+                    .sample_rate(params.sample_rate);
+                if let Some(num_partitions) = params.num_partitions {
+                    ivf_sq_builder = ivf_sq_builder.num_partitions(num_partitions);
+                }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    ivf_sq_builder = ivf_sq_builder.target_partition_size(target_partition_size);
+                }
+                Ok(LanceDbIndex::IvfSq(ivf_sq_builder))
+            },
+            "IvfRq" => {
+                let params = source.extract::<IvfRqParams>()?;
+                let distance_type = parse_distance_type(params.distance_type)?;
+                let mut ivf_rq_builder = IvfRqIndexBuilder::default()
+                    .distance_type(distance_type)
+                    .max_iterations(params.max_iterations)
+                    .sample_rate(params.sample_rate)
+                    .num_bits(params.num_bits);
+                if let Some(num_partitions) = params.num_partitions {
+                    ivf_rq_builder = ivf_rq_builder.num_partitions(num_partitions);
+                }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    ivf_rq_builder = ivf_rq_builder.target_partition_size(target_partition_size);
+                }
+                Ok(LanceDbIndex::IvfRq(ivf_rq_builder))
             },
             "HnswPq" => {
                 let params = source.extract::<IvfHnswPqParams>()?;
@@ -93,6 +130,9 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .num_bits(params.num_bits);
                 if let Some(num_partitions) = params.num_partitions {
                     hnsw_pq_builder = hnsw_pq_builder.num_partitions(num_partitions);
+                }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    hnsw_pq_builder = hnsw_pq_builder.target_partition_size(target_partition_size);
                 }
                 if let Some(num_sub_vectors) = params.num_sub_vectors {
                     hnsw_pq_builder = hnsw_pq_builder.num_sub_vectors(num_sub_vectors);
@@ -111,10 +151,13 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_partitions) = params.num_partitions {
                     hnsw_sq_builder = hnsw_sq_builder.num_partitions(num_partitions);
                 }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    hnsw_sq_builder = hnsw_sq_builder.target_partition_size(target_partition_size);
+                }
                 Ok(LanceDbIndex::IvfHnswSq(hnsw_sq_builder))
             },
             not_supported => Err(PyValueError::new_err(format!(
-                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, FTS, IvfPq, IvfHnswPq, or IvfHnswSq",
+                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, FTS, IvfPq, IvfSq, IvfHnswPq, or IvfHnswSq",
                 not_supported
             ))),
         }
@@ -144,6 +187,7 @@ struct IvfFlatParams {
     num_partitions: Option<u32>,
     max_iterations: u32,
     sample_rate: u32,
+    target_partition_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]
@@ -154,6 +198,26 @@ struct IvfPqParams {
     num_bits: u32,
     max_iterations: u32,
     sample_rate: u32,
+    target_partition_size: Option<u32>,
+}
+
+#[derive(FromPyObject)]
+struct IvfSqParams {
+    distance_type: String,
+    num_partitions: Option<u32>,
+    max_iterations: u32,
+    sample_rate: u32,
+    target_partition_size: Option<u32>,
+}
+
+#[derive(FromPyObject)]
+struct IvfRqParams {
+    distance_type: String,
+    num_partitions: Option<u32>,
+    num_bits: u32,
+    max_iterations: u32,
+    sample_rate: u32,
+    target_partition_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]
@@ -166,6 +230,7 @@ struct IvfHnswPqParams {
     sample_rate: u32,
     m: u32,
     ef_construction: u32,
+    target_partition_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]
@@ -176,6 +241,7 @@ struct IvfHnswSqParams {
     sample_rate: u32,
     m: u32,
     ef_construction: u32,
+    target_partition_size: Option<u32>,
 }
 
 #[pyclass(get_all)]

@@ -3,7 +3,7 @@ name: build_wheel
 description: "Build a lance wheel"
 inputs:
   python-minor-version:
-    description: "8, 9, 10, 11"
+    description: "10, 11, 12, 13, 14"
     required: true
   args:
     description: "--release"
@@ -26,7 +26,7 @@ runs:
       with:
         command: build
         args: ${{ inputs.args }}
-        docker-options: "-e PIP_EXTRA_INDEX_URL=https://pypi.fury.io/lancedb/"
+        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/'"
         working-directory: python
     - uses: actions/upload-artifact@v4
       with:

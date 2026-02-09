@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+pub mod insert;
+
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
@@ -70,7 +72,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
         let request = self
             .inner
             .client
-            .post(&format!("/v1/table/{}/tags/list/", self.inner.name));
+            .post(&format!("/v1/table/{}/tags/list/", self.inner.identifier));
         let (request_id, response) = self.inner.send(request, true).await?;
         let response = self
             .inner
@@ -104,7 +106,10 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
         let request = self
             .inner
             .client
-            .post(&format!("/v1/table/{}/tags/version/", self.inner.name))
+            .post(&format!(
+                "/v1/table/{}/tags/version/",
+                self.inner.identifier
+            ))
             .json(&serde_json::json!({ "tag": tag }));
 
         let (request_id, response) = self.inner.send(request, true).await?;
@@ -146,7 +151,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
         let request = self
             .inner
             .client
-            .post(&format!("/v1/table/{}/tags/create/", self.inner.name))
+            .post(&format!("/v1/table/{}/tags/create/", self.inner.identifier))
             .json(&serde_json::json!({
                 "tag": tag,
                 "version": version
@@ -163,7 +168,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
         let request = self
             .inner
             .client
-            .post(&format!("/v1/table/{}/tags/delete/", self.inner.name))
+            .post(&format!("/v1/table/{}/tags/delete/", self.inner.identifier))
             .json(&serde_json::json!({ "tag": tag }));
 
         let (request_id, response) = self.inner.send(request, true).await?;
@@ -177,7 +182,7 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
         let request = self
             .inner
             .client
-            .post(&format!("/v1/table/{}/tags/update/", self.inner.name))
+            .post(&format!("/v1/table/{}/tags/update/", self.inner.identifier))
             .json(&serde_json::json!({
                 "tag": tag,
                 "version": version
@@ -196,22 +201,30 @@ pub struct RemoteTable<S: HttpSend = Sender> {
     #[allow(dead_code)]
     client: RestfulLanceDbClient<S>,
     name: String,
+    namespace: Vec<String>,
+    identifier: String,
     server_version: ServerVersion,
 
     version: RwLock<Option<u64>>,
+    location: RwLock<Option<String>>,
 }
 
 impl<S: HttpSend> RemoteTable<S> {
     pub fn new(
         client: RestfulLanceDbClient<S>,
         name: String,
+        namespace: Vec<String>,
+        identifier: String,
         server_version: ServerVersion,
     ) -> Self {
         Self {
             client,
             name,
+            namespace,
+            identifier,
             server_version,
             version: RwLock::new(None),
+            location: RwLock::new(None),
         }
     }
 
@@ -223,7 +236,7 @@ impl<S: HttpSend> RemoteTable<S> {
     async fn describe_version(&self, version: Option<u64>) -> Result<TableDescription> {
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/describe/", self.name));
+            .post(&format!("/v1/table/{}/describe/", self.identifier));
 
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
@@ -327,16 +340,33 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(res)
     }
 
+    pub(super) async fn handle_table_not_found(
+        table_name: &str,
+        response: reqwest::Response,
+        request_id: &str,
+    ) -> Result<reqwest::Response> {
+        let status = response.status();
+        if status == StatusCode::NOT_FOUND {
+            let body = response.text().await.ok().unwrap_or_default();
+            let request_error = Error::Http {
+                source: body.into(),
+                request_id: request_id.into(),
+                status_code: Some(status),
+            };
+            return Err(Error::TableNotFound {
+                name: table_name.to_string(),
+                source: Box::new(request_error),
+            });
+        }
+        Ok(response)
+    }
+
     async fn check_table_response(
         &self,
         request_id: &str,
         response: reqwest::Response,
     ) -> Result<reqwest::Response> {
-        if response.status() == StatusCode::NOT_FOUND {
-            return Err(Error::TableNotFound {
-                name: self.name.clone(),
-            });
-        }
+        let response = Self::handle_table_not_found(&self.name, response, request_id).await?;
 
         self.client.check_response(request_id, response).await
     }
@@ -440,7 +470,9 @@ impl<S: HttpSend> RemoteTable<S> {
         self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
-        body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
+        if let Some(distance_type) = query.distance_type {
+            body["distance_type"] = serde_json::json!(distance_type);
+        }
         // In 0.23.1 we migrated from `nprobes` to `minimum_nprobes` and `maximum_nprobes`.
         // Old client / new server: since minimum_nprobes is missing, fallback to nprobes
         // New client / old server: old server will only see nprobes, make sure to set both
@@ -548,7 +580,9 @@ impl<S: HttpSend> RemoteTable<S> {
         query: &AnyQuery,
         options: &QueryExecutionOptions,
     ) -> Result<Vec<Pin<Box<dyn RecordBatchStream + Send>>>> {
-        let mut request = self.client.post(&format!("/v1/table/{}/query/", self.name));
+        let mut request = self
+            .client
+            .post(&format!("/v1/table/{}/query/", self.identifier));
 
         if let Some(timeout) = options.timeout {
             // Also send to server, so it can abort the query if it takes too long.
@@ -611,11 +645,12 @@ impl<S: HttpSend> RemoteTable<S> {
 struct TableDescription {
     version: u64,
     schema: JsonSchema,
+    location: Option<String>,
 }
 
 impl<S: HttpSend> std::fmt::Display for RemoteTable<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RemoteTable({})", self.name)
+        write!(f, "RemoteTable({})", self.identifier)
     }
 }
 
@@ -634,9 +669,12 @@ mod test_utils {
             let client = client_with_handler(handler);
             Self {
                 client,
-                name,
+                name: name.clone(),
+                namespace: vec![],
+                identifier: name,
                 server_version: version.map(ServerVersion).unwrap_or_default(),
                 version: RwLock::new(None),
+                location: RwLock::new(None),
             }
         }
     }
@@ -650,6 +688,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn namespace(&self) -> &[String] {
+        &self.namespace
+    }
+
+    fn id(&self) -> &str {
+        &self.identifier
+    }
     async fn version(&self) -> Result<u64> {
         self.describe().await.map(|desc| desc.version)
     }
@@ -660,8 +706,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .map_err(|e| match e {
                 // try to map the error to a more user-friendly error telling them
                 // specifically that the version does not exist
-                Error::TableNotFound { name } => Error::TableNotFound {
+                Error::TableNotFound { name, source } => Error::TableNotFound {
                     name: format!("{} (version: {})", name, version),
+                    source,
                 },
                 e => e,
             })?;
@@ -678,7 +725,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn restore(&self) -> Result<()> {
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/restore/", self.name));
+            .post(&format!("/v1/table/{}/restore/", self.identifier));
         let version = self.current_version().await;
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
@@ -692,7 +739,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn list_versions(&self) -> Result<Vec<Version>> {
         let request = self
             .client
-            .post(&format!("/v1/table/{}/version/list/", self.name));
+            .post(&format!("/v1/table/{}/version/list/", self.identifier));
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
 
@@ -723,7 +770,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/count_rows/", self.name));
+            .post(&format!("/v1/table/{}/count_rows/", self.identifier));
 
         let version = self.current_version().await;
 
@@ -759,7 +806,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/insert/", self.name))
+            .post(&format!("/v1/table/{}/insert/", self.identifier))
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
         match add.mode {
@@ -831,7 +878,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
         let base_request = self
             .client
-            .post(&format!("/v1/table/{}/explain_plan/", self.name));
+            .post(&format!("/v1/table/{}/explain_plan/", self.identifier));
 
         let query_bodies = self.prepare_query_bodies(query).await?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
@@ -880,7 +927,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     ) -> Result<String> {
         let request = self
             .client
-            .post(&format!("/v1/table/{}/analyze_plan/", self.name));
+            .post(&format!("/v1/table/{}/analyze_plan/", self.identifier));
 
         let query_bodies = self.prepare_query_bodies(query).await?;
         let requests: Vec<reqwest::RequestBuilder> = query_bodies
@@ -919,7 +966,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
         let request = self
             .client
-            .post(&format!("/v1/table/{}/update/", self.name));
+            .post(&format!("/v1/table/{}/update/", self.identifier));
 
         let mut updates = Vec::new();
         for (column, expression) in update.columns {
@@ -958,7 +1005,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "predicate": predicate });
         let request = self
             .client
-            .post(&format!("/v1/table/{}/delete/", self.name))
+            .post(&format!("/v1/table/{}/delete/", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
@@ -980,7 +1027,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
         let request = self
             .client
-            .post(&format!("/v1/table/{}/create_index/", self.name));
+            .post(&format!("/v1/table/{}/create_index/", self.identifier));
 
         let column = match index.columns.len() {
             0 => {
@@ -998,6 +1045,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let mut body = serde_json::json!({
             "column": column
         });
+
+        // Add name parameter if provided (for backwards compatibility, only include if Some)
+        if let Some(ref name) = index.name {
+            body["name"] = serde_json::Value::String(name.clone());
+        }
+
+        // Warn if train=false is specified since it's not meaningful
+        if !index.train {
+            log::warn!(
+                "train=false has no effect remote tables. The index will be created empty and automatically populated in the background."
+            );
+        }
 
         match index.index {
             // TODO: Should we pass the actual index parameters? SaaS does not
@@ -1021,12 +1080,31 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     body["num_bits"] = serde_json::Value::Number(num_bits.into());
                 }
             }
+            Index::IvfSq(index) => {
+                body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_SQ".to_string());
+                body[METRIC_TYPE_KEY] =
+                    serde_json::Value::String(index.distance_type.to_string().to_lowercase());
+                if let Some(num_partitions) = index.num_partitions {
+                    body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
+                }
+            }
             Index::IvfHnswSq(index) => {
                 body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_HNSW_SQ".to_string());
                 body[METRIC_TYPE_KEY] =
                     serde_json::Value::String(index.distance_type.to_string().to_lowercase());
                 if let Some(num_partitions) = index.num_partitions {
                     body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
+                }
+            }
+            Index::IvfRq(index) => {
+                body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_RQ".to_string());
+                body[METRIC_TYPE_KEY] =
+                    serde_json::Value::String(index.distance_type.to_string().to_lowercase());
+                if let Some(num_partitions) = index.num_partitions {
+                    body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
+                }
+                if let Some(num_bits) = index.num_bits {
+                    body["num_bits"] = serde_json::Value::Number(num_bits.into());
                 }
             }
             Index::BTree(_) => {
@@ -1084,8 +1162,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_table_response(&request_id, response).await?;
 
         if let Some(wait_timeout) = index.wait_timeout {
-            let name = format!("{}_idx", column);
-            self.wait_for_index(&[&name], wait_timeout).await?;
+            let index_name = index.name.unwrap_or_else(|| format!("{}_idx", column));
+            self.wait_for_index(&[&index_name], wait_timeout).await?;
         }
 
         Ok(())
@@ -1109,7 +1187,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let query = MergeInsertRequest::try_from(params)?;
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/merge_insert/", self.name))
+            .post(&format!("/v1/table/{}/merge_insert/", self.identifier))
             .query(&query)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
@@ -1132,6 +1210,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 num_deleted_rows: 0,
                 num_inserted_rows: 0,
                 num_updated_rows: 0,
+                num_attempts: 0,
             });
         }
 
@@ -1181,7 +1260,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 let body = serde_json::json!({ "new_columns": body });
                 let request = self
                     .client
-                    .post(&format!("/v1/table/{}/add_columns/", self.name))
+                    .post(&format!("/v1/table/{}/add_columns/", self.identifier))
                     .json(&body);
                 let (request_id, response) = self.send(request, true).await?;
                 let response = self.check_table_response(&request_id, response).await?;
@@ -1234,7 +1313,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "alterations": body });
         let request = self
             .client
-            .post(&format!("/v1/table/{}/alter_columns/", self.name))
+            .post(&format!("/v1/table/{}/alter_columns/", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
@@ -1259,7 +1338,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = serde_json::json!({ "columns": columns });
         let request = self
             .client
-            .post(&format!("/v1/table/{}/drop_columns/", self.name))
+            .post(&format!("/v1/table/{}/drop_columns/", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
@@ -1283,7 +1362,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // Make request to list the indices
         let mut request = self
             .client
-            .post(&format!("/v1/table/{}/index/list/", self.name));
+            .post(&format!("/v1/table/{}/index/list/", self.identifier));
         let version = self.current_version().await;
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
@@ -1339,7 +1418,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
         let mut request = self.client.post(&format!(
             "/v1/table/{}/index/{}/stats/",
-            self.name, index_name
+            self.identifier, index_name
         ));
         let version = self.current_version().await;
         let body = serde_json::json!({ "version": version });
@@ -1367,7 +1446,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn drop_index(&self, index_name: &str) -> Result<()> {
         let request = self.client.post(&format!(
             "/v1/table/{}/index/{}/drop/",
-            self.name, index_name
+            self.identifier, index_name
         ));
         let (request_id, response) = self.send(request, true).await?;
         if response.status() == StatusCode::NOT_FOUND {
@@ -1390,12 +1469,46 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             message: "table_definition is not supported on LanceDB cloud.".into(),
         })
     }
-    fn dataset_uri(&self) -> &str {
-        "NOT_SUPPORTED"
+    async fn uri(&self) -> Result<String> {
+        // Check if we already have the location cached
+        {
+            let location = self.location.read().await;
+            if let Some(ref loc) = *location {
+                return Ok(loc.clone());
+            }
+        }
+
+        // Fetch from server via describe
+        let description = self.describe().await?;
+        let location = description.location.ok_or_else(|| Error::NotSupported {
+            message: "Table URI not supported by the server".into(),
+        })?;
+
+        // Cache the location for future use
+        {
+            let mut cached_location = self.location.write().await;
+            *cached_location = Some(location.clone());
+        }
+
+        Ok(location)
+    }
+
+    async fn storage_options(&self) -> Option<HashMap<String, String>> {
+        None
+    }
+
+    async fn initial_storage_options(&self) -> Option<HashMap<String, String>> {
+        None
+    }
+
+    async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
+        Ok(None)
     }
 
     async fn stats(&self) -> Result<TableStatistics> {
-        let request = self.client.post(&format!("/v1/table/{}/stats/", self.name));
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/stats/", self.identifier));
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
@@ -1407,6 +1520,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })?;
         Ok(stats)
     }
+
+    async fn create_insert_exec(
+        &self,
+        input: Arc<dyn ExecutionPlan>,
+        write_params: lance::dataset::WriteParams,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let overwrite = matches!(write_params.mode, lance::dataset::WriteMode::Overwrite);
+        Ok(Arc::new(insert::RemoteInsertExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            input,
+            overwrite,
+        )))
+    }
 }
 
 #[derive(Serialize)]
@@ -1417,6 +1545,14 @@ struct MergeInsertRequest {
     when_not_matched_insert_all: bool,
     when_not_matched_by_source_delete: bool,
     when_not_matched_by_source_delete_filt: Option<String>,
+    // For backwards compatibility, only serialize use_index when it's false
+    // (the default is true)
+    #[serde(skip_serializing_if = "is_true")]
+    use_index: bool,
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
@@ -1441,6 +1577,8 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             when_not_matched_insert_all: value.when_not_matched_insert_all,
             when_not_matched_by_source_delete: value.when_not_matched_by_source_delete,
             when_not_matched_by_source_delete_filt: value.when_not_matched_by_source_delete_filt,
+            // Only serialize use_index when it's false for backwards compatibility
+            use_index: value.use_index,
         })
     }
 }
@@ -1526,7 +1664,11 @@ mod tests {
         for result in results {
             let result = result.await;
             assert!(result.is_err());
-            assert!(matches!(result, Err(Error::TableNotFound { name }) if name == "my_table"));
+            assert!(
+                matches!(&result, &Err(Error::TableNotFound { ref name, .. }) if name == "my_table")
+            );
+            let full_error_report = snafu::Report::from_error(result.unwrap_err()).to_string();
+            assert!(full_error_report.contains("table my_table not found"));
         }
     }
 
@@ -1907,6 +2049,7 @@ mod tests {
                 assert_eq!(params["when_not_matched_by_source_delete"], "false");
                 assert!(!params.contains_key("when_matched_update_all_filt"));
                 assert!(!params.contains_key("when_not_matched_by_source_delete_filt"));
+                assert!(!params.contains_key("use_index"));
 
                 if old_server {
                     http::Response::builder().status(200).body("{}").unwrap()
@@ -2114,7 +2257,6 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "distance_type": "l2",
                 "nprobes": 20,
                 "minimum_nprobes": 20,
                 "maximum_nprobes": 20,
@@ -2834,7 +2976,7 @@ mod tests {
         let res = table.checkout(43).await;
         println!("{:?}", res);
         assert!(
-            matches!(res, Err(Error::TableNotFound { name }) if name == "my_table (version: 43)")
+            matches!(res, Err(Error::TableNotFound { name, .. }) if name == "my_table (version: 43)")
         );
     }
 
@@ -3069,5 +3211,240 @@ mod tests {
             http::Response::builder().status(status).body(body).unwrap()
         });
         table
+    }
+
+    #[tokio::test]
+    async fn test_table_with_namespace_identifier() {
+        // Test that a table created with namespace uses the correct identifier in API calls
+        let table = Table::new_with_handler("ns1$ns2$table1", |request| {
+            assert_eq!(request.method(), "POST");
+            // All API calls should use the full identifier in the path
+            assert_eq!(request.url().path(), "/v1/table/ns1$ns2$table1/describe/");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 1, "schema": { "fields": [] }}"#)
+                .unwrap()
+        });
+
+        // The name() method should return just the base name, not the full identifier
+        assert_eq!(table.name(), "ns1$ns2$table1");
+
+        // API operations should work correctly
+        let version = table.version().await.unwrap();
+        assert_eq!(version, 1);
+    }
+
+    #[tokio::test]
+    async fn test_query_with_namespace() {
+        let table = Table::new_with_handler("analytics$events", |request| {
+            match request.url().path() {
+                "/v1/table/analytics$events/query/" => {
+                    assert_eq!(request.method(), "POST");
+
+                    // Return empty arrow stream
+                    let data = RecordBatch::try_new(
+                        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+                        vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+                    )
+                    .unwrap();
+                    let body = write_ipc_file(&data);
+
+                    http::Response::builder()
+                        .status(200)
+                        .header("Content-Type", ARROW_FILE_CONTENT_TYPE)
+                        .body(body)
+                        .unwrap()
+                }
+                _ => {
+                    panic!("Unexpected path: {}", request.url().path());
+                }
+            }
+        });
+
+        let results = table.query().execute().await.unwrap();
+        let batches = results.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_add_data_with_namespace() {
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table = Table::new_with_handler("prod$metrics", move |mut request| {
+            if request.url().path() == "/v1/table/prod$metrics/insert/" {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    ARROW_STREAM_CONTENT_TYPE
+                );
+                let mut body_out = reqwest::Body::from(Vec::new());
+                std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+                sender.send(body_out).unwrap();
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 2}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let result = table
+            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(result.version, 2);
+
+        let body = receiver.recv().unwrap();
+        let body = collect_body(body).await;
+        let expected_body = write_ipc_stream(&data);
+        assert_eq!(&body, &expected_body);
+    }
+
+    #[tokio::test]
+    async fn test_create_index_with_namespace() {
+        let table = Table::new_with_handler("dev$users", |request| {
+            match request.url().path() {
+                "/v1/table/dev$users/create_index/" => {
+                    assert_eq!(request.method(), "POST");
+                    assert_eq!(
+                        request.headers().get("Content-Type").unwrap(),
+                        JSON_CONTENT_TYPE
+                    );
+
+                    // Verify the request body contains the column name
+                    if let Some(body) = request.body().unwrap().as_bytes() {
+                        let body = std::str::from_utf8(body).unwrap();
+                        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+                        assert_eq!(value["column"], "embedding");
+                        assert_eq!(value["index_type"], "IVF_PQ");
+                    }
+
+                    http::Response::builder().status(200).body("").unwrap()
+                }
+                "/v1/table/dev$users/describe/" => {
+                    // Needed for schema check in Auto index type
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 1, "schema": {"fields": [{"name": "embedding", "type": {"type": "list", "item": {"type": "float32"}}, "nullable": false}]}}"#)
+                        .unwrap()
+                }
+                _ => {
+                    panic!("Unexpected path: {}", request.url().path());
+                }
+            }
+        });
+
+        table
+            .create_index(&["embedding"], Index::IvfPq(IvfPqIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_columns_with_namespace() {
+        let table = Table::new_with_handler("test$schema_ops", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/test$schema_ops/drop_columns/"
+            );
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            if let Some(body) = request.body().unwrap().as_bytes() {
+                let body = std::str::from_utf8(body).unwrap();
+                let value: serde_json::Value = serde_json::from_str(body).unwrap();
+                let columns = value["columns"].as_array().unwrap();
+                assert_eq!(columns.len(), 2);
+                assert_eq!(columns[0], "old_col1");
+                assert_eq!(columns[1], "old_col2");
+            }
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 5}"#)
+                .unwrap()
+        });
+
+        let result = table.drop_columns(&["old_col1", "old_col2"]).await.unwrap();
+        assert_eq!(result.version, 5);
+    }
+
+    #[tokio::test]
+    async fn test_uri() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 1, "schema": {"fields": []}, "location": "s3://bucket/path/to/table"}"#)
+                .unwrap()
+        });
+
+        let uri = table.uri().await.unwrap();
+        assert_eq!(uri, "s3://bucket/path/to/table");
+    }
+
+    #[tokio::test]
+    async fn test_uri_missing_location() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+
+            // Server returns response without location field
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 1, "schema": {"fields": []}}"#)
+                .unwrap()
+        });
+
+        let result = table.uri().await;
+        assert!(result.is_err());
+        assert!(matches!(&result, Err(Error::NotSupported { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_uri_caching() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version": 1, "schema": {"fields": []}, "location": "gs://bucket/table"}"#,
+                )
+                .unwrap()
+        });
+
+        // First call should fetch from server
+        let uri1 = table.uri().await.unwrap();
+        assert_eq!(uri1, "gs://bucket/table");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second call should use cached value
+        let uri2 = table.uri().await.unwrap();
+        assert_eq!(uri2, "gs://bucket/table");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, no new call
     }
 }

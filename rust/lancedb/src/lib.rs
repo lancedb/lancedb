@@ -25,13 +25,14 @@
 //!
 //! ## Crate Features
 //!
-//! ### Experimental Features
-//!
-//! These features are not enabled by default.  They are experimental or in-development features that
-//! are not yet ready to be released.
-//!
-//! - `remote` - Enable remote client to connect to LanceDB cloud.  This is not yet fully implemented
-//!   and should not be enabled.
+//! - `aws` - Enable AWS S3 object store support.
+//! - `dynamodb` - Enable DynamoDB manifest store support.
+//! - `azure` - Enable Azure Blob Storage object store support.
+//! - `gcs` - Enable Google Cloud Storage object store support.
+//! - `oss` - Enable Alibaba Cloud OSS object store support.
+//! - `remote` - Enable remote client to connect to LanceDB cloud.
+//! - `huggingface` - Enable HuggingFace Hub integration for loading datasets from the Hub.
+//! - `fp16kernels` - Enable FP16 kernels for faster vector search on CPU.
 //!
 //! ### Quick Start
 //!
@@ -50,17 +51,15 @@
 //! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
 //! - `db://dbname` - Lance Cloud
 //!
-//! You can also use [`ConnectOptions`] to configure the connection to the database.
+//! You can also use [`ConnectBuilder`] to configure the connection to the database.
 //!
 //! ```rust
-//! use object_store::aws::AwsCredential;
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = lancedb::connect("data/sample-lancedb")
-//!     .aws_creds(AwsCredential {
-//!         key_id: "some_key".to_string(),
-//!         secret_key: "some_secret".to_string(),
-//!         token: None,
-//!     })
+//!     .storage_options([
+//!         ("aws_access_key_id", "some_key"),
+//!         ("aws_secret_access_key", "some_secret"),
+//!     ])
 //!     .execute()
 //!     .await
 //!     .unwrap();
@@ -71,7 +70,7 @@
 //! It treats [`FixedSizeList<Float16/Float32>`](https://docs.rs/arrow/latest/arrow/array/struct.FixedSizeListArray.html)
 //! columns as vector columns.
 //!
-//! For more details, please refer to [LanceDB documentation](https://lancedb.github.io/lancedb/).
+//! For more details, please refer to the [LanceDB documentation](https://lancedb.com/docs).
 //!
 //! #### Create a table
 //!
@@ -191,10 +190,10 @@
 //! ```
 
 pub mod arrow;
-pub mod catalog;
 pub mod connection;
 pub mod data;
 pub mod database;
+pub mod dataloader;
 pub mod embeddings;
 pub mod error;
 pub mod index;
@@ -207,13 +206,15 @@ pub mod query;
 pub mod remote;
 pub mod rerankers;
 pub mod table;
+#[cfg(test)]
+pub mod test_utils;
 pub mod utils;
 
 use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
-pub use connection::Connection;
+pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, Result};
 use lance_linalg::distance::DistanceType as LanceDistanceType;
 pub use table::Table;
@@ -290,3 +291,9 @@ impl Display for DistanceType {
 
 /// Connect to a database
 pub use connection::connect;
+/// Connect to a namespace-backed database
+pub use connection::connect_namespace;
+
+/// Re-export Lance Session and ObjectStoreRegistry for custom session creation
+pub use lance::session::Session;
+pub use lance_io::object_store::ObjectStoreRegistry;

@@ -12,7 +12,7 @@ use arrow_array::{
 use arrow_cast::{can_cast_types, cast};
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use half::f16;
-use lance::arrow::{DataTypeExt, FixedSizeListArrayExt};
+use lance_arrow::{DataTypeExt, FixedSizeListArrayExt};
 use log::warn;
 use num_traits::cast::AsPrimitive;
 
@@ -189,7 +189,7 @@ mod tests {
     };
     use arrow_schema::Field;
     use half::f16;
-    use lance::arrow::FixedSizeListArrayExt;
+    use lance_arrow::FixedSizeListArrayExt;
 
     #[test]
     fn test_coerce_list_to_fixed_size_list() {

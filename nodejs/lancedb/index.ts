@@ -10,7 +10,14 @@ import {
 import {
   ConnectionOptions,
   Connection as LanceDbConnection,
+  JsHeaderProvider as NativeJsHeaderProvider,
+  Session,
 } from "./native.js";
+
+import { HeaderProvider } from "./header";
+
+// Re-export native header provider for use with connectWithHeaderProvider
+export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 
 export {
   AddColumnsSql,
@@ -20,6 +27,7 @@ export {
   ClientConfig,
   TimeoutConfig,
   RetryConfig,
+  TlsConfig,
   OptimizeStats,
   CompactionStats,
   RemovalStats,
@@ -35,6 +43,11 @@ export {
   DeleteResult,
   DropColumnsResult,
   UpdateResult,
+  SplitCalculatedOptions,
+  SplitRandomOptions,
+  SplitHashOptions,
+  SplitSequentialOptions,
+  ShuffleOptions,
 } from "./native.js";
 
 export {
@@ -51,11 +64,14 @@ export {
   OpenTableOptions,
 } from "./connection";
 
+export { Session } from "./native.js";
+
 export {
   ExecutableQuery,
   Query,
   QueryBase,
   VectorQuery,
+  TakeQuery,
   QueryExecutionOptions,
   FullTextSearchOptions,
   RecordBatchIterator,
@@ -74,6 +90,7 @@ export {
   Index,
   IndexOptions,
   IvfPqOptions,
+  IvfRqOptions,
   IvfFlatOptions,
   HnswPqOptions,
   HnswSqOptions,
@@ -89,9 +106,17 @@ export {
   ColumnAlteration,
 } from "./table";
 
+export {
+  HeaderProvider,
+  StaticHeaderProvider,
+  OAuthHeaderProvider,
+  TokenResponse,
+} from "./header";
+
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 
 export * as embedding from "./embedding";
+export { permutationBuilder, PermutationBuilder } from "./permutation";
 export * as rerankers from "./rerankers";
 export {
   SchemaLike,
@@ -100,6 +125,7 @@ export {
   RecordBatchLike,
   DataLike,
   IntoVector,
+  MultiVector,
 } from "./arrow";
 export { IntoSql, packBits } from "./util";
 
@@ -126,10 +152,27 @@ export { IntoSql, packBits } from "./util";
  *   {storageOptions: {timeout: "60s"}
  * });
  * ```
+ * @example
+ * Using with a header provider for per-request authentication:
+ * ```ts
+ * const provider = new StaticHeaderProvider({
+ *   "X-API-Key": "my-key"
+ * });
+ * const conn = await connectWithHeaderProvider(
+ *   "db://host:port",
+ *   options,
+ *   provider
+ * );
+ * ```
  */
 export async function connect(
   uri: string,
   options?: Partial<ConnectionOptions>,
+  session?: Session,
+  headerProvider?:
+    | HeaderProvider
+    | (() => Record<string, string>)
+    | (() => Promise<Record<string, string>>),
 ): Promise<Connection>;
 /**
  * Connect to a LanceDB instance at the given URI.
@@ -148,31 +191,103 @@ export async function connect(
  *   storageOptions: {timeout: "60s"}
  * });
  * ```
+ *
+ * @example
+ * ```ts
+ * const session = Session.default();
+ * const conn = await connect({
+ *   uri: "/path/to/database",
+ *   session: session
+ * });
+ * ```
  */
 export async function connect(
   options: Partial<ConnectionOptions> & { uri: string },
 ): Promise<Connection>;
 export async function connect(
   uriOrOptions: string | (Partial<ConnectionOptions> & { uri: string }),
-  options: Partial<ConnectionOptions> = {},
+  optionsOrSession?: Partial<ConnectionOptions> | Session,
+  sessionOrHeaderProvider?:
+    | Session
+    | HeaderProvider
+    | (() => Record<string, string>)
+    | (() => Promise<Record<string, string>>),
+  headerProvider?:
+    | HeaderProvider
+    | (() => Record<string, string>)
+    | (() => Promise<Record<string, string>>),
 ): Promise<Connection> {
   let uri: string | undefined;
+  let finalOptions: Partial<ConnectionOptions> = {};
+  let finalHeaderProvider:
+    | HeaderProvider
+    | (() => Record<string, string>)
+    | (() => Promise<Record<string, string>>)
+    | undefined;
+
   if (typeof uriOrOptions !== "string") {
+    // First overload: connect(options)
     const { uri: uri_, ...opts } = uriOrOptions;
     uri = uri_;
-    options = opts;
+    finalOptions = opts;
   } else {
+    // Second overload: connect(uri, options?, session?, headerProvider?)
     uri = uriOrOptions;
+
+    // Handle optionsOrSession parameter
+    if (optionsOrSession && "inner" in optionsOrSession) {
+      // Second param is session, so no options provided
+      finalOptions = {};
+    } else {
+      // Second param is options
+      finalOptions = (optionsOrSession as Partial<ConnectionOptions>) || {};
+    }
+
+    // Handle sessionOrHeaderProvider parameter
+    if (
+      sessionOrHeaderProvider &&
+      (typeof sessionOrHeaderProvider === "function" ||
+        "getHeaders" in sessionOrHeaderProvider)
+    ) {
+      // Third param is header provider
+      finalHeaderProvider = sessionOrHeaderProvider as
+        | HeaderProvider
+        | (() => Record<string, string>)
+        | (() => Promise<Record<string, string>>);
+    } else {
+      // Third param is session, header provider is fourth param
+      finalHeaderProvider = headerProvider;
+    }
   }
 
   if (!uri) {
     throw new Error("uri is required");
   }
 
-  options = (options as ConnectionOptions) ?? {};
-  (<ConnectionOptions>options).storageOptions = cleanseStorageOptions(
-    (<ConnectionOptions>options).storageOptions,
+  finalOptions = (finalOptions as ConnectionOptions) ?? {};
+  (<ConnectionOptions>finalOptions).storageOptions = cleanseStorageOptions(
+    (<ConnectionOptions>finalOptions).storageOptions,
   );
-  const nativeConn = await LanceDbConnection.new(uri, options);
+
+  // Create native header provider if one was provided
+  let nativeProvider: NativeJsHeaderProvider | undefined;
+  if (finalHeaderProvider) {
+    if (typeof finalHeaderProvider === "function") {
+      nativeProvider = new NativeJsHeaderProvider(finalHeaderProvider);
+    } else if (
+      finalHeaderProvider &&
+      typeof finalHeaderProvider.getHeaders === "function"
+    ) {
+      nativeProvider = new NativeJsHeaderProvider(async () =>
+        finalHeaderProvider.getHeaders(),
+      );
+    }
+  }
+
+  const nativeConn = await LanceDbConnection.new(
+    uri,
+    finalOptions,
+    nativeProvider,
+  );
   return new LocalConnection(nativeConn);
 }

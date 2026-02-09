@@ -33,6 +33,7 @@ class LanceMergeInsertBuilder(object):
         self._when_not_matched_by_source_delete = False
         self._when_not_matched_by_source_condition = None
         self._timeout = None
+        self._use_index = True
 
     def when_matched_update_all(
         self, *, where: Optional[str] = None
@@ -76,6 +77,23 @@ class LanceMergeInsertBuilder(object):
         self._when_not_matched_by_source_delete = True
         if condition is not None:
             self._when_not_matched_by_source_condition = condition
+        return self
+
+    def use_index(self, use_index: bool) -> LanceMergeInsertBuilder:
+        """
+        Controls whether to use indexes for the merge operation.
+
+        When set to `True` (the default), the operation will use an index if available
+        on the join key for improved performance. When set to `False`, it forces a full
+        table scan even if an index exists. This can be useful for benchmarking or when
+        the query optimizer chooses a suboptimal path.
+
+        Parameters
+        ----------
+        use_index: bool
+            Whether to use indices for the merge operation. Defaults to `True`.
+        """
+        self._use_index = use_index
         return self
 
     def execute(

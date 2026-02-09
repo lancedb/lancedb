@@ -4,7 +4,6 @@
 import importlib
 import io
 import os
-
 import lancedb
 import numpy as np
 import pandas as pd
@@ -12,7 +11,6 @@ import pyarrow as pa
 import pytest
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector, MultiVector
-import requests
 
 # These are integration tests for embedding functions.
 # They are slow because they require downloading models
@@ -98,9 +96,34 @@ def test_basic_text_embeddings(alias, tmp_path):
     assert not np.allclose(actual.vector, actual.vector2)
 
 
-@pytest.mark.slow
-def test_openclip(tmp_path):
+@pytest.fixture(scope="module")
+def test_images():
     import requests
+
+    labels = ["cat", "cat", "dog", "dog", "horse", "horse"]
+    uris = [
+        "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
+        "http://farm1.staticflickr.com/134/332220238_da527d8140_z.jpg",
+        "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",
+        "http://farm5.staticflickr.com/4092/5017326486_1f46057f5f_z.jpg",
+        "http://farm9.staticflickr.com/8216/8434969557_d37882c42d_z.jpg",
+        "http://farm6.staticflickr.com/5142/5835678453_4f3a4edb45_z.jpg",
+    ]
+    image_bytes = [requests.get(uri).content for uri in uris]
+    return labels, uris, image_bytes
+
+
+@pytest.fixture(scope="module")
+def query_image_bytes():
+    import requests
+
+    query_image_uri = "http://farm1.staticflickr.com/200/467715466_ed4a31801f_z.jpg"
+    image_bytes = requests.get(query_image_uri).content
+    return image_bytes
+
+
+@pytest.mark.slow
+def test_openclip(tmp_path, test_images, query_image_bytes):
     from PIL import Image
 
     db = lancedb.connect(tmp_path)
@@ -114,20 +137,12 @@ def test_openclip(tmp_path):
         vector: Vector(func.ndims()) = func.VectorField()
         vec_from_bytes: Vector(func.ndims()) = func.VectorField()
 
+    labels, uris, image_bytes_list = test_images
     table = db.create_table("images", schema=Images)
-    labels = ["cat", "cat", "dog", "dog", "horse", "horse"]
-    uris = [
-        "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
-        "http://farm1.staticflickr.com/134/332220238_da527d8140_z.jpg",
-        "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",
-        "http://farm5.staticflickr.com/4092/5017326486_1f46057f5f_z.jpg",
-        "http://farm9.staticflickr.com/8216/8434969557_d37882c42d_z.jpg",
-        "http://farm6.staticflickr.com/5142/5835678453_4f3a4edb45_z.jpg",
-    ]
-    # get each uri as bytes
-    image_bytes = [requests.get(uri).content for uri in uris]
     table.add(
-        pd.DataFrame({"label": labels, "image_uri": uris, "image_bytes": image_bytes})
+        pd.DataFrame(
+            {"label": labels, "image_uri": uris, "image_bytes": image_bytes_list}
+        )
     )
 
     # text search
@@ -146,9 +161,7 @@ def test_openclip(tmp_path):
     assert np.allclose(actual.vector, frombytes.vector)
 
     # image search
-    query_image_uri = "http://farm1.staticflickr.com/200/467715466_ed4a31801f_z.jpg"
-    image_bytes = requests.get(query_image_uri).content
-    query_image = Image.open(io.BytesIO(image_bytes))
+    query_image = Image.open(io.BytesIO(query_image_bytes))
     actual = (
         table.search(query_image, vector_column_name="vector")
         .limit(1)
@@ -526,8 +539,46 @@ def test_azure_ai_embedding_function(tmp_path):
 @pytest.mark.skipif(
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
-def test_voyageai_embedding_function():
-    voyageai = get_registry().get("voyageai").create(name="voyage-3", max_retries=0)
+@pytest.mark.parametrize(
+    "model_name,expected_dims",
+    [
+        ("voyage-3", 1024),
+        ("voyage-4", 1024),
+        ("voyage-4-lite", 1024),
+        ("voyage-4-large", 1024),
+    ],
+)
+def test_voyageai_embedding_function(model_name, expected_dims, tmp_path):
+    """Integration test for VoyageAI text embedding models with real API calls."""
+    voyageai = get_registry().get("voyageai").create(name=model_name, max_retries=0)
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
+    assert voyageai.ndims() == expected_dims, (
+        f"{model_name} should have {expected_dims} dimensions"
+    )
+
+    # Test search functionality
+    result = tbl.search("hello").limit(1).to_pandas()
+    assert result["text"][0] == "hello world"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_embedding_function_contextual_model():
+    voyageai = (
+        get_registry().get("voyageai").create(name="voyage-context-3", max_retries=0)
+    )
 
     class TextModel(LanceModel):
         text: str = voyageai.SourceField()
@@ -546,6 +597,8 @@ def test_voyageai_embedding_function():
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
 def test_voyageai_multimodal_embedding_function():
+    import requests
+
     voyageai = (
         get_registry().get("voyageai").create(name="voyage-multimodal-3", max_retries=0)
     )
@@ -597,6 +650,133 @@ def test_voyageai_multimodal_embedding_text_function():
 
     tbl.add(df)
     assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_multimodal_35_embedding_function():
+    """Test voyage-multimodal-3.5 model with text input."""
+    voyageai = (
+        get_registry()
+        .get("voyageai")
+        .create(name="voyage-multimodal-3.5", max_retries=0)
+    )
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test_multimodal_35", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
+    assert voyageai.ndims() == 1024
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_multimodal_35_flexible_dimensions():
+    """Test voyage-multimodal-3.5 model with custom output dimension."""
+    voyageai = (
+        get_registry()
+        .get("voyageai")
+        .create(name="voyage-multimodal-3.5", output_dimension=512, max_retries=0)
+    )
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    assert voyageai.ndims() == 512
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test_multimodal_35_dim", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == 512
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_multimodal_35_image_embedding():
+    """Test voyage-multimodal-3.5 model with image input."""
+    voyageai = (
+        get_registry()
+        .get("voyageai")
+        .create(name="voyage-multimodal-3.5", max_retries=0)
+    )
+
+    class Images(LanceModel):
+        label: str
+        image_uri: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    db = lancedb.connect("~/lancedb")
+    table = db.create_table(
+        "test_multimodal_35_images", schema=Images, mode="overwrite"
+    )
+    labels = ["cat", "dog"]
+    uris = [
+        "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
+        "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",
+    ]
+    table.add(pd.DataFrame({"label": labels, "image_uri": uris}))
+    assert len(table.to_pandas()["vector"][0]) == voyageai.ndims()
+    assert voyageai.ndims() == 1024
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+@pytest.mark.parametrize("dimension", [256, 512, 1024, 2048])
+def test_voyageai_multimodal_35_all_dimensions(dimension):
+    """Test voyage-multimodal-3.5 model with all valid output dimensions."""
+    voyageai = (
+        get_registry()
+        .get("voyageai")
+        .create(name="voyage-multimodal-3.5", output_dimension=dimension, max_retries=0)
+    )
+
+    assert voyageai.ndims() == dimension
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table(
+        f"test_multimodal_35_dim_{dimension}", schema=TextModel, mode="overwrite"
+    )
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == dimension
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_multimodal_35_invalid_dimension():
+    """Test voyage-multimodal-3.5 model raises error for invalid output dimension."""
+    with pytest.raises(ValueError, match="Invalid output_dimension"):
+        voyageai = (
+            get_registry()
+            .get("voyageai")
+            .create(name="voyage-multimodal-3.5", output_dimension=999, max_retries=0)
+        )
+        # ndims() is where the validation happens
+        voyageai.ndims()
 
 
 @pytest.mark.slow
@@ -660,4 +840,172 @@ def test_colpali(tmp_path):
     assert len(first_row["image_vectors"]) > 1, "Should have multiple image vectors"
     assert len(first_row["image_vectors"][0]) == func.ndims(), (
         "Vector dimension mismatch"
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    importlib.util.find_spec("colpali_engine") is None,
+    reason="colpali_engine not installed",
+)
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "vidore/colSmol-256M",
+        "vidore/colqwen2.5-v0.2",
+        "vidore/colpali-v1.3",
+        "vidore/colqwen2-v1.0",
+    ],
+)
+def test_colpali_models(tmp_path, model_name):
+    import requests
+    from lancedb.pydantic import LanceModel
+
+    db = lancedb.connect(tmp_path)
+    registry = get_registry()
+    func = registry.get("colpali").create(model_name=model_name)
+
+    class MediaItems(LanceModel):
+        text: str
+        image_uri: str = func.SourceField()
+        image_bytes: bytes = func.SourceField()
+        image_vectors: MultiVector(func.ndims()) = func.VectorField()
+
+    table = db.create_table(f"media_{model_name.replace('/', '_')}", schema=MediaItems)
+
+    texts = [
+        "a cute cat playing with yarn",
+    ]
+
+    uris = [
+        "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
+    ]
+
+    image_bytes = [requests.get(uri).content for uri in uris]
+
+    table.add(
+        pd.DataFrame({"text": texts, "image_uri": uris, "image_bytes": image_bytes})
+    )
+
+    image_results = (
+        table.search("fluffy companion", vector_column_name="image_vectors")
+        .limit(1)
+        .to_pydantic(MediaItems)[0]
+    )
+    assert "cat" in image_results.text.lower() or "puppy" in image_results.text.lower()
+
+    first_row = table.to_arrow().to_pylist()[0]
+    assert len(first_row["image_vectors"]) > 1, "Should have multiple image vectors"
+    assert len(first_row["image_vectors"][0]) == func.ndims(), (
+        "Vector dimension mismatch"
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    importlib.util.find_spec("colpali_engine") is None,
+    reason="colpali_engine not installed",
+)
+def test_colpali_pooling(tmp_path):
+    registry = get_registry()
+    model_name = "vidore/colSmol-256M"
+    test_sentence = "a test sentence for pooling"
+
+    # 1. Get embeddings with no pooling
+    func_no_pool = registry.get("colpali").create(
+        model_name=model_name, pooling_strategy=None
+    )
+    unpooled_embeddings = func_no_pool.generate_text_embeddings([test_sentence])[0]
+    original_length = len(unpooled_embeddings)
+    assert original_length > 1
+
+    # 2. Test hierarchical pooling
+    func_hierarchical = registry.get("colpali").create(
+        model_name=model_name, pooling_strategy="hierarchical", pool_factor=2
+    )
+    hierarchical_embeddings = func_hierarchical.generate_text_embeddings(
+        [test_sentence]
+    )[0]
+    expected_hierarchical_length = (original_length + 1) // 2
+    assert len(hierarchical_embeddings) == expected_hierarchical_length
+
+    # 3. Test lambda pooling
+    def simple_pool_func(tensor):
+        return tensor[::2]
+
+    func_lambda = registry.get("colpali").create(
+        model_name=model_name,
+        pooling_strategy="lambda",
+        pooling_func=simple_pool_func,
+    )
+    lambda_embeddings = func_lambda.generate_text_embeddings([test_sentence])[0]
+    expected_lambda_length = (original_length + 1) // 2
+    assert len(lambda_embeddings) == expected_lambda_length
+
+
+@pytest.mark.slow
+def test_siglip(tmp_path, test_images, query_image_bytes):
+    from PIL import Image
+
+    labels, uris, image_bytes = test_images
+
+    db = lancedb.connect(tmp_path)
+    registry = get_registry()
+    func = registry.get("siglip").create(max_retries=0)
+
+    class Images(LanceModel):
+        label: str
+        image_uri: str = func.SourceField()
+        image_bytes: bytes = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+        vec_from_bytes: Vector(func.ndims()) = func.VectorField()
+
+    table = db.create_table("images", schema=Images)
+
+    table.add(
+        pd.DataFrame(
+            {
+                "label": labels,
+                "image_uri": uris,
+                "image_bytes": image_bytes,
+            }
+        )
+    )
+
+    # Text search
+    actual = (
+        table.search("man's best friend", vector_column_name="vector")
+        .limit(1)
+        .to_pydantic(Images)[0]
+    )
+    assert actual.label == "dog"
+
+    frombytes = (
+        table.search("man's best friend", vector_column_name="vec_from_bytes")
+        .limit(1)
+        .to_pydantic(Images)[0]
+    )
+    assert actual.label == frombytes.label
+    assert np.allclose(actual.vector, frombytes.vector)
+
+    # Image search
+    query_image = Image.open(io.BytesIO(query_image_bytes))
+    actual = (
+        table.search(query_image, vector_column_name="vector")
+        .limit(1)
+        .to_pydantic(Images)[0]
+    )
+    assert actual.label == "dog"
+
+    other = (
+        table.search(query_image, vector_column_name="vec_from_bytes")
+        .limit(1)
+        .to_pydantic(Images)[0]
+    )
+    assert actual.label == other.label
+
+    arrow_table = table.search().select(["vector", "vec_from_bytes"]).to_arrow()
+    assert np.allclose(
+        arrow_table["vector"].combine_chunks().values.to_numpy(),
+        arrow_table["vec_from_bytes"].combine_chunks().values.to_numpy(),
     )

@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
-
-import { Bool, Field, Int32, List, Schema, Struct, Utf8 } from "apache-arrow";
-
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
@@ -16,11 +13,9 @@ import {
   fromTableToBuffer,
   makeArrowTable,
   makeEmptyTable,
-  tableFromIPC,
 } from "../lancedb/arrow";
 import {
   EmbeddingFunction,
-  FieldOptions,
   FunctionOptions,
 } from "../lancedb/embedding/embedding_function";
 import { EmbeddingFunctionConfig } from "../lancedb/embedding/registry";
@@ -253,6 +248,98 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         expect(actual.numRows).toBe(3);
         const actualSchema = actual.schema;
         expect(actualSchema).toEqual(schema);
+      });
+
+      it("will detect vector columns when name contains 'vector' or 'embedding'", async function () {
+        // Test various naming patterns that should be detected as vector columns
+        const floatVectorTable = makeArrowTable([
+          {
+            // Float vectors (use decimal values to ensure they're treated as floats)
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            user_vector: [1.1, 2.2],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            text_embedding: [3.3, 4.4],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            doc_embeddings: [5.5, 6.6],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            my_vector_field: [7.7, 8.8],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            embedding_model: [9.9, 10.1],
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            VECTOR_COL: [11.1, 12.2], // uppercase
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            Vector_Mixed: [13.3, 14.4], // mixed case
+          },
+        ]);
+
+        // Check that columns with 'vector' or 'embedding' in name are converted to FixedSizeList
+        const floatVectorColumns = [
+          "user_vector",
+          "text_embedding",
+          "doc_embeddings",
+          "my_vector_field",
+          "embedding_model",
+          "VECTOR_COL",
+          "Vector_Mixed",
+        ];
+
+        for (const columnName of floatVectorColumns) {
+          expect(
+            DataType.isFixedSizeList(
+              floatVectorTable.getChild(columnName)?.type,
+            ),
+          ).toBe(true);
+          // Check that float vectors use Float32 by default
+          expect(
+            floatVectorTable
+              .getChild(columnName)
+              ?.type.children[0].type.toString(),
+          ).toEqual(new Float32().toString());
+        }
+
+        // Test that regular integer arrays still get treated as float vectors
+        // (since JavaScript doesn't distinguish integers from floats at runtime)
+        const integerArrayTable = makeArrowTable([
+          {
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            vector_int: [1, 2], // Regular array with integers - should be Float32
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            embedding_int: [3, 4], // Regular array with integers - should be Float32
+          },
+        ]);
+
+        const integerArrayColumns = ["vector_int", "embedding_int"];
+
+        for (const columnName of integerArrayColumns) {
+          expect(
+            DataType.isFixedSizeList(
+              integerArrayTable.getChild(columnName)?.type,
+            ),
+          ).toBe(true);
+          // Regular integer arrays should use Float32 (avoiding false positives)
+          expect(
+            integerArrayTable
+              .getChild(columnName)
+              ?.type.children[0].type.toString(),
+          ).toEqual(new Float32().toString());
+        }
+
+        // Test normal list should NOT be converted to FixedSizeList
+        const normalListTable = makeArrowTable([
+          {
+            // biome-ignore lint/style/useNamingConvention: Testing vector column detection patterns
+            normal_list: [15.5, 16.6], // should NOT be detected as vector
+          },
+        ]);
+
+        expect(
+          DataType.isFixedSizeList(
+            normalListTable.getChild("normal_list")?.type,
+          ),
+        ).toBe(false);
+        expect(
+          DataType.isList(normalListTable.getChild("normal_list")?.type),
+        ).toBe(true);
       });
 
       it("will allow different vector column types", async function () {
@@ -905,6 +992,65 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       it("converting from buffer returns null if buffer has no record batches", async function () {
         const result = await fromBufferToRecordBatch(Buffer.from([0x01, 0x02])); // bad data
         expect(result).toEqual(null);
+      });
+    });
+
+    describe("boolean null handling", function () {
+      it("should handle null values in nullable boolean fields", () => {
+        const { makeArrowTable } = require("../lancedb/arrow");
+        const schema = new Schema([new Field("test", new arrow.Bool(), true)]);
+
+        // Test with all null values
+        const data = [{ test: null }];
+        const table = makeArrowTable(data, { schema });
+
+        expect(table.numRows).toBe(1);
+        expect(table.schema.names).toEqual(["test"]);
+        expect(table.getChild("test")!.get(0)).toBeNull();
+      });
+
+      it("should handle mixed null and non-null boolean values", () => {
+        const { makeArrowTable } = require("../lancedb/arrow");
+        const schema = new Schema([new Field("test", new Bool(), true)]);
+
+        // Test with mixed values
+        const data = [{ test: true }, { test: null }, { test: false }];
+        const table = makeArrowTable(data, { schema });
+
+        expect(table.numRows).toBe(3);
+        expect(table.getChild("test")!.get(0)).toBe(true);
+        expect(table.getChild("test")!.get(1)).toBeNull();
+        expect(table.getChild("test")!.get(2)).toBe(false);
+      });
+    });
+
+    // Test for the undefined values bug fix
+    describe("undefined values handling", () => {
+      it("should handle mixed undefined and actual values", () => {
+        const schema = new Schema([
+          new Field("text", new Utf8(), true), // nullable
+          new Field("number", new Int32(), true), // nullable
+          new Field("bool", new Bool(), true), // nullable
+        ]);
+
+        const data = [
+          { text: undefined, number: 42, bool: true },
+          { text: "hello", number: undefined, bool: false },
+          { text: "world", number: 123, bool: undefined },
+        ];
+        const table = makeArrowTable(data, { schema });
+
+        const result = table.toArray();
+        expect(result).toHaveLength(3);
+        expect(result[0].text).toBe(null);
+        expect(result[0].number).toBe(42);
+        expect(result[0].bool).toBe(true);
+        expect(result[1].text).toBe("hello");
+        expect(result[1].number).toBe(null);
+        expect(result[1].bool).toBe(false);
+        expect(result[2].text).toBe("world");
+        expect(result[2].number).toBe(123);
+        expect(result[2].bool).toBe(null);
       });
     });
   },

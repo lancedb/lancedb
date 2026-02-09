@@ -9,6 +9,7 @@ from .linear_combination import LinearCombinationReranker
 from .openai import OpenaiReranker
 from .jinaai import JinaReranker
 from .rrf import RRFReranker
+from .mrr import MRRReranker
 from .answerdotai import AnswerdotaiRerankers
 from .voyageai import VoyageAIReranker
 
@@ -23,4 +24,5 @@ __all__ = [
     "RRFReranker",
     "AnswerdotaiRerankers",
     "VoyageAIReranker",
+    "MRRReranker",
 ]

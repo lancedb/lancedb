@@ -41,6 +41,7 @@ Creates an instance of MatchQuery.
     - `fuzziness`: The fuzziness level for the query (default is 0).
     - `maxExpansions`: The maximum number of terms to consider for fuzzy matching (default is 50).
     - `operator`: The logical operator to use for combining terms in the query (default is "OR").
+    - `prefixLength`: The number of beginning characters being unchanged for fuzzy matching.
 
 * **options.boost?**: `number`
 
@@ -49,6 +50,8 @@ Creates an instance of MatchQuery.
 * **options.maxExpansions?**: `number`
 
 * **options.operator?**: [`Operator`](../enumerations/Operator.md)
+
+* **options.prefixLength?**: `number`
 
 #### Returns
 

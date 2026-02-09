@@ -130,7 +130,7 @@ async fn test_minio_lifecycle() -> Result<()> {
     let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
     table.add(data).execute().await?;
 
-    db.drop_table("test_table").await?;
+    db.drop_table("test_table", &[]).await?;
 
     Ok(())
 }

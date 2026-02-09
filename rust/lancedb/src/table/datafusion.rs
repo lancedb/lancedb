@@ -2,6 +2,10 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
+
+pub mod insert;
+pub mod udtf;
+
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_array::RecordBatch;
@@ -10,17 +14,20 @@ use async_trait::async_trait;
 use datafusion_catalog::{Session, TableProvider};
 use datafusion_common::{DataFusionError, Result as DataFusionResult, Statistics};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
-use datafusion_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion_expr::{dml::InsertOp, Expr, TableProviderFilterPushDown, TableType};
 use datafusion_physical_plan::{
     stream::RecordBatchStreamAdapter, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
 };
 use futures::{TryFutureExt, TryStreamExt};
+use lance::dataset::{WriteMode, WriteParams};
 
 use super::{AnyQuery, BaseTable};
 use crate::{
     query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
     Result,
 };
+use arrow_schema::{DataType, Field};
+use lance_index::scalar::FullTextSearchQuery;
 
 /// Datafusion attempts to maintain batch metadata
 ///
@@ -85,6 +92,14 @@ impl ExecutionPlan for MetadataEraserExec {
         vec![&self.input]
     }
 
+    fn maintains_input_order(&self) -> Vec<bool> {
+        vec![true; self.children().len()]
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false; self.children().len()]
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -113,25 +128,52 @@ impl ExecutionPlan for MetadataEraserExec {
                 as SendableRecordBatchStream,
         )
     }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Statistics> {
+        self.input.partition_statistics(partition)
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug)]
 pub struct BaseTableAdapter {
     table: Arc<dyn BaseTable>,
     schema: Arc<ArrowSchema>,
+    fts_query: Option<FullTextSearchQuery>,
 }
 
 impl BaseTableAdapter {
     pub async fn try_new(table: Arc<dyn BaseTable>) -> Result<Self> {
-        let schema = Arc::new(
-            table
-                .schema()
-                .await?
-                .as_ref()
-                .clone()
-                .with_metadata(HashMap::default()),
-        );
-        Ok(Self { table, schema })
+        let schema = table
+            .schema()
+            .await?
+            .as_ref()
+            .clone()
+            .with_metadata(HashMap::default());
+
+        Ok(Self {
+            table,
+            schema: Arc::new(schema),
+            fts_query: None,
+        })
+    }
+
+    /// Create a new adapter with an FTS query applied.
+    pub fn with_fts_query(&self, fts_query: FullTextSearchQuery) -> Self {
+        // Add _score column to the schema
+        let score_field = Field::new("_score", DataType::Float32, true);
+        let mut fields = self.schema.fields().to_vec();
+        fields.push(Arc::new(score_field));
+        let schema = Arc::new(ArrowSchema::new(fields));
+
+        Self {
+            table: self.table.clone(),
+            schema,
+            fts_query: Some(fts_query),
+        }
     }
 }
 
@@ -156,11 +198,19 @@ impl TableProvider for BaseTableAdapter {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let mut query = QueryRequest::default();
+        // For FTS queries, disable auto-projection of _score to match DataFusion expectations
+        let disable_scoring = self.fts_query.is_some() && projection.is_some();
+
+        let mut query = QueryRequest {
+            full_text_search: self.fts_query.clone(),
+            disable_scoring_autoprojection: disable_scoring,
+            ..Default::default()
+        };
+
         if let Some(projection) = projection {
             let field_names = projection
                 .iter()
-                .map(|i| self.schema.field(*i).name().to_string())
+                .map(|i| self.schema.field(*i).name().clone())
                 .collect();
             query.select = Select::Columns(field_names);
         }
@@ -202,6 +252,33 @@ impl TableProvider for BaseTableAdapter {
         // TODO
         None
     }
+
+    async fn insert_into(
+        &self,
+        _state: &dyn Session,
+        input: Arc<dyn ExecutionPlan>,
+        insert_op: InsertOp,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let mode = match insert_op {
+            InsertOp::Append => WriteMode::Append,
+            InsertOp::Overwrite => WriteMode::Overwrite,
+            InsertOp::Replace => {
+                return Err(DataFusionError::NotImplemented(
+                    "Replace mode is not supported for LanceDB tables".to_string(),
+                ))
+            }
+        };
+
+        let write_params = WriteParams {
+            mode,
+            ..Default::default()
+        };
+
+        self.table
+            .create_insert_exec(input, write_params)
+            .await
+            .map_err(|e| DataFusionError::External(e.into()))
+    }
 }
 
 #[cfg(test)]
@@ -219,6 +296,7 @@ pub mod tests {
         prelude::{SessionConfig, SessionContext},
     };
     use datafusion_catalog::TableProvider;
+    use datafusion_common::stats::Precision;
     use datafusion_execution::SendableRecordBatchStream;
     use datafusion_expr::{col, lit, LogicalPlan, LogicalPlanBuilder};
     use futures::{StreamExt, TryStreamExt};
@@ -486,11 +564,9 @@ pub mod tests {
         TestFixture::check_plan(
             plan,
             "MetadataEraserExec
-             CoalesceBatchesExec:...
-             FilterExec: i@0 >= 5
-             RepartitionExec:...
              ProjectionExec:...
-             LanceScan:...",
+             CooperativeExec...
+             LanceRead:...",
         )
         .await;
 
@@ -503,5 +579,25 @@ pub mod tests {
             .unwrap();
 
         TestFixture::check_plan(plan, "").await;
+    }
+
+    #[tokio::test]
+    async fn test_metadata_eraser_propagates_statistics() {
+        let fixture = TestFixture::new().await;
+
+        let plan =
+            LogicalPlanBuilder::scan("foo", provider_as_source(fixture.adapter.clone()), None)
+                .unwrap()
+                .build()
+                .unwrap();
+
+        let ctx = SessionContext::new();
+        let physical_plan = ctx.state().create_physical_plan(&plan).await.unwrap();
+
+        assert_eq!(physical_plan.name(), "MetadataEraserExec");
+
+        let partition_stats = physical_plan.partition_statistics(None).unwrap();
+
+        assert!(matches!(partition_stats.num_rows, Precision::Exact(10)));
     }
 }

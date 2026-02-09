@@ -6,7 +6,9 @@ on:
       - main
   pull_request:
     paths:
+      - Cargo.toml
       - nodejs/**
+      - docs/src/js/**
       - .github/workflows/nodejs.yml
       - docker-compose.yml
 
@@ -15,9 +17,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Disable full debug symbol generation to speed up CI build and keep memory down
-  # "1" means line tables only, which is useful for panic tracebacks.
-  RUSTFLAGS: "-C debuginfo=1"
   RUST_BACKTRACE: "1"
 
 jobs:
@@ -42,18 +41,20 @@ jobs:
         node-version: 20
         cache: 'npm'
         cache-dependency-path: nodejs/package-lock.json
-    - uses: Swatinem/rust-cache@v2
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        components: rustfmt, clippy
     - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y protobuf-compiler libssl-dev
-    - uses: actions-rust-lang/setup-rust-toolchain@v1
-      with:
-        components: rustfmt, clippy
-    - name: Lint
+    - uses: Swatinem/rust-cache@v2
+    - name: Format Rust
+      run: cargo fmt --all -- --check
+    - name: Lint Rust
+      run: cargo clippy --profile ci --all --all-features -- -D warnings
+    - name: Lint Typescript
       run: |
-        cargo fmt --all -- --check
-        cargo clippy --all --all-features -- -D warnings
         npm ci
         npm run lint-ci
     - name: Lint examples
@@ -79,7 +80,7 @@ jobs:
       with:
         node-version: ${{ matrix.node-version }}
         cache: 'npm'
-        cache-dependency-path: node/package-lock.json
+        cache-dependency-path: nodejs/package-lock.json
     - uses: Swatinem/rust-cache@v2
     - name: Install dependencies
       run: |
@@ -88,8 +89,9 @@ jobs:
         npm install -g @napi-rs/cli
     - name: Build
       run: |
-        npm ci
-        npm run build
+        npm ci --include=optional
+        npm run build:debug -- --profile ci
+        npm run tsc
     - name: Setup localstack
       working-directory: .
       run: docker compose up --detach --wait
@@ -116,7 +118,7 @@ jobs:
         set -e
         npm ci
         npm run docs
-        if ! git diff --exit-code -- . ':(exclude)Cargo.lock'; then
+        if ! git diff --exit-code -- ../ ':(exclude)Cargo.lock'; then
           echo "Docs need to be updated"
           echo "Run 'npm run docs', fix any warnings, and commit the changes."
           exit 1
@@ -137,7 +139,7 @@ jobs:
       with:
         node-version: 20
         cache: 'npm'
-        cache-dependency-path: node/package-lock.json
+        cache-dependency-path: nodejs/package-lock.json
     - uses: Swatinem/rust-cache@v2
     - name: Install dependencies
       run: |
@@ -145,8 +147,9 @@ jobs:
         npm install -g @napi-rs/cli
     - name: Build
       run: |
-        npm ci
-        npm run build
+        npm ci --include=optional
+        npm run build:debug -- --profile ci
+        npm run tsc
     - name: Test
       run: |
         npm run test

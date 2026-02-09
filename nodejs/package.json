@@ -11,7 +11,7 @@
     "ann"
   ],
   "private": false,
-  "version": "0.21.2-beta.0",
+  "version": "0.26.1",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
@@ -25,7 +25,6 @@
     "triples": {
       "defaults": false,
       "additional": [
-        "x86_64-apple-darwin",
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
@@ -36,7 +35,7 @@
       ]
     }
   },
-  "license": "Apache 2.0",
+  "license": "Apache-2.0",
   "devDependencies": {
     "@aws-sdk/client-dynamodb": "^3.33.0",
     "@aws-sdk/client-kms": "^3.33.0",
@@ -73,8 +72,10 @@
   "scripts": {
     "artifacts": "napi artifacts",
     "build:debug": "napi build --platform --no-const-enum --dts ../lancedb/native.d.ts --js ../lancedb/native.js lancedb",
+    "postbuild:debug": "shx mkdir -p dist && shx cp lancedb/*.node dist/",
     "build:release": "napi build --platform --no-const-enum --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js dist/",
-    "build": "npm run build:debug && npm run tsc && shx cp lancedb/*.node dist/",
+    "postbuild:release": "shx mkdir -p dist && shx cp lancedb/*.node dist/",
+    "build": "npm run build:debug && npm run tsc",
     "build-release": "npm run build:release && npm run tsc",
     "tsc": "tsc -b",
     "posttsc": "shx cp lancedb/native.d.ts dist/native.d.ts",

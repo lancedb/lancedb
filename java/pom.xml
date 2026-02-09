@@ -6,11 +6,10 @@
 
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-parent</artifactId>
-    <version>0.21.2-beta.0</version>
+    <version>0.26.1-final.0</version>
     <packaging>pom</packaging>
-
-    <name>LanceDB Parent</name>
-    <description>LanceDB vector database Java API</description>
+    <name>${project.artifactId}</name>
+    <description>LanceDB Java SDK Parent POM</description>
     <url>http://lancedb.com/</url>
 
     <developers>
@@ -29,6 +28,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <arrow.version>15.0.0</arrow.version>
+        <lance-core.version>2.0.0</lance-core.version>
         <spotless.skip>false</spotless.skip>
         <spotless.version>2.30.0</spotless.version>
         <spotless.java.googlejavaformat.version>1.7</spotless.java.googlejavaformat.version>
@@ -51,7 +51,7 @@
     </properties>
 
     <modules>
-        <module>core</module>
+        <module>lancedb-core</module>
     </modules>
 
     <scm>
@@ -62,6 +62,11 @@
 
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>org.lance</groupId>
+                <artifactId>lance-core</artifactId>
+                <version>${lance-core.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.apache.arrow</groupId>
                 <artifactId>arrow-vector</artifactId>
@@ -83,19 +88,9 @@
                 <version>${arrow.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.questdb</groupId>
-                <artifactId>jar-jni</artifactId>
-                <version>1.1.1</version>
-            </dependency>
-            <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter</artifactId>
                 <version>5.10.1</version>
-            </dependency>
-            <dependency>
-                <groupId>org.json</groupId>
-                <artifactId>json</artifactId>
-                <version>20210307</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -297,11 +292,12 @@
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>0.4.0</version>
+                        <version>0.8.0</version>
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>ossrh</publishingServerId>
                             <tokenAuth>true</tokenAuth>
+                            <autoPublish>true</autoPublish>
                         </configuration>
                     </plugin>
                     <plugin>

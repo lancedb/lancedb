@@ -44,3 +44,17 @@ optional readTimeout: number;
 The timeout for reading data from the server in seconds. Default is 300
 seconds (5 minutes). This can also be set via the environment variable
 `LANCE_CLIENT_READ_TIMEOUT`, as an integer number of seconds.
+
+***
+
+### timeout?
+
+```ts
+optional timeout: number;
+```
+
+The overall timeout for the entire request in seconds. This includes
+connection, send, and read time. If the entire request doesn't complete
+within this time, it will fail. Default is None (no overall timeout).
+This can also be set via the environment variable `LANCE_CLIENT_TIMEOUT`,
+as an integer number of seconds.

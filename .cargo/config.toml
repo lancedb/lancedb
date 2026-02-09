@@ -19,7 +19,7 @@ rustflags = [
     "-Wclippy::string_add_assign",
     "-Wclippy::string_add",
     "-Wclippy::string_lit_as_bytes",
-    "-Wclippy::string_to_string",
+    "-Wclippy::implicit_clone",
     "-Wclippy::use_self",
     "-Dclippy::cargo",
     "-Dclippy::dbg_macro",

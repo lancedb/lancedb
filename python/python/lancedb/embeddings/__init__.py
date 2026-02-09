@@ -11,7 +11,7 @@ from .instructor import InstructorEmbeddingFunction
 from .ollama import OllamaEmbeddings
 from .open_clip import OpenClipEmbeddings
 from .openai import OpenAIEmbeddings
-from .registry import EmbeddingFunctionRegistry, get_registry
+from .registry import EmbeddingFunctionRegistry, get_registry, register
 from .sentence_transformers import SentenceTransformerEmbeddings
 from .gte import GteEmbeddings
 from .transformers import TransformersEmbeddingFunction, ColbertEmbeddings
@@ -21,3 +21,4 @@ from .watsonx import WatsonxEmbeddings
 from .voyageai import VoyageAIEmbeddingFunction
 from .colpali import ColPaliEmbeddings
 from .azure_ai_foundry import AzureAITextEmbeddingFunction
+from .siglip import SigLipEmbeddings

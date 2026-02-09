@@ -6,9 +6,11 @@ import {
   Data,
   DataType,
   IntoVector,
+  MultiVector,
   Schema,
   dataTypeToJson,
   fromDataToBuffer,
+  isMultiVector,
   tableFromIPC,
 } from "./arrow";
 
@@ -33,6 +35,7 @@ import {
 import {
   FullTextQuery,
   Query,
+  TakeQuery,
   VectorQuery,
   instanceOfFullTextQuery,
 } from "./query";
@@ -335,6 +338,24 @@ export abstract class Table {
   abstract query(): Query;
 
   /**
+   * Create a query that returns a subset of the rows in the table.
+   * @param offsets The offsets of the rows to return.
+   * @returns A builder that can be used to parameterize the query.
+   */
+  abstract takeOffsets(offsets: number[]): TakeQuery;
+
+  /**
+   * Create a query that returns a subset of the rows in the table.
+   * @param rowIds The row ids of the rows to return.
+   *
+   * Row ids returned by `withRowId()` are `bigint`, so `bigint[]` is supported.
+   * For convenience / backwards compatibility, `number[]` is also accepted (for
+   * small row ids that fit in a safe integer).
+   * @returns A builder that can be used to parameterize the query.
+   */
+  abstract takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery;
+
+  /**
    * Create a search query to find the nearest neighbors
    * of the given query
    * @param {string | IntoVector} query - the query, a vector or string
@@ -346,7 +367,7 @@ export abstract class Table {
    * if the query is a string and no embedding function is defined, it will be treated as a full text search query
    */
   abstract search(
-    query: string | IntoVector | FullTextQuery,
+    query: string | IntoVector | MultiVector | FullTextQuery,
     queryType?: string,
     ftsColumns?: string | string[],
   ): VectorQuery | Query;
@@ -357,7 +378,7 @@ export abstract class Table {
    * is the same thing as calling `nearestTo` on the builder returned
    * by `query`.  @see {@link Query#nearestTo} for more details.
    */
-  abstract vectorSearch(vector: IntoVector): VectorQuery;
+  abstract vectorSearch(vector: IntoVector | MultiVector): VectorQuery;
   /**
    * Add new columns with defined values.
    * @param {AddColumnsSql[]} newColumnTransforms pairs of column names and
@@ -521,6 +542,35 @@ export abstract class Table {
    *
    */
   abstract stats(): Promise<TableStatistics>;
+
+  /**
+   * Get the initial storage options that were passed in when opening this table.
+   *
+   * For dynamically refreshed options (e.g., credential vending), use
+   * {@link Table.latestStorageOptions}.
+   *
+   * Warning: This is an internal API and the return value is subject to change.
+   *
+   * @returns The storage options, or undefined if no storage options were configured.
+   */
+  abstract initialStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  >;
+
+  /**
+   * Get the latest storage options, refreshing from provider if configured.
+   *
+   * This method is useful for credential vending scenarios where storage options
+   * may be refreshed dynamically. If no dynamic provider is configured, this
+   * returns the initial static options.
+   *
+   * Warning: This is an internal API and the return value is subject to change.
+   *
+   * @returns The storage options, or undefined if no storage options were configured.
+   */
+  abstract latestStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  >;
 }
 
 export class LocalTable extends Table {
@@ -645,6 +695,8 @@ export class LocalTable extends Table {
       column,
       options?.replace,
       options?.waitTimeoutSeconds,
+      options?.name,
+      options?.train,
     );
   }
 
@@ -663,12 +715,36 @@ export class LocalTable extends Table {
     await this.inner.waitForIndex(indexNames, timeoutSeconds);
   }
 
+  takeOffsets(offsets: number[]): TakeQuery {
+    return new TakeQuery(this.inner.takeOffsets(offsets));
+  }
+
+  takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery {
+    const ids = rowIds.map((id) => {
+      if (typeof id === "bigint") {
+        return id;
+      }
+      if (!Number.isInteger(id)) {
+        throw new Error("Row id must be an integer (or bigint)");
+      }
+      if (id < 0) {
+        throw new Error("Row id cannot be negative");
+      }
+      if (!Number.isSafeInteger(id)) {
+        throw new Error("Row id is too large for number; use bigint instead");
+      }
+      return BigInt(id);
+    });
+
+    return new TakeQuery(this.inner.takeRowIds(ids));
+  }
+
   query(): Query {
     return new Query(this.inner);
   }
 
   search(
-    query: string | IntoVector | FullTextQuery,
+    query: string | IntoVector | MultiVector | FullTextQuery,
     queryType: string = "auto",
     ftsColumns?: string | string[],
   ): VectorQuery | Query {
@@ -715,7 +791,15 @@ export class LocalTable extends Table {
     return this.query().nearestTo(queryPromise);
   }
 
-  vectorSearch(vector: IntoVector): VectorQuery {
+  vectorSearch(vector: IntoVector | MultiVector): VectorQuery {
+    if (isMultiVector(vector)) {
+      const query = this.query().nearestTo(vector[0]);
+      for (const v of vector.slice(1)) {
+        query.addQueryVector(v);
+      }
+      return query;
+    }
+
     return this.query().nearestTo(vector);
   }
 
@@ -821,6 +905,18 @@ export class LocalTable extends Table {
 
   async stats(): Promise<TableStatistics> {
     return await this.inner.stats();
+  }
+
+  async initialStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  > {
+    return await this.inner.initialStorageOptions();
+  }
+
+  async latestStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  > {
+    return await this.inner.latestStorageOptions();
   }
 
   mergeInsert(on: string | string[]): MergeInsertBuilder {

@@ -5,12 +5,14 @@ use arrow::RecordBatchStream;
 use connection::{connect, Connection};
 use env_logger::Env;
 use index::IndexConfig;
+use permutation::{PyAsyncPermutationBuilder, PyPermutationReader};
 use pyo3::{
     pymodule,
     types::{PyModule, PyModuleMethods},
     wrap_pyfunction, Bound, PyResult, Python,
 };
 use query::{FTSQuery, HybridQuery, Query, VectorQuery};
+use session::Session;
 use table::{
     AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, MergeResult,
     Table, UpdateResult,
@@ -19,8 +21,12 @@ use table::{
 pub mod arrow;
 pub mod connection;
 pub mod error;
+pub mod header;
 pub mod index;
+pub mod permutation;
 pub mod query;
+pub mod session;
+pub mod storage_options;
 pub mod table;
 pub mod util;
 
@@ -31,6 +37,7 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         .write_style("LANCEDB_LOG_STYLE");
     env_logger::init_from_env(env);
     m.add_class::<Connection>()?;
+    m.add_class::<Session>()?;
     m.add_class::<Table>()?;
     m.add_class::<IndexConfig>()?;
     m.add_class::<Query>()?;
@@ -45,8 +52,12 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DeleteResult>()?;
     m.add_class::<DropColumnsResult>()?;
     m.add_class::<UpdateResult>()?;
+    m.add_class::<PyAsyncPermutationBuilder>()?;
+    m.add_class::<PyPermutationReader>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
+    m.add_function(wrap_pyfunction!(permutation::async_permutation_builder, m)?)?;
     m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
+    m.add_function(wrap_pyfunction!(query::fts_query_to_json, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

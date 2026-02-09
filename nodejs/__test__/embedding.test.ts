@@ -256,6 +256,60 @@ describe("embedding functions", () => {
     expect(actual).toHaveProperty("text");
   });
 
+  it("should handle undefined vector field with embedding function correctly", async () => {
+    @register("undefined_test")
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return Array.from({ length: data.length }).fill([
+          1, 2, 3,
+        ]) as number[][];
+      }
+    }
+    const func = getRegistry()
+      .get<MockEmbeddingFunction>("undefined_test")!
+      .create();
+    const schema = new Schema([
+      new Field("text", new Utf8(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(3, new Field("item", new Float32(), true)),
+        true,
+      ),
+    ]);
+
+    const db = await connect(tmpDir.name);
+    const table = await db.createEmptyTable("test_undefined", schema, {
+      embeddingFunction: {
+        function: func,
+        sourceColumn: "text",
+        vectorColumn: "vector",
+      },
+    });
+
+    // Test that undefined, null, and omitted vector fields all work
+    await table.add([{ text: "test1", vector: undefined }]);
+    await table.add([{ text: "test2", vector: null }]);
+    await table.add([{ text: "test3" }]);
+
+    const rows = await table.query().toArray();
+    expect(rows.length).toBe(3);
+
+    // All rows should have vectors computed by the embedding function
+    for (const row of rows) {
+      expect(row.vector).toBeDefined();
+      expect(JSON.parse(JSON.stringify(row.vector))).toEqual([1, 2, 3]);
+    }
+  });
+
   test.each([new Float16(), new Float32(), new Float64()])(
     "should be able to provide manual embeddings with multiple float datatype",
     async (floatType) => {

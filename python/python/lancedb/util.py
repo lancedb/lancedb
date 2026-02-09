@@ -366,3 +366,56 @@ def add_note(base_exception: BaseException, note: str):
         )
     else:
         raise ValueError("Cannot add note to exception")
+
+
+def tbl_to_tensor(tbl: pa.Table):
+    """
+    Convert a PyArrow Table to a PyTorch Tensor.
+
+    Each column is converted to a tensor (using zero-copy via DLPack)
+    and the columns are then stacked into a single tensor.
+
+    Fails if torch is not installed.
+    Fails if any column is more than one chunk.
+    Fails if a column's data type is not supported by PyTorch.
+
+    Parameters
+    ----------
+    tbl : pa.Table or pa.RecordBatch
+        The table or record batch to convert to a tensor.
+
+    Returns
+    -------
+    torch.Tensor: The tensor containing the columns of the table.
+    """
+    torch = attempt_import_or_raise("torch", "torch")
+
+    def to_tensor(col: pa.ChunkedArray):
+        if col.num_chunks > 1:
+            raise Exception("Single batch was too large to fit into a one-chunk table")
+        return torch.from_dlpack(col.chunk(0))
+
+    return torch.stack([to_tensor(tbl.column(i)) for i in range(tbl.num_columns)])
+
+
+def batch_to_tensor(batch: pa.RecordBatch):
+    """
+    Convert a PyArrow RecordBatch to a PyTorch Tensor.
+
+    Each column is converted to a tensor (using zero-copy via DLPack)
+    and the columns are then stacked into a single tensor.
+
+    Fails if torch is not installed.
+    Fails if a column's data type is not supported by PyTorch.
+
+    Parameters
+    ----------
+    batch : pa.RecordBatch
+        The record batch to convert to a tensor.
+
+    Returns
+    -------
+    torch.Tensor: The tensor containing the columns of the record batch.
+    """
+    torch = attempt_import_or_raise("torch", "torch")
+    return torch.stack([torch.from_dlpack(col) for col in batch.columns])

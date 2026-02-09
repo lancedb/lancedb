@@ -3,30 +3,130 @@ from typing import Dict, List, Optional, Tuple, Any, TypedDict, Union, Literal
 
 import pyarrow as pa
 
-from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from .index import (
+    BTree,
+    IvfFlat,
+    IvfPq,
+    IvfSq,
+    Bitmap,
+    LabelList,
+    HnswPq,
+    HnswSq,
+    FTS,
+)
+from .io import StorageOptionsProvider
+from lance_namespace import (
+    ListNamespacesResponse,
+    CreateNamespaceResponse,
+    DropNamespaceResponse,
+    DescribeNamespaceResponse,
+    ListTablesResponse,
+)
 from .remote import ClientConfig
+
+IvfHnswPq: type[HnswPq] = HnswPq
+IvfHnswSq: type[HnswSq] = HnswSq
+
+class Session:
+    def __init__(
+        self,
+        index_cache_size_bytes: Optional[int] = None,
+        metadata_cache_size_bytes: Optional[int] = None,
+    ): ...
+    @staticmethod
+    def default() -> "Session": ...
+    @property
+    def size_bytes(self) -> int: ...
+    @property
+    def approx_num_items(self) -> int: ...
 
 class Connection(object):
     uri: str
+    async def is_open(self): ...
+    async def close(self): ...
+    async def list_namespaces(
+        self,
+        namespace: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListNamespacesResponse: ...
+    async def create_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[str] = None,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> CreateNamespaceResponse: ...
+    async def drop_namespace(
+        self,
+        namespace: List[str],
+        mode: Optional[str] = None,
+        behavior: Optional[str] = None,
+    ) -> DropNamespaceResponse: ...
+    async def describe_namespace(
+        self,
+        namespace: List[str],
+    ) -> DescribeNamespaceResponse: ...
+    async def list_tables(
+        self,
+        namespace: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListTablesResponse: ...
     async def table_names(
-        self, start_after: Optional[str], limit: Optional[int]
-    ) -> list[str]: ...
+        self,
+        namespace: Optional[List[str]],
+        start_after: Optional[str],
+        limit: Optional[int],
+    ) -> list[str]: ...  # Deprecated: Use list_tables instead
     async def create_table(
         self,
         name: str,
         mode: str,
         data: pa.RecordBatchReader,
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
+        location: Optional[str] = None,
     ) -> Table: ...
     async def create_empty_table(
         self,
         name: str,
         mode: str,
         schema: pa.Schema,
+        namespace: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
+        location: Optional[str] = None,
     ) -> Table: ...
-    async def rename_table(self, old_name: str, new_name: str) -> None: ...
-    async def drop_table(self, name: str) -> None: ...
+    async def open_table(
+        self,
+        name: str,
+        namespace: Optional[List[str]] = None,
+        storage_options: Optional[Dict[str, str]] = None,
+        storage_options_provider: Optional[StorageOptionsProvider] = None,
+        index_cache_size: Optional[int] = None,
+        location: Optional[str] = None,
+    ) -> Table: ...
+    async def clone_table(
+        self,
+        target_table_name: str,
+        source_uri: str,
+        target_namespace: Optional[List[str]] = None,
+        source_version: Optional[int] = None,
+        source_tag: Optional[str] = None,
+        is_shallow: bool = True,
+    ) -> Table: ...
+    async def rename_table(
+        self,
+        cur_name: str,
+        new_name: str,
+        cur_namespace: Optional[List[str]] = None,
+        new_namespace: Optional[List[str]] = None,
+    ) -> None: ...
+    async def drop_table(
+        self, name: str, namespace: Optional[List[str]] = None
+    ) -> None: ...
+    async def drop_all_tables(self, namespace: Optional[List[str]] = None) -> None: ...
 
 class Table:
     def name(self) -> str: ...
@@ -44,8 +144,22 @@ class Table:
     async def create_index(
         self,
         column: str,
-        index: Union[IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS],
+        index: Union[
+            IvfFlat,
+            IvfSq,
+            IvfPq,
+            HnswPq,
+            HnswSq,
+            BTree,
+            Bitmap,
+            LabelList,
+            FTS,
+        ],
         replace: Optional[bool],
+        wait_timeout: Optional[object],
+        *,
+        name: Optional[str],
+        train: Optional[bool],
     ): ...
     async def list_versions(self) -> List[Dict[str, Any]]: ...
     async def version(self) -> int: ...
@@ -65,9 +179,14 @@ class Table:
         cleanup_since_ms: Optional[int] = None,
         delete_unverified: Optional[bool] = None,
     ) -> OptimizeStats: ...
+    async def uri(self) -> str: ...
+    async def initial_storage_options(self) -> Optional[Dict[str, str]]: ...
+    async def latest_storage_options(self) -> Optional[Dict[str, str]]: ...
     @property
     def tags(self) -> Tags: ...
     def query(self) -> Query: ...
+    def take_offsets(self, offsets: list[int]) -> TakeQuery: ...
+    def take_row_ids(self, row_ids: list[int]) -> TakeQuery: ...
     def vector_search(self) -> VectorQuery: ...
 
 class Tags:
@@ -78,6 +197,7 @@ class Tags:
     async def update(self, tag: str, version: int): ...
 
 class IndexConfig:
+    name: str
     index_type: str
     columns: List[str]
 
@@ -89,6 +209,7 @@ async def connect(
     read_consistency_interval: Optional[float],
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]],
     storage_options: Optional[Dict[str, str]],
+    session: Optional[Session],
 ) -> Connection: ...
 
 class RecordBatchStream:
@@ -108,11 +229,19 @@ class Query:
     def postfilter(self): ...
     def nearest_to(self, query_vec: pa.Array) -> VectorQuery: ...
     def nearest_to_text(self, query: dict) -> FTSQuery: ...
+    async def output_schema(self) -> pa.Schema: ...
     async def execute(
         self, max_batch_length: Optional[int], timeout: Optional[timedelta]
     ) -> RecordBatchStream: ...
     async def explain_plan(self, verbose: Optional[bool]) -> str: ...
     async def analyze_plan(self) -> str: ...
+    def to_query_request(self) -> PyQueryRequest: ...
+
+class TakeQuery:
+    def select(self, columns: List[str]): ...
+    def with_row_id(self): ...
+    async def output_schema(self) -> pa.Schema: ...
+    async def execute(self) -> RecordBatchStream: ...
     def to_query_request(self) -> PyQueryRequest: ...
 
 class FTSQuery:
@@ -126,12 +255,14 @@ class FTSQuery:
     def get_query(self) -> str: ...
     def add_query_vector(self, query_vec: pa.Array) -> None: ...
     def nearest_to(self, query_vec: pa.Array) -> HybridQuery: ...
+    async def output_schema(self) -> pa.Schema: ...
     async def execute(
         self, max_batch_length: Optional[int], timeout: Optional[timedelta]
     ) -> RecordBatchStream: ...
     def to_query_request(self) -> PyQueryRequest: ...
 
 class VectorQuery:
+    async def output_schema(self) -> pa.Schema: ...
     async def execute(self) -> RecordBatchStream: ...
     def where(self, filter: str): ...
     def select(self, columns: List[str]): ...
@@ -230,6 +361,7 @@ class MergeResult:
     num_updated_rows: int
     num_inserted_rows: int
     num_deleted_rows: int
+    num_attempts: int
 
 class AddColumnsResult:
     version: int
@@ -239,3 +371,38 @@ class AlterColumnsResult:
 
 class DropColumnsResult:
     version: int
+
+class AsyncPermutationBuilder:
+    def select(self, projections: Dict[str, str]) -> "AsyncPermutationBuilder": ...
+    def split_random(
+        self,
+        *,
+        ratios: Optional[List[float]] = None,
+        counts: Optional[List[int]] = None,
+        fixed: Optional[int] = None,
+        seed: Optional[int] = None,
+    ) -> "AsyncPermutationBuilder": ...
+    def split_hash(
+        self, columns: List[str], split_weights: List[int], *, discard_weight: int = 0
+    ) -> "AsyncPermutationBuilder": ...
+    def split_sequential(
+        self,
+        *,
+        ratios: Optional[List[float]] = None,
+        counts: Optional[List[int]] = None,
+        fixed: Optional[int] = None,
+    ) -> "AsyncPermutationBuilder": ...
+    def split_calculated(self, calculation: str) -> "AsyncPermutationBuilder": ...
+    def shuffle(
+        self, seed: Optional[int], clump_size: Optional[int]
+    ) -> "AsyncPermutationBuilder": ...
+    def filter(self, filter: str) -> "AsyncPermutationBuilder": ...
+    async def execute(self) -> Table: ...
+
+def async_permutation_builder(
+    table: Table, dest_table_name: str
+) -> AsyncPermutationBuilder: ...
+def fts_query_to_json(query: Any) -> str: ...
+
+class PermutationReader:
+    def __init__(self, base_table: Table, permutation_table: Table): ...

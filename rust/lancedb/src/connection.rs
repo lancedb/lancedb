@@ -9,17 +9,21 @@ use std::sync::Arc;
 use arrow_array::RecordBatchReader;
 use arrow_schema::{Field, SchemaRef};
 use lance::dataset::ReadParams;
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
+    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+};
+#[cfg(feature = "aws")]
 use object_store::aws::AwsCredential;
 
 use crate::arrow::{IntoArrow, IntoArrowStream, SendableRecordBatchStream};
-use crate::catalog::listing::ListingCatalog;
-use crate::catalog::CatalogOptions;
 use crate::database::listing::{
     ListingDatabase, OPT_NEW_TABLE_STORAGE_VERSION, OPT_NEW_TABLE_V2_MANIFEST_PATHS,
 };
 use crate::database::{
-    CreateTableData, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
-    OpenTableRequest, TableNamesRequest,
+    CloneTableRequest, CreateTableData, CreateTableMode, CreateTableRequest, Database,
+    DatabaseOptions, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::embeddings::{
     EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
@@ -32,9 +36,42 @@ use crate::remote::{
 };
 use crate::table::{TableDefinition, WriteOptions};
 use crate::Table;
+use lance::io::ObjectStoreParams;
 pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
+use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
+
+fn merge_storage_options(
+    store_params: &mut ObjectStoreParams,
+    pairs: impl IntoIterator<Item = (String, String)>,
+) {
+    let mut options = store_params.storage_options().cloned().unwrap_or_default();
+    for (key, value) in pairs {
+        options.insert(key, value);
+    }
+    let provider = store_params
+        .storage_options_accessor
+        .as_ref()
+        .and_then(|accessor| accessor.provider().cloned());
+    let accessor = if let Some(provider) = provider {
+        StorageOptionsAccessor::with_initial_and_provider(options, provider)
+    } else {
+        StorageOptionsAccessor::with_static_options(options)
+    };
+    store_params.storage_options_accessor = Some(Arc::new(accessor));
+}
+
+fn set_storage_options_provider(
+    store_params: &mut ObjectStoreParams,
+    provider: Arc<dyn StorageOptionsProvider>,
+) {
+    let accessor = match store_params.storage_options().cloned() {
+        Some(options) => StorageOptionsAccessor::with_initial_and_provider(options, provider),
+        None => StorageOptionsAccessor::with_provider(provider),
+    };
+    store_params.storage_options_accessor = Some(Arc::new(accessor));
+}
 
 /// A builder for configuring a [`Connection::table_names`] operation
 pub struct TableNamesBuilder {
@@ -66,7 +103,14 @@ impl TableNamesBuilder {
         self
     }
 
+    /// Set the namespace to list tables from
+    pub fn namespace(mut self, namespace: Vec<String>) -> Self {
+        self.request.namespace = namespace;
+        self
+    }
+
     /// Execute the table names operation
+    #[allow(deprecated)]
     pub async fn execute(self) -> Result<Vec<String>> {
         self.parent.clone().table_names(self.request).await
     }
@@ -146,6 +190,7 @@ impl CreateTableBuilder<true> {
         let request = self.into_request()?;
         Ok(Table::new_with_embedding_registry(
             parent.create_table(request).await?,
+            parent,
             embedding_registry,
         ))
     }
@@ -205,9 +250,37 @@ impl CreateTableBuilder<false> {
 
     /// Execute the create table operation
     pub async fn execute(self) -> Result<Table> {
-        Ok(Table::new(
-            self.parent.clone().create_table(self.request).await?,
+        let parent = self.parent.clone();
+        let embedding_registry = self.embedding_registry.clone();
+        let request = self.into_request()?;
+        Ok(Table::new_with_embedding_registry(
+            parent.create_table(request).await?,
+            parent,
+            embedding_registry,
         ))
+    }
+
+    fn into_request(self) -> Result<CreateTableRequest> {
+        if self.embeddings.is_empty() {
+            return Ok(self.request);
+        }
+
+        let CreateTableData::Empty(table_def) = self.request.data else {
+            unreachable!("CreateTableBuilder<false> should always have Empty data")
+        };
+
+        let schema = table_def.schema.clone();
+        let empty_batch = arrow_array::RecordBatch::new_empty(schema.clone());
+
+        let reader = Box::new(std::iter::once(Ok(empty_batch)).collect::<Vec<_>>());
+        let reader = arrow_array::RecordBatchIterator::new(reader.into_iter(), schema);
+        let with_embeddings = WithEmbeddings::new(reader, self.embeddings);
+        let table_definition = with_embeddings.table_definition()?;
+
+        Ok(CreateTableRequest {
+            data: CreateTableData::Empty(table_definition),
+            ..self.request
+        })
     }
 }
 
@@ -231,18 +304,16 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://lancedb.com/docs/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        let store_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert(Default::default())
             .store_params
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
-        store_options.insert(key.into(), value.into());
+        merge_storage_options(store_params, [(key.into(), value.into())]);
         self
     }
 
@@ -251,24 +322,22 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://lancedb.com/docs/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
-        let store_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert(Default::default())
             .store_params
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
-
-        for (key, value) in pairs {
-            store_options.insert(key.into(), value.into());
-        }
+        let updates = pairs
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()));
+        merge_storage_options(store_params, updates);
         self
     }
 
@@ -305,23 +374,21 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// This has no effect in LanceDB Cloud.
     #[deprecated(since = "0.15.1", note = "Use `database_options` instead")]
     pub fn enable_v2_manifest_paths(mut self, use_v2_manifest_paths: bool) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert_with(Default::default)
             .store_params
-            .get_or_insert_with(Default::default)
-            .storage_options
             .get_or_insert_with(Default::default);
-
-        storage_options.insert(
-            OPT_NEW_TABLE_V2_MANIFEST_PATHS.to_string(),
-            if use_v2_manifest_paths {
-                "true".to_string()
-            } else {
-                "false".to_string()
-            },
+        let value = if use_v2_manifest_paths {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        };
+        merge_storage_options(
+            store_params,
+            [(OPT_NEW_TABLE_V2_MANIFEST_PATHS.to_string(), value)],
         );
         self
     }
@@ -331,20 +398,51 @@ impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
     /// The default is `LanceFileVersion::Stable`.
     #[deprecated(since = "0.15.1", note = "Use `database_options` instead")]
     pub fn data_storage_version(mut self, data_storage_version: LanceFileVersion) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .write_options
             .lance_write_params
             .get_or_insert_with(Default::default)
             .store_params
-            .get_or_insert_with(Default::default)
-            .storage_options
             .get_or_insert_with(Default::default);
-
-        storage_options.insert(
-            OPT_NEW_TABLE_STORAGE_VERSION.to_string(),
-            data_storage_version.to_string(),
+        merge_storage_options(
+            store_params,
+            [(
+                OPT_NEW_TABLE_STORAGE_VERSION.to_string(),
+                data_storage_version.to_string(),
+            )],
         );
+        self
+    }
+
+    /// Set the namespace for the table
+    pub fn namespace(mut self, namespace: Vec<String>) -> Self {
+        self.request.namespace = namespace;
+        self
+    }
+
+    /// Set a custom location for the table.
+    ///
+    /// If not set, the database will derive a location from its URI and the table name.
+    /// This is useful when integrating with namespace systems that manage table locations.
+    pub fn location(mut self, location: impl Into<String>) -> Self {
+        self.request.location = Some(location.into());
+        self
+    }
+
+    /// Set a storage options provider for automatic credential refresh.
+    ///
+    /// This allows tables to automatically refresh cloud storage credentials
+    /// when they expire, enabling long-running operations on remote storage.
+    pub fn storage_options_provider(mut self, provider: Arc<dyn StorageOptionsProvider>) -> Self {
+        let store_params = self
+            .request
+            .write_options
+            .lance_write_params
+            .get_or_insert(Default::default())
+            .store_params
+            .get_or_insert(Default::default());
+        set_storage_options_provider(store_params, provider);
         self
     }
 }
@@ -366,8 +464,11 @@ impl OpenTableBuilder {
             parent,
             request: OpenTableRequest {
                 name,
+                namespace: vec![],
                 index_cache_size: None,
                 lance_read_params: None,
+                location: None,
+                namespace_client: None,
             },
             embedding_registry,
         }
@@ -402,17 +503,15 @@ impl OpenTableBuilder {
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://lancedb.com/docs/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .lance_read_params
             .get_or_insert(Default::default())
             .store_options
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
-        storage_options.insert(key.into(), value.into());
+        merge_storage_options(store_params, [(key.into(), value.into())]);
         self
     }
 
@@ -421,39 +520,124 @@ impl OpenTableBuilder {
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://lancedb.com/docs/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
-        let storage_options = self
+        let store_params = self
             .request
             .lance_read_params
             .get_or_insert(Default::default())
             .store_options
-            .get_or_insert(Default::default())
-            .storage_options
             .get_or_insert(Default::default());
+        let updates = pairs
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()));
+        merge_storage_options(store_params, updates);
+        self
+    }
 
-        for (key, value) in pairs {
-            storage_options.insert(key.into(), value.into());
-        }
+    /// Set the namespace for the table
+    pub fn namespace(mut self, namespace: Vec<String>) -> Self {
+        self.request.namespace = namespace;
+        self
+    }
+
+    /// Set a custom location for the table.
+    ///
+    /// If not set, the database will derive a location from its URI and the table name.
+    /// This is useful when integrating with namespace systems that manage table locations.
+    pub fn location(mut self, location: impl Into<String>) -> Self {
+        self.request.location = Some(location.into());
+        self
+    }
+
+    /// Set a storage options provider for automatic credential refresh.
+    ///
+    /// This allows tables to automatically refresh cloud storage credentials
+    /// when they expire, enabling long-running operations on remote storage.
+    pub fn storage_options_provider(mut self, provider: Arc<dyn StorageOptionsProvider>) -> Self {
+        let store_params = self
+            .request
+            .lance_read_params
+            .get_or_insert(Default::default())
+            .store_options
+            .get_or_insert(Default::default());
+        set_storage_options_provider(store_params, provider);
         self
     }
 
     /// Open the table
     pub async fn execute(self) -> Result<Table> {
+        let table = self.parent.open_table(self.request).await?;
         Ok(Table::new_with_embedding_registry(
-            self.parent.clone().open_table(self.request).await?,
+            table,
+            self.parent,
             self.embedding_registry,
         ))
+    }
+}
+
+/// Builder for cloning a table.
+///
+/// A shallow clone creates a new table that shares the underlying data files
+/// with the source table but has its own independent manifest. Both the source
+/// and cloned tables can evolve independently while initially sharing the same
+/// data, deletion, and index files.
+///
+/// Use this builder to configure the clone operation before executing it.
+pub struct CloneTableBuilder {
+    parent: Arc<dyn Database>,
+    request: CloneTableRequest,
+}
+
+impl CloneTableBuilder {
+    fn new(parent: Arc<dyn Database>, target_table_name: String, source_uri: String) -> Self {
+        Self {
+            parent,
+            request: CloneTableRequest::new(target_table_name, source_uri),
+        }
+    }
+
+    /// Set the source version to clone from
+    pub fn source_version(mut self, version: u64) -> Self {
+        self.request.source_version = Some(version);
+        self
+    }
+
+    /// Set the source tag to clone from
+    pub fn source_tag(mut self, tag: impl Into<String>) -> Self {
+        self.request.source_tag = Some(tag.into());
+        self
+    }
+
+    /// Set the target namespace for the cloned table
+    pub fn target_namespace(mut self, namespace: Vec<String>) -> Self {
+        self.request.target_namespace = namespace;
+        self
+    }
+
+    /// Set whether to perform a shallow clone (default: true)
+    ///
+    /// When true, the cloned table shares data files with the source table.
+    /// When false, performs a deep clone (not yet implemented).
+    pub fn is_shallow(mut self, is_shallow: bool) -> Self {
+        self.request.is_shallow = is_shallow;
+        self
+    }
+
+    /// Execute the clone operation
+    pub async fn execute(self) -> Result<Table> {
+        let parent = self.parent.clone();
+        let table = parent.clone_table(self.request).await?;
+        Ok(Table::new(table, parent))
     }
 }
 
 /// A connection to LanceDB
 #[derive(Clone)]
 pub struct Connection {
-    uri: String,
     internal: Arc<dyn Database>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
@@ -465,9 +649,19 @@ impl std::fmt::Display for Connection {
 }
 
 impl Connection {
+    pub fn new(
+        internal: Arc<dyn Database>,
+        embedding_registry: Arc<dyn EmbeddingRegistry>,
+    ) -> Self {
+        Self {
+            internal,
+            embedding_registry,
+        }
+    }
+
     /// Get the URI of the connection
     pub fn uri(&self) -> &str {
-        self.uri.as_str()
+        self.internal.uri()
     }
 
     /// Get access to the underlying database
@@ -556,6 +750,30 @@ impl Connection {
         )
     }
 
+    /// Clone a table in the database
+    ///
+    /// Creates a new table by cloning from an existing source table.
+    /// By default, this performs a shallow clone where the new table shares
+    /// the underlying data files with the source table.
+    ///
+    /// # Parameters
+    /// - `target_table_name`: The name of the new table to create
+    /// - `source_uri`: The URI of the source table to clone from
+    ///
+    /// # Returns
+    /// A [`CloneTableBuilder`] that can be used to configure the clone operation
+    pub fn clone_table(
+        &self,
+        target_table_name: impl Into<String>,
+        source_uri: impl Into<String>,
+    ) -> CloneTableBuilder {
+        CloneTableBuilder::new(
+            self.internal.clone(),
+            target_table_name.into(),
+            source_uri.into(),
+        )
+    }
+
     /// Rename a table in the database.
     ///
     /// This is only supported in LanceDB Cloud.
@@ -563,18 +781,31 @@ impl Connection {
         &self,
         old_name: impl AsRef<str>,
         new_name: impl AsRef<str>,
+        cur_namespace: &[String],
+        new_namespace: &[String],
     ) -> Result<()> {
         self.internal
-            .rename_table(old_name.as_ref(), new_name.as_ref())
+            .rename_table(
+                old_name.as_ref(),
+                new_name.as_ref(),
+                cur_namespace,
+                new_namespace,
+            )
             .await
+    }
+
+    /// Get the read consistency of the connection
+    pub async fn read_consistency(&self) -> Result<ReadConsistency> {
+        self.internal.read_consistency().await
     }
 
     /// Drop a table in the database.
     ///
     /// # Arguments
     /// * `name` - The name of the table to drop
-    pub async fn drop_table(&self, name: impl AsRef<str>) -> Result<()> {
-        self.internal.drop_table(name.as_ref()).await
+    /// * `namespace` - The namespace to drop the table from
+    pub async fn drop_table(&self, name: impl AsRef<str>, namespace: &[String]) -> Result<()> {
+        self.internal.drop_table(name.as_ref(), namespace).await
     }
 
     /// Drop the database
@@ -582,12 +813,60 @@ impl Connection {
     /// This is the same as dropping all of the tables
     #[deprecated(since = "0.15.1", note = "Use `drop_all_tables` instead")]
     pub async fn drop_db(&self) -> Result<()> {
-        self.internal.drop_all_tables().await
+        self.internal.drop_all_tables(&[]).await
     }
 
     /// Drops all tables in the database
-    pub async fn drop_all_tables(&self) -> Result<()> {
-        self.internal.drop_all_tables().await
+    ///
+    /// # Arguments
+    /// * `namespace` - The namespace to drop all tables from. Empty slice represents root namespace.
+    pub async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
+        self.internal.drop_all_tables(namespace).await
+    }
+
+    /// List immediate child namespace names in the given namespace
+    pub async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
+        self.internal.list_namespaces(request).await
+    }
+
+    /// Create a new namespace
+    pub async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
+        self.internal.create_namespace(request).await
+    }
+
+    /// Drop a namespace
+    pub async fn drop_namespace(
+        &self,
+        request: DropNamespaceRequest,
+    ) -> Result<DropNamespaceResponse> {
+        self.internal.drop_namespace(request).await
+    }
+
+    /// Describe a namespace
+    pub async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse> {
+        self.internal.describe_namespace(request).await
+    }
+
+    /// Get the equivalent namespace client in the database of this connection.
+    /// For LanceNamespaceDatabase, it is the underlying LanceNamespace.
+    /// For ListingDatabase, it is the equivalent DirectoryNamespace.
+    /// For RemoteDatabase, it is the equivalent RestNamespace.
+    pub async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
+        self.internal.namespace_client().await
+    }
+
+    /// List tables with pagination support
+    pub async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        self.internal.list_tables(request).await
     }
 
     /// Get the in-memory embedding registry.
@@ -613,7 +892,7 @@ pub struct ConnectRequest {
     #[cfg(feature = "remote")]
     pub client_config: ClientConfig,
 
-    /// Database/Catalog specific options
+    /// Database specific options
     pub options: HashMap<String, String>,
 
     /// The interval at which to check for updates from other processes.
@@ -627,6 +906,12 @@ pub struct ConnectRequest {
     /// consistency only applies to read operations. Write operations are
     /// always consistent.
     pub read_consistency_interval: Option<std::time::Duration>,
+
+    /// Optional session for object stores and caching
+    ///
+    /// If provided, this session will be used instead of creating a default one.
+    /// This allows for custom configuration of object store registries, caching, etc.
+    pub session: Option<Arc<lance::session::Session>>,
 }
 
 #[derive(Debug)]
@@ -634,6 +919,10 @@ pub struct ConnectBuilder {
     request: ConnectRequest,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
 }
+
+#[cfg(feature = "remote")]
+const ENV_VARS_TO_STORAGE_OPTS: [(&str, &str); 1] =
+    [("AZURE_STORAGE_ACCOUNT_NAME", "azure_storage_account_name")];
 
 impl ConnectBuilder {
     /// Create a new [`ConnectOptions`] with the given database URI.
@@ -645,6 +934,7 @@ impl ConnectBuilder {
                 client_config: Default::default(),
                 read_consistency_interval: None,
                 options: HashMap::new(),
+                session: None,
             },
             embedding_registry: None,
         }
@@ -742,6 +1032,7 @@ impl ConnectBuilder {
     }
 
     /// [`AwsCredential`] to use when connecting to S3.
+    #[cfg(feature = "aws")]
     #[deprecated(note = "Pass through storage_options instead")]
     pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
         self.request
@@ -760,7 +1051,7 @@ impl ConnectBuilder {
 
     /// Set an option for the storage layer.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://lancedb.com/docs/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.request.options.insert(key.into(), value.into());
         self
@@ -768,7 +1059,7 @@ impl ConnectBuilder {
 
     /// Set multiple options for the storage layer.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://lancedb.com/docs/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
@@ -802,11 +1093,41 @@ impl ConnectBuilder {
         self
     }
 
+    /// Set a custom session for object stores and caching.
+    ///
+    /// By default, a new session with default configuration will be created.
+    /// This method allows you to provide a custom session with your own
+    /// configuration for object store registries, caching, etc.
+    ///
+    /// # Arguments
+    ///
+    /// * `session` - A custom session to use for this connection
+    pub fn session(mut self, session: Arc<lance::session::Session>) -> Self {
+        self.request.session = Some(session);
+        self
+    }
+
+    #[cfg(feature = "remote")]
+    fn apply_env_defaults(
+        env_var_to_remote_storage_option: &[(&str, &str)],
+        options: &mut HashMap<String, String>,
+    ) {
+        for (env_key, opt_key) in env_var_to_remote_storage_option {
+            if let Ok(env_value) = std::env::var(env_key) {
+                if !options.contains_key(*opt_key) {
+                    options.insert((*opt_key).to_string(), env_value);
+                }
+            }
+        }
+    }
+
     #[cfg(feature = "remote")]
     fn execute_remote(self) -> Result<Connection> {
         use crate::remote::db::RemoteDatabaseOptions;
 
-        let options = RemoteDatabaseOptions::parse_from_map(&self.request.options)?;
+        let mut merged_options = self.request.options.clone();
+        Self::apply_env_defaults(&ENV_VARS_TO_STORAGE_OPTS, &mut merged_options);
+        let options = RemoteDatabaseOptions::parse_from_map(&merged_options)?;
 
         let region = options.region.ok_or_else(|| Error::InvalidInput {
             message: "A region is required when connecting to LanceDb Cloud".to_string(),
@@ -826,7 +1147,6 @@ impl ConnectBuilder {
         )?);
         Ok(Connection {
             internal,
-            uri: self.request.uri,
             embedding_registry: self
                 .embedding_registry
                 .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
@@ -849,7 +1169,6 @@ impl ConnectBuilder {
             let internal = Arc::new(ListingDatabase::connect_with_options(&self.request).await?);
             Ok(Connection {
                 internal,
-                uri: self.request.uri,
                 embedding_registry: self
                     .embedding_registry
                     .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
@@ -868,47 +1187,129 @@ pub fn connect(uri: &str) -> ConnectBuilder {
     ConnectBuilder::new(uri)
 }
 
-/// A builder for configuring a connection to a LanceDB catalog
-#[derive(Debug)]
-pub struct CatalogConnectBuilder {
-    request: ConnectRequest,
+pub struct ConnectNamespaceBuilder {
+    ns_impl: String,
+    properties: HashMap<String, String>,
+    storage_options: HashMap<String, String>,
+    read_consistency_interval: Option<std::time::Duration>,
+    embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    session: Option<Arc<lance::session::Session>>,
+    server_side_query_enabled: bool,
 }
 
-impl CatalogConnectBuilder {
-    /// Create a new [`CatalogConnectBuilder`] with the given catalog URI.
-    pub fn new(uri: &str) -> Self {
+impl ConnectNamespaceBuilder {
+    fn new(ns_impl: &str, properties: HashMap<String, String>) -> Self {
         Self {
-            request: ConnectRequest {
-                uri: uri.to_string(),
-                #[cfg(feature = "remote")]
-                client_config: Default::default(),
-                read_consistency_interval: None,
-                options: HashMap::new(),
-            },
+            ns_impl: ns_impl.to_string(),
+            properties,
+            storage_options: HashMap::new(),
+            read_consistency_interval: None,
+            embedding_registry: None,
+            session: None,
+            server_side_query_enabled: false,
         }
     }
 
-    pub fn catalog_options(mut self, catalog_options: &dyn CatalogOptions) -> Self {
-        catalog_options.serialize_into_map(&mut self.request.options);
+    /// Set an option for the storage layer.
+    ///
+    /// See available options at <https://lancedb.com/docs/storage/>
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.storage_options.insert(key.into(), value.into());
         self
     }
 
-    /// Establishes a connection to the catalog
-    pub async fn execute(self) -> Result<Arc<ListingCatalog>> {
-        let catalog = ListingCatalog::connect(&self.request).await?;
-        Ok(Arc::new(catalog))
+    /// Set multiple options for the storage layer.
+    ///
+    /// See available options at <https://lancedb.com/docs/storage/>
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (key, value) in pairs {
+            self.storage_options.insert(key.into(), value.into());
+        }
+        self
+    }
+
+    /// The interval at which to check for updates from other processes.
+    ///
+    /// If left unset, consistency is not checked. For maximum read
+    /// performance, this is the default. For strong consistency, set this to
+    /// zero seconds. Then every read will check for updates from other processes.
+    /// As a compromise, set this to a non-zero duration for eventual consistency.
+    pub fn read_consistency_interval(
+        mut self,
+        read_consistency_interval: std::time::Duration,
+    ) -> Self {
+        self.read_consistency_interval = Some(read_consistency_interval);
+        self
+    }
+
+    /// Provide a custom [`EmbeddingRegistry`] to use for this connection.
+    pub fn embedding_registry(mut self, registry: Arc<dyn EmbeddingRegistry>) -> Self {
+        self.embedding_registry = Some(registry);
+        self
+    }
+
+    /// Set a custom session for object stores and caching.
+    ///
+    /// By default, a new session with default configuration will be created.
+    /// This method allows you to provide a custom session with your own
+    /// configuration for object store registries, caching, etc.
+    pub fn session(mut self, session: Arc<lance::session::Session>) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    /// Enable server-side query execution.
+    ///
+    /// When enabled, queries will be executed on the namespace server instead of
+    /// locally. This can improve performance by reducing data transfer and
+    /// leveraging server-side compute resources.
+    ///
+    /// Default is `false` (queries executed locally).
+    pub fn server_side_query(mut self, enabled: bool) -> Self {
+        self.server_side_query_enabled = enabled;
+        self
+    }
+
+    /// Execute the connection
+    pub async fn execute(self) -> Result<Connection> {
+        use crate::database::namespace::LanceNamespaceDatabase;
+
+        let internal = Arc::new(
+            LanceNamespaceDatabase::connect(
+                &self.ns_impl,
+                self.properties,
+                self.storage_options,
+                self.read_consistency_interval,
+                self.session,
+                self.server_side_query_enabled,
+            )
+            .await?,
+        );
+
+        Ok(Connection {
+            internal,
+            embedding_registry: self
+                .embedding_registry
+                .unwrap_or_else(|| Arc::new(MemoryRegistry::new())),
+        })
     }
 }
 
-/// Connect to a LanceDB catalog.
-///
-/// A catalog is a container for databases, which in turn are containers for tables.
+/// Connect to a LanceDB database through a namespace.
 ///
 /// # Arguments
 ///
-/// * `uri` - URI where the catalog is located, can be a local directory or supported remote cloud storage.
-pub fn connect_catalog(uri: &str) -> CatalogConnectBuilder {
-    CatalogConnectBuilder::new(uri)
+/// * `ns_impl` - The namespace implementation to use (e.g., "dir" for directory-based, "rest" for REST API)
+/// * `properties` - Configuration properties for the namespace implementation
+/// ```
+pub fn connect_namespace(
+    ns_impl: &str,
+    properties: HashMap<String, String>,
+) -> ConnectNamespaceBuilder {
+    ConnectNamespaceBuilder::new(ns_impl, properties)
 }
 
 #[cfg(all(test, feature = "remote"))]
@@ -924,7 +1325,22 @@ mod test_utils {
             let internal = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
                 internal,
-                uri: "db://test".to_string(),
+                embedding_registry: Arc::new(MemoryRegistry::new()),
+            }
+        }
+
+        pub fn new_with_handler_and_config<T>(
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+            config: crate::remote::ClientConfig,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let internal = Arc::new(crate::remote::db::RemoteDatabase::new_mock_with_config(
+                handler, config,
+            ));
+            Self {
+                internal,
                 embedding_registry: Arc::new(MemoryRegistry::new()),
             }
         }
@@ -933,18 +1349,16 @@ mod test_utils {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::create_dir_all;
-
-    use crate::catalog::{Catalog, DatabaseNamesRequest, OpenDatabaseRequest};
     use crate::database::listing::{ListingDatabaseOptions, NewTableConfig};
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, QueryExecutionOptions};
+    use crate::test_utils::connection::new_test_connection;
     use arrow::compute::concat_batches;
     use arrow_array::RecordBatchReader;
     use arrow_schema::{DataType, Field, Schema};
     use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
     use futures::{stream, TryStreamExt};
-    use lance::error::{ArrowResult, DataFusionResult};
+    use lance_core::error::{ArrowResult, DataFusionResult};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
     use tempfile::tempdir;
 
@@ -954,11 +1368,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri).execute().await.unwrap();
+        let tc = new_test_connection().await.unwrap();
+        assert_eq!(tc.connection.uri(), tc.uri);
+    }
 
-        assert_eq!(db.uri, uri);
+    #[cfg(feature = "remote")]
+    #[test]
+    fn test_apply_env_defaults() {
+        let env_key = "TEST_APPLY_ENV_DEFAULTS_ENVIRONMENT_VARIABLE_ENV_KEY";
+        let env_val = "TEST_APPLY_ENV_DEFAULTS_ENVIRONMENT_VARIABLE_ENV_VAL";
+        let opts_key = "test_apply_env_defaults_environment_variable_opts_key";
+        std::env::set_var(env_key, env_val);
+
+        let mut options = HashMap::new();
+        ConnectBuilder::apply_env_defaults(&[(env_key, opts_key)], &mut options);
+        assert_eq!(Some(&env_val.to_string()), options.get(opts_key));
+
+        options.insert(opts_key.to_string(), "EXPLICIT-VALUE".to_string());
+        ConnectBuilder::apply_env_defaults(&[(env_key, opts_key)], &mut options);
+        assert_eq!(Some(&"EXPLICIT-VALUE".to_string()), options.get(opts_key));
     }
 
     #[cfg(not(windows))]
@@ -979,30 +1407,32 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(db.uri, relative_uri.to_str().unwrap().to_string());
+        assert_eq!(db.uri(), relative_uri.to_str().unwrap().to_string());
     }
 
     #[tokio::test]
     async fn test_table_names() {
-        let tmp_dir = tempdir().unwrap();
+        let tc = new_test_connection().await.unwrap();
+        let db = tc.connection;
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
         let mut names = Vec::with_capacity(100);
         for _ in 0..100 {
-            let mut name = uuid::Uuid::new_v4().to_string();
+            let name = uuid::Uuid::new_v4().to_string();
             names.push(name.clone());
-            name.push_str(".lance");
-            create_dir_all(tmp_dir.path().join(&name)).unwrap();
+            db.create_empty_table(name, schema.clone())
+                .execute()
+                .await
+                .unwrap();
         }
         names.sort();
-
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri).execute().await.unwrap();
-        let tables = db.table_names().execute().await.unwrap();
+        let tables = db.table_names().limit(100).execute().await.unwrap();
 
         assert_eq!(tables, names);
 
         let tables = db
             .table_names()
             .start_after(&names[30])
+            .limit(100)
             .execute()
             .await
             .unwrap();
@@ -1025,15 +1455,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_connect_s3() {
-        // let db = Database::connect("s3://bucket/path/to/database").await.unwrap();
-    }
-
-    #[tokio::test]
     async fn test_open_table() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri).execute().await.unwrap();
+        let tc = new_test_connection().await.unwrap();
+        let db = tc.connection;
 
         assert_eq!(db.table_names().execute().await.unwrap().len(), 0);
         // open non-exist table
@@ -1189,19 +1613,28 @@ mod tests {
 
     #[tokio::test]
     async fn drop_table() {
-        let tmp_dir = tempdir().unwrap();
+        let tc = new_test_connection().await.unwrap();
+        let db = tc.connection;
 
-        let uri = tmp_dir.path().to_str().unwrap();
-        let db = connect(uri).execute().await.unwrap();
+        if tc.is_remote {
+            // All the typical endpoints such as s3:///, file-object-store:///, etc. treat drop_table
+            // as idempotent.
+            assert!(db.drop_table("invalid_table", &[]).await.is_ok());
+        } else {
+            // The behavior of drop_table when using a file:/// endpoint differs from all other
+            // object providers, in that it returns an error when deleting a non-existent table.
+            assert!(matches!(
+                db.drop_table("invalid_table", &[]).await,
+                Err(crate::Error::TableNotFound { .. }),
+            ));
+        }
 
-        // drop non-exist table
-        assert!(matches!(
-            db.drop_table("invalid_table").await,
-            Err(crate::Error::TableNotFound { .. }),
-        ));
-
-        create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
-        db.drop_table("table1").await.unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        db.create_empty_table("table1", schema.clone())
+            .execute()
+            .await
+            .unwrap();
+        db.drop_table("table1", &[]).await.unwrap();
 
         let tables = db.table_names().execute().await.unwrap();
         assert_eq!(tables.len(), 0);
@@ -1243,89 +1676,172 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_connect_catalog() {
+    async fn test_clone_table() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let catalog = connect_catalog(uri).execute().await.unwrap();
+        let db = connect(uri).execute().await.unwrap();
 
-        // Verify that we can get the uri from the catalog
-        let catalog_uri = catalog.uri();
-        assert_eq!(catalog_uri, uri);
+        // Create a source table with some data
+        let mut batch_gen = BatchGenerator::new()
+            .col(Box::new(IncrementingInt32::new().named("id")))
+            .col(Box::new(IncrementingInt32::new().named("value")));
+        let reader = batch_gen.batches(5, 100);
 
-        // Check that the catalog is initially empty
-        let dbs = catalog
-            .database_names(DatabaseNamesRequest::default())
+        let source_table = db
+            .create_table("source_table", reader)
+            .execute()
             .await
             .unwrap();
-        assert_eq!(dbs.len(), 0);
+
+        // Get the source table URI
+        let source_table_path = tmp_dir.path().join("source_table.lance");
+        let source_uri = source_table_path.to_str().unwrap();
+
+        // Clone the table
+        let cloned_table = db
+            .clone_table("cloned_table", source_uri)
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify the cloned table exists
+        let table_names = db.table_names().execute().await.unwrap();
+        assert!(table_names.contains(&"source_table".to_string()));
+        assert!(table_names.contains(&"cloned_table".to_string()));
+
+        // Verify the cloned table has the same schema
+        assert_eq!(
+            source_table.schema().await.unwrap(),
+            cloned_table.schema().await.unwrap()
+        );
+
+        // Verify the cloned table has the same data
+        let source_count = source_table.count_rows(None).await.unwrap();
+        let cloned_count = cloned_table.count_rows(None).await.unwrap();
+        assert_eq!(source_count, cloned_count);
     }
 
     #[tokio::test]
-    #[cfg(not(windows))]
-    async fn test_catalog_create_database() {
+    async fn test_create_empty_table_with_embeddings() {
+        use crate::embeddings::{EmbeddingDefinition, EmbeddingFunction};
+        use arrow_array::{
+            Array, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator, StringArray,
+        };
+        use std::borrow::Cow;
+
+        #[derive(Debug, Clone)]
+        struct MockEmbedding {
+            dim: usize,
+        }
+
+        impl EmbeddingFunction for MockEmbedding {
+            fn name(&self) -> &str {
+                "test_embedding"
+            }
+
+            fn source_type(&self) -> Result<Cow<'_, DataType>> {
+                Ok(Cow::Owned(DataType::Utf8))
+            }
+
+            fn dest_type(&self) -> Result<Cow<'_, DataType>> {
+                Ok(Cow::Owned(DataType::new_fixed_size_list(
+                    DataType::Float32,
+                    self.dim as i32,
+                    true,
+                )))
+            }
+
+            fn compute_source_embeddings(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+                let len = source.len();
+                let values = vec![1.0f32; len * self.dim];
+                let values = Arc::new(Float32Array::from(values));
+                let field = Arc::new(Field::new("item", DataType::Float32, true));
+                Ok(Arc::new(FixedSizeListArray::new(
+                    field,
+                    self.dim as i32,
+                    values,
+                    None,
+                )))
+            }
+
+            fn compute_query_embeddings(&self, _input: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+                unimplemented!()
+            }
+        }
+
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let catalog = connect_catalog(uri).execute().await.unwrap();
+        let db = connect(uri).execute().await.unwrap();
 
-        let db_name = "test_db";
-        catalog
-            .create_database(crate::catalog::CreateDatabaseRequest {
-                name: db_name.to_string(),
-                mode: Default::default(),
-                options: Default::default(),
-            })
+        let embed_func = Arc::new(MockEmbedding { dim: 128 });
+        db.embedding_registry()
+            .register("test_embedding", embed_func.clone())
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)]));
+        let ed = EmbeddingDefinition {
+            source_column: "name".to_owned(),
+            dest_column: Some("name_embedding".to_owned()),
+            embedding_name: "test_embedding".to_owned(),
+        };
+
+        let table = db
+            .create_empty_table("test", schema)
+            .mode(CreateTableMode::Overwrite)
+            .add_embedding(ed)
+            .unwrap()
+            .execute()
             .await
             .unwrap();
 
-        let dbs = catalog
-            .database_names(DatabaseNamesRequest::default())
+        let table_schema = table.schema().await.unwrap();
+        assert!(table_schema.column_with_name("name").is_some());
+        assert!(table_schema.column_with_name("name_embedding").is_some());
+
+        let embedding_field = table_schema.field_with_name("name_embedding").unwrap();
+        assert_eq!(
+            embedding_field.data_type(),
+            &DataType::new_fixed_size_list(DataType::Float32, 128, true)
+        );
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)]));
+        let input_batch = RecordBatch::try_new(
+            input_schema.clone(),
+            vec![Arc::new(StringArray::from(vec![
+                Some("Alice"),
+                Some("Bob"),
+                Some("Charlie"),
+            ]))],
+        )
+        .unwrap();
+
+        let input_reader = Box::new(RecordBatchIterator::new(
+            vec![Ok(input_batch)].into_iter(),
+            input_schema,
+        ));
+
+        table.add(input_reader).execute().await.unwrap();
+
+        let results = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
             .await
             .unwrap();
-        assert_eq!(dbs.len(), 1);
-        assert_eq!(dbs[0], db_name);
 
-        let db = catalog
-            .open_database(OpenDatabaseRequest {
-                name: db_name.to_string(),
-                database_options: HashMap::new(),
-            })
-            .await
+        assert_eq!(results.len(), 1);
+        let batch = &results[0];
+        assert_eq!(batch.num_rows(), 3);
+        assert!(batch.column_by_name("name_embedding").is_some());
+
+        let embedding_col = batch
+            .column_by_name("name_embedding")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
             .unwrap();
-
-        let tables = db.table_names(Default::default()).await.unwrap();
-        assert_eq!(tables.len(), 0);
-    }
-
-    #[tokio::test]
-    #[cfg(not(windows))]
-    async fn test_catalog_drop_database() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let catalog = connect_catalog(uri).execute().await.unwrap();
-
-        // Create and then drop a database
-        let db_name = "test_db_to_drop";
-        catalog
-            .create_database(crate::catalog::CreateDatabaseRequest {
-                name: db_name.to_string(),
-                mode: Default::default(),
-                options: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        let dbs = catalog
-            .database_names(DatabaseNamesRequest::default())
-            .await
-            .unwrap();
-        assert_eq!(dbs.len(), 1);
-
-        catalog.drop_database(db_name).await.unwrap();
-
-        let dbs_after = catalog
-            .database_names(DatabaseNamesRequest::default())
-            .await
-            .unwrap();
-        assert_eq!(dbs_after.len(), 0);
+        assert_eq!(embedding_col.len(), 3);
     }
 }

@@ -6,10 +6,14 @@
 
 # Function: connect()
 
-## connect(uri, options)
+## connect(uri, options, session, headerProvider)
 
 ```ts
-function connect(uri, options?): Promise<Connection>
+function connect(
+   uri,
+   options?,
+   session?,
+   headerProvider?): Promise<Connection>
 ```
 
 Connect to a LanceDB instance at the given URI.
@@ -28,6 +32,10 @@ Accepted formats:
 
 * **options?**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt;
     The options to use when connecting to the database
+
+* **session?**: [`Session`](../classes/Session.md)
+
+* **headerProvider?**: [`HeaderProvider`](../classes/HeaderProvider.md) \| () => `Record`&lt;`string`, `string`&gt; \| () => `Promise`&lt;`Record`&lt;`string`, `string`&gt;&gt;
 
 ### Returns
 
@@ -48,6 +56,18 @@ const conn = await connect(
   "s3://bucket/path/to/database",
   {storageOptions: {timeout: "60s"}
 });
+```
+
+Using with a header provider for per-request authentication:
+```ts
+const provider = new StaticHeaderProvider({
+  "X-API-Key": "my-key"
+});
+const conn = await connectWithHeaderProvider(
+  "db://host:port",
+  options,
+  provider
+);
 ```
 
 ## connect(options)
@@ -77,11 +97,19 @@ Accepted formats:
 
 [ConnectionOptions](../interfaces/ConnectionOptions.md) for more details on the URI format.
 
-### Example
+### Examples
 
 ```ts
 const conn = await connect({
   uri: "/path/to/database",
   storageOptions: {timeout: "60s"}
+});
+```
+
+```ts
+const session = Session.default();
+const conn = await connect({
+  uri: "/path/to/database",
+  session: session
 });
 ```
