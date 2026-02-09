@@ -36,6 +36,10 @@
     }
   },
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lancedb/lancedb"
+  },
   "devDependencies": {
     "@aws-sdk/client-dynamodb": "^3.33.0",
     "@aws-sdk/client-kms": "^3.33.0",
