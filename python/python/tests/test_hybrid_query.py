@@ -197,3 +197,92 @@ def test_normalize_scores():
             assert pc.equal(result, expected), (
                 f"Expected {expected} but got {result} for invert={invert}"
             )
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_select_columns(table: AsyncTable):
+    result = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .select(["text"])
+        .limit(2)
+        .to_arrow()
+    )
+    assert "text" in result.column_names
+    assert "_relevance_score" in result.column_names
+    assert "vector" not in result.column_names
+    assert "_distance" not in result.column_names
+    assert "_score" not in result.column_names
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_select_relevance_score(table: AsyncTable):
+    result = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .select(["text", "_relevance_score"])
+        .limit(2)
+        .to_arrow()
+    )
+    assert result.column_names == ["text", "_relevance_score"]
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_select_score_error(table: AsyncTable):
+    with pytest.raises(ValueError, match="_relevance_score"):
+        await (
+            table.query()
+            .nearest_to([0.0, 0.4])
+            .nearest_to_text("dog")
+            .select(["_score"])
+            .limit(2)
+            .to_arrow()
+        )
+    with pytest.raises(ValueError, match="_relevance_score"):
+        await (
+            table.query()
+            .nearest_to([0.0, 0.4])
+            .nearest_to_text("dog")
+            .select(["_distance"])
+            .limit(2)
+            .to_arrow()
+        )
+
+
+def test_sync_hybrid_select_columns(sync_table: Table):
+    result = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .select(["text"])
+        .limit(2)
+        .to_arrow()
+    )
+    assert "text" in result.column_names
+    assert "_relevance_score" in result.column_names
+    assert "vector" not in result.column_names
+    assert "_distance" not in result.column_names
+    assert "_score" not in result.column_names
+
+
+def test_sync_hybrid_select_score_error(sync_table: Table):
+    with pytest.raises(ValueError, match="_relevance_score"):
+        (
+            sync_table.search(query_type="hybrid")
+            .vector([0.0, 0.4])
+            .text("dog")
+            .select(["_score"])
+            .limit(2)
+            .to_arrow()
+        )
+    with pytest.raises(ValueError, match="_relevance_score"):
+        (
+            sync_table.search(query_type="hybrid")
+            .vector([0.0, 0.4])
+            .text("dog")
+            .select(["_distance"])
+            .limit(2)
+            .to_arrow()
+        )

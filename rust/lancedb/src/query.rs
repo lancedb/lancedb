@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::{future::Future, time::Duration};
 
 use arrow::compute::concat_batches;
-use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
+use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array, RecordBatch};
 use arrow_schema::{DataType, SchemaRef};
 use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
@@ -21,7 +21,7 @@ use lance_io::stream::RecordBatchStreamAdapter;
 
 use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
-use crate::rerankers::{check_reranker_result, NormalizeMethod, Reranker};
+use crate::rerankers::{check_reranker_result, NormalizeMethod, Reranker, RELEVANCE_SCORE};
 use crate::table::BaseTable;
 use crate::utils::TimeoutStream;
 use crate::DistanceType;
@@ -886,6 +886,66 @@ pub struct VectorQuery {
     request: VectorQueryRequest,
 }
 
+/// Apply user-specified column selection to the final hybrid search results.
+///
+/// This is done after reranking rather than on the sub-queries, because the
+/// sub-queries produce `_score` / `_distance` which get fused into
+/// `_relevance_score` by the reranker. Pushing the user's select into
+/// sub-queries would cause contradictory errors (e.g. selecting `_score` on
+/// the vector sub-query which only has `_distance`).
+fn apply_hybrid_select(batch: RecordBatch, select: &Select) -> Result<RecordBatch> {
+    match select {
+        Select::All => Ok(batch),
+        Select::Columns(columns) => {
+            for col in columns {
+                if col == SCORE_COL || col == DIST_COL {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "Column '{}' is not available in hybrid search results. \
+                             Hybrid search fuses scores into '{}'. \
+                             Select '{}' instead, or omit it to have it included automatically.",
+                            col, RELEVANCE_SCORE, RELEVANCE_SCORE,
+                        ),
+                    });
+                }
+            }
+
+            let mut indices: Vec<usize> = columns
+                .iter()
+                .map(|name| {
+                    batch
+                        .schema()
+                        .index_of(name)
+                        .map_err(|_| Error::InvalidInput {
+                            message: format!(
+                                "Column '{}' does not exist in the table. Available columns: {:?}",
+                                name,
+                                batch
+                                    .schema()
+                                    .fields()
+                                    .iter()
+                                    .map(|f| f.name().as_str())
+                                    .collect::<Vec<_>>()
+                            ),
+                        })
+                })
+                .collect::<Result<_>>()?;
+
+            // Auto-include _relevance_score if not explicitly listed
+            if !columns.iter().any(|c| c == RELEVANCE_SCORE) {
+                if let Ok(idx) = batch.schema().index_of(RELEVANCE_SCORE) {
+                    indices.push(idx);
+                }
+            }
+
+            Ok(batch.project(&indices)?)
+        }
+        Select::Dynamic(_) => Err(Error::InvalidInput {
+            message: "Dynamic column selection is not yet supported with hybrid search".to_string(),
+        }),
+    }
+}
+
 impl VectorQuery {
     fn new(base: Query) -> Self {
         Self {
@@ -1113,12 +1173,16 @@ impl VectorQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        let user_select = self.request.base.select.clone();
+
         // clone query and specify we want to include row IDs, which can be needed for reranking
         let mut fts_query = Query::new(self.parent.clone());
         fts_query.request = self.request.base.clone();
+        fts_query.request.select = Select::All;
         fts_query = fts_query.with_row_id();
 
         let mut vector_query = self.clone().with_row_id();
+        vector_query.request.base.select = Select::All;
 
         vector_query.request.base.full_text_search = None;
         let (fts_results, vec_results) = try_join!(
@@ -1177,6 +1241,8 @@ impl VectorQuery {
         if !self.request.base.with_row_id {
             results = results.drop_column(ROW_ID)?;
         }
+
+        results = apply_hybrid_select(results, &user_select)?;
 
         Ok(SendableRecordBatchStream::from(
             RecordBatchStreamAdapter::new(results.schema(), stream::iter([Ok(results)])),
@@ -2172,5 +2238,186 @@ mod tests {
         ids.sort();
 
         assert_eq!(ids, vec![1, 5, 17]);
+    }
+
+    async fn hybrid_test_table(tmp_dir: &tempfile::TempDir) -> Table {
+        let dataset_path = tmp_dir.path();
+        let conn = connect(dataset_path.to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let dims = 2;
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("text", DataType::Utf8, false),
+            ArrowField::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    dims,
+                ),
+                false,
+            ),
+        ]));
+
+        let text = StringArray::from(vec!["dog", "cat", "a", "b"]);
+        let vectors = vec![
+            Some(vec![Some(0.0), Some(0.0)]),
+            Some(vec![Some(-2.0), Some(-2.0)]),
+            Some(vec![Some(50.0), Some(50.0)]),
+            Some(vec![Some(-30.0), Some(-30.0)]),
+        ];
+        let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(vectors, dims);
+
+        let record_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(text), Arc::new(vector)]).unwrap();
+        let record_batch_iter =
+            RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
+        let table = conn
+            .create_table("my_table", record_batch_iter)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["text"], crate::index::Index::FTS(Default::default()))
+            .replace(true)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_select_columns() {
+        let tmp_dir = tempdir().unwrap();
+        let table = hybrid_test_table(&tmp_dir).await;
+
+        let results = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("b".to_string()))
+            .select(Select::columns(&["text"]))
+            .limit(2)
+            .nearest_to(&[-10.0, -10.0])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let batch = &results[0];
+        let schema = batch.schema();
+        let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert!(col_names.contains(&"text"));
+        assert!(col_names.contains(&"_relevance_score"));
+        assert!(!col_names.contains(&"vector"));
+        assert!(!col_names.contains(&"_distance"));
+        assert!(!col_names.contains(&"_score"));
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_select_relevance_score() {
+        let tmp_dir = tempdir().unwrap();
+        let table = hybrid_test_table(&tmp_dir).await;
+
+        let results = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("b".to_string()))
+            .select(Select::columns(&["text", "_relevance_score"]))
+            .limit(2)
+            .nearest_to(&[-10.0, -10.0])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let batch = &results[0];
+        let schema = batch.schema();
+        let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert!(col_names.contains(&"text"));
+        assert!(col_names.contains(&"_relevance_score"));
+        assert_eq!(col_names.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_select_score_errors() {
+        let tmp_dir = tempdir().unwrap();
+        let table = hybrid_test_table(&tmp_dir).await;
+
+        let err = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("b".to_string()))
+            .select(Select::columns(&["_score"]))
+            .limit(2)
+            .nearest_to(&[-10.0, -10.0])
+            .unwrap()
+            .execute()
+            .await;
+        assert!(err.is_err());
+        let err_msg = err.err().unwrap().to_string();
+        assert!(
+            err_msg.contains("_relevance_score"),
+            "Error should mention _relevance_score: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("_score"),
+            "Error should mention _score: {}",
+            err_msg
+        );
+
+        let err = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("b".to_string()))
+            .select(Select::columns(&["_distance"]))
+            .limit(2)
+            .nearest_to(&[-10.0, -10.0])
+            .unwrap()
+            .execute()
+            .await;
+        assert!(err.is_err());
+        let err_msg = err.err().unwrap().to_string();
+        assert!(
+            err_msg.contains("_relevance_score"),
+            "Error should mention _relevance_score: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("_distance"),
+            "Error should mention _distance: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_select_all_unchanged() {
+        let tmp_dir = tempdir().unwrap();
+        let table = hybrid_test_table(&tmp_dir).await;
+
+        let results = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("b".to_string()))
+            .limit(2)
+            .nearest_to(&[-10.0, -10.0])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let batch = &results[0];
+        let schema = batch.schema();
+        let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert!(col_names.contains(&"text"));
+        assert!(col_names.contains(&"vector"));
+        assert!(col_names.contains(&"_relevance_score"));
     }
 }

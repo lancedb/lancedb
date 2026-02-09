@@ -1747,6 +1747,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         raise NotImplementedError("to_query_object not yet supported on a hybrid query")
 
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
+        # Save and strip user's column selection so it doesn't get pushed
+        # into the sub-queries (which would cause contradictory errors
+        # since FTS has _score and vector has _distance).
+        saved_columns = self._columns
+        self._columns = None
+
         self._create_query_builders()
         with ThreadPoolExecutor() as executor:
             fts_future = executor.submit(
@@ -1758,7 +1764,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             fts_results = fts_future.result()
             vector_results = vector_future.result()
 
-        return self._combine_hybrid_results(
+        result = self._combine_hybrid_results(
             fts_results=fts_results,
             vector_results=vector_results,
             norm=self._norm,
@@ -1767,6 +1773,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             with_row_ids=self._with_row_id,
         )
+
+        if saved_columns is not None:
+            result = self._apply_hybrid_select(result, saved_columns)
+
+        return result
 
     @staticmethod
     def _combine_hybrid_results(
@@ -1839,6 +1850,37 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             results = results.drop(["_rowid"])
 
         return results
+
+    @staticmethod
+    def _apply_hybrid_select(
+        result: pa.Table,
+        columns: Union[List[str], Dict[str, str]],
+    ) -> pa.Table:
+        """Apply user-specified column selection to hybrid search results.
+
+        This is done after reranking because the sub-queries produce
+        _score / _distance which get fused into _relevance_score. Pushing the
+        user's select into sub-queries would cause contradictory errors.
+        """
+        if isinstance(columns, dict):
+            raise ValueError(
+                "Dynamic column selection (dict) is not supported with hybrid search"
+            )
+
+        for col in columns:
+            if col in ("_score", "_distance"):
+                raise ValueError(
+                    f"Column '{col}' is not available in hybrid search results. "
+                    "Hybrid search fuses scores into '_relevance_score'. "
+                    "Select '_relevance_score' instead, or omit it to have it "
+                    "included automatically."
+                )
+
+        cols = list(columns)
+        if "_relevance_score" not in cols and "_relevance_score" in result.column_names:
+            cols.append("_relevance_score")
+
+        return result.select(cols)
 
     def to_batches(
         self, /, batch_size: Optional[int] = None, timeout: Optional[timedelta] = None
@@ -3084,6 +3126,17 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._inner = inner
         self._norm = "score"
         self._reranker = RRFReranker()
+        self._hybrid_columns = None
+
+    def select(self, columns: Union[List[str], dict[str, str]]) -> "AsyncHybridQuery":
+        """Intercept column selection for hybrid queries.
+
+        The selection is applied after reranking rather than being pushed to
+        the sub-queries, which would cause contradictory errors because FTS
+        produces ``_score`` and vector search produces ``_distance``.
+        """
+        self._hybrid_columns = columns
+        return self
 
     def rerank(
         self, reranker: Reranker = RRFReranker(), normalize: str = "score"
@@ -3144,6 +3197,11 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             limit=self._inner.get_limit(),
             with_row_ids=with_row_ids,
         )
+
+        if self._hybrid_columns is not None:
+            result = LanceHybridQueryBuilder._apply_hybrid_select(
+                result, self._hybrid_columns
+            )
 
         return AsyncRecordBatchReader(result, max_batch_length=max_batch_length)
 
