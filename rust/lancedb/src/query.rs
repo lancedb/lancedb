@@ -2311,11 +2311,8 @@ mod tests {
         let batch = &results[0];
         let schema = batch.schema();
         let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        assert!(col_names.contains(&"text"));
-        assert!(col_names.contains(&"_relevance_score"));
-        assert!(!col_names.contains(&"vector"));
-        assert!(!col_names.contains(&"_distance"));
-        assert!(!col_names.contains(&"_score"));
+        // User-requested columns come first, auto-appended _relevance_score last
+        assert_eq!(col_names, vec!["text", "_relevance_score"]);
     }
 
     #[tokio::test]
@@ -2340,9 +2337,7 @@ mod tests {
         let batch = &results[0];
         let schema = batch.schema();
         let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        assert!(col_names.contains(&"text"));
-        assert!(col_names.contains(&"_relevance_score"));
-        assert_eq!(col_names.len(), 2);
+        assert_eq!(col_names, vec!["text", "_relevance_score"]);
     }
 
     #[tokio::test]

@@ -209,11 +209,8 @@ async def test_async_hybrid_select_columns(table: AsyncTable):
         .limit(2)
         .to_arrow()
     )
-    assert "text" in result.column_names
-    assert "_relevance_score" in result.column_names
-    assert "vector" not in result.column_names
-    assert "_distance" not in result.column_names
-    assert "_score" not in result.column_names
+    # User-requested columns come first, auto-appended _relevance_score last
+    assert result.column_names == ["text", "_relevance_score"]
 
 
 @pytest.mark.asyncio
@@ -260,11 +257,7 @@ def test_sync_hybrid_select_columns(sync_table: Table):
         .limit(2)
         .to_arrow()
     )
-    assert "text" in result.column_names
-    assert "_relevance_score" in result.column_names
-    assert "vector" not in result.column_names
-    assert "_distance" not in result.column_names
-    assert "_score" not in result.column_names
+    assert result.column_names == ["text", "_relevance_score"]
 
 
 def test_sync_hybrid_select_score_error(sync_table: Table):
