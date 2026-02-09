@@ -1747,16 +1747,26 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         raise NotImplementedError("to_query_object not yet supported on a hybrid query")
 
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
-        # Strip column-name lists so they don't get pushed into the
-        # sub-queries (which would cause contradictory errors since FTS has
-        # _score and vector has _distance). Dict (dynamic) selects are left
-        # alone — they contain SQL expressions evaluated during the scan.
+        # Strip column-name lists so they don't get pushed into
+        # _create_query_builders (which would push them identically to both
+        # sub-queries). We'll push sanitized per-sub-query projections below.
         saved_columns = self._columns
         if isinstance(saved_columns, list):
             self._columns = None
 
         try:
             self._create_query_builders()
+
+            if isinstance(saved_columns, list):
+                fts_cols = self._build_hybrid_subquery_select(
+                    saved_columns, remove="_distance", ensure="_score"
+                )
+                vec_cols = self._build_hybrid_subquery_select(
+                    saved_columns, remove="_score", ensure="_distance"
+                )
+                self._fts_query.select(fts_cols)
+                self._vector_query.select(vec_cols)
+
             with ThreadPoolExecutor() as executor:
                 fts_future = executor.submit(
                     self._fts_query.with_row_id(True).to_arrow, timeout=timeout
@@ -1855,6 +1865,26 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             results = results.drop(["_rowid"])
 
         return results
+
+    @staticmethod
+    def _build_hybrid_subquery_select(
+        columns: List[str],
+        remove: str,
+        ensure: str,
+    ) -> List[str]:
+        """Build a sanitized column list for a hybrid sub-query.
+
+        Removes the score column the sub-query doesn't produce and
+        ``_relevance_score`` (which only exists after reranking), then ensures
+        the correct score column and ``_rowid`` are included.
+        """
+        skip = {remove, ensure, "_relevance_score"}
+        cols = [c for c in columns if c not in skip]
+        if ensure not in cols:
+            cols.append(ensure)
+        if "_rowid" not in cols:
+            cols.append("_rowid")
+        return cols
 
     @staticmethod
     def _apply_hybrid_select(
@@ -3182,6 +3212,17 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
     ) -> AsyncRecordBatchReader:
         fts_query = AsyncFTSQuery(self._inner.to_fts_query())
         vec_query = AsyncVectorQuery(self._inner.to_vector_query())
+
+        # Push sanitized per-sub-query projections for I/O efficiency
+        if self._hybrid_columns is not None:
+            fts_cols = LanceHybridQueryBuilder._build_hybrid_subquery_select(
+                self._hybrid_columns, remove="_distance", ensure="_score"
+            )
+            vec_cols = LanceHybridQueryBuilder._build_hybrid_subquery_select(
+                self._hybrid_columns, remove="_score", ensure="_distance"
+            )
+            fts_query.select(fts_cols)
+            vec_query.select(vec_cols)
 
         # save the row ID choice that was made on the query builder and force it
         # to actually fetch the row ids because we need this for reranking

@@ -316,9 +316,7 @@ async def test_async_hybrid_select_dynamic(table: AsyncTable):
 @pytest.mark.asyncio
 async def test_async_hybrid_select_dict_clears_stale_list(table: AsyncTable):
     """Switching from a list select to a dict select must not apply the stale list."""
-    query = (
-        table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").limit(2)
-    )
+    query = table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").limit(2)
     # First set a list select
     query.select(["text"])
     # Then override with a dict select — the list must not be applied

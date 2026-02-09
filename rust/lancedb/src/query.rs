@@ -894,6 +894,9 @@ pub struct VectorQuery {
 /// sub-queries would cause contradictory errors (e.g. selecting `_score` on
 /// the vector sub-query which only has `_distance`).
 fn apply_hybrid_select(batch: RecordBatch, select: &Select) -> Result<RecordBatch> {
+    // Note: per-sub-query projections are pushed down in execute_hybrid() via
+    // build_hybrid_subquery_select() for I/O efficiency. This function handles
+    // the *final* projection on the merged/reranked result.
     match select {
         Select::All => Ok(batch),
         Select::Columns(columns) => {
@@ -944,6 +947,36 @@ fn apply_hybrid_select(batch: RecordBatch, select: &Select) -> Result<RecordBatc
         // post-rerank), so by this point they've already been applied.
         Select::Dynamic(_) => Ok(batch),
     }
+}
+
+/// Build a projection for a hybrid sub-query that preserves projection pushdown.
+///
+/// Takes the user's requested columns and adjusts them for a specific sub-query:
+/// - Removes `remove_col` (the score column that this sub-query doesn't produce)
+/// - Removes `_relevance_score` (only exists after reranking, not in sub-queries)
+/// - Ensures `ensure_col` (the score column this sub-query *does* produce) is included
+/// - Ensures `_rowid` is included (needed by the reranker for merging)
+fn build_hybrid_subquery_select(
+    user_cols: &[String],
+    remove_col: &str,
+    ensure_col: &str,
+) -> Vec<String> {
+    let mut cols: Vec<String> = user_cols
+        .iter()
+        .filter(|c| {
+            c.as_str() != remove_col && c.as_str() != ensure_col && c.as_str() != RELEVANCE_SCORE
+        })
+        .cloned()
+        .collect();
+
+    if !cols.iter().any(|c| c.as_str() == ensure_col) {
+        cols.push(ensure_col.to_string());
+    }
+    if !cols.iter().any(|c| c.as_str() == ROW_ID) {
+        cols.push(ROW_ID.to_string());
+    }
+
+    cols
 }
 
 impl VectorQuery {
@@ -1182,12 +1215,16 @@ impl VectorQuery {
 
         let mut vector_query = self.clone().with_row_id();
 
-        // Only strip column-name selects; dynamic selects contain SQL
-        // expressions that are evaluated by the sub-queries and can't easily
-        // be applied post-rerank, so we leave them pushed down as before.
-        if matches!(user_select, Select::Columns(_)) {
-            fts_query.request.select = Select::All;
-            vector_query.request.base.select = Select::All;
+        // Push sanitized column projections to sub-queries for I/O efficiency.
+        // Each sub-query gets the user's columns minus the score column it
+        // doesn't produce, plus the score column it *does* produce and _rowid
+        // (both needed by the reranker). Dynamic selects are left as-is.
+        if let Select::Columns(ref cols) = user_select {
+            let fts_cols = build_hybrid_subquery_select(cols, DIST_COL, SCORE_COL);
+            fts_query.request.select = Select::Columns(fts_cols);
+
+            let vec_cols = build_hybrid_subquery_select(cols, SCORE_COL, DIST_COL);
+            vector_query.request.base.select = Select::Columns(vec_cols);
         }
 
         vector_query.request.base.full_text_search = None;
