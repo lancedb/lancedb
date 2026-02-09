@@ -275,7 +275,7 @@ class ColPaliEmbeddings(EmbeddingFunction):
         """
         Convert image inputs to PIL Images.
         """
-        PIL = attempt_import_or_raise("PIL", "pillow")
+        PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
         requests = attempt_import_or_raise("requests", "requests")
         images = self.sanitize_input(images)
         pil_images = []
@@ -285,12 +285,12 @@ class ColPaliEmbeddings(EmbeddingFunction):
                     if image.startswith(("http://", "https://")):
                         response = requests.get(image, timeout=10)
                         response.raise_for_status()
-                        pil_images.append(PIL.Image.open(io.BytesIO(response.content)))
+                        pil_images.append(PIL_Image.open(io.BytesIO(response.content)))
                     else:
-                        with PIL.Image.open(image) as im:
+                        with PIL_Image.open(image) as im:
                             pil_images.append(im.copy())
                 elif isinstance(image, bytes):
-                    pil_images.append(PIL.Image.open(io.BytesIO(image)))
+                    pil_images.append(PIL_Image.open(io.BytesIO(image)))
                 else:
                     # Assume it's a PIL Image; will raise if invalid
                     pil_images.append(image)

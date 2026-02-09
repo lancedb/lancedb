@@ -287,7 +287,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.schema().await.infer_error()?;
-            Python::with_gil(|py| schema.to_pyarrow(py))
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
         })
     }
 
@@ -438,7 +438,7 @@ impl Table {
         future_into_py(self_.py(), async move {
             let stats = inner.index_stats(&index_name).await.infer_error()?;
             if let Some(stats) = stats {
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     let dict = PyDict::new(py);
                     dict.set_item("num_indexed_rows", stats.num_indexed_rows)?;
                     dict.set_item("num_unindexed_rows", stats.num_unindexed_rows)?;
@@ -468,7 +468,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let stats = inner.stats().await.infer_error()?;
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let dict = PyDict::new(py);
                 dict.set_item("total_bytes", stats.total_bytes)?;
                 dict.set_item("num_rows", stats.num_rows)?;
@@ -503,6 +503,20 @@ impl Table {
         future_into_py(self_.py(), async move { inner.uri().await.infer_error() })
     }
 
+    pub fn initial_storage_options(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            Ok(inner.initial_storage_options().await)
+        })
+    }
+
+    pub fn latest_storage_options(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.latest_storage_options().await.infer_error()
+        })
+    }
+
     pub fn __repr__(&self) -> String {
         match &self.inner {
             None => format!("ClosedTable({})", self.name),
@@ -522,7 +536,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let versions = inner.list_versions().await.infer_error()?;
-            let versions_as_dict = Python::with_gil(|py| {
+            let versions_as_dict = Python::attach(|py| {
                 versions
                     .iter()
                     .map(|v| {
@@ -873,7 +887,7 @@ impl Tags {
             let tags = inner.tags().await.infer_error()?;
             let res = tags.list().await.infer_error()?;
 
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let py_dict = PyDict::new(py);
                 for (key, contents) in res {
                     let value_dict = PyDict::new(py);

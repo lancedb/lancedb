@@ -23,9 +23,7 @@ pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
-use lance::dataset::{
-    InsertBuilder, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
-};
+use lance::dataset::{InsertBuilder, WhenMatched, WriteMode, WriteParams};
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::index::vector::VectorIndexParams;
@@ -79,12 +77,16 @@ use self::merge::MergeInsertBuilder;
 mod add_data;
 pub mod datafusion;
 pub(crate) mod dataset;
+pub mod delete;
 pub mod merge;
+pub mod schema_evolution;
+pub mod update;
 
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult};
 
 use crate::index::waiter::wait_for_index;
 pub use chrono::Duration;
+pub use delete::DeleteResult;
 use futures::future::{join_all, Either};
 pub use lance::dataset::optimize::CompactionOptions;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
@@ -92,7 +94,9 @@ pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
 pub use lance_index::optimize::OptimizeOptions;
+pub use schema_evolution::{AddColumnsResult, AlterColumnsResult, DropColumnsResult};
 use serde_with::skip_serializing_none;
+pub use update::{UpdateBuilder, UpdateResult};
 
 /// Defines the type of column
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,72 +279,6 @@ pub struct WriteOptions {
     pub lance_write_params: Option<WriteParams>,
 }
 
-/// A builder for configuring an [`Table::update`] operation
-#[derive(Debug, Clone)]
-pub struct UpdateBuilder {
-    parent: Arc<dyn BaseTable>,
-    pub(crate) filter: Option<String>,
-    pub(crate) columns: Vec<(String, String)>,
-}
-
-impl UpdateBuilder {
-    fn new(parent: Arc<dyn BaseTable>) -> Self {
-        Self {
-            parent,
-            filter: None,
-            columns: Vec::new(),
-        }
-    }
-
-    /// Limits the update operation to rows matching the given filter
-    ///
-    /// If a row does not match the filter then it will be left unchanged.
-    pub fn only_if(mut self, filter: impl Into<String>) -> Self {
-        self.filter = Some(filter.into());
-        self
-    }
-
-    /// Specifies a column to update
-    ///
-    /// This method may be called multiple times to update multiple columns
-    ///
-    /// The `update_expr` should be an SQL expression explaining how to calculate
-    /// the new value for the column.  The expression will be evaluated against the
-    /// previous row's value.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use lancedb::Table;
-    /// # async fn doctest_helper(tbl: Table) {
-    ///   let mut operation = tbl.update();
-    ///   // Increments the `bird_count` value by 1
-    ///   operation = operation.column("bird_count", "bird_count + 1");
-    ///   operation.execute().await.unwrap();
-    /// # }
-    /// ```
-    pub fn column(
-        mut self,
-        column_name: impl Into<String>,
-        update_expr: impl Into<String>,
-    ) -> Self {
-        self.columns.push((column_name.into(), update_expr.into()));
-        self
-    }
-
-    /// Executes the update operation.
-    /// Returns the update result
-    pub async fn execute(self) -> Result<UpdateResult> {
-        if self.columns.is_empty() {
-            Err(Error::InvalidInput {
-                message: "at least one column must be specified in an update operation".to_string(),
-            })
-        } else {
-            self.parent.clone().update(self).await
-        }
-    }
-}
-
 /// Filters that can be used to limit the rows returned by a query
 pub enum Filter {
     /// A SQL filter string
@@ -375,26 +313,6 @@ pub trait Tags: Send + Sync {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct UpdateResult {
-    #[serde(default)]
-    pub rows_updated: u64,
-    // The commit version associated with the operation.
-    // A version of `0` indicates compatibility with legacy servers that do not return
-    /// a commit version.
-    #[serde(default)]
-    pub version: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct DeleteResult {
-    // The commit version associated with the operation.
-    // A version of `0` indicates compatibility with legacy servers that do not return
-    /// a commit version.
-    #[serde(default)]
-    pub version: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MergeResult {
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
@@ -417,33 +335,6 @@ pub struct MergeResult {
     /// A value of 1 means the operation succeeded on the first try.
     #[serde(default)]
     pub num_attempts: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AddColumnsResult {
-    // The commit version associated with the operation.
-    // A version of `0` indicates compatibility with legacy servers that do not return
-    /// a commit version.
-    #[serde(default)]
-    pub version: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AlterColumnsResult {
-    // The commit version associated with the operation.
-    // A version of `0` indicates compatibility with legacy servers that do not return
-    /// a commit version.
-    #[serde(default)]
-    pub version: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct DropColumnsResult {
-    // The commit version associated with the operation.
-    // A version of `0` indicates compatibility with legacy servers that do not return
-    /// a commit version.
-    #[serde(default)]
-    pub version: u64,
 }
 
 /// A trait for anything "table-like".  This is used for both native tables (which target
@@ -546,7 +437,17 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Get the table URI (storage location)
     async fn uri(&self) -> Result<String>;
     /// Get the storage options used when opening this table, if any.
+    #[deprecated(since = "0.25.0", note = "Use initial_storage_options() instead")]
     async fn storage_options(&self) -> Option<HashMap<String, String>>;
+    /// Get the initial storage options that were passed in when opening this table.
+    ///
+    /// For dynamically refreshed options (e.g., credential vending), use [`Self::latest_storage_options`].
+    async fn initial_storage_options(&self) -> Option<HashMap<String, String>>;
+    /// Get the latest storage options, refreshing from provider if configured.
+    ///
+    /// Returns `Ok(Some(options))` if storage options are available (static or refreshed),
+    /// `Ok(None)` if no storage options were configured, or `Err(...)` if refresh failed.
+    async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>>;
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
     /// are not fully indexed within the timeout.
     async fn wait_for_index(
@@ -556,6 +457,19 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ) -> Result<()>;
     /// Get statistics on the table
     async fn stats(&self) -> Result<TableStatistics>;
+    /// Create an ExecutionPlan for inserting data into the table.
+    ///
+    /// This is used by the DataFusion TableProvider implementation to support
+    /// INSERT INTO statements.
+    async fn create_insert_exec(
+        &self,
+        _input: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
+        _write_params: WriteParams,
+    ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
+        Err(Error::NotSupported {
+            message: "create_insert_exec not implemented".to_string(),
+        })
+    }
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -1280,8 +1194,30 @@ impl Table {
     /// Get the storage options used when opening this table, if any.
     ///
     /// Warning: This is an internal API and the return value is subject to change.
+    #[deprecated(since = "0.25.0", note = "Use initial_storage_options() instead")]
     pub async fn storage_options(&self) -> Option<HashMap<String, String>> {
+        #[allow(deprecated)]
         self.inner.storage_options().await
+    }
+
+    /// Get the initial storage options that were passed in when opening this table.
+    ///
+    /// For dynamically refreshed options (e.g., credential vending), use [`Self::latest_storage_options`].
+    ///
+    /// Warning: This is an internal API and the return value is subject to change.
+    pub async fn initial_storage_options(&self) -> Option<HashMap<String, String>> {
+        self.inner.initial_storage_options().await
+    }
+
+    /// Get the latest storage options, refreshing from provider if configured.
+    ///
+    /// This method is useful for credential vending scenarios where storage options
+    /// may be refreshed dynamically. If no dynamic provider is configured, this
+    /// returns the initial static options.
+    ///
+    /// Warning: This is an internal API and the return value is subject to change.
+    pub async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
+        self.inner.latest_storage_options().await
     }
 
     /// Get statistics about an index.
@@ -1377,7 +1313,9 @@ impl Table {
             })
             .collect::<Vec<_>>();
 
-        let unioned = Arc::new(UnionExec::new(projected_plans));
+        let unioned = UnionExec::try_new(projected_plans).map_err(|err| Error::Runtime {
+            message: err.to_string(),
+        })?;
         // We require 1 partition in the final output
         let repartitioned = RepartitionExec::try_new(
             unioned,
@@ -2749,25 +2687,8 @@ impl BaseTable for NativeTable {
     }
 
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult> {
-        let dataset = self.dataset.get().await?.clone();
-        let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
-        if let Some(predicate) = update.filter {
-            builder = builder.update_where(&predicate)?;
-        }
-
-        for (column, value) in update.columns {
-            builder = builder.set(column, &value)?;
-        }
-
-        let operation = builder.build()?;
-        let res = operation.execute().await?;
-        self.dataset
-            .set_latest(res.new_dataset.as_ref().clone())
-            .await;
-        Ok(UpdateResult {
-            rows_updated: res.rows_updated,
-            version: res.new_dataset.version().version,
-        })
+        // Delegate to the submodule implementation
+        update::execute_update(self, update).await
     }
 
     async fn create_plan(
@@ -3025,11 +2946,8 @@ impl BaseTable for NativeTable {
 
     /// Delete rows from the table
     async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
-        let mut dataset = self.dataset.get_mut().await?;
-        dataset.delete(predicate).await?;
-        Ok(DeleteResult {
-            version: dataset.version().version,
-        })
+        // Delegate to the submodule implementation
+        delete::execute_delete(self, predicate).await
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
@@ -3095,27 +3013,15 @@ impl BaseTable for NativeTable {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
-        let mut dataset = self.dataset.get_mut().await?;
-        dataset.add_columns(transforms, read_columns, None).await?;
-        Ok(AddColumnsResult {
-            version: dataset.version().version,
-        })
+        schema_evolution::execute_add_columns(self, transforms, read_columns).await
     }
 
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
-        let mut dataset = self.dataset.get_mut().await?;
-        dataset.alter_columns(alterations).await?;
-        Ok(AlterColumnsResult {
-            version: dataset.version().version,
-        })
+        schema_evolution::execute_alter_columns(self, alterations).await
     }
 
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
-        let mut dataset = self.dataset.get_mut().await?;
-        dataset.drop_columns(columns).await?;
-        Ok(DropColumnsResult {
-            version: dataset.version().version,
-        })
+        schema_evolution::execute_drop_columns(self, columns).await
     }
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
@@ -3178,11 +3084,20 @@ impl BaseTable for NativeTable {
     }
 
     async fn storage_options(&self) -> Option<HashMap<String, String>> {
+        self.initial_storage_options().await
+    }
+
+    async fn initial_storage_options(&self) -> Option<HashMap<String, String>> {
         self.dataset
             .get()
             .await
             .ok()
             .and_then(|dataset| dataset.initial_storage_options().cloned())
+    }
+
+    async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
+        let dataset = self.dataset.get().await?;
+        Ok(dataset.latest_storage_options().await?.map(|o| o.0))
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
@@ -3298,6 +3213,21 @@ impl BaseTable for NativeTable {
         };
         Ok(stats)
     }
+
+    async fn create_insert_exec(
+        &self,
+        input: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
+        write_params: WriteParams,
+    ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
+        let ds = self.dataset.get().await?;
+        let dataset = Arc::new((*ds).clone());
+        Ok(Arc::new(datafusion::insert::InsertExec::new(
+            self.dataset.clone(),
+            dataset,
+            input,
+            write_params,
+        )))
+    }
 }
 
 #[skip_serializing_none]
@@ -3353,15 +3283,12 @@ mod tests {
 
     use arrow_array::{
         builder::{ListBuilder, StringBuilder},
-        Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
-        Int32Array, Int64Array, LargeStringArray, RecordBatch, RecordBatchIterator,
-        RecordBatchReader, StringArray, TimestampMillisecondArray, TimestampNanosecondArray,
-        UInt32Array,
+        Array, BooleanArray, FixedSizeListArray, Float32Array, Int32Array, LargeStringArray,
+        RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
     };
     use arrow_array::{BinaryArray, LargeBinaryArray};
     use arrow_data::ArrayDataBuilder;
-    use arrow_schema::{DataType, Field, Schema, TimeUnit};
-    use futures::TryStreamExt;
+    use arrow_schema::{DataType, Field, Schema};
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance::Dataset;
     use rand::Rng;
@@ -3372,7 +3299,6 @@ mod tests {
     use crate::connection::ConnectBuilder;
     use crate::index::scalar::{BTreeIndexBuilder, BitmapIndexBuilder};
     use crate::index::vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder};
-    use crate::query::{ExecutableQuery, QueryBase};
 
     #[tokio::test]
     async fn test_open() {
@@ -3516,296 +3442,6 @@ mod tests {
         merge_insert_builder.use_index(false);
         merge_insert_builder.execute(new_batches).await.unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 25);
-    }
-
-    #[tokio::test]
-    async fn test_update_with_predicate() {
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = dataset_path.to_str().unwrap();
-        let conn = connect(uri)
-            .read_consistency_interval(Duration::from_secs(0))
-            .execute()
-            .await
-            .unwrap();
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, false),
-        ]));
-
-        let record_batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..10)),
-                Arc::new(StringArray::from_iter_values(vec![
-                    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-                ])),
-            ],
-        )
-        .unwrap();
-
-        let table = conn
-            .create_table("my_table", record_batch)
-            .execute()
-            .await
-            .unwrap();
-
-        table
-            .update()
-            .only_if("id > 5")
-            .column("name", "'foo'")
-            .execute()
-            .await
-            .unwrap();
-
-        let mut batches = table
-            .query()
-            .select(Select::columns(&["id", "name"]))
-            .execute()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-
-        while let Some(batch) = batches.pop() {
-            let ids = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .unwrap()
-                .iter()
-                .collect::<Vec<_>>();
-            let names = batch
-                .column(1)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap()
-                .iter()
-                .collect::<Vec<_>>();
-            for (i, name) in names.iter().enumerate() {
-                let id = ids[i].unwrap();
-                let name = name.unwrap();
-                if id > 5 {
-                    assert_eq!(name, "foo");
-                } else {
-                    assert_eq!(name, &format!("{}", (b'a' + id as u8) as char));
-                }
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_update_all_types() {
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = dataset_path.to_str().unwrap();
-        let conn = connect(uri)
-            .read_consistency_interval(Duration::from_secs(0))
-            .execute()
-            .await
-            .unwrap();
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("int32", DataType::Int32, false),
-            Field::new("int64", DataType::Int64, false),
-            Field::new("uint32", DataType::UInt32, false),
-            Field::new("string", DataType::Utf8, false),
-            Field::new("large_string", DataType::LargeUtf8, false),
-            Field::new("float32", DataType::Float32, false),
-            Field::new("float64", DataType::Float64, false),
-            Field::new("bool", DataType::Boolean, false),
-            Field::new("date32", DataType::Date32, false),
-            Field::new(
-                "timestamp_ns",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(
-                "timestamp_ms",
-                DataType::Timestamp(TimeUnit::Millisecond, None),
-                false,
-            ),
-            Field::new(
-                "vec_f32",
-                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
-                false,
-            ),
-            Field::new(
-                "vec_f64",
-                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 2),
-                false,
-            ),
-        ]));
-
-        let record_batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..10)),
-                Arc::new(Int64Array::from_iter_values(0..10)),
-                Arc::new(UInt32Array::from_iter_values(0..10)),
-                Arc::new(StringArray::from_iter_values(vec![
-                    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-                ])),
-                Arc::new(LargeStringArray::from_iter_values(vec![
-                    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-                ])),
-                Arc::new(Float32Array::from_iter_values((0..10).map(|i| i as f32))),
-                Arc::new(Float64Array::from_iter_values((0..10).map(|i| i as f64))),
-                Arc::new(Into::<BooleanArray>::into(vec![
-                    true, false, true, false, true, false, true, false, true, false,
-                ])),
-                Arc::new(Date32Array::from_iter_values(0..10)),
-                Arc::new(TimestampNanosecondArray::from_iter_values(0..10)),
-                Arc::new(TimestampMillisecondArray::from_iter_values(0..10)),
-                Arc::new(
-                    create_fixed_size_list(
-                        Float32Array::from_iter_values((0..20).map(|i| i as f32)),
-                        2,
-                    )
-                    .unwrap(),
-                ),
-                Arc::new(
-                    create_fixed_size_list(
-                        Float64Array::from_iter_values((0..20).map(|i| i as f64)),
-                        2,
-                    )
-                    .unwrap(),
-                ),
-            ],
-        )
-        .unwrap();
-
-        let table = conn
-            .create_table("my_table", record_batch)
-            .execute()
-            .await
-            .unwrap();
-
-        // check it can do update for each type
-        let updates: Vec<(&str, &str)> = vec![
-            ("string", "'foo'"),
-            ("large_string", "'large_foo'"),
-            ("int32", "1"),
-            ("int64", "1"),
-            ("uint32", "1"),
-            ("float32", "1.0"),
-            ("float64", "1.0"),
-            ("bool", "true"),
-            ("date32", "1"),
-            ("timestamp_ns", "1"),
-            ("timestamp_ms", "1"),
-            ("vec_f32", "[1.0, 1.0]"),
-            ("vec_f64", "[1.0, 1.0]"),
-        ];
-
-        let mut update_op = table.update();
-        for (column, value) in updates {
-            update_op = update_op.column(column, value);
-        }
-        update_op.execute().await.unwrap();
-
-        let mut batches = table
-            .query()
-            .select(Select::columns(&[
-                "string",
-                "large_string",
-                "int32",
-                "int64",
-                "uint32",
-                "float32",
-                "float64",
-                "bool",
-                "date32",
-                "timestamp_ns",
-                "timestamp_ms",
-                "vec_f32",
-                "vec_f64",
-            ]))
-            .execute()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-        let batch = batches.pop().unwrap();
-
-        macro_rules! assert_column {
-            ($column:expr, $array_type:ty, $expected:expr) => {
-                let array = $column
-                    .as_any()
-                    .downcast_ref::<$array_type>()
-                    .unwrap()
-                    .iter()
-                    .collect::<Vec<_>>();
-                for v in array {
-                    assert_eq!(v, Some($expected));
-                }
-            };
-        }
-
-        assert_column!(batch.column(0), StringArray, "foo");
-        assert_column!(batch.column(1), LargeStringArray, "large_foo");
-        assert_column!(batch.column(2), Int32Array, 1);
-        assert_column!(batch.column(3), Int64Array, 1);
-        assert_column!(batch.column(4), UInt32Array, 1);
-        assert_column!(batch.column(5), Float32Array, 1.0);
-        assert_column!(batch.column(6), Float64Array, 1.0);
-        assert_column!(batch.column(7), BooleanArray, true);
-        assert_column!(batch.column(8), Date32Array, 1);
-        assert_column!(batch.column(9), TimestampNanosecondArray, 1);
-        assert_column!(batch.column(10), TimestampMillisecondArray, 1);
-
-        let array = batch
-            .column(11)
-            .as_any()
-            .downcast_ref::<FixedSizeListArray>()
-            .unwrap()
-            .iter()
-            .collect::<Vec<_>>();
-        for v in array {
-            let v = v.unwrap();
-            let f32array = v.as_any().downcast_ref::<Float32Array>().unwrap();
-            for v in f32array {
-                assert_eq!(v, Some(1.0));
-            }
-        }
-
-        let array = batch
-            .column(12)
-            .as_any()
-            .downcast_ref::<FixedSizeListArray>()
-            .unwrap()
-            .iter()
-            .collect::<Vec<_>>();
-        for v in array {
-            let v = v.unwrap();
-            let f64array = v.as_any().downcast_ref::<Float64Array>().unwrap();
-            for v in f64array {
-                assert_eq!(v, Some(1.0));
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_update_via_expr() {
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = dataset_path.to_str().unwrap();
-        let conn = connect(uri)
-            .read_consistency_interval(Duration::from_secs(0))
-            .execute()
-            .await
-            .unwrap();
-        let tbl = conn
-            .create_table("my_table", make_test_batches())
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(1, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
-        tbl.update().column("i", "i+1").execute().await.unwrap();
-        assert_eq!(0, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
     }
 
     #[derive(Default, Debug)]

@@ -3,6 +3,7 @@
 
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
 
+pub mod insert;
 pub mod udtf;
 
 use std::{collections::HashMap, sync::Arc};
@@ -13,11 +14,12 @@ use async_trait::async_trait;
 use datafusion_catalog::{Session, TableProvider};
 use datafusion_common::{DataFusionError, Result as DataFusionResult, Statistics};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
-use datafusion_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion_expr::{dml::InsertOp, Expr, TableProviderFilterPushDown, TableType};
 use datafusion_physical_plan::{
     stream::RecordBatchStreamAdapter, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
 };
 use futures::{TryFutureExt, TryStreamExt};
+use lance::dataset::{WriteMode, WriteParams};
 
 use super::{AnyQuery, BaseTable};
 use crate::{
@@ -249,6 +251,33 @@ impl TableProvider for BaseTableAdapter {
     fn statistics(&self) -> Option<Statistics> {
         // TODO
         None
+    }
+
+    async fn insert_into(
+        &self,
+        _state: &dyn Session,
+        input: Arc<dyn ExecutionPlan>,
+        insert_op: InsertOp,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let mode = match insert_op {
+            InsertOp::Append => WriteMode::Append,
+            InsertOp::Overwrite => WriteMode::Overwrite,
+            InsertOp::Replace => {
+                return Err(DataFusionError::NotImplemented(
+                    "Replace mode is not supported for LanceDB tables".to_string(),
+                ))
+            }
+        };
+
+        let write_params = WriteParams {
+            mode,
+            ..Default::default()
+        };
+
+        self.table
+            .create_insert_exec(input, write_params)
+            .await
+            .map_err(|e| DataFusionError::External(e.into()))
     }
 }
 

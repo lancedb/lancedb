@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+pub mod insert;
+
 use crate::data::scannable::Scannable;
 use crate::index::Index;
 use crate::index::IndexStatistics;
@@ -577,7 +579,9 @@ impl<S: HttpSend> RemoteTable<S> {
         self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
-        body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
+        if let Some(distance_type) = query.distance_type {
+            body["distance_type"] = serde_json::json!(distance_type);
+        }
         // In 0.23.1 we migrated from `nprobes` to `minimum_nprobes` and `maximum_nprobes`.
         // Old client / new server: since minimum_nprobes is missing, fallback to nprobes
         // New client / old server: old server will only see nprobes, make sure to set both
@@ -1616,6 +1620,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         None
     }
 
+    async fn initial_storage_options(&self) -> Option<HashMap<String, String>> {
+        None
+    }
+
+    async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
+        Ok(None)
+    }
+
     async fn stats(&self) -> Result<TableStatistics> {
         let request = self
             .client
@@ -1630,6 +1642,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })?;
         Ok(stats)
+    }
+
+    async fn create_insert_exec(
+        &self,
+        input: Arc<dyn ExecutionPlan>,
+        write_params: lance::dataset::WriteParams,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let overwrite = matches!(write_params.mode, lance::dataset::WriteMode::Overwrite);
+        Ok(Arc::new(insert::RemoteInsertExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            input,
+            overwrite,
+        )))
     }
 }
 
@@ -2359,7 +2386,6 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "distance_type": "l2",
                 "nprobes": 20,
                 "minimum_nprobes": 20,
                 "maximum_nprobes": 20,

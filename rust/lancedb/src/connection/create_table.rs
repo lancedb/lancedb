@@ -166,7 +166,9 @@ impl CreateTableBuilder {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{record_batch, Array, RecordBatch, RecordBatchIterator};
+    use arrow_array::{
+        record_batch, Array, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator,
+    };
     use arrow_schema::{ArrowError, DataType, Field, Schema};
     use futures::TryStreamExt;
     use lance_file::version::LanceFileVersion;
@@ -180,6 +182,7 @@ mod tests {
         query::{ExecutableQuery, QueryBase, Select},
         test_utils::embeddings::MockEmbed,
     };
+    use std::borrow::Cow;
 
     use super::*;
 
@@ -317,6 +320,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_create_table_with_storage_options() {
         let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
         let db = connect("memory://").execute().await.unwrap();
@@ -501,5 +505,108 @@ mod tests {
                 .contains_key("lancedb::column_definitions"),
             "Schema metadata should contain column definitions"
         );
+    }
+
+    #[tokio::test]
+    async fn test_create_empty_table_with_embeddings() {
+        #[derive(Debug, Clone)]
+        struct MockEmbedding {
+            dim: usize,
+        }
+
+        impl EmbeddingFunction for MockEmbedding {
+            fn name(&self) -> &str {
+                "test_embedding"
+            }
+
+            fn source_type(&self) -> Result<Cow<'_, DataType>> {
+                Ok(Cow::Owned(DataType::Utf8))
+            }
+
+            fn dest_type(&self) -> Result<Cow<'_, DataType>> {
+                Ok(Cow::Owned(DataType::new_fixed_size_list(
+                    DataType::Float32,
+                    self.dim as i32,
+                    true,
+                )))
+            }
+
+            fn compute_source_embeddings(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+                let len = source.len();
+                let values = vec![1.0f32; len * self.dim];
+                let values = Arc::new(Float32Array::from(values));
+                let field = Arc::new(Field::new("item", DataType::Float32, true));
+                Ok(Arc::new(FixedSizeListArray::new(
+                    field,
+                    self.dim as i32,
+                    values,
+                    None,
+                )))
+            }
+
+            fn compute_query_embeddings(&self, _input: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+                unimplemented!()
+            }
+        }
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = connect(uri).execute().await.unwrap();
+
+        let embed_func = Arc::new(MockEmbedding { dim: 128 });
+        db.embedding_registry()
+            .register("test_embedding", embed_func.clone())
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, true)]));
+        let ed = EmbeddingDefinition {
+            source_column: "name".to_owned(),
+            dest_column: Some("name_embedding".to_owned()),
+            embedding_name: "test_embedding".to_owned(),
+        };
+
+        let table = db
+            .create_empty_table("test", schema)
+            .mode(CreateTableMode::Overwrite)
+            .add_embedding(ed)
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
+
+        let table_schema = table.schema().await.unwrap();
+        assert!(table_schema.column_with_name("name").is_some());
+        assert!(table_schema.column_with_name("name_embedding").is_some());
+
+        let embedding_field = table_schema.field_with_name("name_embedding").unwrap();
+        assert_eq!(
+            embedding_field.data_type(),
+            &DataType::new_fixed_size_list(DataType::Float32, 128, true)
+        );
+
+        let input_batch = record_batch!(("name", Utf8, ["Alice", "Bob", "Charlie"])).unwrap();
+        table.add(input_batch).execute().await.unwrap();
+
+        let results = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        let batch = &results[0];
+        assert_eq!(batch.num_rows(), 3);
+        assert!(batch.column_by_name("name_embedding").is_some());
+
+        let embedding_col = batch
+            .column_by_name("name_embedding")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .unwrap();
+        assert_eq!(embedding_col.len(), 3);
     }
 }

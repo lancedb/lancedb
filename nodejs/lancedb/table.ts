@@ -347,9 +347,13 @@ export abstract class Table {
   /**
    * Create a query that returns a subset of the rows in the table.
    * @param rowIds The row ids of the rows to return.
+   *
+   * Row ids returned by `withRowId()` are `bigint`, so `bigint[]` is supported.
+   * For convenience / backwards compatibility, `number[]` is also accepted (for
+   * small row ids that fit in a safe integer).
    * @returns A builder that can be used to parameterize the query.
    */
-  abstract takeRowIds(rowIds: number[]): TakeQuery;
+  abstract takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery;
 
   /**
    * Create a search query to find the nearest neighbors
@@ -538,6 +542,35 @@ export abstract class Table {
    *
    */
   abstract stats(): Promise<TableStatistics>;
+
+  /**
+   * Get the initial storage options that were passed in when opening this table.
+   *
+   * For dynamically refreshed options (e.g., credential vending), use
+   * {@link Table.latestStorageOptions}.
+   *
+   * Warning: This is an internal API and the return value is subject to change.
+   *
+   * @returns The storage options, or undefined if no storage options were configured.
+   */
+  abstract initialStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  >;
+
+  /**
+   * Get the latest storage options, refreshing from provider if configured.
+   *
+   * This method is useful for credential vending scenarios where storage options
+   * may be refreshed dynamically. If no dynamic provider is configured, this
+   * returns the initial static options.
+   *
+   * Warning: This is an internal API and the return value is subject to change.
+   *
+   * @returns The storage options, or undefined if no storage options were configured.
+   */
+  abstract latestStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  >;
 }
 
 export class LocalTable extends Table {
@@ -686,8 +719,24 @@ export class LocalTable extends Table {
     return new TakeQuery(this.inner.takeOffsets(offsets));
   }
 
-  takeRowIds(rowIds: number[]): TakeQuery {
-    return new TakeQuery(this.inner.takeRowIds(rowIds));
+  takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery {
+    const ids = rowIds.map((id) => {
+      if (typeof id === "bigint") {
+        return id;
+      }
+      if (!Number.isInteger(id)) {
+        throw new Error("Row id must be an integer (or bigint)");
+      }
+      if (id < 0) {
+        throw new Error("Row id cannot be negative");
+      }
+      if (!Number.isSafeInteger(id)) {
+        throw new Error("Row id is too large for number; use bigint instead");
+      }
+      return BigInt(id);
+    });
+
+    return new TakeQuery(this.inner.takeRowIds(ids));
   }
 
   query(): Query {
@@ -856,6 +905,18 @@ export class LocalTable extends Table {
 
   async stats(): Promise<TableStatistics> {
     return await this.inner.stats();
+  }
+
+  async initialStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  > {
+    return await this.inner.initialStorageOptions();
+  }
+
+  async latestStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  > {
+    return await this.inner.latestStorageOptions();
   }
 
   mergeInsert(on: string | string[]): MergeInsertBuilder {
