@@ -260,6 +260,68 @@ def test_sync_hybrid_select_columns(sync_table: Table):
     assert result.column_names == ["text", "_relevance_score"]
 
 
+def test_sync_hybrid_select_dynamic(sync_table: Table):
+    """Dict (dynamic) selects are pushed to sub-queries and should work."""
+    result = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .select({"upper_text": "upper(text)"})
+        .limit(2)
+        .to_arrow()
+    )
+    assert "upper_text" in result.column_names
+    assert "_relevance_score" in result.column_names
+
+
+def test_sync_hybrid_to_arrow_restores_columns(sync_table: Table):
+    """to_arrow() must restore _columns even if the sub-queries raise."""
+    builder = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .select(["text"])
+        .limit(2)
+    )
+    # First call succeeds
+    result = builder.to_arrow()
+    assert result.column_names == ["text", "_relevance_score"]
+
+    # Second call on the same builder should also apply the selection
+    result = builder.to_arrow()
+    assert result.column_names == ["text", "_relevance_score"]
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_select_dynamic(table: AsyncTable):
+    """Dict (dynamic) selects are pushed to sub-queries and should work."""
+    result = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .select({"upper_text": "upper(text)"})
+        .limit(2)
+        .to_arrow()
+    )
+    assert "upper_text" in result.column_names
+    assert "_relevance_score" in result.column_names
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_select_dict_clears_stale_list(table: AsyncTable):
+    """Switching from a list select to a dict select must not apply the stale list."""
+    query = (
+        table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").limit(2)
+    )
+    # First set a list select
+    query.select(["text"])
+    # Then override with a dict select — the list must not be applied
+    query.select({"upper_text": "upper(text)"})
+    result = await query.to_arrow()
+    assert "upper_text" in result.column_names
+    assert "_relevance_score" in result.column_names
+
+
 def test_sync_hybrid_select_score_error(sync_table: Table):
     with pytest.raises(ValueError, match="_relevance_score"):
         (

@@ -3139,6 +3139,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         contain SQL expressions that are evaluated during the scan.
         """
         if isinstance(columns, dict):
+            self._hybrid_columns = None
             return super().select(columns)
         self._hybrid_columns = columns
         return self

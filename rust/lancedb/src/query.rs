@@ -2397,6 +2397,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_hybrid_select_dynamic() {
+        let tmp_dir = tempdir().unwrap();
+        let table = hybrid_test_table(&tmp_dir).await;
+
+        // Dynamic selects are pushed to sub-queries, not applied post-rerank.
+        // Expressions that only reference user columns should work.
+        let results = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("b".to_string()))
+            .select(Select::dynamic(&[("upper_text", "upper(text)")]))
+            .limit(2)
+            .nearest_to(&[-10.0, -10.0])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let batch = &results[0];
+        let schema = batch.schema();
+        let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert!(col_names.contains(&"upper_text"));
+        assert!(col_names.contains(&"_relevance_score"));
+    }
+
+    #[tokio::test]
     async fn test_hybrid_select_all_unchanged() {
         let tmp_dir = tempdir().unwrap();
         let table = hybrid_test_table(&tmp_dir).await;
