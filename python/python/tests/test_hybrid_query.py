@@ -275,7 +275,7 @@ def test_sync_hybrid_select_dynamic(sync_table: Table):
 
 
 def test_sync_hybrid_to_arrow_restores_columns(sync_table: Table):
-    """to_arrow() must restore _columns even if the sub-queries raise."""
+    """to_arrow() must restore _columns on success and after an exception."""
     builder = (
         sync_table.search(query_type="hybrid")
         .vector([0.0, 0.4])
@@ -290,6 +290,12 @@ def test_sync_hybrid_to_arrow_restores_columns(sync_table: Table):
     # Second call on the same builder should also apply the selection
     result = builder.to_arrow()
     assert result.column_names == ["text", "_relevance_score"]
+
+    # Force an error via an invalid filter, then verify _columns survived
+    builder.where("THIS IS NOT VALID SQL")
+    with pytest.raises(Exception):
+        builder.to_arrow()
+    assert builder._columns == ["text"]
 
 
 @pytest.mark.asyncio
