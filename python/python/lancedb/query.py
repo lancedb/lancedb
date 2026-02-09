@@ -2118,7 +2118,14 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         """  # noqa: E501
         self._create_query_builders()
 
-        results = ["Vector Search Plan:"]
+        results = []
+        if self._reranker is not None:
+            reranker_name = type(self._reranker).__name__
+            reranker_params = ""
+            if hasattr(self._reranker, "k"):
+                reranker_params = f": k={self._reranker.k}"
+            results.append(f"Reranker: {reranker_name}{reranker_params}")
+        results.append("Vector Search Plan:")
         results.append(
             self._table._explain_plan(
                 self._vector_query.to_query_object(), verbose=verbose
