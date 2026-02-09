@@ -4,6 +4,7 @@
 import lancedb
 
 from lancedb.query import LanceHybridQueryBuilder
+from lancedb.rerankers.base import Reranker
 from lancedb.rerankers.rrf import RRFReranker
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -270,8 +271,7 @@ def test_sync_hybrid_select_dynamic(sync_table: Table):
         .limit(2)
         .to_arrow()
     )
-    assert "upper_text" in result.column_names
-    assert "_relevance_score" in result.column_names
+    assert result.column_names == ["upper_text", "_relevance_score"]
 
 
 def test_sync_hybrid_to_arrow_restores_columns(sync_table: Table):
@@ -309,8 +309,7 @@ async def test_async_hybrid_select_dynamic(table: AsyncTable):
         .limit(2)
         .to_arrow()
     )
-    assert "upper_text" in result.column_names
-    assert "_relevance_score" in result.column_names
+    assert result.column_names == ["upper_text", "_relevance_score"]
 
 
 @pytest.mark.asyncio
@@ -322,8 +321,7 @@ async def test_async_hybrid_select_dict_clears_stale_list(table: AsyncTable):
     # Then override with a dict select — the list must not be applied
     query.select({"upper_text": "upper(text)"})
     result = await query.to_arrow()
-    assert "upper_text" in result.column_names
-    assert "_relevance_score" in result.column_names
+    assert result.column_names == ["upper_text", "_relevance_score"]
 
 
 def test_sync_hybrid_select_score_error(sync_table: Table):
@@ -345,3 +343,207 @@ def test_sync_hybrid_select_score_error(sync_table: Table):
             .limit(2)
             .to_arrow()
         )
+
+
+def test_sync_hybrid_select_with_tantivy(tmpdir_factory):
+    """Projection pushdown must not pass synthetic columns to lance take()."""
+    tantivy = pytest.importorskip("tantivy")  # noqa: F841
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    db = lancedb.connect(tmp_path)
+    data = pa.table(
+        {
+            "text": pa.array(["a", "b", "cat", "dog"]),
+            "vector": pa.array(
+                [[0.1, 0.1], [2, 2], [-0.1, -0.1], [0.5, -0.5]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+    table = db.create_table("test_tantivy", data)
+    table.create_fts_index("text", use_tantivy=True)
+    result = (
+        table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .select(["text"])
+        .limit(2)
+        .to_arrow()
+    )
+    assert result.column_names == ["text", "_relevance_score"]
+    assert len(result) == 2
+
+
+class _ColumnReadingReranker(Reranker):
+    """Minimal reranker that reads a specific column from the merged results."""
+
+    def __init__(self, column="text"):
+        super().__init__()
+        self.column = column
+
+    def rerank_hybrid(self, query, vector_results, fts_results):
+        combined = self.merge_results(vector_results, fts_results)
+        # Access the column — this will raise if projection pushdown excluded it
+        _ = combined[self.column]
+        combined = combined.append_column(
+            "_relevance_score",
+            pa.array([1.0 / (i + 1) for i in range(len(combined))], type=pa.float32()),
+        )
+        return self._keep_relevance_score(combined)
+
+
+def test_sync_hybrid_select_reranker_column(tmpdir_factory):
+    """Reranker's required column must be fetched even when not user-selected."""
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    db = lancedb.connect(tmp_path)
+    data = pa.table(
+        {
+            "id": pa.array([1, 2, 3, 4]),
+            "text": pa.array(["a", "b", "cat", "dog"]),
+            "vector": pa.array(
+                [[0.1, 0.1], [2, 2], [-0.1, -0.1], [0.5, -0.5]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+    table = db.create_table("test_reranker", data)
+    table.create_fts_index("text", with_position=False, use_tantivy=False)
+    reranker = _ColumnReadingReranker(column="text")
+    result = (
+        table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .select(["id"])
+        .rerank(reranker)
+        .limit(2)
+        .to_arrow()
+    )
+    # Reranker had access to "text" internally, but the final output
+    # should only contain user-selected columns + _relevance_score.
+    assert result.column_names == ["id", "_relevance_score"]
+    assert len(result) == 2
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_select_reranker_column(tmpdir_factory):
+    """Async: reranker's required column must be fetched even when not selected."""
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    db = await lancedb.connect_async(tmp_path)
+    data = pa.table(
+        {
+            "id": pa.array([1, 2, 3, 4]),
+            "text": pa.array(["a", "b", "cat", "dog"]),
+            "vector": pa.array(
+                [[0.1, 0.1], [2, 2], [-0.1, -0.1], [0.5, -0.5]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+    table = await db.create_table("test_reranker", data)
+    await table.create_index("text", config=FTS(with_position=False))
+    reranker = _ColumnReadingReranker(column="text")
+    result = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .select(["id"])
+        .rerank(reranker)
+        .limit(2)
+        .to_arrow()
+    )
+    assert result.column_names == ["id", "_relevance_score"]
+    assert len(result) == 2
+
+
+def test_sync_tantivy_select_only_score(tmpdir_factory):
+    """Selecting only synthetic columns should return just those columns."""
+    tantivy = pytest.importorskip("tantivy")  # noqa: F841
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    db = lancedb.connect(tmp_path)
+    data = pa.table(
+        {
+            "text": pa.array(["a", "b", "cat", "dog"]),
+            "vector": pa.array(
+                [[0.1, 0.1], [2, 2], [-0.1, -0.1], [0.5, -0.5]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+    table = db.create_table("test_synth", data)
+    table.create_fts_index("text", use_tantivy=True)
+    result = table.search("dog").select(["_score"]).limit(2).to_arrow()
+    assert result.column_names == ["_score"]
+    assert len(result) == 1  # only "dog" matches
+
+
+def test_sync_tantivy_select_nonexistent_synthetic(tmpdir_factory):
+    """Selecting a synthetic column that doesn't exist should raise."""
+    tantivy = pytest.importorskip("tantivy")  # noqa: F841
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    db = lancedb.connect(tmp_path)
+    data = pa.table(
+        {
+            "text": pa.array(["a", "b", "cat", "dog"]),
+            "vector": pa.array(
+                [[0.1, 0.1], [2, 2], [-0.1, -0.1], [0.5, -0.5]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+    table = db.create_table("test_bad_synth", data)
+    table.create_fts_index("text", use_tantivy=True)
+    # _relevance_score only exists after reranking; standalone FTS doesn't have it
+    with pytest.raises(ValueError, match="do not exist"):
+        table.search("dog").select(["_relevance_score"]).limit(2).to_arrow()
+
+
+def test_sync_hybrid_reranker_column_none(sync_table: Table):
+    """Reranker with column=None should not break projection pushdown."""
+
+    class _NoneColumnReranker(Reranker):
+        def __init__(self):
+            super().__init__()
+            self.column = None
+
+        def rerank_hybrid(self, query, vector_results, fts_results):
+            combined = self.merge_results(vector_results, fts_results)
+            combined = combined.append_column(
+                "_relevance_score",
+                pa.array(
+                    [1.0 / (i + 1) for i in range(len(combined))],
+                    type=pa.float32(),
+                ),
+            )
+            return self._keep_relevance_score(combined)
+
+    result = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .select(["text"])
+        .rerank(_NoneColumnReranker())
+        .limit(2)
+        .to_arrow()
+    )
+    assert result.column_names == ["text", "_relevance_score"]
+    assert len(result) == 2
+
+
+def test_reranker_column_deps():
+    """_reranker_column_deps validates the column attribute."""
+    assert LanceHybridQueryBuilder._reranker_column_deps(None) == []
+    assert LanceHybridQueryBuilder._reranker_column_deps(RRFReranker()) == []
+
+    class _HasColumn:
+        column = "text"
+
+    assert LanceHybridQueryBuilder._reranker_column_deps(_HasColumn()) == ["text"]
+
+    class _NoneColumn:
+        column = None
+
+    assert LanceHybridQueryBuilder._reranker_column_deps(_NoneColumn()) == []
+
+    class _EmptyColumn:
+        column = ""
+
+    assert LanceHybridQueryBuilder._reranker_column_deps(_EmptyColumn()) == []

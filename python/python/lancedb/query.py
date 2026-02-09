@@ -1573,7 +1573,20 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             empty_schema = pa.schema([pa.field("_score", pa.float32())])
             return pa.Table.from_batches([], schema=empty_schema)
         scores = pa.array(scores)
-        output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
+        # _score, _rowid, and _relevance_score are synthetic columns appended
+        # after take(), so they must not be passed to lance take().
+        cols = self._columns
+        overfetched = False
+        if isinstance(cols, list):
+            cols = [
+                c for c in cols if c not in ("_score", "_rowid", "_relevance_score")
+            ]
+            if not cols:
+                # All selected columns are synthetic; fetch everything and
+                # trim to the requested columns after synthetics are appended.
+                cols = None
+                overfetched = True
+        output_tbl = self._table.to_lance().take(row_ids, columns=cols)
         output_tbl = output_tbl.append_column("_score", scores)
         # this needs to match vector search results which are uint64
         row_ids = pa.array(row_ids, type=pa.uint64())
@@ -1613,6 +1626,19 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         if self._reranker is not None:
             output_tbl = self._reranker.rerank_fts(self._query, output_tbl)
+
+        # When all user-selected columns were synthetic we had to fetch every
+        # real column; trim back to just the columns the user asked for.
+        if overfetched and isinstance(self._columns, list):
+            keep = [c for c in self._columns if c in output_tbl.column_names]
+            if not keep:
+                missing = [c for c in self._columns if c not in output_tbl.column_names]
+                raise ValueError(
+                    f"Selected columns {missing} do not exist in the results. "
+                    f"Available columns: {output_tbl.column_names}"
+                )
+            output_tbl = output_tbl.select(keep)
+
         return output_tbl
 
     def rerank(self, reranker: Reranker) -> LanceFtsQueryBuilder:
@@ -1758,11 +1784,18 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._create_query_builders()
 
             if isinstance(saved_columns, list):
+                reranker_cols = self._reranker_column_deps(self._reranker)
                 fts_cols = self._build_hybrid_subquery_select(
-                    saved_columns, remove="_distance", ensure="_score"
+                    saved_columns,
+                    remove="_distance",
+                    ensure="_score",
+                    extra_columns=reranker_cols,
                 )
                 vec_cols = self._build_hybrid_subquery_select(
-                    saved_columns, remove="_score", ensure="_distance"
+                    saved_columns,
+                    remove="_score",
+                    ensure="_distance",
+                    extra_columns=reranker_cols,
                 )
                 self._fts_query.select(fts_cols)
                 self._vector_query.select(vec_cols)
@@ -1867,19 +1900,37 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         return results
 
     @staticmethod
+    def _reranker_column_deps(reranker) -> List[str]:
+        """Return dataset columns the reranker needs to read."""
+        if reranker is None or not hasattr(reranker, "column"):
+            return []
+        col = reranker.column
+        if isinstance(col, str) and col:
+            return [col]
+        return []
+
+    @staticmethod
     def _build_hybrid_subquery_select(
         columns: List[str],
         remove: str,
         ensure: str,
+        extra_columns: Optional[List[str]] = None,
     ) -> List[str]:
         """Build a sanitized column list for a hybrid sub-query.
 
         Removes the score column the sub-query doesn't produce and
         ``_relevance_score`` (which only exists after reranking), then ensures
         the correct score column and ``_rowid`` are included.
+
+        ``extra_columns`` are additional columns required by downstream
+        consumers (e.g. a reranker) that must be present even if the user
+        didn't explicitly select them.
         """
         skip = {remove, ensure, "_relevance_score"}
         cols = [c for c in columns if c not in skip]
+        for extra in extra_columns or ():
+            if extra not in cols and extra not in skip:
+                cols.append(extra)
         if ensure not in cols:
             cols.append(ensure)
         if "_rowid" not in cols:
@@ -3159,15 +3210,10 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._hybrid_columns = None
 
     def select(self, columns: Union[List[str], dict[str, str]]) -> "AsyncHybridQuery":
-        """Intercept column selection for hybrid queries.
-
-        Column-name lists are applied after reranking rather than being pushed
-        to the sub-queries, which would cause contradictory errors because FTS
-        produces ``_score`` and vector search produces ``_distance``.
-
-        Dict (dynamic) selects are still pushed to sub-queries since they
-        contain SQL expressions that are evaluated during the scan.
-        """
+        # Column-name lists are applied after reranking rather than being
+        # pushed to sub-queries, which would cause contradictory errors
+        # (FTS has _score, vector has _distance). Dict selects are still
+        # pushed since they contain SQL expressions evaluated during scan.
         if isinstance(columns, dict):
             self._hybrid_columns = None
             return super().select(columns)
@@ -3215,11 +3261,20 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
 
         # Push sanitized per-sub-query projections for I/O efficiency
         if self._hybrid_columns is not None:
+            reranker_cols = LanceHybridQueryBuilder._reranker_column_deps(
+                self._reranker
+            )
             fts_cols = LanceHybridQueryBuilder._build_hybrid_subquery_select(
-                self._hybrid_columns, remove="_distance", ensure="_score"
+                self._hybrid_columns,
+                remove="_distance",
+                ensure="_score",
+                extra_columns=reranker_cols,
             )
             vec_cols = LanceHybridQueryBuilder._build_hybrid_subquery_select(
-                self._hybrid_columns, remove="_score", ensure="_distance"
+                self._hybrid_columns,
+                remove="_score",
+                ensure="_distance",
+                extra_columns=reranker_cols,
             )
             fts_query.select(fts_cols)
             vec_query.select(vec_cols)
