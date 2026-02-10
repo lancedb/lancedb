@@ -1766,68 +1766,65 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     _HYBRID_ONLY_COLS = frozenset({"_relevance_score", "_score", "_distance"})
 
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
-        # Strip column-name lists so they don't get pushed into
-        # _create_query_builders (which would push them identically to both
-        # sub-queries). We'll push sanitized per-sub-query projections below.
-        # For dict selects, strip entries that reference post-rerank columns
-        # (they don't exist in sub-queries and are resolved after reranking).
-        saved_columns = self._columns
-        if isinstance(saved_columns, list):
-            self._columns = None
-        elif isinstance(saved_columns, dict):
-            sub_query_cols = {
-                k: v
-                for k, v in saved_columns.items()
-                if v not in self._HYBRID_ONLY_COLS
-            }
-            self._columns = sub_query_cols if sub_query_cols else None
+        columns = self._columns
 
-        try:
+        # For list/dict selects, don't push them into _create_query_builders
+        # (which would push them identically to both sub-queries). Instead,
+        # pass columns=None (or a stripped dict for dynamic selects) and push
+        # sanitized per-sub-query projections below.
+        if isinstance(columns, list):
+            self._create_query_builders(columns=None)
+        elif isinstance(columns, dict):
+            sub_query_cols = {
+                k: v for k, v in columns.items() if v not in self._HYBRID_ONLY_COLS
+            }
+            self._create_query_builders(
+                columns=sub_query_cols if sub_query_cols else None
+            )
+        else:
             self._create_query_builders()
 
-            if isinstance(saved_columns, list):
-                reranker_cols = self._reranker_column_deps(self._reranker)
-                fts_cols = self._build_hybrid_subquery_select(
-                    saved_columns,
-                    remove="_distance",
-                    ensure="_score",
-                    extra_columns=reranker_cols,
-                )
-                vec_cols = self._build_hybrid_subquery_select(
-                    saved_columns,
-                    remove="_score",
-                    ensure="_distance",
-                    extra_columns=reranker_cols,
-                )
-                self._fts_query.select(fts_cols)
-                self._vector_query.select(vec_cols)
-
-            with ThreadPoolExecutor() as executor:
-                fts_future = executor.submit(
-                    self._fts_query.with_row_id(True).to_arrow, timeout=timeout
-                )
-                vector_future = executor.submit(
-                    self._vector_query.with_row_id(True).to_arrow, timeout=timeout
-                )
-                fts_results = fts_future.result()
-                vector_results = vector_future.result()
-
-            result = self._combine_hybrid_results(
-                fts_results=fts_results,
-                vector_results=vector_results,
-                norm=self._norm,
-                fts_query=self._fts_query._query,
-                reranker=self._reranker,
-                limit=self._limit,
-                with_row_ids=self._with_row_id,
+        if isinstance(columns, list):
+            reranker_cols = self._reranker_column_deps(self._reranker)
+            fts_cols = self._build_hybrid_subquery_select(
+                columns,
+                remove="_distance",
+                ensure="_score",
+                extra_columns=reranker_cols,
             )
-        finally:
-            self._columns = saved_columns
+            vec_cols = self._build_hybrid_subquery_select(
+                columns,
+                remove="_score",
+                ensure="_distance",
+                extra_columns=reranker_cols,
+            )
+            self._fts_query.select(fts_cols)
+            self._vector_query.select(vec_cols)
 
-        if isinstance(saved_columns, list):
-            result = self._apply_hybrid_select(result, saved_columns)
-        elif isinstance(saved_columns, dict):
-            result = self._apply_hybrid_dynamic_select(result, saved_columns)
+        with ThreadPoolExecutor() as executor:
+            fts_future = executor.submit(
+                self._fts_query.with_row_id(True).to_arrow, timeout=timeout
+            )
+            vector_future = executor.submit(
+                self._vector_query.with_row_id(True).to_arrow, timeout=timeout
+            )
+            fts_results = fts_future.result()
+            vector_results = vector_future.result()
+
+        result = self._combine_hybrid_results(
+            fts_results=fts_results,
+            vector_results=vector_results,
+            norm=self._norm,
+            fts_query=self._fts_query._query,
+            reranker=self._reranker,
+            limit=self._limit,
+            with_row_ids=self._with_row_id,
+        )
+
+        if isinstance(columns, list):
+            result = self._apply_hybrid_select(result, columns)
+        elif isinstance(columns, dict):
+            result = self._apply_hybrid_dynamic_select(result, columns)
         else:
             # No explicit select: drop _score/_distance for backward compat
             drop = [c for c in ("_score", "_distance") if c in result.column_names]
@@ -2256,7 +2253,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         -------
         plan : str
         """  # noqa: E501
-        self._create_query_builders()
+        self._create_query_builders(columns=self._columns)
 
         results = ["Vector Search Plan:"]
         results.append(
@@ -2279,7 +2276,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         -------
         plan : str
         """
-        self._create_query_builders()
+        self._create_query_builders(columns=self._columns)
 
         results = ["Vector Search Plan:"]
         results.append(self._table._analyze_plan(self._vector_query.to_query_object()))
@@ -2287,8 +2284,14 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         results.append(self._table._analyze_plan(self._fts_query.to_query_object()))
         return "\n".join(results)
 
-    def _create_query_builders(self):
-        """Set up and configure the vector and FTS query builders."""
+    def _create_query_builders(self, *, columns=None):
+        """Set up and configure the vector and FTS query builders.
+
+        Parameters
+        ----------
+        columns : optional
+            Column selection to push to sub-queries, or None to suppress.
+        """
         vector_query, fts_query = self._validate_query(
             self._query, self._vector, self._text
         )
@@ -2306,9 +2309,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._limit:
             self._vector_query.limit(self._limit)
             self._fts_query.limit(self._limit)
-        if self._columns:
-            self._vector_query.select(self._columns)
-            self._fts_query.select(self._columns)
+        if columns:
+            self._vector_query.select(columns)
+            self._fts_query.select(columns)
         if self._where:
             self._vector_query.where(self._where, self._postfilter)
             self._fts_query.where(self._where, self._postfilter)
