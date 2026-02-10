@@ -1576,18 +1576,18 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         # _score, _rowid, and _relevance_score are synthetic columns appended
         # after take(), so they must not be passed to lance take().
         cols = self._columns
-        overfetched = False
         if isinstance(cols, list):
             cols = [
                 c for c in cols if c not in ("_score", "_rowid", "_relevance_score")
             ]
-            if not cols:
-                # All selected columns are synthetic; fetch everything and
-                # trim to the requested columns after synthetics are appended.
-                cols = None
-                overfetched = True
-        output_tbl = self._table.to_lance().take(row_ids, columns=cols)
-        output_tbl = output_tbl.append_column("_score", scores)
+
+        skipped_take = isinstance(cols, list) and not cols
+        if skipped_take:
+            # All selected columns are synthetic; no real columns to fetch.
+            output_tbl = pa.table({"_score": scores})
+        else:
+            output_tbl = self._table.to_lance().take(row_ids, columns=cols)
+            output_tbl = output_tbl.append_column("_score", scores)
         # this needs to match vector search results which are uint64
         row_ids = pa.array(row_ids, type=pa.uint64())
 
@@ -1627,17 +1627,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if self._reranker is not None:
             output_tbl = self._reranker.rerank_fts(self._query, output_tbl)
 
-        # When all user-selected columns were synthetic we had to fetch every
-        # real column; trim back to just the columns the user asked for.
-        if overfetched and isinstance(self._columns, list):
-            keep = [c for c in self._columns if c in output_tbl.column_names]
-            if not keep:
-                missing = [c for c in self._columns if c not in output_tbl.column_names]
-                raise ValueError(
-                    f"Selected columns {missing} do not exist in the results. "
-                    f"Available columns: {output_tbl.column_names}"
-                )
-            output_tbl = output_tbl.select(keep)
+        if skipped_take and isinstance(self._columns, list):
+            output_tbl = output_tbl.select(self._columns)
 
         return output_tbl
 

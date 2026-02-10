@@ -545,7 +545,7 @@ def test_sync_tantivy_select_nonexistent_synthetic(tmpdir_factory):
     table = db.create_table("test_bad_synth", data)
     table.create_fts_index("text", use_tantivy=True)
     # _relevance_score only exists after reranking; standalone FTS doesn't have it
-    with pytest.raises(ValueError, match="do not exist"):
+    with pytest.raises(KeyError):
         table.search("dog").select(["_relevance_score"]).limit(2).to_arrow()
 
 
