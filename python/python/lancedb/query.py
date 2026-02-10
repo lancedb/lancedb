@@ -2128,11 +2128,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # Indent sub-plans under the reranker
         indented_vector = "\n".join("  " + line for line in vector_plan.splitlines())
         indented_fts = "\n".join("  " + line for line in fts_plan.splitlines())
-        return (
-            f"{reranker_label}\n"
-            f"  Vector Search Plan:\n{indented_vector}\n"
-            f"  FTS Search Plan:\n{indented_fts}"
-        )
+        return f"{reranker_label}\n  {indented_vector}\n  {indented_fts}"
 
     def analyze_plan(self):
         """Execute the query and display with runtime metrics.
@@ -3167,23 +3163,19 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         RRFReranker(K=60)
-          Vector Search Plan:
-          ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
-            Take: columns="vector, _rowid, _distance, (text)"
-              CoalesceBatchesExec: target_batch_size=1024
-                GlobalLimitExec: skip=0, fetch=10
-                  FilterExec: _distance@2 IS NOT NULL
-                    SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
-                      KNNVectorDistance: metric=l2
-                        LanceRead: uri=..., projection=[vector], ...
-        <BLANKLINE>
-          FTS Search Plan:
-          ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
-            Take: columns="_rowid, _score, (vector), (text)"
-              CoalesceBatchesExec: target_batch_size=1024
-                GlobalLimitExec: skip=0, fetch=10
-                  MatchQuery: column=text, query=hello
-        <BLANKLINE>
+            ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
+              Take: columns="vector, _rowid, _distance, (text)"
+                CoalesceBatchesExec: target_batch_size=1024
+                  GlobalLimitExec: skip=0, fetch=10
+                    FilterExec: _distance@2 IS NOT NULL
+                      SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+                        KNNVectorDistance: metric=l2
+                          LanceRead: uri=..., projection=[vector], ...
+            ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
+              Take: columns="_rowid, _score, (vector), (text)"
+                CoalesceBatchesExec: target_batch_size=1024
+                  GlobalLimitExec: skip=0, fetch=10
+                    MatchQuery: column=text, query=hello
 
         Parameters
         ----------
