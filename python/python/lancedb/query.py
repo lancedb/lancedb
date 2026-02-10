@@ -2126,12 +2126,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.to_query_object(), verbose=verbose
         )
         # Indent sub-plans under the reranker
-        indented_vector = "\n".join(
-            "  " + line for line in vector_plan.splitlines()
-        )
-        indented_fts = "\n".join(
-            "  " + line for line in fts_plan.splitlines()
-        )
+        indented_vector = "\n".join("  " + line for line in vector_plan.splitlines())
+        indented_fts = "\n".join("  " + line for line in fts_plan.splitlines())
         return (
             f"{reranker_label}\n"
             f"  Vector Search Plan:\n{indented_vector}\n"
@@ -3202,17 +3198,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         vector_plan = await self._inner.to_vector_query().explain_plan(verbose)
         fts_plan = await self._inner.to_fts_query().explain_plan(verbose)
         # Indent sub-plans under the reranker
-        indented_vector = "\n".join(
-            "  " + line for line in vector_plan.splitlines()
-        )
-        indented_fts = "\n".join(
-            "  " + line for line in fts_plan.splitlines()
-        )
-        return (
-            f"{self._reranker}\n"
-            f"  {indented_vector}\n"
-            f"  {indented_fts}"
-        )
+        indented_vector = "\n".join("  " + line for line in vector_plan.splitlines())
+        indented_fts = "\n".join("  " + line for line in fts_plan.splitlines())
+        return f"{self._reranker}\n  {indented_vector}\n  {indented_fts}"
 
     async def analyze_plan(self):
         """
