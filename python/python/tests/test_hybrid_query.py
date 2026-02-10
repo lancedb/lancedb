@@ -312,16 +312,28 @@ def test_sync_hybrid_query_select(sync_table: Table):
 
 
 def test_sync_hybrid_select_dynamic(sync_table: Table):
-    """Dict (dynamic) selects are pushed to sub-queries and should work."""
-    result = (
-        sync_table.search(query_type="hybrid")
-        .vector([0.0, 0.4])
-        .text("dog")
-        .select({"upper_text": "upper(text)"})
-        .limit(2)
-        .to_arrow()
-    )
-    assert result.column_names == ["upper_text", "_relevance_score"]
+    """Dict (dynamic) selects should return exactly the requested columns."""
+    cases = [
+        {"upper_text": "upper(text)"},
+        {"upper_text": "upper(text)", "text": "text"},
+        {"text": "text"},
+        {"t1": "upper(text)", "t2": "lower(text)", "t3": "text"},
+        {"hybrid_score": "_relevance_score", "text": "text"},
+        {"s": "_score", "d": "_distance"},
+        {"hybrid_score": "_relevance_score"},
+    ]
+    for columns in cases:
+        result = (
+            sync_table.search(query_type="hybrid")
+            .vector([0.0, 0.4])
+            .text("dog")
+            .select(columns)
+            .limit(2)
+            .to_arrow()
+        )
+        assert result.column_names == list(columns.keys()), (
+            f"select({columns}) should return exactly {list(columns.keys())}"
+        )
 
 
 def test_sync_hybrid_to_arrow_restores_columns(sync_table: Table):
@@ -350,16 +362,28 @@ def test_sync_hybrid_to_arrow_restores_columns(sync_table: Table):
 
 @pytest.mark.asyncio
 async def test_async_hybrid_select_dynamic(table: AsyncTable):
-    """Dict (dynamic) selects are pushed to sub-queries and should work."""
-    result = await (
-        table.query()
-        .nearest_to([0.0, 0.4])
-        .nearest_to_text("dog")
-        .select({"upper_text": "upper(text)"})
-        .limit(2)
-        .to_arrow()
-    )
-    assert result.column_names == ["upper_text", "_relevance_score"]
+    """Dict (dynamic) selects should return exactly the requested columns."""
+    cases = [
+        {"upper_text": "upper(text)"},
+        {"upper_text": "upper(text)", "text": "text"},
+        {"text": "text"},
+        {"t1": "upper(text)", "t2": "lower(text)", "t3": "text"},
+        {"hybrid_score": "_relevance_score", "text": "text"},
+        {"s": "_score", "d": "_distance"},
+        {"hybrid_score": "_relevance_score"},
+    ]
+    for columns in cases:
+        result = await (
+            table.query()
+            .nearest_to([0.0, 0.4])
+            .nearest_to_text("dog")
+            .select(columns)
+            .limit(2)
+            .to_arrow()
+        )
+        assert result.column_names == list(columns.keys()), (
+            f"select({columns}) should return exactly {list(columns.keys())}"
+        )
 
 
 @pytest.mark.asyncio
@@ -371,7 +395,7 @@ async def test_async_hybrid_select_dict_clears_stale_list(table: AsyncTable):
     # Then override with a dict select — the list must not be applied
     query.select({"upper_text": "upper(text)"})
     result = await query.to_arrow()
-    assert result.column_names == ["upper_text", "_relevance_score"]
+    assert result.column_names == ["upper_text"]
 
 
 def test_sync_hybrid_select_with_tantivy(tmpdir_factory):

@@ -1772,13 +1772,24 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def to_query_object(self) -> Query:
         raise NotImplementedError("to_query_object not yet supported on a hybrid query")
 
+    _HYBRID_ONLY_COLS = frozenset({"_relevance_score", "_score", "_distance"})
+
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         # Strip column-name lists so they don't get pushed into
         # _create_query_builders (which would push them identically to both
         # sub-queries). We'll push sanitized per-sub-query projections below.
+        # For dict selects, strip entries that reference post-rerank columns
+        # (they don't exist in sub-queries and are resolved after reranking).
         saved_columns = self._columns
         if isinstance(saved_columns, list):
             self._columns = None
+        elif isinstance(saved_columns, dict):
+            sub_query_cols = {
+                k: v
+                for k, v in saved_columns.items()
+                if v not in self._HYBRID_ONLY_COLS
+            }
+            self._columns = sub_query_cols if sub_query_cols else None
 
         try:
             self._create_query_builders()
@@ -1824,6 +1835,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         if isinstance(saved_columns, list):
             result = self._apply_hybrid_select(result, saved_columns)
+        elif isinstance(saved_columns, dict):
+            result = self._apply_hybrid_dynamic_select(result, saved_columns)
         else:
             # No explicit select: drop _score/_distance for backward compat
             drop = [c for c in ("_score", "_distance") if c in result.column_names]
@@ -1954,13 +1967,27 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         result: pa.Table,
         columns: List[str],
     ) -> pa.Table:
-        """Apply user-specified column selection to hybrid search results.
-
-        Only column-name lists are handled here. Dict (dynamic) selects are
-        pushed to sub-queries directly and never reach this method.
-        """
-
+        """Apply column-name-list selection to hybrid search results."""
         return result.select(columns)
+
+    @classmethod
+    def _apply_hybrid_dynamic_select(
+        cls,
+        result: pa.Table,
+        columns: dict,
+    ) -> pa.Table:
+        """Apply dict (dynamic) selection to hybrid search results.
+
+        Entries whose expression is a literal post-rerank column name
+        (_relevance_score, _score, _distance) are resolved from the merged
+        result. All other entries were already computed by the sub-queries
+        under the output name.
+        """
+        arrays = {}
+        for name, expr in columns.items():
+            source = expr if expr in cls._HYBRID_ONLY_COLS else name
+            arrays[name] = result.column(source)
+        return pa.table(arrays)
 
     def to_batches(
         self, /, batch_size: Optional[int] = None, timeout: Optional[timedelta] = None
@@ -3207,16 +3234,25 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._norm = "score"
         self._reranker = RRFReranker()
         self._hybrid_columns = None
+        self._hybrid_dict_select = None
 
     def select(self, columns: Union[List[str], dict[str, str]]) -> "AsyncHybridQuery":
         # Column-name lists are applied after reranking rather than being
         # pushed to sub-queries, which would cause contradictory errors
         # (FTS has _score, vector has _distance). Dict selects are still
-        # pushed since they contain SQL expressions evaluated during scan.
+        # pushed since they contain SQL expressions evaluated during scan,
+        # but entries referencing post-rerank columns are stripped and
+        # resolved after reranking.
         if isinstance(columns, dict):
             self._hybrid_columns = None
-            return super().select(columns)
+            self._hybrid_dict_select = columns
+            hybrid_only = LanceHybridQueryBuilder._HYBRID_ONLY_COLS
+            sub_query_cols = {k: v for k, v in columns.items() if v not in hybrid_only}
+            if sub_query_cols:
+                return super().select(sub_query_cols)
+            return self
         self._hybrid_columns = columns
+        self._hybrid_dict_select = None
         return self
 
     def rerank(
@@ -3302,6 +3338,10 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         if self._hybrid_columns is not None:
             result = LanceHybridQueryBuilder._apply_hybrid_select(
                 result, self._hybrid_columns
+            )
+        elif self._hybrid_dict_select is not None:
+            result = LanceHybridQueryBuilder._apply_hybrid_dynamic_select(
+                result, self._hybrid_dict_select
             )
         else:
             # No explicit select: drop _score/_distance for backward compat

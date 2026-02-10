@@ -940,9 +940,41 @@ fn apply_hybrid_select(batch: RecordBatch, select: &Select) -> Result<RecordBatc
 
             Ok(batch.project(&indices)?)
         }
-        // Dynamic selects are evaluated by the sub-queries directly (not
-        // post-rerank), so by this point they've already been applied.
-        Select::Dynamic(_) => Ok(batch),
+        Select::Dynamic(cols) => {
+            // Expressions that are literal references to post-rerank columns
+            // (_relevance_score, _score, _distance) are resolved here from
+            // the merged result. All other expressions were already evaluated
+            // by the sub-queries under their output name.
+            let hybrid_only: &[&str] = &[RELEVANCE_SCORE, SCORE_COL, DIST_COL];
+            let schema = batch.schema();
+            let mut fields = Vec::with_capacity(cols.len());
+            let mut arrays: Vec<Arc<dyn Array>> = Vec::with_capacity(cols.len());
+            for (name, expr) in cols {
+                let source = if hybrid_only.contains(&expr.as_str()) {
+                    expr.as_str()
+                } else {
+                    name.as_str()
+                };
+                let idx = schema.index_of(source).map_err(|_| Error::InvalidInput {
+                    message: format!(
+                        "dynamic select column '{}' not found in result. Available: {:?}",
+                        source,
+                        schema.fields().iter().map(|f| f.name()).collect::<Vec<_>>()
+                    ),
+                })?;
+                let col = batch.column(idx);
+                fields.push(arrow_schema::Field::new(
+                    name,
+                    col.data_type().clone(),
+                    col.is_nullable(),
+                ));
+                arrays.push(col.clone());
+            }
+            Ok(RecordBatch::try_new(
+                Arc::new(arrow_schema::Schema::new(fields)),
+                arrays,
+            )?)
+        }
     }
 }
 
@@ -1215,13 +1247,33 @@ impl VectorQuery {
         // Push sanitized column projections to sub-queries for I/O efficiency.
         // Each sub-query gets the user's columns minus the score column it
         // doesn't produce, plus the score column it *does* produce and _rowid
-        // (both needed by the reranker). Dynamic selects are left as-is.
-        if let Select::Columns(ref cols) = user_select {
-            let fts_cols = build_hybrid_subquery_select(cols, DIST_COL, SCORE_COL);
-            fts_query.request.select = Select::Columns(fts_cols);
+        // (both needed by the reranker).
+        match &user_select {
+            Select::Columns(cols) => {
+                let fts_cols = build_hybrid_subquery_select(cols, DIST_COL, SCORE_COL);
+                fts_query.request.select = Select::Columns(fts_cols);
 
-            let vec_cols = build_hybrid_subquery_select(cols, SCORE_COL, DIST_COL);
-            vector_query.request.base.select = Select::Columns(vec_cols);
+                let vec_cols = build_hybrid_subquery_select(cols, SCORE_COL, DIST_COL);
+                vector_query.request.base.select = Select::Columns(vec_cols);
+            }
+            Select::Dynamic(cols) => {
+                // Strip entries that are literal references to post-rerank
+                // columns; those are resolved in apply_hybrid_select instead.
+                let hybrid_only: &[&str] = &[RELEVANCE_SCORE, SCORE_COL, DIST_COL];
+                let sub_query_cols: Vec<_> = cols
+                    .iter()
+                    .filter(|(_, expr)| !hybrid_only.contains(&expr.as_str()))
+                    .cloned()
+                    .collect();
+                let sub_select = if sub_query_cols.is_empty() {
+                    Select::All
+                } else {
+                    Select::Dynamic(sub_query_cols)
+                };
+                fts_query.request.select = sub_select.clone();
+                vector_query.request.base.select = sub_select;
+            }
+            Select::All => {}
         }
 
         vector_query.request.base.full_text_search = None;
@@ -2517,26 +2569,41 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let table = hybrid_test_table(&tmp_dir).await;
 
-        // Dynamic selects are pushed to sub-queries, not applied post-rerank.
-        // Expressions that only reference user columns should work.
-        let results = table
-            .query()
-            .full_text_search(FullTextSearchQuery::new("b".to_string()))
-            .select(Select::dynamic(&[("upper_text", "upper(text)")]))
-            .limit(2)
-            .nearest_to(&[-10.0, -10.0])
-            .unwrap()
-            .execute()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
+        // Dynamic selects should return exactly the requested columns.
+        let cases: Vec<Vec<(&str, &str)>> = vec![
+            vec![("upper_text", "upper(text)")],
+            vec![("upper_text", "upper(text)"), ("text", "text")],
+            vec![("text", "text")],
+            vec![("t1", "upper(text)"), ("t2", "lower(text)"), ("t3", "text")],
+            vec![("hybrid_score", "_relevance_score"), ("t2", "text")],
+            vec![("s", "_score"), ("d", "_distance")],
+            vec![("hybrid_score", "_relevance_score")],
+        ];
 
-        let batch = &results[0];
-        let schema = batch.schema();
-        let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        assert!(col_names.contains(&"upper_text"));
-        assert!(col_names.contains(&"_relevance_score"));
+        for dynamic_cols in &cases {
+            let expected_names: Vec<&str> = dynamic_cols.iter().map(|(name, _)| *name).collect();
+            let results = table
+                .query()
+                .full_text_search(FullTextSearchQuery::new("b".to_string()))
+                .select(Select::dynamic(dynamic_cols))
+                .limit(2)
+                .nearest_to(&[-10.0, -10.0])
+                .unwrap()
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+
+            let batch = &results[0];
+            let schema = batch.schema();
+            let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+            assert_eq!(
+                col_names, expected_names,
+                "dynamic select {:?} should return exactly {:?}",
+                dynamic_cols, expected_names
+            );
+        }
     }
 }
