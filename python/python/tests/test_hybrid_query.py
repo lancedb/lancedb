@@ -268,27 +268,19 @@ async def test_async_hybrid_query_select(table: AsyncTable):
         extra_columns=["_score", "_distance"],
     )
 
-
-@pytest.mark.asyncio
-async def test_async_hybrid_select_score_and_distance(table: AsyncTable):
+    # Verify null patterns: each row came from at least one sub-query,
+    # so at least one of _score/_distance must be non-null.
     result = await (
         table.query()
         .nearest_to([0.0, 0.4])
         .nearest_to_text("dog")
-        .select(["text", "_score", "_distance"])
+        .select(["_score", "_distance"])
         .limit(4)
         .to_arrow()
     )
-    assert result.column_names == ["text", "_score", "_distance"]
-
-    # Rows from the vector sub-query should have _distance values and null _score
-    # Rows from the FTS sub-query should have _score values and null _distance
-    scores = result["_score"]
-    distances = result["_distance"]
     for i in range(len(result)):
-        s = scores[i].as_py()
-        d = distances[i].as_py()
-        # At least one must be non-null (each row came from at least one sub-query)
+        s = result["_score"][i].as_py()
+        d = result["_distance"][i].as_py()
         assert s is not None or d is not None
 
 
@@ -302,6 +294,21 @@ def test_sync_hybrid_query_select(sync_table: Table):
         ),
         extra_columns=["_score", "_distance"],
     )
+
+    # Verify null patterns: each row came from at least one sub-query,
+    # so at least one of _score/_distance must be non-null.
+    result = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .select(["_score", "_distance"])
+        .limit(4)
+        .to_arrow()
+    )
+    for i in range(len(result)):
+        s = result["_score"][i].as_py()
+        d = result["_distance"][i].as_py()
+        assert s is not None or d is not None
 
 
 def test_sync_hybrid_select_dynamic(sync_table: Table):
@@ -365,25 +372,6 @@ async def test_async_hybrid_select_dict_clears_stale_list(table: AsyncTable):
     query.select({"upper_text": "upper(text)"})
     result = await query.to_arrow()
     assert result.column_names == ["upper_text", "_relevance_score"]
-
-
-def test_sync_hybrid_select_score_and_distance(sync_table: Table):
-    result = (
-        sync_table.search(query_type="hybrid")
-        .vector([0.0, 0.4])
-        .text("dog")
-        .select(["text", "_score", "_distance"])
-        .limit(4)
-        .to_arrow()
-    )
-    assert result.column_names == ["text", "_score", "_distance"]
-
-    scores = result["_score"]
-    distances = result["_distance"]
-    for i in range(len(result)):
-        s = scores[i].as_py()
-        d = distances[i].as_py()
-        assert s is not None or d is not None
 
 
 def test_sync_hybrid_select_with_tantivy(tmpdir_factory):

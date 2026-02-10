@@ -2483,17 +2483,13 @@ mod tests {
             &["_score", "_distance"],
         )
         .await;
-    }
 
-    #[tokio::test]
-    async fn test_hybrid_select_score_and_distance() {
-        let tmp_dir = tempdir().unwrap();
-        let table = hybrid_test_table(&tmp_dir).await;
-
+        // Verify null patterns: each row came from at least one sub-query,
+        // so at least one of _score/_distance must be non-null.
         let results = table
             .query()
             .full_text_search(FullTextSearchQuery::new("b".to_string()))
-            .select(Select::columns(&["text", "_score", "_distance"]))
+            .select(Select::columns(&["_score", "_distance"]))
             .limit(4)
             .nearest_to(&[-10.0, -10.0])
             .unwrap()
@@ -2505,11 +2501,6 @@ mod tests {
             .unwrap();
 
         let batch = &results[0];
-        let schema = batch.schema();
-        let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        assert_eq!(col_names, vec!["text", "_score", "_distance"]);
-
-        // Each row should have at least one non-null score
         let scores = batch.column_by_name("_score").unwrap();
         let distances = batch.column_by_name("_distance").unwrap();
         for i in 0..batch.num_rows() {
