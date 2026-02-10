@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import itertools
+
 import lancedb
 
 from lancedb.query import LanceHybridQueryBuilder
@@ -13,6 +15,64 @@ import pytest_asyncio
 
 from lancedb.index import FTS
 from lancedb.table import AsyncTable, Table
+
+
+def assert_select_projections(make_query, *, extra_columns=None):
+    """Assert that .select() returns exactly the requested columns with correct data.
+
+    Runs the query to discover default columns, then verifies that every
+    permutation of every non-empty subset of columns (including extra_columns)
+    produces results matching a projection of the full result.
+
+    Parameters
+    ----------
+    make_query : callable
+        Returns a fresh query builder (without .select()). Must support
+        .select() and .to_arrow().
+    extra_columns : list of str, optional
+        Columns not in default output but available for selection
+        (e.g. ["_score", "_distance"] for hybrid search).
+    """
+    default = make_query().to_arrow()
+    all_columns = list(default.column_names)
+
+    if extra_columns:
+        for col in extra_columns:
+            assert col not in default.column_names, (
+                f"extra column {col!r} should not be in default output"
+            )
+        all_columns.extend(extra_columns)
+
+    full = make_query().select(all_columns).to_arrow()
+
+    for r in range(1, len(all_columns) + 1):
+        for perm in itertools.permutations(all_columns, r):
+            cols = list(perm)
+            actual = make_query().select(cols).to_arrow()
+            expected = full.select(cols)
+            assert actual == expected, f"select({cols}) mismatch"
+
+
+async def assert_select_projections_async(make_query, *, extra_columns=None):
+    """Async version of assert_select_projections."""
+    default = await make_query().to_arrow()
+    all_columns = list(default.column_names)
+
+    if extra_columns:
+        for col in extra_columns:
+            assert col not in default.column_names, (
+                f"extra column {col!r} should not be in default output"
+            )
+        all_columns.extend(extra_columns)
+
+    full = await make_query().select(all_columns).to_arrow()
+
+    for r in range(1, len(all_columns) + 1):
+        for perm in itertools.permutations(all_columns, r):
+            cols = list(perm)
+            actual = await make_query().select(cols).to_arrow()
+            expected = full.select(cols)
+            assert actual == expected, f"select({cols}) mismatch"
 
 
 @pytest.fixture
@@ -203,57 +263,10 @@ def test_normalize_scores():
 
 @pytest.mark.asyncio
 async def test_async_hybrid_query_select(table: AsyncTable):
-    # Default output should NOT contain _score or _distance
-    default_result = await (
-        table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").limit(2).to_arrow()
+    await assert_select_projections_async(
+        lambda: table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").limit(2),
+        extra_columns=["_score", "_distance"],
     )
-    assert "_score" not in default_result.column_names
-    assert "_distance" not in default_result.column_names
-    assert "_relevance_score" in default_result.column_names
-
-    # Fetch a full result with all columns for subset comparisons
-    full_result = await (
-        table.query()
-        .nearest_to([0.0, 0.4])
-        .nearest_to_text("dog")
-        .select(["text", "vector", "_relevance_score", "_distance", "_score"])
-        .limit(2)
-        .to_arrow()
-    )
-
-    for subset in [
-        ["text"],
-        ["vector"],
-        ["vector", "text"],
-        ["text", "_relevance_score"],
-        ["_relevance_score", "text"],
-        ["text", "_distance"],
-        ["_score", "text"],
-        ["_relevance_score", "_distance", "text"],
-    ]:
-        actual = await (
-            table.query()
-            .nearest_to([0.0, 0.4])
-            .nearest_to_text("dog")
-            .select(subset)
-            .limit(2)
-            .to_arrow()
-        )
-        expected = full_result.select(subset)
-        assert actual == expected
-
-
-@pytest.mark.asyncio
-async def test_async_hybrid_select_relevance_score(table: AsyncTable):
-    result = await (
-        table.query()
-        .nearest_to([0.0, 0.4])
-        .nearest_to_text("dog")
-        .select(["text", "_relevance_score"])
-        .limit(2)
-        .to_arrow()
-    )
-    assert result.column_names == ["text", "_relevance_score"]
 
 
 @pytest.mark.asyncio
@@ -279,16 +292,16 @@ async def test_async_hybrid_select_score_and_distance(table: AsyncTable):
         assert s is not None or d is not None
 
 
-def test_sync_hybrid_select_columns(sync_table: Table):
-    result = (
-        sync_table.search(query_type="hybrid")
-        .vector([0.0, 0.4])
-        .text("dog")
-        .select(["text"])
-        .limit(2)
-        .to_arrow()
+def test_sync_hybrid_query_select(sync_table: Table):
+    assert_select_projections(
+        lambda: (
+            sync_table.search(query_type="hybrid")
+            .vector([0.0, 0.4])
+            .text("dog")
+            .limit(2)
+        ),
+        extra_columns=["_score", "_distance"],
     )
-    assert result.column_names == ["text"]
 
 
 def test_sync_hybrid_select_dynamic(sync_table: Table):

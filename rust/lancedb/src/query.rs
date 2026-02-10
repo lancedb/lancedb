@@ -2392,54 +2392,97 @@ mod tests {
         table
     }
 
-    #[tokio::test]
-    async fn test_hybrid_select_columns() {
-        let tmp_dir = tempdir().unwrap();
-        let table = hybrid_test_table(&tmp_dir).await;
+    /// Assert that `.select()` with any column subset returns correct projections.
+    ///
+    /// Runs the query with `Select::All` to discover default columns, then
+    /// verifies every permutation of every non-empty subset of columns
+    /// (including `extra_columns`) matches a projection of the full result.
+    async fn assert_select_projections<F, Fut>(make_query: F, extra_columns: &[&str])
+    where
+        F: Fn(Select) -> Fut,
+        Fut: std::future::Future<Output = RecordBatch>,
+    {
+        use itertools::Itertools;
 
-        let results = table
-            .query()
-            .full_text_search(FullTextSearchQuery::new("b".to_string()))
-            .select(Select::columns(&["text"]))
-            .limit(2)
-            .nearest_to(&[-10.0, -10.0])
-            .unwrap()
-            .execute()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
+        let default = make_query(Select::All).await;
+        let mut all_columns: Vec<String> = default
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
 
-        let batch = &results[0];
-        let schema = batch.schema();
-        let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        assert_eq!(col_names, vec!["text"]);
+        for col in extra_columns {
+            assert!(
+                !all_columns.contains(&col.to_string()),
+                "extra column {} should not be in default output",
+                col
+            );
+            all_columns.push(col.to_string());
+        }
+
+        let all_refs: Vec<&str> = all_columns.iter().map(|s| s.as_str()).collect();
+        let full = make_query(Select::columns(&all_refs)).await;
+
+        for r in 1..=all_columns.len() {
+            for perm in all_columns.iter().permutations(r) {
+                let cols: Vec<&str> = perm.iter().map(|s| s.as_str()).collect();
+                let actual = make_query(Select::columns(&cols)).await;
+                let indices: Vec<usize> = cols
+                    .iter()
+                    .map(|c| full.schema().index_of(c).unwrap())
+                    .collect();
+                let expected = full.project(&indices).unwrap();
+                assert_eq!(
+                    actual,
+                    expected,
+                    "select({:?}) mismatch:\n  actual cols: {:?}\n  expected cols: {:?}",
+                    cols,
+                    actual
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|f| f.name())
+                        .collect::<Vec<_>>(),
+                    expected
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|f| f.name())
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
     }
 
     #[tokio::test]
-    async fn test_hybrid_select_relevance_score() {
+    async fn test_hybrid_select_projections() {
         let tmp_dir = tempdir().unwrap();
         let table = hybrid_test_table(&tmp_dir).await;
 
-        let results = table
-            .query()
-            .full_text_search(FullTextSearchQuery::new("b".to_string()))
-            .select(Select::columns(&["text", "_relevance_score"]))
-            .limit(2)
-            .nearest_to(&[-10.0, -10.0])
-            .unwrap()
-            .execute()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-
-        let batch = &results[0];
-        let schema = batch.schema();
-        let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        assert_eq!(col_names, vec!["text", "_relevance_score"]);
+        assert_select_projections(
+            |select| {
+                let table = table.clone();
+                async move {
+                    let results = table
+                        .query()
+                        .full_text_search(FullTextSearchQuery::new("b".to_string()))
+                        .select(select)
+                        .limit(2)
+                        .nearest_to(&[-10.0, -10.0])
+                        .unwrap()
+                        .execute()
+                        .await
+                        .unwrap()
+                        .try_collect::<Vec<_>>()
+                        .await
+                        .unwrap();
+                    concat_batches(&results[0].schema(), results.iter()).unwrap()
+                }
+            },
+            &["_score", "_distance"],
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -2504,40 +2547,5 @@ mod tests {
         let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
         assert!(col_names.contains(&"upper_text"));
         assert!(col_names.contains(&"_relevance_score"));
-    }
-
-    #[tokio::test]
-    async fn test_hybrid_select_all_unchanged() {
-        let tmp_dir = tempdir().unwrap();
-        let table = hybrid_test_table(&tmp_dir).await;
-
-        let results = table
-            .query()
-            .full_text_search(FullTextSearchQuery::new("b".to_string()))
-            .limit(2)
-            .nearest_to(&[-10.0, -10.0])
-            .unwrap()
-            .execute()
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-
-        let batch = &results[0];
-        let schema = batch.schema();
-        let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        assert!(col_names.contains(&"text"));
-        assert!(col_names.contains(&"vector"));
-        assert!(col_names.contains(&"_relevance_score"));
-        // _score and _distance should NOT be in default output
-        assert!(
-            !col_names.contains(&"_score"),
-            "_score should not be in default output"
-        );
-        assert!(
-            !col_names.contains(&"_distance"),
-            "_distance should not be in default output"
-        );
     }
 }
