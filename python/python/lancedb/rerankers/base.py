@@ -40,6 +40,9 @@ class Reranker(ABC):
         if ARROW_VERSION.major <= 13:
             self._concat_tables_args = {"promote": True}
 
+    def __str__(self):
+        return self.__class__.__name__
+
     def rerank_vector(
         self,
         query: str,

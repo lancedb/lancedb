@@ -2118,19 +2118,17 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         """  # noqa: E501
         self._create_query_builders()
 
-        results = ["Vector Search Plan:"]
-        results.append(
-            self._table._explain_plan(
-                self._vector_query.to_query_object(), verbose=verbose
-            )
+        reranker_label = str(self._reranker) if self._reranker else "No reranker"
+        vector_plan = self._table._explain_plan(
+            self._vector_query.to_query_object(), verbose=verbose
         )
-        results.append("FTS Search Plan:")
-        results.append(
-            self._table._explain_plan(
-                self._fts_query.to_query_object(), verbose=verbose
-            )
+        fts_plan = self._table._explain_plan(
+            self._fts_query.to_query_object(), verbose=verbose
         )
-        return "\n".join(results)
+        # Indent sub-plans under the reranker
+        indented_vector = "\n".join("  " + line for line in vector_plan.splitlines())
+        indented_fts = "\n".join("  " + line for line in fts_plan.splitlines())
+        return f"{reranker_label}\n  {indented_vector}\n  {indented_fts}"
 
     def analyze_plan(self):
         """Execute the query and display with runtime metrics.
@@ -3164,23 +3162,20 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         ...     plan = await table.query().nearest_to([1.0, 2.0]).nearest_to_text("hello").explain_plan(True)
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
-        Vector Search Plan:
-        ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
-          Take: columns="vector, _rowid, _distance, (text)"
-            CoalesceBatchesExec: target_batch_size=1024
-              GlobalLimitExec: skip=0, fetch=10
-                FilterExec: _distance@2 IS NOT NULL
-                  SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
-                    KNNVectorDistance: metric=l2
-                      LanceRead: uri=..., projection=[vector], ...
-        <BLANKLINE>
-        FTS Search Plan:
-        ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
-          Take: columns="_rowid, _score, (vector), (text)"
-            CoalesceBatchesExec: target_batch_size=1024
-              GlobalLimitExec: skip=0, fetch=10
-                MatchQuery: column=text, query=hello
-        <BLANKLINE>
+        RRFReranker(K=60)
+            ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
+              Take: columns="vector, _rowid, _distance, (text)"
+                CoalesceBatchesExec: target_batch_size=1024
+                  GlobalLimitExec: skip=0, fetch=10
+                    FilterExec: _distance@2 IS NOT NULL
+                      SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+                        KNNVectorDistance: metric=l2
+                          LanceRead: uri=..., projection=[vector], ...
+            ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score]
+              Take: columns="_rowid, _score, (vector), (text)"
+                CoalesceBatchesExec: target_batch_size=1024
+                  GlobalLimitExec: skip=0, fetch=10
+                    MatchQuery: column=text, query=hello
 
         Parameters
         ----------
@@ -3192,12 +3187,12 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         plan : str
         """  # noqa: E501
 
-        results = ["Vector Search Plan:"]
-        results.append(await self._inner.to_vector_query().explain_plan(verbose))
-        results.append("FTS Search Plan:")
-        results.append(await self._inner.to_fts_query().explain_plan(verbose))
-
-        return "\n".join(results)
+        vector_plan = await self._inner.to_vector_query().explain_plan(verbose)
+        fts_plan = await self._inner.to_fts_query().explain_plan(verbose)
+        # Indent sub-plans under the reranker
+        indented_vector = "\n".join("  " + line for line in vector_plan.splitlines())
+        indented_fts = "\n".join("  " + line for line in fts_plan.splitlines())
+        return f"{self._reranker}\n  {indented_vector}\n  {indented_fts}"
 
     async def analyze_plan(self):
         """

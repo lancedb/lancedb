@@ -36,6 +36,9 @@ class RRFReranker(Reranker):
         super().__init__(return_score)
         self.K = K
 
+    def __str__(self):
+        return f"RRFReranker(K={self.K})"
+
     def rerank_hybrid(
         self,
         query: str,  # noqa: F821

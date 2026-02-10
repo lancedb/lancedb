@@ -44,6 +44,9 @@ class CohereReranker(Reranker):
         self.top_n = top_n
         self.api_key = api_key
 
+    def __str__(self):
+        return f"CohereReranker(model_name={self.model_name})"
+
     @cached_property
     def _client(self):
         cohere = attempt_import_or_raise("cohere")

@@ -54,6 +54,12 @@ class MRRReranker(Reranker):
         self.weight_vector = weight_vector
         self.weight_fts = weight_fts
 
+    def __str__(self):
+        return (
+            f"MRRReranker(weight_vector={self.weight_vector}, "
+            f"weight_fts={self.weight_fts})"
+        )
+
     def rerank_hybrid(
         self,
         query: str,  # noqa: F821
