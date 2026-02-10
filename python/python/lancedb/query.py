@@ -1824,6 +1824,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         if isinstance(saved_columns, list):
             result = self._apply_hybrid_select(result, saved_columns)
+        else:
+            # No explicit select: drop _score/_distance for backward compat
+            drop = [c for c in ("_score", "_distance") if c in result.column_names]
+            if drop:
+                result = result.drop(drop)
 
         return result
 
@@ -1874,23 +1879,30 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         check_reranker_result(results)
 
-        if "_distance" in results.column_names and original_distances is not None:
-            # restore the original distances
+        # Always restore original _distance and _score by _rowid lookup.
+        # Rows from the other sub-query get null values (pc.take with null
+        # indices produces nulls).
+        if original_distances is not None:
             indices = pc.index_in(
                 results["_rowid"], original_distance_row_ids, skip_nulls=True
             )
-            original_distances = pc.take(original_distances, indices)
-            distance_i = results.column_names.index("_distance")
-            results = results.set_column(distance_i, "_distance", original_distances)
+            restored = pc.take(original_distances, indices)
+            if "_distance" in results.column_names:
+                i = results.column_names.index("_distance")
+                results = results.set_column(i, "_distance", restored)
+            else:
+                results = results.append_column("_distance", restored)
 
-        if "_score" in results.column_names and original_scores is not None:
-            # restore the original scores
+        if original_scores is not None:
             indices = pc.index_in(
                 results["_rowid"], original_score_row_ids, skip_nulls=True
             )
-            original_scores = pc.take(original_scores, indices)
-            score_i = results.column_names.index("_score")
-            results = results.set_column(score_i, "_score", original_scores)
+            restored = pc.take(original_scores, indices)
+            if "_score" in results.column_names:
+                i = results.column_names.index("_score")
+                results = results.set_column(i, "_score", restored)
+            else:
+                results = results.append_column("_score", restored)
 
         results = results.slice(length=limit)
 
@@ -1948,20 +1960,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         pushed to sub-queries directly and never reach this method.
         """
 
-        for col in columns:
-            if col in ("_score", "_distance"):
-                raise ValueError(
-                    f"Column '{col}' is not available in hybrid search results. "
-                    "Hybrid search fuses scores into '_relevance_score'. "
-                    "Select '_relevance_score' instead, or omit it to have it "
-                    "included automatically."
-                )
-
-        cols = list(columns)
-        if "_relevance_score" not in cols and "_relevance_score" in result.column_names:
-            cols.append("_relevance_score")
-
-        return result.select(cols)
+        return result.select(columns)
 
     def to_batches(
         self, /, batch_size: Optional[int] = None, timeout: Optional[timedelta] = None
@@ -3304,6 +3303,11 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             result = LanceHybridQueryBuilder._apply_hybrid_select(
                 result, self._hybrid_columns
             )
+        else:
+            # No explicit select: drop _score/_distance for backward compat
+            drop = [c for c in ("_score", "_distance") if c in result.column_names]
+            if drop:
+                result = result.drop(drop)
 
         return AsyncRecordBatchReader(result, max_batch_length=max_batch_length)
 

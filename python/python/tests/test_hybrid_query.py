@@ -129,12 +129,12 @@ def test_hybrid_query_distance_range(sync_table: Table):
         .vector([0.0, 0.4])
         .text("cat and dog")
         .distance_range(lower_bound=0.2, upper_bound=0.5)
+        .select(["text", "_distance"])
         .rerank(reranker)
         .limit(2)
         .to_arrow()
     )
     assert len(result) == 2
-    print(result)
     for dist in result["_distance"]:
         if dist.is_valid:
             assert 0.2 <= dist.as_py() <= 0.5
@@ -148,6 +148,7 @@ async def test_hybrid_query_distance_range_async(table: AsyncTable):
         .nearest_to([0.0, 0.4])
         .nearest_to_text("cat and dog")
         .distance_range(lower_bound=0.2, upper_bound=0.5)
+        .select(["text", "_distance"])
         .rerank(reranker)
         .limit(2)
         .to_arrow()
@@ -201,17 +202,45 @@ def test_normalize_scores():
 
 
 @pytest.mark.asyncio
-async def test_async_hybrid_select_columns(table: AsyncTable):
-    result = await (
+async def test_async_hybrid_query_select(table: AsyncTable):
+    # Default output should NOT contain _score or _distance
+    default_result = await (
+        table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").limit(2).to_arrow()
+    )
+    assert "_score" not in default_result.column_names
+    assert "_distance" not in default_result.column_names
+    assert "_relevance_score" in default_result.column_names
+
+    # Fetch a full result with all columns for subset comparisons
+    full_result = await (
         table.query()
         .nearest_to([0.0, 0.4])
         .nearest_to_text("dog")
-        .select(["text"])
+        .select(["text", "vector", "_relevance_score", "_distance", "_score"])
         .limit(2)
         .to_arrow()
     )
-    # User-requested columns come first, auto-appended _relevance_score last
-    assert result.column_names == ["text", "_relevance_score"]
+
+    for subset in [
+        ["text"],
+        ["vector"],
+        ["vector", "text"],
+        ["text", "_relevance_score"],
+        ["_relevance_score", "text"],
+        ["text", "_distance"],
+        ["_score", "text"],
+        ["_relevance_score", "_distance", "text"],
+    ]:
+        actual = await (
+            table.query()
+            .nearest_to([0.0, 0.4])
+            .nearest_to_text("dog")
+            .select(subset)
+            .limit(2)
+            .to_arrow()
+        )
+        expected = full_result.select(subset)
+        assert actual == expected
 
 
 @pytest.mark.asyncio
@@ -228,25 +257,26 @@ async def test_async_hybrid_select_relevance_score(table: AsyncTable):
 
 
 @pytest.mark.asyncio
-async def test_async_hybrid_select_score_error(table: AsyncTable):
-    with pytest.raises(ValueError, match="_relevance_score"):
-        await (
-            table.query()
-            .nearest_to([0.0, 0.4])
-            .nearest_to_text("dog")
-            .select(["_score"])
-            .limit(2)
-            .to_arrow()
-        )
-    with pytest.raises(ValueError, match="_relevance_score"):
-        await (
-            table.query()
-            .nearest_to([0.0, 0.4])
-            .nearest_to_text("dog")
-            .select(["_distance"])
-            .limit(2)
-            .to_arrow()
-        )
+async def test_async_hybrid_select_score_and_distance(table: AsyncTable):
+    result = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .select(["text", "_score", "_distance"])
+        .limit(4)
+        .to_arrow()
+    )
+    assert result.column_names == ["text", "_score", "_distance"]
+
+    # Rows from the vector sub-query should have _distance values and null _score
+    # Rows from the FTS sub-query should have _score values and null _distance
+    scores = result["_score"]
+    distances = result["_distance"]
+    for i in range(len(result)):
+        s = scores[i].as_py()
+        d = distances[i].as_py()
+        # At least one must be non-null (each row came from at least one sub-query)
+        assert s is not None or d is not None
 
 
 def test_sync_hybrid_select_columns(sync_table: Table):
@@ -258,7 +288,7 @@ def test_sync_hybrid_select_columns(sync_table: Table):
         .limit(2)
         .to_arrow()
     )
-    assert result.column_names == ["text", "_relevance_score"]
+    assert result.column_names == ["text"]
 
 
 def test_sync_hybrid_select_dynamic(sync_table: Table):
@@ -285,11 +315,11 @@ def test_sync_hybrid_to_arrow_restores_columns(sync_table: Table):
     )
     # First call succeeds
     result = builder.to_arrow()
-    assert result.column_names == ["text", "_relevance_score"]
+    assert result.column_names == ["text"]
 
     # Second call on the same builder should also apply the selection
     result = builder.to_arrow()
-    assert result.column_names == ["text", "_relevance_score"]
+    assert result.column_names == ["text"]
 
     # Force an error via an invalid filter, then verify _columns survived
     builder.where("THIS IS NOT VALID SQL")
@@ -324,25 +354,23 @@ async def test_async_hybrid_select_dict_clears_stale_list(table: AsyncTable):
     assert result.column_names == ["upper_text", "_relevance_score"]
 
 
-def test_sync_hybrid_select_score_error(sync_table: Table):
-    with pytest.raises(ValueError, match="_relevance_score"):
-        (
-            sync_table.search(query_type="hybrid")
-            .vector([0.0, 0.4])
-            .text("dog")
-            .select(["_score"])
-            .limit(2)
-            .to_arrow()
-        )
-    with pytest.raises(ValueError, match="_relevance_score"):
-        (
-            sync_table.search(query_type="hybrid")
-            .vector([0.0, 0.4])
-            .text("dog")
-            .select(["_distance"])
-            .limit(2)
-            .to_arrow()
-        )
+def test_sync_hybrid_select_score_and_distance(sync_table: Table):
+    result = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .select(["text", "_score", "_distance"])
+        .limit(4)
+        .to_arrow()
+    )
+    assert result.column_names == ["text", "_score", "_distance"]
+
+    scores = result["_score"]
+    distances = result["_distance"]
+    for i in range(len(result)):
+        s = scores[i].as_py()
+        d = distances[i].as_py()
+        assert s is not None or d is not None
 
 
 def test_sync_hybrid_select_with_tantivy(tmpdir_factory):
@@ -369,7 +397,7 @@ def test_sync_hybrid_select_with_tantivy(tmpdir_factory):
         .limit(2)
         .to_arrow()
     )
-    assert result.column_names == ["text", "_relevance_score"]
+    assert result.column_names == ["text"]
     assert len(result) == 2
 
 
@@ -418,8 +446,8 @@ def test_sync_hybrid_select_reranker_column(tmpdir_factory):
         .to_arrow()
     )
     # Reranker had access to "text" internally, but the final output
-    # should only contain user-selected columns + _relevance_score.
-    assert result.column_names == ["id", "_relevance_score"]
+    # should only contain user-selected columns.
+    assert result.column_names == ["id"]
     assert len(result) == 2
 
 
@@ -450,7 +478,7 @@ async def test_async_hybrid_select_reranker_column(tmpdir_factory):
         .limit(2)
         .to_arrow()
     )
-    assert result.column_names == ["id", "_relevance_score"]
+    assert result.column_names == ["id"]
     assert len(result) == 2
 
 
@@ -524,7 +552,7 @@ def test_sync_hybrid_reranker_column_none(sync_table: Table):
         .limit(2)
         .to_arrow()
     )
-    assert result.column_names == ["text", "_relevance_score"]
+    assert result.column_names == ["text"]
     assert len(result) == 2
 
 

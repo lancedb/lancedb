@@ -4,8 +4,12 @@
 use std::sync::Arc;
 use std::{future::Future, time::Duration};
 
+use arrow::array::downcast_array;
 use arrow::compute::concat_batches;
-use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array, RecordBatch};
+use arrow_array::{
+    make_array, Array, Float16Array, Float32Array, Float64Array, RecordBatch, UInt32Array,
+    UInt64Array,
+};
 use arrow_schema::{DataType, SchemaRef};
 use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
@@ -898,22 +902,22 @@ fn apply_hybrid_select(batch: RecordBatch, select: &Select) -> Result<RecordBatc
     // build_hybrid_subquery_select() for I/O efficiency. This function handles
     // the *final* projection on the merged/reranked result.
     match select {
-        Select::All => Ok(batch),
-        Select::Columns(columns) => {
-            for col in columns {
-                if col == SCORE_COL || col == DIST_COL {
-                    return Err(Error::InvalidInput {
-                        message: format!(
-                            "Column '{}' is not available in hybrid search results. \
-                             Hybrid search fuses scores into '{}'. \
-                             Select '{}' instead, or omit it to have it included automatically.",
-                            col, RELEVANCE_SCORE, RELEVANCE_SCORE,
-                        ),
-                    });
-                }
+        Select::All => {
+            // Drop _score and _distance from default output for backward compat;
+            // users must explicitly select them to see them.
+            let drop: Vec<&str> = [SCORE_COL, DIST_COL]
+                .iter()
+                .filter(|c| batch.schema().index_of(c).is_ok())
+                .copied()
+                .collect();
+            let mut result = batch;
+            for col in drop {
+                result = result.drop_column(col)?;
             }
-
-            let mut indices: Vec<usize> = columns
+            Ok(result)
+        }
+        Select::Columns(columns) => {
+            let indices: Vec<usize> = columns
                 .iter()
                 .map(|name| {
                     batch
@@ -933,13 +937,6 @@ fn apply_hybrid_select(batch: RecordBatch, select: &Select) -> Result<RecordBatc
                         })
                 })
                 .collect::<Result<_>>()?;
-
-            // Auto-include _relevance_score if not explicitly listed
-            if !columns.iter().any(|c| c == RELEVANCE_SCORE) {
-                if let Ok(idx) = batch.schema().index_of(RELEVANCE_SCORE) {
-                    indices.push(idx);
-                }
-            }
 
             Ok(batch.project(&indices)?)
         }
@@ -1246,6 +1243,27 @@ impl VectorQuery {
         let mut fts_results = concat_batches(&fts_schema, fts_results.iter())?;
         let mut vec_results = concat_batches(&vec_schema, vec_results.iter())?;
 
+        // Save the original (pre-normalization) scores so they can be restored
+        // after reranking. merge_results concatenates by position using the FTS
+        // schema, which silently mixes _distance values under the _score name,
+        // so we need to restore the correct values by _rowid lookup.
+        let original_distances: Option<(UInt64Array, Arc<dyn Array>)> = if vec_results.num_rows()
+            > 0
+        {
+            let row_ids: UInt64Array = downcast_array(vec_results.column_by_name(ROW_ID).unwrap());
+            let distances = vec_results.column_by_name(DIST_COL).unwrap().clone();
+            Some((row_ids, distances))
+        } else {
+            None
+        };
+        let original_scores: Option<(UInt64Array, Arc<dyn Array>)> = if fts_results.num_rows() > 0 {
+            let row_ids: UInt64Array = downcast_array(fts_results.column_by_name(ROW_ID).unwrap());
+            let scores = fts_results.column_by_name(SCORE_COL).unwrap().clone();
+            Some((row_ids, scores))
+        } else {
+            None
+        };
+
         if matches!(self.request.base.norm, Some(NormalizeMethod::Rank)) {
             vec_results = hybrid::rank(vec_results, DIST_COL, None)?;
             fts_results = hybrid::rank(fts_results, SCORE_COL, None)?;
@@ -1275,6 +1293,48 @@ impl VectorQuery {
             .await?;
 
         check_reranker_result(&results)?;
+
+        // Restore original _distance and _score columns by _rowid lookup.
+        // Rows from the other sub-query get null values.
+        let result_row_ids: UInt64Array = downcast_array(results.column_by_name(ROW_ID).unwrap());
+        if let Some((orig_row_ids, orig_values)) = &original_distances {
+            let lookup: std::collections::HashMap<u64, u32> = orig_row_ids
+                .values()
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (*id, i as u32))
+                .collect();
+            let indices: UInt32Array = result_row_ids
+                .values()
+                .iter()
+                .map(|id| lookup.get(id).copied())
+                .collect();
+            let restored = arrow::compute::take(orig_values.as_ref(), &indices, None)?;
+            results = results.drop_column(DIST_COL)?;
+            results = results.try_with_column(
+                arrow_schema::Field::new(DIST_COL, restored.data_type().clone(), true),
+                restored,
+            )?;
+        }
+        if let Some((orig_row_ids, orig_values)) = &original_scores {
+            let lookup: std::collections::HashMap<u64, u32> = orig_row_ids
+                .values()
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (*id, i as u32))
+                .collect();
+            let indices: UInt32Array = result_row_ids
+                .values()
+                .iter()
+                .map(|id| lookup.get(id).copied())
+                .collect();
+            let restored = arrow::compute::take(orig_values.as_ref(), &indices, None)?;
+            results = results.drop_column(SCORE_COL)?;
+            results = results.try_with_column(
+                arrow_schema::Field::new(SCORE_COL, restored.data_type().clone(), true),
+                restored,
+            )?;
+        }
 
         let limit = self.request.base.limit.unwrap_or(DEFAULT_TOP_K);
         if results.num_rows() > limit {
@@ -2354,8 +2414,7 @@ mod tests {
         let batch = &results[0];
         let schema = batch.schema();
         let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        // User-requested columns come first, auto-appended _relevance_score last
-        assert_eq!(col_names, vec!["text", "_relevance_score"]);
+        assert_eq!(col_names, vec!["text"]);
     }
 
     #[tokio::test]
@@ -2384,53 +2443,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hybrid_select_score_errors() {
+    async fn test_hybrid_select_score_and_distance() {
         let tmp_dir = tempdir().unwrap();
         let table = hybrid_test_table(&tmp_dir).await;
 
-        let err = table
+        let results = table
             .query()
             .full_text_search(FullTextSearchQuery::new("b".to_string()))
-            .select(Select::columns(&["_score"]))
-            .limit(2)
+            .select(Select::columns(&["text", "_score", "_distance"]))
+            .limit(4)
             .nearest_to(&[-10.0, -10.0])
             .unwrap()
             .execute()
-            .await;
-        assert!(err.is_err());
-        let err_msg = err.err().unwrap().to_string();
-        assert!(
-            err_msg.contains("_relevance_score"),
-            "Error should mention _relevance_score: {}",
-            err_msg
-        );
-        assert!(
-            err_msg.contains("_score"),
-            "Error should mention _score: {}",
-            err_msg
-        );
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
 
-        let err = table
-            .query()
-            .full_text_search(FullTextSearchQuery::new("b".to_string()))
-            .select(Select::columns(&["_distance"]))
-            .limit(2)
-            .nearest_to(&[-10.0, -10.0])
-            .unwrap()
-            .execute()
-            .await;
-        assert!(err.is_err());
-        let err_msg = err.err().unwrap().to_string();
-        assert!(
-            err_msg.contains("_relevance_score"),
-            "Error should mention _relevance_score: {}",
-            err_msg
-        );
-        assert!(
-            err_msg.contains("_distance"),
-            "Error should mention _distance: {}",
-            err_msg
-        );
+        let batch = &results[0];
+        let schema = batch.schema();
+        let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(col_names, vec!["text", "_score", "_distance"]);
+
+        // Each row should have at least one non-null score
+        let scores = batch.column_by_name("_score").unwrap();
+        let distances = batch.column_by_name("_distance").unwrap();
+        for i in 0..batch.num_rows() {
+            assert!(
+                !scores.is_null(i) || !distances.is_null(i),
+                "row {} should have at least one non-null score",
+                i
+            );
+        }
     }
 
     #[tokio::test]
@@ -2485,5 +2530,14 @@ mod tests {
         assert!(col_names.contains(&"text"));
         assert!(col_names.contains(&"vector"));
         assert!(col_names.contains(&"_relevance_score"));
+        // _score and _distance should NOT be in default output
+        assert!(
+            !col_names.contains(&"_score"),
+            "_score should not be in default output"
+        );
+        assert!(
+            !col_names.contains(&"_distance"),
+            "_distance should not be in default output"
+        );
     }
 }
