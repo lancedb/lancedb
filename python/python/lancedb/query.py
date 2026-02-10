@@ -3210,8 +3210,8 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         )
         return (
             f"{self._reranker}\n"
-            f"  Vector Search Plan:\n{indented_vector}\n"
-            f"  FTS Search Plan:\n{indented_fts}"
+            f"  {indented_vector}\n"
+            f"  {indented_fts}"
         )
 
     async def analyze_plan(self):
