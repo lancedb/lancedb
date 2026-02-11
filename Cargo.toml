@@ -78,3 +78,17 @@ debug = false
 debug-assertions = false
 strip = "debuginfo"
 incremental = false
+
+[profile.release]
+# Default optimization level balances size and performance
+opt-level = 2
+# Existing settings from .cargo/config.toml
+lto = "fat"
+codegen-units = 1
+
+# Optimize these large parsing crates for size
+[profile.release.package."sqlparser"]
+opt-level = "z"
+
+[profile.release.package."geoarrow-expr-geo"]
+opt-level = "z"
