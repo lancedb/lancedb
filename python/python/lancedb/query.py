@@ -1822,14 +1822,14 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         )
 
         if isinstance(columns, list):
-            result = self._apply_hybrid_select(result, columns)
+            result = result.select(columns)
         elif isinstance(columns, dict):
             result = self._apply_hybrid_dynamic_select(result, columns)
         else:
             # No explicit select: drop _score/_distance for backward compat
-            drop = [c for c in ("_score", "_distance") if c in result.column_names]
-            if drop:
-                result = result.drop(drop)
+            for col in ("_score", "_distance"):
+                if col in result.column_names:
+                    result = result.drop(col)
 
         return result
 
@@ -1949,14 +1949,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if "_rowid" not in cols:
             cols.append("_rowid")
         return cols
-
-    @staticmethod
-    def _apply_hybrid_select(
-        result: pa.Table,
-        columns: List[str],
-    ) -> pa.Table:
-        """Apply column-name-list selection to hybrid search results."""
-        return result.select(columns)
 
     @classmethod
     def _apply_hybrid_dynamic_select(
@@ -3330,9 +3322,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         )
 
         if self._hybrid_columns is not None:
-            result = LanceHybridQueryBuilder._apply_hybrid_select(
-                result, self._hybrid_columns
-            )
+            result = result.select(self._hybrid_columns)
         elif self._hybrid_dict_select is not None:
             result = LanceHybridQueryBuilder._apply_hybrid_dynamic_select(
                 result, self._hybrid_dict_select

@@ -890,6 +890,45 @@ pub struct VectorQuery {
     request: VectorQueryRequest,
 }
 
+/// Restore a column from original values using rowid-based lookup.
+///
+/// When merging hybrid results, column values get displaced. This restores
+/// the original per-subquery values by looking up each result row's id in
+/// the original rowid array.
+///
+/// # Arguments
+/// - results: The merged result batch
+/// - result_row_ids: The _rowid column from the result
+/// - col_name: Name of the column to restore
+/// - orig_row_ids: The _rowid array from the original sub-query
+/// - orig_values: The original column values (in original row order)
+fn restore_column_by_rowid(
+    mut results: RecordBatch,
+    result_row_ids: &UInt64Array,
+    col_name: &str,
+    orig_row_ids: &UInt64Array,
+    orig_values: &Arc<dyn Array>,
+) -> Result<RecordBatch> {
+    let lookup: std::collections::HashMap<u64, u32> = orig_row_ids
+        .values()
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (*id, i as u32))
+        .collect();
+    let indices: UInt32Array = result_row_ids
+        .values()
+        .iter()
+        .map(|id| lookup.get(id).copied())
+        .collect();
+    let restored = arrow::compute::take(orig_values.as_ref(), &indices, None)?;
+    results = results.drop_column(col_name)?;
+    results = results.try_with_column(
+        arrow_schema::Field::new(col_name, restored.data_type().clone(), true),
+        restored,
+    )?;
+    Ok(results)
+}
+
 /// Apply user-specified column selection to the final hybrid search results.
 ///
 /// This is done after reranking rather than on the sub-queries, because the
@@ -1350,41 +1389,21 @@ impl VectorQuery {
         // Rows from the other sub-query get null values.
         let result_row_ids: UInt64Array = downcast_array(results.column_by_name(ROW_ID).unwrap());
         if let Some((orig_row_ids, orig_values)) = &original_distances {
-            let lookup: std::collections::HashMap<u64, u32> = orig_row_ids
-                .values()
-                .iter()
-                .enumerate()
-                .map(|(i, id)| (*id, i as u32))
-                .collect();
-            let indices: UInt32Array = result_row_ids
-                .values()
-                .iter()
-                .map(|id| lookup.get(id).copied())
-                .collect();
-            let restored = arrow::compute::take(orig_values.as_ref(), &indices, None)?;
-            results = results.drop_column(DIST_COL)?;
-            results = results.try_with_column(
-                arrow_schema::Field::new(DIST_COL, restored.data_type().clone(), true),
-                restored,
+            results = restore_column_by_rowid(
+                results,
+                &result_row_ids,
+                DIST_COL,
+                orig_row_ids,
+                orig_values,
             )?;
         }
         if let Some((orig_row_ids, orig_values)) = &original_scores {
-            let lookup: std::collections::HashMap<u64, u32> = orig_row_ids
-                .values()
-                .iter()
-                .enumerate()
-                .map(|(i, id)| (*id, i as u32))
-                .collect();
-            let indices: UInt32Array = result_row_ids
-                .values()
-                .iter()
-                .map(|id| lookup.get(id).copied())
-                .collect();
-            let restored = arrow::compute::take(orig_values.as_ref(), &indices, None)?;
-            results = results.drop_column(SCORE_COL)?;
-            results = results.try_with_column(
-                arrow_schema::Field::new(SCORE_COL, restored.data_type().clone(), true),
-                restored,
+            results = restore_column_by_rowid(
+                results,
+                &result_row_ids,
+                SCORE_COL,
+                orig_row_ids,
+                orig_values,
             )?;
         }
 
