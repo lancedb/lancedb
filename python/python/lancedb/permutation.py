@@ -719,7 +719,7 @@ class Permutation:
         - "polars" - the batch will be a polars DataFrame
 
         Conversion may or may not involve a data copy.  Lance uses Arrow internally
-        and so it is able to zero-copy to the arrow and polars.
+        and so it is able to zero-copy to the arrow and polars formats.
 
         Conversion to torch_col will be zero-copy but will only support a subset of data
         types (numeric types).
