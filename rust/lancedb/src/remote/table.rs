@@ -363,6 +363,20 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(response)
     }
 
+    /// Check if a status code should trigger schema cache invalidation
+    fn should_invalidate_cache_for_status(status: StatusCode) -> bool {
+        // Only invalidate for errors that could be schema-related
+        // Don't invalidate for auth errors (401, 403) or not found (404)
+        // or temporary failures (503)
+        matches!(
+            status,
+            StatusCode::BAD_REQUEST // 400 - could be schema mismatch
+            | StatusCode::UNPROCESSABLE_ENTITY // 422 - schema validation error
+            | StatusCode::INTERNAL_SERVER_ERROR // 500 - could be schema issue on server
+            | StatusCode::BAD_GATEWAY // 502 - could be server issues
+        )
+    }
+
     async fn check_table_response(
         &self,
         request_id: &str,
@@ -373,11 +387,8 @@ impl<S: HttpSend> RemoteTable<S> {
 
         let result = self.client.check_response(request_id, response).await;
 
-        // Invalidate schema cache on 4xx/5xx errors except 503
-        if result.is_err()
-            && (status.is_client_error() || status.is_server_error())
-            && status != StatusCode::SERVICE_UNAVAILABLE
-        {
+        // Invalidate schema cache on errors that could be schema-related
+        if result.is_err() && Self::should_invalidate_cache_for_status(status) {
             self.invalidate_schema_cache().await;
         }
 
@@ -860,9 +871,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     _ => None,
                 };
                 if let Some(status_code) = status_code {
-                    if (status_code.is_client_error() || status_code.is_server_error())
-                        && status_code != StatusCode::SERVICE_UNAVAILABLE
-                    {
+                    if Self::should_invalidate_cache_for_status(status_code) {
                         self.invalidate_schema_cache().await;
                     }
                 }
@@ -3752,6 +3761,9 @@ mod tests {
     /// Test that schema cache is invalidated when server returns certain error codes
     #[rstest]
     #[case(400, true)] // 400 Bad Request should invalidate cache
+    #[case(401, false)] // 401 Unauthorized should NOT invalidate cache
+    #[case(403, false)] // 403 Forbidden should NOT invalidate cache
+    #[case(404, false)] // 404 Not Found should NOT invalidate cache
     #[case(500, true)] // 500 Internal Server Error should invalidate cache
     #[case(503, false)] // 503 Service Unavailable should NOT invalidate cache
     #[tokio::test]
@@ -3826,5 +3838,290 @@ mod tests {
             );
             assert_eq!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
         }
+    }
+
+    /// Test that schema cache is invalidated after checkout
+    #[tokio::test]
+    async fn test_schema_cache_invalidation_on_checkout() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            let count = call_count_clone.load(Ordering::SeqCst);
+
+            if path == "/v1/table/my_table/describe/" {
+                // Return different schemas for different calls
+                if count <= 2 {
+                    // First schema call and checkout validation
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{"version": 1, "schema": {"fields": [
+                                {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                            ]}}"#,
+                        )
+                        .unwrap()
+                } else {
+                    // After checkout
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{"version": 2, "schema": {"fields": [
+                                {"name": "a", "type": { "type": "int32" }, "nullable": false},
+                                {"name": "b", "type": { "type": "int32" }, "nullable": false}
+                            ]}}"#,
+                        )
+                        .unwrap()
+                }
+            } else {
+                http::Response::builder()
+                    .status(404)
+                    .body("not found")
+                    .unwrap()
+            }
+        });
+
+        // First schema call
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(schema1.fields().len(), 1);
+
+        // Second schema call should use cached value (no new call)
+        let call_count_before = call_count.load(Ordering::SeqCst);
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), call_count_before);
+
+        // Checkout to version 2 (makes a describe call to validate)
+        let _ = table.checkout(2).await;
+
+        // Schema call after checkout should re-fetch (cache was invalidated)
+        let schema3 = table.schema().await.unwrap();
+        assert_eq!(schema3.fields().len(), 2);
+        assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
+    }
+
+    /// Test that schema cache is invalidated after checkout_latest
+    #[tokio::test]
+    async fn test_schema_cache_invalidation_on_checkout_latest() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+
+            if path == "/v1/table/my_table/describe/" {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"version": 1, "schema": {"fields": [
+                            {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                        ]}}"#,
+                    )
+                    .unwrap()
+            } else {
+                http::Response::builder()
+                    .status(404)
+                    .body("not found")
+                    .unwrap()
+            }
+        });
+
+        // First schema call
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second schema call should use cached value
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Checkout latest
+        let _ = table.checkout_latest().await;
+
+        // Schema call after checkout_latest should re-fetch (cache was invalidated)
+        let schema3 = table.schema().await.unwrap();
+        assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    /// Test that schema cache is invalidated after checkout_tag
+    #[tokio::test]
+    async fn test_schema_cache_invalidation_on_checkout_tag() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+
+            if path == "/v1/table/my_table/describe/" {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"version": 1, "schema": {"fields": [
+                            {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                        ]}}"#,
+                    )
+                    .unwrap()
+            } else if path == "/v1/table/my_table/tags/list/" {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tags": {"v2": {"version": 2}}}"#)
+                    .unwrap()
+            } else if path == "/v1/table/my_table/tags/version/" {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 2}"#)
+                    .unwrap()
+            } else {
+                http::Response::builder()
+                    .status(404)
+                    .body("not found")
+                    .unwrap()
+            }
+        });
+
+        // First schema call
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second schema call should use cached value
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Checkout tag
+        table
+            .checkout_tag("v2")
+            .await
+            .expect("checkout_tag should succeed");
+
+        // Schema call after checkout_tag should re-fetch (cache was invalidated)
+        let schema3 = table.schema().await.unwrap();
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            2,
+            "Cache should have been invalidated and re-fetched"
+        );
+        assert_ne!(
+            Arc::as_ptr(&schema3),
+            Arc::as_ptr(&schema1),
+            "Should be different Arc instances"
+        );
+    }
+
+    /// Test that restore invalidates cache (via checkout_latest)
+    #[tokio::test]
+    async fn test_schema_cache_invalidation_on_restore() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+
+            if path == "/v1/table/my_table/describe/" {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"version": 1, "schema": {"fields": [
+                            {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                        ]}}"#,
+                    )
+                    .unwrap()
+            } else if path == "/v1/table/my_table/restore/" {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1}"#)
+                    .unwrap()
+            } else {
+                http::Response::builder()
+                    .status(404)
+                    .body("not found")
+                    .unwrap()
+            }
+        });
+
+        // First schema call
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second schema call uses cache
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Restore operation
+        let _ = table.restore().await;
+
+        // Schema call after restore should re-fetch (cache invalidated)
+        let schema3 = table.schema().await.unwrap();
+        assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    /// Test that centralized error handling invalidates cache on query errors
+    #[tokio::test]
+    async fn test_centralized_error_invalidation_on_query() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+            let current_count = call_count_clone.load(Ordering::SeqCst);
+
+            if path == "/v1/table/my_table/describe/" {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"version": 1, "schema": {"fields": [
+                            {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                        ]}}"#,
+                    )
+                    .unwrap()
+            } else if path == "/v1/table/my_table/query/" {
+                // Return 400 error on first query (could be schema mismatch)
+                if current_count == 1 {
+                    http::Response::builder()
+                        .status(400)
+                        .body("Bad request")
+                        .unwrap()
+                } else {
+                    // Return empty result for successful query
+                    http::Response::builder()
+                        .status(200)
+                        .header("content-type", "application/vnd.apache.arrow.stream")
+                        .body("")
+                        .unwrap()
+                }
+            } else {
+                http::Response::builder()
+                    .status(404)
+                    .body("not found")
+                    .unwrap()
+            }
+        });
+
+        // First schema call
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second schema call uses cache
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Query that returns 400 error
+        let result = table.query().execute().await;
+        assert!(result.is_err());
+
+        // Schema call after error should re-fetch (cache invalidated by centralized handler)
+        let schema3 = table.schema().await.unwrap();
+        assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 }
