@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     arrow::RecordBatchStream, connection::Connection, error::PythonErrorExt, table::Table,
 };
-use arrow::pyarrow::{IntoPyArrow, ToPyArrow};
+use arrow::pyarrow::{PyArrowType, ToPyArrow};
 use lancedb::{
     dataloader::permutation::{
         builder::{PermutationBuilder as LancePermutationBuilder, ShuffleStrategy},
@@ -337,13 +337,12 @@ impl PyPermutationReader {
     ) -> PyResult<Bound<'py, PyAny>> {
         let selection = Self::parse_selection(selection)?;
         let reader = slf.reader.clone();
-        let py = slf.py();
-        future_into_py(py, async move {
+        future_into_py(slf.py(), async move {
             let batch = reader
                 .take_offsets(&indices, selection)
                 .await
                 .infer_error()?;
-            Python::with_gil(|py| batch.into_pyarrow(py))
+            Ok(PyArrowType(batch))
         })
     }
 }

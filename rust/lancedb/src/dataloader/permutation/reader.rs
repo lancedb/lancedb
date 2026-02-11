@@ -40,6 +40,7 @@ pub struct PermutationReader {
     available_rows: u64,
     split: u64,
     // Cached map of offset to row id for the split
+    #[allow(clippy::type_complexity)]
     offset_map: Arc<tokio::sync::Mutex<Option<Arc<HashMap<u64, u64>>>>>,
 }
 
