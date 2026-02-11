@@ -836,20 +836,27 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
 
         // Acquire write lock to fetch (prevents concurrent fetches)
-        let mut cache = self.schema_cache.write().await;
+        {
+            let cache = self.schema_cache.write().await;
 
-        // Second check - maybe someone else filled it while we waited for write lock
-        if let Some((schema, cached_at)) = &*cache {
-            let elapsed = clock::now().duration_since(*cached_at);
-            if elapsed < SCHEMA_CACHE_TTL {
-                return Ok(schema.clone());
+            // Second check - maybe someone else filled it while we waited for write lock
+            if let Some((schema, cached_at)) = &*cache {
+                let elapsed = clock::now().duration_since(*cached_at);
+                if elapsed < SCHEMA_CACHE_TTL {
+                    return Ok(schema.clone());
+                }
             }
+            // Drop write lock before calling describe() to avoid deadlock
+            // (describe may invalidate cache on error)
         }
 
-        // Still need to fetch - we have exclusive write lock, so only one thread fetches
+        // Fetch without holding lock (describe may invalidate cache on errors)
         let json_schema = self.describe().await?.schema;
         let arrow_schema: arrow_schema::Schema = json_schema.try_into()?;
         let schema = Arc::new(arrow_schema);
+
+        // Re-acquire write lock to store result
+        let mut cache = self.schema_cache.write().await;
         *cache = Some((schema.clone(), clock::now()));
 
         Ok(schema)
