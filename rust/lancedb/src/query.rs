@@ -1331,11 +1331,10 @@ impl VectorQuery {
         // the table's columns so they're preserved in the final output.
         let (fts_schema, vec_schema) = if fts_results.is_empty() && vec_results.is_empty() {
             let table_schema = self.parent.schema().await?;
-            let vector_col = self.request.column.as_deref();
             let fts_schema =
-                hybrid::build_empty_schema_with_table_columns(&table_schema, SCORE_COL, vector_col);
+                hybrid::build_empty_schema_with_table_columns(&table_schema, SCORE_COL);
             let vec_schema =
-                hybrid::build_empty_schema_with_table_columns(&table_schema, DIST_COL, vector_col);
+                hybrid::build_empty_schema_with_table_columns(&table_schema, DIST_COL);
             (Arc::new(fts_schema), Arc::new(vec_schema))
         } else {
             hybrid::query_schemas(&fts_results, &vec_results)
@@ -2230,7 +2229,7 @@ mod tests {
             .unwrap();
         let batch = &results[0];
         assert_eq!(0, batch.num_rows());
-        assert_eq!(batch.schema().field_names(), &["text", "_relevance_score"]);
+        assert_eq!(batch.schema().field_names(), &["text", "vector", "_relevance_score"]);
     }
 
     // TODO: Implement a good FTS test data generator in lance_datagen.

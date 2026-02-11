@@ -104,36 +104,10 @@ pub fn empty_vec_schema() -> Schema {
 pub fn build_empty_schema_with_table_columns(
     table_schema: &arrow_schema::SchemaRef,
     score_col: &str,
-    vector_column: Option<&str>,
 ) -> Schema {
     let mut fields: Vec<Arc<Field>> = table_schema
         .fields()
         .iter()
-        .filter(|f| {
-            let name = f.name().as_str();
-            // Exclude if explicitly specified as vector column
-            if Some(name) == vector_column {
-                return false;
-            }
-            // Exclude vector-like columns (FixedSizeList or List of numeric types)
-            // that are typically used for embeddings
-            let is_vector_like = match f.data_type() {
-                DataType::FixedSizeList(inner_field, _) => {
-                    matches!(
-                        inner_field.data_type(),
-                        DataType::Float32 | DataType::Float64 | DataType::Float16
-                    ) && !name.starts_with("_")
-                }
-                DataType::List(inner_field) | DataType::LargeList(inner_field) => {
-                    matches!(
-                        inner_field.data_type(),
-                        DataType::Float32 | DataType::Float64 | DataType::Float16
-                    ) && !name.starts_with("_")
-                }
-                _ => false,
-            };
-            !is_vector_like
-        })
         .cloned()
         .collect();
 
