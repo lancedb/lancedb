@@ -61,6 +61,7 @@ use crate::{
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
+const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
 
 pub struct RemoteTags<'a, S: HttpSend = Sender> {
     inner: &'a RemoteTable<S>,
@@ -366,14 +367,13 @@ impl<S: HttpSend> RemoteTable<S> {
     /// Check if a status code should trigger schema cache invalidation
     fn should_invalidate_cache_for_status(status: StatusCode) -> bool {
         // Only invalidate for errors that could be schema-related
-        // Don't invalidate for auth errors (401, 403) or temporary failures (503)
+        // Don't invalidate for auth errors (401, 403) or temporary failures (503, 502)
         matches!(
             status,
             StatusCode::BAD_REQUEST // 400 - could be schema mismatch
             | StatusCode::NOT_FOUND // 404 - table might have been recreated
             | StatusCode::UNPROCESSABLE_ENTITY // 422 - schema validation error
             | StatusCode::INTERNAL_SERVER_ERROR // 500 - could be schema issue on server
-            | StatusCode::BAD_GATEWAY // 502 - could be server issues
         )
     }
 
@@ -674,6 +674,20 @@ impl<S: HttpSend> RemoteTable<S> {
         let mut cache = self.schema_cache.write().await;
         *cache = None;
     }
+
+    /// Extract status code from an error and invalidate cache if needed
+    async fn handle_error_invalidation(&self, error: &Error) {
+        let status_code = match error {
+            Error::Http { status_code, .. } => *status_code,
+            Error::Retry { status_code, .. } => *status_code,
+            _ => None,
+        };
+        if let Some(status_code) = status_code {
+            if Self::should_invalidate_cache_for_status(status_code) {
+                self.invalidate_schema_cache().await;
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -815,7 +829,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             let cache = self.schema_cache.read().await;
             if let Some((schema, cached_at)) = &*cache {
                 let elapsed = clock::now().duration_since(*cached_at);
-                if elapsed < Duration::from_secs(30) {
+                if elapsed < SCHEMA_CACHE_TTL {
                     return Ok(schema.clone());
                 }
             }
@@ -827,7 +841,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // Second check - maybe someone else filled it while we waited for write lock
         if let Some((schema, cached_at)) = &*cache {
             let elapsed = clock::now().duration_since(*cached_at);
-            if elapsed < Duration::from_secs(30) {
+            if elapsed < SCHEMA_CACHE_TTL {
                 return Ok(schema.clone());
             }
         }
@@ -860,27 +874,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             request = request.json(&body);
         }
 
-        let send_result = self.send(request, true).await;
-
-        // Handle errors from send() - check if we should invalidate cache
-        let (request_id, response) = match send_result {
+        let (request_id, response) = match self.send(request, true).await {
             Ok((id, resp)) => {
                 // check_table_response now handles error-based invalidation
                 let response = self.check_table_response(&id, resp).await?;
                 (id, response)
             }
             Err(e) => {
-                // Check if error from send() has a status code that should invalidate cache
-                let status_code = match &e {
-                    Error::Http { status_code, .. } => *status_code,
-                    Error::Retry { status_code, .. } => *status_code,
-                    _ => None,
-                };
-                if let Some(status_code) = status_code {
-                    if Self::should_invalidate_cache_for_status(status_code) {
-                        self.invalidate_schema_cache().await;
-                    }
-                }
+                self.handle_error_invalidation(&e).await;
                 return Err(e);
             }
         };
