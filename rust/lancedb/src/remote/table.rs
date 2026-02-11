@@ -368,9 +368,20 @@ impl<S: HttpSend> RemoteTable<S> {
         request_id: &str,
         response: reqwest::Response,
     ) -> Result<reqwest::Response> {
+        let status = response.status();
         let response = Self::handle_table_not_found(&self.name, response, request_id).await?;
 
-        self.client.check_response(request_id, response).await
+        let result = self.client.check_response(request_id, response).await;
+
+        // Invalidate schema cache on 4xx/5xx errors except 503
+        if result.is_err()
+            && (status.is_client_error() || status.is_server_error())
+            && status != StatusCode::SERVICE_UNAVAILABLE
+        {
+            self.invalidate_schema_cache().await;
+        }
+
+        result
     }
 
     async fn read_arrow_stream(
@@ -723,11 +734,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let mut write_guard = self.version.write().await;
         *write_guard = Some(version);
+        drop(write_guard);
+
+        // Invalidate schema cache since we're switching versions
+        self.invalidate_schema_cache().await;
+
         Ok(())
     }
     async fn checkout_latest(&self) -> Result<()> {
         let mut write_guard = self.version.write().await;
         *write_guard = None;
+        drop(write_guard);
+
+        // Invalidate schema cache since we're switching versions
+        self.invalidate_schema_cache().await;
+
         Ok(())
     }
     async fn restore(&self) -> Result<()> {
@@ -827,21 +848,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // Handle errors from send() - check if we should invalidate cache
         let (request_id, response) = match send_result {
             Ok((id, resp)) => {
-                let status = resp.status();
-                let check_result = self.check_table_response(&id, resp).await;
-
-                // Invalidate cache on 4xx/5xx errors except 503
-                if check_result.is_err()
-                    && (status.is_client_error() || status.is_server_error())
-                    && status != StatusCode::SERVICE_UNAVAILABLE
-                {
-                    self.invalidate_schema_cache().await;
-                }
-
-                (id, check_result?)
+                // check_table_response now handles error-based invalidation
+                let response = self.check_table_response(&id, resp).await?;
+                (id, response)
             }
             Err(e) => {
-                // Check if error has a status code that should invalidate cache
+                // Check if error from send() has a status code that should invalidate cache
                 let status_code = match &e {
                     Error::Http { status_code, .. } => *status_code,
                     Error::Retry { status_code, .. } => *status_code,
@@ -1305,6 +1317,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let version = tags.get_version(tag).await?;
         let mut write_guard = self.version.write().await;
         *write_guard = Some(version);
+        drop(write_guard);
+
+        // Invalidate schema cache since we're switching versions
+        self.invalidate_schema_cache().await;
+
         Ok(())
     }
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
