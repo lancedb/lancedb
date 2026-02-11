@@ -1585,6 +1585,9 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
     use std::{collections::HashMap, pin::Pin};
 
     use super::*;
@@ -3446,5 +3449,251 @@ mod tests {
         let uri2 = table.uri().await.unwrap();
         assert_eq!(uri2, "gs://bucket/table");
         assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, no new call
+    }
+
+    /// Test that schema is fetched once and cached for subsequent calls
+    #[tokio::test]
+    async fn test_schema_caching() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version": 1, "schema": {"fields": [
+                        {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                    ]}}"#,
+                )
+                .unwrap()
+        });
+
+        // First call should fetch from server
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(schema1.fields().len(), 1);
+        assert_eq!(schema1.field(0).name(), "a");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second call should use cached value
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, no new call
+
+        // Third call should still use cached value
+        let schema3 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, no new call
+    }
+
+    /// Test that schema cache expires after 30 seconds TTL
+    #[tokio::test]
+    async fn test_schema_cache_invalidation_after_ttl() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+
+            http::Response::builder()
+                .status(200)
+                .body(
+                    r#"{"version": 1, "schema": {"fields": [
+                        {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                    ]}}"#,
+                )
+                .unwrap()
+        });
+
+        // First call should fetch from server
+        let _schema1 = table.schema().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second call should use cached value (within TTL)
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&_schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Wait for TTL to expire (30 seconds + small buffer)
+        // TODO: Use a mock clock to avoid actually waiting in tests
+        tokio::time::sleep(Duration::from_secs(31)).await;
+
+        // Third call should re-fetch from server (TTL expired)
+        let schema3 = table.schema().await.unwrap();
+        assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&_schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    /// Test that schema cache is invalidated after schema-changing operations
+    #[rstest]
+    #[case("overwrite")]
+    #[case("add_columns")]
+    #[case("drop_columns")]
+    #[case("alter_columns")]
+    #[tokio::test]
+    async fn test_schema_cache_invalidation_after_operation(#[case] operation: &str) {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+
+            if path == "/v1/table/my_table/describe/" {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"version": 1, "schema": {"fields": [
+                            {"name": "a", "type": { "type": "int32" }, "nullable": false},
+                            {"name": "b", "type": { "type": "int32" }, "nullable": false}
+                        ]}}"#,
+                    )
+                    .unwrap()
+            } else if path == "/v1/table/my_table/insert/"
+                || path == "/v1/table/my_table/add_columns/"
+                || path == "/v1/table/my_table/drop_columns/"
+                || path == "/v1/table/my_table/alter_columns/"
+            {
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 2}"#)
+                    .unwrap()
+            } else {
+                http::Response::builder()
+                    .status(404)
+                    .body("not found")
+                    .unwrap()
+            }
+        });
+
+        // First schema call should fetch from server
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second schema call should use cached value
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Perform the schema-changing operation
+        match operation {
+            "overwrite" => {
+                let data = RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                    vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+                )
+                .unwrap();
+                let data_iter =
+                    Box::new(RecordBatchIterator::new([Ok(data.clone())], data.schema()));
+                let _ = table
+                    .add(data_iter)
+                    .mode(AddDataMode::Overwrite)
+                    .execute()
+                    .await;
+            }
+            "add_columns" => {
+                let _ = table
+                    .add_columns(
+                        NewColumnTransform::SqlExpressions(vec![("c".into(), "a + 1".into())]),
+                        None,
+                    )
+                    .await;
+            }
+            "drop_columns" => {
+                let _ = table.drop_columns(&["b"]).await;
+            }
+            "alter_columns" => {
+                let alterations = vec![ColumnAlteration::new("a".into()).rename("new_a".into())];
+                let _ = table.alter_columns(&alterations).await;
+            }
+            _ => panic!("Unknown operation: {}", operation),
+        }
+
+        // Schema call after operation should re-fetch from server (cache invalidated)
+        let schema3 = table.schema().await.unwrap();
+        assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    /// Test that schema cache is invalidated when server returns certain error codes
+    #[rstest]
+    #[case(400, true)] // 400 Bad Request should invalidate cache
+    #[case(500, true)] // 500 Internal Server Error should invalidate cache
+    #[case(503, false)] // 503 Service Unavailable should NOT invalidate cache
+    #[tokio::test]
+    async fn test_schema_cache_invalidation_on_errors(
+        #[case] error_status: u16,
+        #[case] should_invalidate: bool,
+    ) {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+            let current_count = call_count_clone.load(Ordering::SeqCst);
+
+            if path == "/v1/table/my_table/describe/" {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"version": 1, "schema": {"fields": [
+                            {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                        ]}}"#,
+                    )
+                    .unwrap()
+            } else if path == "/v1/table/my_table/count_rows/" {
+                // Return error on first count_rows call
+                if current_count == 1 {
+                    http::Response::builder()
+                        .status(error_status)
+                        .body("error")
+                        .unwrap()
+                } else {
+                    http::Response::builder().status(200).body("10").unwrap()
+                }
+            } else {
+                http::Response::builder()
+                    .status(404)
+                    .body("not found")
+                    .unwrap()
+            }
+        });
+
+        // First schema call should fetch from server
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Second schema call should use cached value
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Perform operation that returns error
+        let result = table.count_rows(None).await;
+        assert!(result.is_err());
+
+        // Schema call after error - check if cache was invalidated
+        let schema3 = table.schema().await.unwrap();
+        if should_invalidate {
+            assert_eq!(
+                call_count.load(Ordering::SeqCst),
+                2,
+                "Cache should be invalidated for {} error",
+                error_status
+            );
+            assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
+        } else {
+            assert_eq!(
+                call_count.load(Ordering::SeqCst),
+                1,
+                "Cache should NOT be invalidated for {} error",
+                error_status
+            );
+            assert_eq!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
+        }
     }
 }
