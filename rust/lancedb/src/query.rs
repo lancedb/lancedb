@@ -1327,8 +1327,19 @@ impl VectorQuery {
         )?;
 
         // try to get the schema to use when combining batches.
-        // if either
-        let (fts_schema, vec_schema) = hybrid::query_schemas(&fts_results, &vec_results);
+        // if both queries returned no results, build empty schemas that include
+        // the table's columns so they're preserved in the final output.
+        let (fts_schema, vec_schema) = if fts_results.is_empty() && vec_results.is_empty() {
+            let table_schema = self.parent.schema().await?;
+            let vector_col = self.request.column.as_deref();
+            let fts_schema =
+                hybrid::build_empty_schema_with_table_columns(&table_schema, SCORE_COL, vector_col);
+            let vec_schema =
+                hybrid::build_empty_schema_with_table_columns(&table_schema, DIST_COL, vector_col);
+            (Arc::new(fts_schema), Arc::new(vec_schema))
+        } else {
+            hybrid::query_schemas(&fts_results, &vec_results)
+        };
 
         // concatenate all the batches together
         let mut fts_results = concat_batches(&fts_schema, fts_results.iter())?;
@@ -1625,6 +1636,7 @@ mod tests {
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
+    use lance_arrow::SchemaExt;
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use rand::seq::IndexedRandom;
     use tempfile::tempdir;
@@ -2218,7 +2230,7 @@ mod tests {
             .unwrap();
         let batch = &results[0];
         assert_eq!(0, batch.num_rows());
-        assert_eq!(2, batch.num_columns());
+        assert_eq!(batch.schema().field_names(), &["text", "_relevance_score"]);
     }
 
     // TODO: Implement a good FTS test data generator in lance_datagen.
