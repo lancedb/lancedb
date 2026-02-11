@@ -366,11 +366,11 @@ impl<S: HttpSend> RemoteTable<S> {
     /// Check if a status code should trigger schema cache invalidation
     fn should_invalidate_cache_for_status(status: StatusCode) -> bool {
         // Only invalidate for errors that could be schema-related
-        // Don't invalidate for auth errors (401, 403) or not found (404)
-        // or temporary failures (503)
+        // Don't invalidate for auth errors (401, 403) or temporary failures (503)
         matches!(
             status,
             StatusCode::BAD_REQUEST // 400 - could be schema mismatch
+            | StatusCode::NOT_FOUND // 404 - table might have been recreated
             | StatusCode::UNPROCESSABLE_ENTITY // 422 - schema validation error
             | StatusCode::INTERNAL_SERVER_ERROR // 500 - could be schema issue on server
             | StatusCode::BAD_GATEWAY // 502 - could be server issues
@@ -383,8 +383,14 @@ impl<S: HttpSend> RemoteTable<S> {
         response: reqwest::Response,
     ) -> Result<reqwest::Response> {
         let status = response.status();
-        let response = Self::handle_table_not_found(&self.name, response, request_id).await?;
+        let not_found_result = Self::handle_table_not_found(&self.name, response, request_id).await;
 
+        // Check if we should invalidate cache for 404 errors
+        if not_found_result.is_err() && Self::should_invalidate_cache_for_status(status) {
+            self.invalidate_schema_cache().await;
+        }
+
+        let response = not_found_result?;
         let result = self.client.check_response(request_id, response).await;
 
         // Invalidate schema cache on errors that could be schema-related
@@ -3763,7 +3769,7 @@ mod tests {
     #[case(400, true)] // 400 Bad Request should invalidate cache
     #[case(401, false)] // 401 Unauthorized should NOT invalidate cache
     #[case(403, false)] // 403 Forbidden should NOT invalidate cache
-    #[case(404, false)] // 404 Not Found should NOT invalidate cache
+    #[case(404, true)] // 404 Not Found should invalidate (table might be recreated)
     #[case(500, true)] // 500 Internal Server Error should invalidate cache
     #[case(503, false)] // 503 Service Unavailable should NOT invalidate cache
     #[tokio::test]
