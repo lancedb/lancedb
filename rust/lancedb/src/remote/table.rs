@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use super::client::RequestResultExt;
@@ -207,6 +207,7 @@ pub struct RemoteTable<S: HttpSend = Sender> {
 
     version: RwLock<Option<u64>>,
     location: RwLock<Option<String>>,
+    schema_cache: RwLock<Option<(SchemaRef, Instant)>>,
 }
 
 impl<S: HttpSend> RemoteTable<S> {
@@ -225,6 +226,7 @@ impl<S: HttpSend> RemoteTable<S> {
             server_version,
             version: RwLock::new(None),
             location: RwLock::new(None),
+            schema_cache: RwLock::new(None),
         }
     }
 
@@ -639,6 +641,11 @@ impl<S: HttpSend> RemoteTable<S> {
             AnyQuery::VectorQuery(query) => self.apply_vector_query_params(base_body, query),
         }
     }
+
+    async fn invalidate_schema_cache(&self) {
+        let mut cache = self.schema_cache.write().await;
+        *cache = None;
+    }
 }
 
 #[derive(Deserialize)]
@@ -675,6 +682,7 @@ mod test_utils {
                 server_version: version.map(ServerVersion).unwrap_or_default(),
                 version: RwLock::new(None),
                 location: RwLock::new(None),
+                schema_cache: RwLock::new(None),
             }
         }
     }
@@ -764,9 +772,37 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn schema(&self) -> Result<SchemaRef> {
-        let schema = self.describe().await?.schema;
-        Ok(Arc::new(schema.try_into()?))
+        // First check with read lock (fast path for cache hits)
+        {
+            let cache = self.schema_cache.read().await;
+            if let Some((schema, cached_at)) = &*cache {
+                let elapsed = clock::now().duration_since(*cached_at);
+                if elapsed < Duration::from_secs(30) {
+                    return Ok(schema.clone());
+                }
+            }
+        }
+
+        // Acquire write lock to fetch (prevents concurrent fetches)
+        let mut cache = self.schema_cache.write().await;
+
+        // Second check - maybe someone else filled it while we waited for write lock
+        if let Some((schema, cached_at)) = &*cache {
+            let elapsed = clock::now().duration_since(*cached_at);
+            if elapsed < Duration::from_secs(30) {
+                return Ok(schema.clone());
+            }
+        }
+
+        // Still need to fetch - we have exclusive write lock, so only one thread fetches
+        let json_schema = self.describe().await?.schema;
+        let arrow_schema: arrow_schema::Schema = json_schema.try_into()?;
+        let schema = Arc::new(arrow_schema);
+        *cache = Some((schema.clone(), clock::now()));
+
+        Ok(schema)
     }
+
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
         let mut request = self
             .client
@@ -786,9 +822,41 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             request = request.json(&body);
         }
 
-        let (request_id, response) = self.send(request, true).await?;
+        let send_result = self.send(request, true).await;
 
-        let response = self.check_table_response(&request_id, response).await?;
+        // Handle errors from send() - check if we should invalidate cache
+        let (request_id, response) = match send_result {
+            Ok((id, resp)) => {
+                let status = resp.status();
+                let check_result = self.check_table_response(&id, resp).await;
+
+                // Invalidate cache on 4xx/5xx errors except 503
+                if check_result.is_err()
+                    && (status.is_client_error() || status.is_server_error())
+                    && status != StatusCode::SERVICE_UNAVAILABLE
+                {
+                    self.invalidate_schema_cache().await;
+                }
+
+                (id, check_result?)
+            }
+            Err(e) => {
+                // Check if error has a status code that should invalidate cache
+                let status_code = match &e {
+                    Error::Http { status_code, .. } => *status_code,
+                    Error::Retry { status_code, .. } => *status_code,
+                    _ => None,
+                };
+                if let Some(status_code) = status_code {
+                    if (status_code.is_client_error() || status_code.is_server_error())
+                        && status_code != StatusCode::SERVICE_UNAVAILABLE
+                    {
+                        self.invalidate_schema_cache().await;
+                    }
+                }
+                return Err(e);
+            }
+        };
 
         let body = response.text().await.err_to_http(request_id.clone())?;
 
@@ -829,6 +897,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             request_id,
             status_code: None,
         })?;
+
+        if matches!(add.mode, AddDataMode::Overwrite) {
+            self.invalidate_schema_cache().await;
+        }
+
         Ok(add_response)
     }
 
@@ -1278,6 +1351,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         status_code: None,
                     })?;
 
+                self.invalidate_schema_cache().await;
+
                 Ok(result)
             }
             _ => {
@@ -1330,6 +1405,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })?;
 
+        self.invalidate_schema_cache().await;
+
         Ok(result)
     }
 
@@ -1354,6 +1431,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             request_id,
             status_code: None,
         })?;
+
+        self.invalidate_schema_cache().await;
 
         Ok(result)
     }
@@ -1580,6 +1659,42 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             // Only serialize use_index when it's false for backwards compatibility
             use_index: value.use_index,
         })
+    }
+}
+
+// Clock module for testing with mock time
+#[cfg(test)]
+mod clock {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        static MOCK_NOW: Cell<Option<Instant>> = const { Cell::new(None) };
+    }
+
+    pub fn now() -> Instant {
+        MOCK_NOW.with(|mock| mock.get().unwrap_or_else(Instant::now))
+    }
+
+    pub fn advance_by(duration: Duration) {
+        MOCK_NOW.with(|mock| {
+            let current = mock.get().unwrap_or_else(Instant::now);
+            mock.set(Some(current + duration));
+        });
+    }
+
+    #[allow(dead_code)]
+    pub fn clear_mock() {
+        MOCK_NOW.with(|mock| mock.set(None));
+    }
+}
+
+#[cfg(not(test))]
+mod clock {
+    use std::time::Instant;
+
+    pub fn now() -> Instant {
+        Instant::now()
     }
 }
 
@@ -3517,9 +3632,8 @@ mod tests {
         assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&_schema1));
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
 
-        // Wait for TTL to expire (30 seconds + small buffer)
-        // TODO: Use a mock clock to avoid actually waiting in tests
-        tokio::time::sleep(Duration::from_secs(31)).await;
+        // Advance mock time past TTL (no real wait)
+        clock::advance_by(Duration::from_secs(31));
 
         // Third call should re-fetch from server (TTL expired)
         let schema3 = table.schema().await.unwrap();
