@@ -8,7 +8,7 @@ use std::{
 
 use lance::{dataset::refs, Dataset};
 
-use crate::error::Result;
+use crate::{error::Result, utils::background_cache::BackgroundCache, Error};
 
 /// A wrapper around a [Dataset] that provides consistency checks.
 ///
@@ -17,6 +17,7 @@ use crate::error::Result;
 #[derive(Debug, Clone)]
 pub struct DatasetConsistencyWrapper {
     state: Arc<Mutex<DatasetRef>>,
+    bg_cache: Option<BackgroundCache<Arc<Dataset>, Error>>,
 }
 
 /// Internal state tracking the dataset and its consistency mode.
@@ -73,21 +74,40 @@ impl DatasetRef {
 impl DatasetConsistencyWrapper {
     /// Create a new wrapper in the latest version mode.
     pub fn new_latest(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
+        let bg_cache = match read_consistency_interval {
+            Some(d) if d > Duration::ZERO => Some(BackgroundCache::new(d, d / 2)),
+            _ => None,
+        };
         Self {
             state: Arc::new(Mutex::new(DatasetRef::Latest {
                 dataset: Arc::new(dataset),
                 read_consistency_interval,
                 last_consistency_check: Some(Instant::now()),
             })),
+            bg_cache,
         }
     }
 
     /// Get the current dataset.
     ///
-    /// For strong consistency (`read_consistency_interval = Some(Duration::ZERO)`),
-    /// this checks for a new version before returning. For lazy consistency (`None`),
-    /// this returns the cached dataset immediately.
+    /// Behavior depends on the consistency mode:
+    /// - **Lazy** (`None`): returns the cached dataset immediately.
+    /// - **Strong** (`Some(ZERO)`): checks for a new version before returning.
+    /// - **Eventual** (`Some(d)` where `d > 0`): returns a cached value immediately
+    ///   while refreshing in the background when the TTL expires.
     pub async fn get(&self) -> Result<Arc<Dataset>> {
+        if let Some(bg_cache) = &self.bg_cache {
+            if let Some(dataset) = bg_cache.try_get() {
+                return Ok(dataset);
+            }
+            let state = self.state.clone();
+            return bg_cache
+                .get(move || fetch_latest_dataset(state))
+                .await
+                .map_err(unwrap_shared_error);
+        }
+
+        // Lazy or strong consistency
         self.ensure_up_to_date().await?;
         let state = self.state.lock().unwrap();
         Ok(state.dataset().clone())
@@ -109,6 +129,8 @@ impl DatasetConsistencyWrapper {
             }
             _ => unreachable!("Dataset should be in latest mode when calling update"),
         }
+        drop(state);
+        self.invalidate_bg_cache();
     }
 
     /// Checkout a branch and track its HEAD for new versions.
@@ -156,6 +178,8 @@ impl DatasetConsistencyWrapper {
                 last_consistency_check: Some(Instant::now()),
             };
         }
+        drop(state);
+        self.invalidate_bg_cache();
         Ok(())
     }
 
@@ -188,6 +212,8 @@ impl DatasetConsistencyWrapper {
             dataset: Arc::new(new_dataset),
             version: version_value,
         };
+        drop(state);
+        self.invalidate_bg_cache();
         Ok(())
     }
 
@@ -246,6 +272,7 @@ impl DatasetConsistencyWrapper {
             }
         }
 
+        self.invalidate_bg_cache();
         Ok(())
     }
 
@@ -260,6 +287,49 @@ impl DatasetConsistencyWrapper {
             self.reload().await?;
         }
         Ok(())
+    }
+
+    fn invalidate_bg_cache(&self) {
+        if let Some(bg_cache) = &self.bg_cache {
+            bg_cache.invalidate();
+        }
+    }
+}
+
+async fn fetch_latest_dataset(state: Arc<Mutex<DatasetRef>>) -> Result<Arc<Dataset>> {
+    let dataset = {
+        let state = state.lock().unwrap();
+        state.dataset().clone()
+    };
+
+    let latest_version = dataset.latest_version_id().await?;
+    if latest_version == dataset.version().version {
+        return Ok(dataset);
+    }
+
+    let mut ds = (*dataset).clone();
+    ds.checkout_latest().await?;
+    let new_arc = Arc::new(ds);
+
+    // Update the mutex state so version comparisons stay current
+    {
+        let mut state = state.lock().unwrap();
+        if let DatasetRef::Latest { dataset, .. } = &mut *state {
+            if new_arc.manifest().version > dataset.manifest().version {
+                *dataset = new_arc.clone();
+            }
+        }
+    }
+
+    Ok(new_arc)
+}
+
+fn unwrap_shared_error(arc: Arc<Error>) -> Error {
+    match Arc::try_unwrap(arc) {
+        Ok(err) => err,
+        Err(arc) => Error::Runtime {
+            message: arc.to_string(),
+        },
     }
 }
 
@@ -416,10 +486,9 @@ mod tests {
         assert_eq!(wrapper.time_travel_version(), None);
     }
 
-    // Group 2: Background refresh tests (todo)
+    // Group 2: Background refresh tests
 
     #[tokio::test]
-    #[ignore]
     async fn test_lazy_consistency_never_refreshes() {
         let dir = tempfile::tempdir().unwrap();
         let uri = dir.path().to_str().unwrap();
@@ -437,7 +506,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_strong_consistency_always_refreshes() {
         let dir = tempfile::tempdir().unwrap();
         let uri = dir.path().to_str().unwrap();
@@ -455,22 +523,46 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_eventual_consistency_background_refresh() {
         let dir = tempfile::tempdir().unwrap();
         let uri = dir.path().to_str().unwrap();
         let ds = create_test_dataset(uri).await;
 
-        let wrapper = DatasetConsistencyWrapper::new_latest(ds, Some(Duration::from_secs(5)));
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, Some(Duration::from_millis(200)));
+
+        // Populate the cache
+        let v1 = wrapper.get().await.unwrap().version().version;
+        assert_eq!(v1, 1);
 
         // External write
         append_to_dataset(uri).await;
 
-        // Should return cached value immediately
+        // Should return cached value immediately (within TTL)
         let v_cached = wrapper.get().await.unwrap().version().version;
         assert_eq!(v_cached, 1);
 
-        // TODO: After background refresh interval passes, should update
+        // Wait for TTL to expire, then get() should trigger a refresh
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let v_after = wrapper.get().await.unwrap().version().version;
+        assert_eq!(v_after, 2);
+    }
+
+    #[tokio::test]
+    async fn test_eventual_consistency_update_invalidates_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds_v1 = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds_v1, Some(Duration::from_secs(60)));
+
+        // Simulate a write that produces v2
+        let ds_v2 = append_to_dataset(uri).await;
+        wrapper.update(ds_v2);
+
+        // get() should return v2 immediately (update invalidated the bg_cache,
+        // and the mutex state was updated)
+        let v = wrapper.get().await.unwrap().version().version;
+        assert_eq!(v, 2);
     }
 
     // Group 3: Branch tests (todo)

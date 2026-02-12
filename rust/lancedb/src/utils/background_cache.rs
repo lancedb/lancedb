@@ -78,6 +78,15 @@ pub struct BackgroundCache<V, E> {
     refresh_window: Duration,
 }
 
+impl<V, E> std::fmt::Debug for BackgroundCache<V, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackgroundCache")
+            .field("ttl", &self.ttl)
+            .field("refresh_window", &self.refresh_window)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<V, E> Clone for BackgroundCache<V, E> {
     fn clone(&self) -> Self {
         Self {
