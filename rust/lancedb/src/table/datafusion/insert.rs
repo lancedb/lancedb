@@ -200,7 +200,7 @@ impl ExecutionPlan for InsertExec {
                     let new_dataset = CommitBuilder::new(dataset.clone())
                         .execute(merged_txn)
                         .await?;
-                    ds_wrapper.set_latest(new_dataset).await;
+                    ds_wrapper.update(new_dataset);
                 }
             }
 

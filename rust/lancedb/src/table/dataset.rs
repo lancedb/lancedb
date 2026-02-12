@@ -2,120 +2,49 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::{
-    ops::{Deref, DerefMut},
-    sync::Arc,
-    time::{self, Duration, Instant},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use lance::{dataset::refs, Dataset};
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::error::Result;
 
-/// A wrapper around a [Dataset] that provides lazy-loading and consistency checks.
-///
-/// This can be cloned cheaply. It supports concurrent reads or exclusive writes.
-#[derive(Debug, Clone)]
-pub struct DatasetConsistencyWrapper(Arc<RwLock<DatasetRef>>);
-
 /// A wrapper around a [Dataset] that provides consistency checks.
 ///
-/// The dataset is lazily loaded, and starts off as None. On the first access,
-/// the dataset is loaded.
+/// This can be cloned cheaply. Callers get an [`Arc<Dataset>`] from [`get()`](Self::get)
+/// and call [`update()`](Self::update) after writes to store the new version.
+#[derive(Debug, Clone)]
+pub struct DatasetConsistencyWrapper {
+    state: Arc<Mutex<DatasetRef>>,
+}
+
+/// Internal state tracking the dataset and its consistency mode.
+///
+/// The dataset is stored as `Arc<Dataset>` for cheap cloning. The mutex
+/// is never held across `.await` points.
 #[derive(Debug, Clone)]
 enum DatasetRef {
     /// In this mode, the dataset is always the latest version.
     Latest {
-        dataset: Dataset,
+        dataset: Arc<Dataset>,
         read_consistency_interval: Option<Duration>,
-        last_consistency_check: Option<time::Instant>,
+        last_consistency_check: Option<Instant>,
     },
     /// In this mode, the dataset is a specific version. It cannot be mutated.
-    TimeTravel { dataset: Dataset, version: u64 },
+    TimeTravel { dataset: Arc<Dataset>, version: u64 },
 }
 
 impl DatasetRef {
-    /// Reload the dataset to the appropriate version.
-    async fn reload(&mut self) -> Result<()> {
+    fn dataset(&self) -> &Arc<Dataset> {
         match self {
-            Self::Latest {
-                dataset,
-                last_consistency_check,
-                ..
-            } => {
-                dataset.checkout_latest().await?;
-                last_consistency_check.replace(Instant::now());
-            }
-            Self::TimeTravel { dataset, version } => {
-                dataset.checkout_version(*version).await?;
-            }
+            Self::Latest { dataset, .. } => dataset,
+            Self::TimeTravel { dataset, .. } => dataset,
         }
-        Ok(())
     }
 
     fn is_latest(&self) -> bool {
         matches!(self, Self::Latest { .. })
-    }
-
-    async fn need_reload(&self) -> Result<bool> {
-        Ok(match self {
-            Self::Latest { dataset, .. } => {
-                dataset.latest_version_id().await? != dataset.version().version
-            }
-            Self::TimeTravel { dataset, version } => dataset.version().version != *version,
-        })
-    }
-
-    async fn as_latest(&mut self, read_consistency_interval: Option<Duration>) -> Result<()> {
-        match self {
-            Self::Latest { .. } => Ok(()),
-            Self::TimeTravel { dataset, .. } => {
-                dataset
-                    .checkout_version(dataset.latest_version_id().await?)
-                    .await?;
-                *self = Self::Latest {
-                    dataset: dataset.clone(),
-                    read_consistency_interval,
-                    last_consistency_check: Some(Instant::now()),
-                };
-                Ok(())
-            }
-        }
-    }
-
-    async fn as_time_travel(&mut self, target_version: impl Into<refs::Ref>) -> Result<()> {
-        let target_ref = target_version.into();
-
-        match self {
-            Self::Latest { dataset, .. } => {
-                let new_dataset = dataset.checkout_version(target_ref.clone()).await?;
-                let version_value = new_dataset.version().version;
-
-                *self = Self::TimeTravel {
-                    dataset: new_dataset,
-                    version: version_value,
-                };
-            }
-            Self::TimeTravel { dataset, version } => {
-                let should_checkout = match &target_ref {
-                    refs::Ref::Version(_, Some(target_ver)) => version != target_ver,
-                    refs::Ref::Version(_, None) => true, // No specific version, always checkout
-                    refs::Ref::VersionNumber(target_ver) => version != target_ver,
-                    refs::Ref::Tag(_) => true, // Always checkout for tags
-                };
-
-                if should_checkout {
-                    let new_dataset = dataset.checkout_version(target_ref).await?;
-                    let version_value = new_dataset.version().version;
-
-                    *self = Self::TimeTravel {
-                        dataset: new_dataset,
-                        version: version_value,
-                    };
-                }
-            }
-        }
-        Ok(())
     }
 
     fn time_travel_version(&self) -> Option<u64> {
@@ -125,17 +54,18 @@ impl DatasetRef {
         }
     }
 
-    fn set_latest(&mut self, dataset: Dataset) {
+    fn is_up_to_date(&self) -> bool {
         match self {
             Self::Latest {
-                dataset: ref mut ds,
+                read_consistency_interval,
+                last_consistency_check,
                 ..
-            } => {
-                if dataset.manifest().version > ds.manifest().version {
-                    *ds = dataset;
-                }
-            }
-            _ => unreachable!("Dataset should be in latest mode at this point"),
+            } => match (read_consistency_interval, last_consistency_check) {
+                (None, _) => true,
+                (Some(_), None) => false,
+                (Some(interval), Some(last_check)) => last_check.elapsed() < *interval,
+            },
+            Self::TimeTravel { dataset, version } => dataset.version().version == *version,
         }
     }
 }
@@ -143,90 +73,53 @@ impl DatasetRef {
 impl DatasetConsistencyWrapper {
     /// Create a new wrapper in the latest version mode.
     pub fn new_latest(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
-        Self(Arc::new(RwLock::new(DatasetRef::Latest {
-            dataset,
-            read_consistency_interval,
-            last_consistency_check: Some(Instant::now()),
-        })))
+        Self {
+            state: Arc::new(Mutex::new(DatasetRef::Latest {
+                dataset: Arc::new(dataset),
+                read_consistency_interval,
+                last_consistency_check: Some(Instant::now()),
+            })),
+        }
     }
 
-    /// Get an immutable reference to the dataset.
-    pub async fn get(&self) -> Result<DatasetReadGuard<'_>> {
-        self.ensure_up_to_date().await?;
-        Ok(DatasetReadGuard {
-            guard: self.0.read().await,
-        })
-    }
-
-    /// Get a mutable reference to the dataset.
+    /// Get the current dataset.
     ///
-    /// If the dataset is in time travel mode this will fail
-    pub async fn get_mut(&self) -> Result<DatasetWriteGuard<'_>> {
-        self.ensure_mutable().await?;
+    /// For strong consistency (`read_consistency_interval = Some(Duration::ZERO)`),
+    /// this checks for a new version before returning. For lazy consistency (`None`),
+    /// this returns the cached dataset immediately.
+    pub async fn get(&self) -> Result<Arc<Dataset>> {
         self.ensure_up_to_date().await?;
-        Ok(DatasetWriteGuard {
-            guard: self.0.write().await,
-        })
+        let state = self.state.lock().unwrap();
+        Ok(state.dataset().clone())
     }
 
-    /// Get a mutable reference to the dataset without requiring the
-    /// dataset to be in a Latest mode.
-    pub async fn get_mut_unchecked(&self) -> Result<DatasetWriteGuard<'_>> {
-        self.ensure_up_to_date().await?;
-        Ok(DatasetWriteGuard {
-            guard: self.0.write().await,
-        })
-    }
-
-    /// Convert into a wrapper in latest version mode
-    pub async fn as_latest(&self, read_consistency_interval: Option<Duration>) -> Result<()> {
-        if self.0.read().await.is_latest() {
-            return Ok(());
-        }
-
-        let mut write_guard = self.0.write().await;
-        if write_guard.is_latest() {
-            return Ok(());
-        }
-
-        write_guard.as_latest(read_consistency_interval).await
-    }
-
-    pub async fn as_time_travel(&self, target_version: impl Into<refs::Ref>) -> Result<()> {
-        self.0.write().await.as_time_travel(target_version).await
-    }
-
-    /// Provide a known latest version of the dataset.
+    /// Store a new dataset version after a write operation.
     ///
-    /// This is usually done after some write operation, which inherently will
-    /// have the latest version.
-    pub async fn set_latest(&self, dataset: Dataset) {
-        self.0.write().await.set_latest(dataset);
-    }
-
-    pub async fn reload(&self) -> Result<()> {
-        if !self.0.read().await.need_reload().await? {
-            return Ok(());
+    /// Only stores the dataset if its version is newer than the current one.
+    /// Panics if called when not in Latest mode.
+    pub fn update(&self, dataset: Dataset) {
+        let mut state = self.state.lock().unwrap();
+        match &mut *state {
+            DatasetRef::Latest {
+                dataset: current, ..
+            } => {
+                if dataset.manifest().version > current.manifest().version {
+                    *current = Arc::new(dataset);
+                }
+            }
+            _ => unreachable!("Dataset should be in latest mode when calling update"),
         }
-
-        let mut write_guard = self.0.write().await;
-        // on lock escalation -- check if someone else has already reloaded
-        if !write_guard.need_reload().await? {
-            return Ok(());
-        }
-
-        // actually need reloading
-        write_guard.reload().await
     }
 
-    /// Returns the version, if in time travel mode, or None otherwise
-    pub async fn time_travel_version(&self) -> Option<u64> {
-        self.0.read().await.time_travel_version()
+    /// Checkout a branch and track its HEAD for new versions.
+    pub async fn as_branch(&self, _branch: impl Into<String>) -> Result<()> {
+        todo!("Branch support not yet implemented")
     }
 
-    pub async fn ensure_mutable(&self) -> Result<()> {
-        let dataset_ref = self.0.read().await;
-        match &*dataset_ref {
+    /// Check that the dataset is in a mutable mode (Latest).
+    pub fn ensure_mutable(&self) -> Result<()> {
+        let state = self.state.lock().unwrap();
+        match &*state {
             DatasetRef::Latest { .. } => Ok(()),
             DatasetRef::TimeTravel { .. } => Err(crate::Error::InvalidInput {
                 message: "table cannot be modified when a specific version is checked out"
@@ -235,87 +128,366 @@ impl DatasetConsistencyWrapper {
         }
     }
 
-    async fn is_up_to_date(&self) -> Result<bool> {
-        let dataset_ref = self.0.read().await;
-        match &*dataset_ref {
-            DatasetRef::Latest {
+    /// Returns the version, if in time travel mode, or None otherwise.
+    pub fn time_travel_version(&self) -> Option<u64> {
+        let state = self.state.lock().unwrap();
+        state.time_travel_version()
+    }
+
+    /// Convert into a wrapper in latest version mode.
+    pub async fn as_latest(&self, read_consistency_interval: Option<Duration>) -> Result<()> {
+        let dataset = {
+            let state = self.state.lock().unwrap();
+            if state.is_latest() {
+                return Ok(());
+            }
+            state.dataset().clone()
+        };
+
+        let latest_version = dataset.latest_version_id().await?;
+        let new_dataset = dataset.checkout_version(latest_version).await?;
+
+        let mut state = self.state.lock().unwrap();
+        // Re-check in case another thread already switched to Latest
+        if !state.is_latest() {
+            *state = DatasetRef::Latest {
+                dataset: Arc::new(new_dataset),
                 read_consistency_interval,
-                last_consistency_check,
-                ..
-            } => match (read_consistency_interval, last_consistency_check) {
-                (None, _) => Ok(true),
-                (Some(_), None) => Ok(false),
-                (Some(read_consistency_interval), Some(last_consistency_check)) => {
-                    if &last_consistency_check.elapsed() < read_consistency_interval {
-                        Ok(true)
-                    } else {
-                        Ok(false)
+                last_consistency_check: Some(Instant::now()),
+            };
+        }
+        Ok(())
+    }
+
+    pub async fn as_time_travel(&self, target_version: impl Into<refs::Ref>) -> Result<()> {
+        let target_ref = target_version.into();
+
+        let (should_checkout, dataset) = {
+            let state = self.state.lock().unwrap();
+            let should = match &*state {
+                DatasetRef::Latest { .. } => true,
+                DatasetRef::TimeTravel { version, .. } => match &target_ref {
+                    refs::Ref::Version(_, Some(target_ver)) => version != target_ver,
+                    refs::Ref::Version(_, None) => true,
+                    refs::Ref::VersionNumber(target_ver) => version != target_ver,
+                    refs::Ref::Tag(_) => true,
+                },
+            };
+            (should, state.dataset().clone())
+        };
+
+        if !should_checkout {
+            return Ok(());
+        }
+
+        let new_dataset = dataset.checkout_version(target_ref).await?;
+        let version_value = new_dataset.version().version;
+
+        let mut state = self.state.lock().unwrap();
+        *state = DatasetRef::TimeTravel {
+            dataset: Arc::new(new_dataset),
+            version: version_value,
+        };
+        Ok(())
+    }
+
+    pub async fn reload(&self) -> Result<()> {
+        let (dataset, reload_info) = {
+            let state = self.state.lock().unwrap();
+            let ds = state.dataset().clone();
+            let info = match &*state {
+                DatasetRef::Latest { .. } => ReloadInfo::Latest,
+                DatasetRef::TimeTravel { version, .. } => ReloadInfo::TimeTravel(*version),
+            };
+            (ds, info)
+        };
+
+        match reload_info {
+            ReloadInfo::Latest => {
+                let latest_version = dataset.latest_version_id().await?;
+                if latest_version == dataset.version().version {
+                    // Already up to date, just refresh the check time
+                    let mut state = self.state.lock().unwrap();
+                    if let DatasetRef::Latest {
+                        last_consistency_check,
+                        ..
+                    } = &mut *state
+                    {
+                        *last_consistency_check = Some(Instant::now());
                     }
+                    return Ok(());
                 }
-            },
-            DatasetRef::TimeTravel { dataset, version } => {
-                Ok(dataset.version().version == *version)
+
+                let mut dataset_clone = (*dataset).clone();
+                dataset_clone.checkout_latest().await?;
+
+                let mut state = self.state.lock().unwrap();
+                if let DatasetRef::Latest {
+                    dataset,
+                    last_consistency_check,
+                    ..
+                } = &mut *state
+                {
+                    *dataset = Arc::new(dataset_clone);
+                    *last_consistency_check = Some(Instant::now());
+                }
+            }
+            ReloadInfo::TimeTravel(version) => {
+                if dataset.version().version == version {
+                    return Ok(());
+                }
+
+                let new_dataset = dataset.checkout_version(version).await?;
+
+                let mut state = self.state.lock().unwrap();
+                if let DatasetRef::TimeTravel { dataset, .. } = &mut *state {
+                    *dataset = Arc::new(new_dataset);
+                }
             }
         }
+
+        Ok(())
     }
 
     /// Ensures that the dataset is loaded and up-to-date with consistency and
     /// version parameters.
     async fn ensure_up_to_date(&self) -> Result<()> {
-        if !self.is_up_to_date().await? {
+        let up_to_date = {
+            let state = self.state.lock().unwrap();
+            state.is_up_to_date()
+        };
+        if !up_to_date {
             self.reload().await?;
         }
         Ok(())
     }
 }
 
-pub struct DatasetReadGuard<'a> {
-    guard: RwLockReadGuard<'a, DatasetRef>,
-}
-
-impl Deref for DatasetReadGuard<'_> {
-    type Target = Dataset;
-
-    fn deref(&self) -> &Self::Target {
-        match &*self.guard {
-            DatasetRef::Latest { dataset, .. } => dataset,
-            DatasetRef::TimeTravel { dataset, .. } => dataset,
-        }
-    }
-}
-
-pub struct DatasetWriteGuard<'a> {
-    guard: RwLockWriteGuard<'a, DatasetRef>,
-}
-
-impl Deref for DatasetWriteGuard<'_> {
-    type Target = Dataset;
-
-    fn deref(&self) -> &Self::Target {
-        match &*self.guard {
-            DatasetRef::Latest { dataset, .. } => dataset,
-            DatasetRef::TimeTravel { dataset, .. } => dataset,
-        }
-    }
-}
-
-impl DerefMut for DatasetWriteGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match &mut *self.guard {
-            DatasetRef::Latest { dataset, .. } => dataset,
-            DatasetRef::TimeTravel { dataset, .. } => dataset,
-        }
-    }
+enum ReloadInfo {
+    Latest,
+    TimeTravel(u64),
 }
 
 #[cfg(test)]
 mod tests {
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
-    use lance::{dataset::WriteParams, io::ObjectStoreParams};
+    use lance::dataset::{WriteMode, WriteParams};
 
     use super::*;
 
     use crate::{connect, io::object_store::io_tracking::IoStatsHolder, table::WriteOptions};
+
+    async fn create_test_dataset(uri: &str) -> Dataset {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        Dataset::write(
+            RecordBatchIterator::new(vec![Ok(batch)], schema),
+            uri,
+            Some(WriteParams::default()),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn append_to_dataset(uri: &str) -> Dataset {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![4, 5, 6]))],
+        )
+        .unwrap();
+        Dataset::write(
+            RecordBatchIterator::new(vec![Ok(batch)], schema),
+            uri,
+            Some(WriteParams {
+                mode: WriteMode::Append,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+    }
+
+    // Group 1: API change tests
+
+    #[tokio::test]
+    async fn test_get_returns_dataset() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+        let version = ds.version().version;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        let ds1 = wrapper.get().await.unwrap();
+        let ds2 = wrapper.get().await.unwrap();
+
+        assert_eq!(ds1.version().version, version);
+        assert_eq!(ds2.version().version, version);
+
+        // Arc<Dataset> is independent — not borrowing from wrapper
+        drop(wrapper);
+        assert_eq!(ds1.version().version, version);
+    }
+
+    #[tokio::test]
+    async fn test_update_stores_newer_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds_v1 = create_test_dataset(uri).await;
+        assert_eq!(ds_v1.version().version, 1);
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds_v1, None);
+
+        let ds_v2 = append_to_dataset(uri).await;
+        assert_eq!(ds_v2.version().version, 2);
+
+        wrapper.update(ds_v2);
+
+        let ds = wrapper.get().await.unwrap();
+        assert_eq!(ds.version().version, 2);
+    }
+
+    #[tokio::test]
+    async fn test_update_ignores_older_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds_v1 = create_test_dataset(uri).await;
+        let ds_v2 = append_to_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds_v2, None);
+        wrapper.update(ds_v1);
+
+        let ds = wrapper.get().await.unwrap();
+        assert_eq!(ds.version().version, 2);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_mutable_allows_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        assert!(wrapper.ensure_mutable().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_ensure_mutable_rejects_time_travel() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        wrapper.as_time_travel(1u64).await.unwrap();
+
+        assert!(wrapper.ensure_mutable().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_time_travel_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        assert_eq!(wrapper.time_travel_version(), None);
+
+        wrapper.as_time_travel(1u64).await.unwrap();
+        assert_eq!(wrapper.time_travel_version(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_as_latest_from_time_travel() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        wrapper.as_time_travel(1u64).await.unwrap();
+        assert!(wrapper.ensure_mutable().is_err());
+
+        wrapper.as_latest(None).await.unwrap();
+        assert!(wrapper.ensure_mutable().is_ok());
+        assert_eq!(wrapper.time_travel_version(), None);
+    }
+
+    // Group 2: Background refresh tests (todo)
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_lazy_consistency_never_refreshes() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        let v1 = wrapper.get().await.unwrap().version().version;
+
+        // External write
+        append_to_dataset(uri).await;
+
+        // Lazy consistency should not pick up external write
+        let v_after = wrapper.get().await.unwrap().version().version;
+        assert_eq!(v1, v_after);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_strong_consistency_always_refreshes() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, Some(Duration::ZERO));
+        let v1 = wrapper.get().await.unwrap().version().version;
+
+        // External write
+        append_to_dataset(uri).await;
+
+        // Strong consistency should pick up external write
+        let v_after = wrapper.get().await.unwrap().version().version;
+        assert_eq!(v_after, v1 + 1);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_eventual_consistency_background_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, Some(Duration::from_secs(5)));
+
+        // External write
+        append_to_dataset(uri).await;
+
+        // Should return cached value immediately
+        let v_cached = wrapper.get().await.unwrap().version().version;
+        assert_eq!(v_cached, 1);
+
+        // TODO: After background refresh interval passes, should update
+    }
+
+    // Group 3: Branch tests (todo)
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_as_branch() {
+        // TODO: test checkout branch
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_branch_picks_up_new_versions() {
+        // TODO: test branch refresh picks up new versions
+    }
+
+    // Existing test
 
     #[tokio::test]
     async fn test_iops_open_strong_consistency() {
@@ -332,7 +504,7 @@ mod tests {
             .create_empty_table("test", schema)
             .write_options(WriteOptions {
                 lance_write_params: Some(WriteParams {
-                    store_params: Some(ObjectStoreParams {
+                    store_params: Some(lance::io::ObjectStoreParams {
                         object_store_wrapper: Some(Arc::new(io_stats.clone())),
                         ..Default::default()
                     }),
