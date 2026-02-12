@@ -24,7 +24,8 @@ use async_trait::async_trait;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
-use futures::TryStreamExt;
+use futures::future::Shared;
+use futures::{FutureExt, TryStreamExt};
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
@@ -62,6 +63,59 @@ const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-ti
 const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
+const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
+
+type SharedSchemaFuture =
+    Shared<futures::future::BoxFuture<'static, std::result::Result<SchemaRef, Arc<Error>>>>;
+
+enum SchemaState {
+    Empty,
+    Current(SchemaRef, Instant),
+    Refreshing {
+        previous: Option<(SchemaRef, Instant)>,
+        future: SharedSchemaFuture,
+    },
+}
+
+struct SchemaCache {
+    state: SchemaState,
+    /// Incremented on invalidation. Background fetches check this to avoid
+    /// overwriting with stale data after a concurrent invalidation.
+    generation: u64,
+}
+
+enum SchemaAction {
+    Return(SchemaRef),
+    Wait(SharedSchemaFuture),
+}
+
+impl SchemaState {
+    /// Returns the schema if it's fresh (not in the refresh window).
+    fn fresh_schema(&self) -> Option<SchemaRef> {
+        match self {
+            Self::Current(schema, cached_at) => {
+                let elapsed = clock::now().duration_since(*cached_at);
+                if elapsed < SCHEMA_CACHE_TTL - SCHEMA_CACHE_REFRESH_WINDOW {
+                    Some(schema.clone())
+                } else {
+                    None
+                }
+            }
+            Self::Refreshing {
+                previous: Some((schema, cached_at)),
+                ..
+            } => {
+                let elapsed = clock::now().duration_since(*cached_at);
+                if elapsed < SCHEMA_CACHE_TTL - SCHEMA_CACHE_REFRESH_WINDOW {
+                    Some(schema.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
 
 pub struct RemoteTags<'a, S: HttpSend = Sender> {
     inner: &'a RemoteTable<S>,
@@ -197,7 +251,6 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
     }
 }
 
-#[derive(Debug)]
 pub struct RemoteTable<S: HttpSend = Sender> {
     #[allow(dead_code)]
     client: RestfulLanceDbClient<S>,
@@ -208,7 +261,16 @@ pub struct RemoteTable<S: HttpSend = Sender> {
 
     version: RwLock<Option<u64>>,
     location: RwLock<Option<String>>,
-    schema_cache: RwLock<Option<(SchemaRef, Instant)>>,
+    schema_cache: Arc<Mutex<SchemaCache>>,
+}
+
+impl<S: HttpSend> std::fmt::Debug for RemoteTable<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteTable")
+            .field("name", &self.name)
+            .field("identifier", &self.identifier)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S: HttpSend> RemoteTable<S> {
@@ -227,7 +289,10 @@ impl<S: HttpSend> RemoteTable<S> {
             server_version,
             version: RwLock::new(None),
             location: RwLock::new(None),
-            schema_cache: RwLock::new(None),
+            schema_cache: Arc::new(Mutex::new(SchemaCache {
+                state: SchemaState::Empty,
+                generation: 0,
+            })),
         }
     }
 
@@ -387,7 +452,7 @@ impl<S: HttpSend> RemoteTable<S> {
 
         // Check if we should invalidate cache for 404 errors
         if not_found_result.is_err() && Self::should_invalidate_cache_for_status(status) {
-            self.invalidate_schema_cache().await;
+            self.invalidate_schema_cache();
         }
 
         let response = not_found_result?;
@@ -395,7 +460,7 @@ impl<S: HttpSend> RemoteTable<S> {
 
         // Invalidate schema cache on errors that could be schema-related
         if result.is_err() && Self::should_invalidate_cache_for_status(status) {
-            self.invalidate_schema_cache().await;
+            self.invalidate_schema_cache();
         }
 
         result
@@ -670,13 +735,13 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
-    async fn invalidate_schema_cache(&self) {
-        let mut cache = self.schema_cache.write().await;
-        *cache = None;
+    fn invalidate_schema_cache(&self) {
+        let mut cache = self.schema_cache.lock().unwrap();
+        cache.state = SchemaState::Empty;
+        cache.generation += 1;
     }
 
-    /// Extract status code from an error and invalidate cache if needed
-    async fn handle_error_invalidation(&self, error: &Error) {
+    fn handle_error_invalidation(&self, error: &Error) {
         let status_code = match error {
             Error::Http { status_code, .. } => *status_code,
             Error::Retry { status_code, .. } => *status_code,
@@ -684,9 +749,122 @@ impl<S: HttpSend> RemoteTable<S> {
         };
         if let Some(status_code) = status_code {
             if Self::should_invalidate_cache_for_status(status_code) {
-                self.invalidate_schema_cache().await;
+                self.invalidate_schema_cache();
             }
         }
+    }
+
+    fn determine_schema_action(
+        &self,
+        cache: &mut SchemaCache,
+        version: Option<u64>,
+    ) -> SchemaAction {
+        match &cache.state {
+            SchemaState::Empty => {
+                let (shared, _) = self.start_schema_fetch(cache, version, None);
+                SchemaAction::Wait(shared)
+            }
+            SchemaState::Current(schema, cached_at) => {
+                let elapsed = clock::now().duration_since(*cached_at);
+                if elapsed < SCHEMA_CACHE_TTL - SCHEMA_CACHE_REFRESH_WINDOW {
+                    SchemaAction::Return(schema.clone())
+                } else if elapsed < SCHEMA_CACHE_TTL {
+                    // In refresh window: start background fetch, return current value
+                    let schema = schema.clone();
+                    let previous = Some((schema.clone(), *cached_at));
+                    let _ = self.start_schema_fetch(cache, version, previous);
+                    SchemaAction::Return(schema)
+                } else {
+                    // Expired: must wait for fetch
+                    let previous = Some((schema.clone(), *cached_at));
+                    let (shared, _) = self.start_schema_fetch(cache, version, previous);
+                    SchemaAction::Wait(shared)
+                }
+            }
+            SchemaState::Refreshing { previous, future } => {
+                // If the background fetch already completed (spawned task hasn't
+                // run yet to update state), transition the state and re-evaluate.
+                if let Some(result) = future.peek() {
+                    match result {
+                        Ok(schema) => {
+                            cache.state = SchemaState::Current(schema.clone(), clock::now());
+                        }
+                        Err(_) => {
+                            cache.state = match previous.clone() {
+                                Some((s, t)) => SchemaState::Current(s, t),
+                                None => SchemaState::Empty,
+                            };
+                        }
+                    }
+                    return self.determine_schema_action(cache, version);
+                }
+
+                if let Some((schema, cached_at)) = previous {
+                    if clock::now().duration_since(*cached_at) < SCHEMA_CACHE_TTL {
+                        SchemaAction::Return(schema.clone())
+                    } else {
+                        SchemaAction::Wait(future.clone())
+                    }
+                } else {
+                    SchemaAction::Wait(future.clone())
+                }
+            }
+        }
+    }
+
+    fn start_schema_fetch(
+        &self,
+        cache: &mut SchemaCache,
+        version: Option<u64>,
+        previous: Option<(SchemaRef, Instant)>,
+    ) -> (SharedSchemaFuture, u64) {
+        let client = self.client.clone();
+        let identifier = self.identifier.clone();
+        let table_name = self.name.clone();
+        let generation = cache.generation;
+
+        let shared = async move {
+            fetch_schema(&client, &identifier, &table_name, version)
+                .await
+                .map_err(Arc::new)
+        }
+        .boxed()
+        .shared();
+
+        // Spawn task to eagerly drive the future and update state on completion
+        let schema_cache = self.schema_cache.clone();
+        let fut_for_spawn = shared.clone();
+        tokio::spawn(async move {
+            let result = fut_for_spawn.await;
+            let mut cache = schema_cache.lock().unwrap();
+            // Only update if no invalidation has happened since we started
+            if cache.generation != generation {
+                return;
+            }
+            match result {
+                Ok(schema) => {
+                    cache.state = SchemaState::Current(schema, clock::now());
+                }
+                Err(_) => {
+                    // Revert to previous cached value if available
+                    let prev = match &cache.state {
+                        SchemaState::Refreshing { previous, .. } => previous.clone(),
+                        _ => None,
+                    };
+                    cache.state = match prev {
+                        Some((s, t)) => SchemaState::Current(s, t),
+                        None => SchemaState::Empty,
+                    };
+                }
+            }
+        });
+
+        cache.state = SchemaState::Refreshing {
+            previous,
+            future: shared.clone(),
+        };
+
+        (shared, generation)
     }
 }
 
@@ -695,6 +873,68 @@ struct TableDescription {
     version: u64,
     schema: JsonSchema,
     location: Option<String>,
+}
+
+/// Extract an Error from Arc<Error>, reconstructing if the Arc is shared.
+/// This is needed because `Shared` futures cache results internally, so
+/// `Arc::try_unwrap` typically fails.
+fn unwrap_shared_error(arc: Arc<Error>) -> Error {
+    match Arc::try_unwrap(arc) {
+        Ok(err) => err,
+        Err(arc) => match &*arc {
+            Error::TableNotFound { name, source } => Error::TableNotFound {
+                name: name.clone(),
+                source: source.to_string().into(),
+            },
+            _ => Error::Runtime {
+                message: arc.to_string(),
+            },
+        },
+    }
+}
+
+async fn fetch_schema<S: HttpSend>(
+    client: &RestfulLanceDbClient<S>,
+    identifier: &str,
+    table_name: &str,
+    version: Option<u64>,
+) -> Result<SchemaRef> {
+    let request = client
+        .post(&format!("/v1/table/{}/describe/", identifier))
+        .json(&serde_json::json!({ "version": version }));
+
+    let (request_id, response) = client.send_with_retry(request, None, true).await?;
+
+    if response.status() == StatusCode::NOT_FOUND {
+        let body = response.text().await.ok().unwrap_or_default();
+        return Err(Error::TableNotFound {
+            name: table_name.to_string(),
+            source: Box::new(Error::Http {
+                source: body.into(),
+                request_id,
+                status_code: Some(StatusCode::NOT_FOUND),
+            }),
+        });
+    }
+
+    let response = client.check_response(&request_id, response).await?;
+    let body = response.text().await.map_err(|e| {
+        let status_code = e.status();
+        Error::Http {
+            source: Box::new(e),
+            request_id: request_id.clone(),
+            status_code,
+        }
+    })?;
+
+    let description: TableDescription = serde_json::from_str(&body).map_err(|e| Error::Http {
+        source: format!("Failed to parse table description: {}", e).into(),
+        request_id,
+        status_code: None,
+    })?;
+
+    let arrow_schema: arrow_schema::Schema = description.schema.try_into()?;
+    Ok(Arc::new(arrow_schema))
 }
 
 impl<S: HttpSend> std::fmt::Display for RemoteTable<S> {
@@ -724,7 +964,10 @@ mod test_utils {
                 server_version: version.map(ServerVersion).unwrap_or_default(),
                 version: RwLock::new(None),
                 location: RwLock::new(None),
-                schema_cache: RwLock::new(None),
+                schema_cache: Arc::new(Mutex::new(SchemaCache {
+                    state: SchemaState::Empty,
+                    generation: 0,
+                })),
             }
         }
     }
@@ -768,7 +1011,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         drop(write_guard);
 
         // Invalidate schema cache since we're switching versions
-        self.invalidate_schema_cache().await;
+        self.invalidate_schema_cache();
 
         Ok(())
     }
@@ -778,7 +1021,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         drop(write_guard);
 
         // Invalidate schema cache since we're switching versions
-        self.invalidate_schema_cache().await;
+        self.invalidate_schema_cache();
 
         Ok(())
     }
@@ -824,42 +1067,28 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn schema(&self) -> Result<SchemaRef> {
-        // First check with read lock (fast path for cache hits)
+        // Fast path: check if cache is fresh (not even in refresh window)
         {
-            let cache = self.schema_cache.read().await;
-            if let Some((schema, cached_at)) = &*cache {
-                let elapsed = clock::now().duration_since(*cached_at);
-                if elapsed < SCHEMA_CACHE_TTL {
-                    return Ok(schema.clone());
-                }
+            let cache = self.schema_cache.lock().unwrap();
+            if let Some(schema) = cache.state.fresh_schema() {
+                return Ok(schema);
             }
         }
 
-        // Acquire write lock to fetch (prevents concurrent fetches)
-        {
-            let cache = self.schema_cache.write().await;
+        // Slow path: may need to fetch or start background refresh
+        let version = self.current_version().await;
+        let action = {
+            let mut cache = self.schema_cache.lock().unwrap();
+            self.determine_schema_action(&mut cache, version)
+        };
 
-            // Second check - maybe someone else filled it while we waited for write lock
-            if let Some((schema, cached_at)) = &*cache {
-                let elapsed = clock::now().duration_since(*cached_at);
-                if elapsed < SCHEMA_CACHE_TTL {
-                    return Ok(schema.clone());
-                }
-            }
-            // Drop write lock before calling describe() to avoid deadlock
-            // (describe may invalidate cache on error)
+        match action {
+            SchemaAction::Return(schema) => Ok(schema),
+            SchemaAction::Wait(fut) => match fut.await {
+                Ok(schema) => Ok(schema),
+                Err(arc_err) => Err(unwrap_shared_error(arc_err)),
+            },
         }
-
-        // Fetch without holding lock (describe may invalidate cache on errors)
-        let json_schema = self.describe().await?.schema;
-        let arrow_schema: arrow_schema::Schema = json_schema.try_into()?;
-        let schema = Arc::new(arrow_schema);
-
-        // Re-acquire write lock to store result
-        let mut cache = self.schema_cache.write().await;
-        *cache = Some((schema.clone(), clock::now()));
-
-        Ok(schema)
     }
 
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
@@ -888,7 +1117,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 (id, response)
             }
             Err(e) => {
-                self.handle_error_invalidation(&e).await;
+                self.handle_error_invalidation(&e);
                 return Err(e);
             }
         };
@@ -934,7 +1163,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })?;
 
         if matches!(add.mode, AddDataMode::Overwrite) {
-            self.invalidate_schema_cache().await;
+            self.invalidate_schema_cache();
         }
 
         Ok(add_response)
@@ -1343,7 +1572,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         drop(write_guard);
 
         // Invalidate schema cache since we're switching versions
-        self.invalidate_schema_cache().await;
+        self.invalidate_schema_cache();
 
         Ok(())
     }
@@ -1391,7 +1620,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         status_code: None,
                     })?;
 
-                self.invalidate_schema_cache().await;
+                self.invalidate_schema_cache();
 
                 Ok(result)
             }
@@ -1445,7 +1674,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })?;
 
-        self.invalidate_schema_cache().await;
+        self.invalidate_schema_cache();
 
         Ok(result)
     }
@@ -1472,7 +1701,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })?;
 
-        self.invalidate_schema_cache().await;
+        self.invalidate_schema_cache();
 
         Ok(result)
     }
@@ -4137,5 +4366,221 @@ mod tests {
         let schema3 = table.schema().await.unwrap();
         assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    /// Test that concurrent schema() calls with an empty cache only trigger one fetch.
+    #[tokio::test]
+    async fn test_concurrent_schema_calls_single_fetch() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Arc::new(Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+            if path == "/v1/table/my_table/describe/" {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"version": 1, "schema": {"fields": [
+                            {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                        ]}}"#,
+                    )
+                    .unwrap()
+            } else {
+                panic!("Unexpected request: {}", path);
+            }
+        }));
+
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let table = table.clone();
+            handles.push(tokio::spawn(async move { table.schema().await.unwrap() }));
+        }
+
+        let schemas: Vec<SchemaRef> = futures::future::try_join_all(handles).await.unwrap();
+
+        // All callers should get the same Arc
+        for schema in &schemas {
+            assert_eq!(Arc::as_ptr(schema), Arc::as_ptr(&schemas[0]));
+        }
+        // Only one describe call should have been made
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    /// Test that a background refresh is triggered in the refresh window and
+    /// returns the cached value immediately.
+    #[tokio::test]
+    async fn test_background_refresh_triggers_in_window() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+            if path == "/v1/table/my_table/describe/" {
+                let count = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if count == 0 {
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{"version": 1, "schema": {"fields": [
+                                {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                            ]}}"#,
+                        )
+                        .unwrap()
+                } else {
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{"version": 2, "schema": {"fields": [
+                                {"name": "a", "type": { "type": "int32" }, "nullable": false},
+                                {"name": "b", "type": { "type": "string" }, "nullable": true}
+                            ]}}"#,
+                        )
+                        .unwrap()
+                }
+            } else {
+                panic!("Unexpected request: {}", path);
+            }
+        });
+
+        // Populate cache and trigger peek transition to Current state
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(schema1.fields().len(), 1);
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        // Second call transitions cache from Refreshing to Current via peek()
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
+
+        // Advance into refresh window (TTL=30s, window=5s, so 26s is in window)
+        clock::advance_by(Duration::from_secs(26));
+
+        // This call enters the refresh window: returns cached value and creates
+        // a background shared future (Refreshing state with previous).
+        let schema3 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
+        // Only the initial fetch so far
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Advance past TTL so the previous value expires. This forces the next
+        // schema() to Wait on the in-flight shared future, driving it to completion.
+        clock::advance_by(Duration::from_secs(30));
+
+        let schema4 = table.schema().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        assert_eq!(schema4.fields().len(), 2);
+        assert_ne!(Arc::as_ptr(&schema4), Arc::as_ptr(&schema1));
+    }
+
+    /// Test that multiple calls during the refresh window don't trigger
+    /// duplicate background refreshes.
+    #[tokio::test]
+    async fn test_no_duplicate_background_refreshes() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+            if path == "/v1/table/my_table/describe/" {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .status(200)
+                    .body(
+                        r#"{"version": 1, "schema": {"fields": [
+                            {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                        ]}}"#,
+                    )
+                    .unwrap()
+            } else {
+                panic!("Unexpected request: {}", path);
+            }
+        });
+
+        // Populate cache and transition to Current state
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        let _ = table.schema().await.unwrap(); // peek transition
+
+        // Advance into refresh window
+        clock::advance_by(Duration::from_secs(26));
+
+        // Multiple rapid calls should all return cached. The first one enters
+        // the refresh window and starts a background fetch (Refreshing state).
+        // Subsequent calls see Refreshing with a valid previous and return it.
+        for _ in 0..5 {
+            let schema = table.schema().await.unwrap();
+            assert_eq!(Arc::as_ptr(&schema), Arc::as_ptr(&schema1));
+        }
+
+        // Advance past TTL and drive the shared future to completion
+        clock::advance_by(Duration::from_secs(30));
+        let _ = table.schema().await.unwrap();
+
+        // Only one additional describe call (the background refresh),
+        // not five separate ones
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    /// Test that if a background refresh fails, the previously cached value
+    /// is preserved and still returned.
+    #[tokio::test]
+    async fn test_background_refresh_error_preserves_cache() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            let path = request.url().path();
+            if path == "/v1/table/my_table/describe/" {
+                let count = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if count == 0 {
+                    // First call succeeds
+                    http::Response::builder()
+                        .status(200)
+                        .body(
+                            r#"{"version": 1, "schema": {"fields": [
+                                {"name": "a", "type": { "type": "int32" }, "nullable": false}
+                            ]}}"#,
+                        )
+                        .unwrap()
+                } else {
+                    // Subsequent calls fail (422 is not retried)
+                    http::Response::builder()
+                        .status(422)
+                        .body("Unprocessable Entity")
+                        .unwrap()
+                }
+            } else {
+                panic!("Unexpected request: {}", path);
+            }
+        });
+
+        // Populate cache and transition to Current state
+        let schema1 = table.schema().await.unwrap();
+        assert_eq!(schema1.fields().len(), 1);
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        let _ = table.schema().await.unwrap(); // peek transition
+
+        // Advance into refresh window
+        clock::advance_by(Duration::from_secs(26));
+
+        // Trigger background refresh (returns cached value). The background
+        // fetch will fail but the previous value should be preserved.
+        let schema2 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
+
+        // Still in the refresh window: the previous value is valid,
+        // so calling schema() should still return it.
+        let schema3 = table.schema().await.unwrap();
+        assert_eq!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
+
+        // Advance past TTL. The shared future will be driven and fail.
+        // The peek() error path should revert to the previous cached value.
+        clock::advance_by(Duration::from_secs(30));
+
+        // After the error, the previous is restored but its timestamp is old,
+        // so the next call triggers a new fetch which also fails.
+        let result = table.schema().await;
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        // The error from the failed fetch should be propagated
+        assert!(result.is_err());
     }
 }
