@@ -383,8 +383,6 @@ mod tests {
         .unwrap()
     }
 
-    // Group 1: API change tests
-
     #[tokio::test]
     async fn test_get_returns_dataset() {
         let dir = tempfile::tempdir().unwrap();
@@ -486,8 +484,6 @@ mod tests {
         assert_eq!(wrapper.time_travel_version(), None);
     }
 
-    // Group 2: Background refresh tests
-
     #[tokio::test]
     async fn test_lazy_consistency_never_refreshes() {
         let dir = tempfile::tempdir().unwrap();
@@ -564,22 +560,6 @@ mod tests {
         let v = wrapper.get().await.unwrap().version().version;
         assert_eq!(v, 2);
     }
-
-    // Group 3: Branch tests (todo)
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_as_branch() {
-        // TODO: test checkout branch
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_branch_picks_up_new_versions() {
-        // TODO: test branch refresh picks up new versions
-    }
-
-    // Existing test
 
     #[tokio::test]
     async fn test_iops_open_strong_consistency() {
