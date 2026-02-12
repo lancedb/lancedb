@@ -423,12 +423,13 @@ impl<S: HttpSend> RemoteTable<S> {
                 );
             }
             Select::Dynamic(pairs) => {
-                body["columns"] = serde_json::Value::Array(
-                    pairs
-                        .iter()
-                        .map(|(name, expr)| serde_json::json!([name, expr]))
-                        .collect(),
-                );
+                let alias_map =
+                    serde_json::Map::from_iter(pairs.iter().map(|(name, expr)| {
+                        (name.clone(), serde_json::Value::String(expr.clone()))
+                    }));
+                body["columns"] = serde_json::json!({
+                    "column_aliases": alias_map,
+                })
             }
         }
 
