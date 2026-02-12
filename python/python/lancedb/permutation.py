@@ -746,15 +746,20 @@ class Permutation:
 
     def __getitem__(self, index: int) -> Any:
         """
-        Return a single row from the permutation
-
-        The output will always be a python dictionary regardless of the format.
-
-        This method is mostly useful for debugging and exploration.  For actual
-        processing use [iter](#iter) or a torch data loader to perform batched
-        processing.
+        Returns a single row from the permutation by offset
         """
-        pass
+        return self.__getitems__([index])
+
+    def __getitems__(self, indices: list[int]) -> Any:
+        """
+        Returns rows from the permutation by offset
+        """
+
+        async def do_getitems():
+            return await self.reader.take_offsets(indices, selection=self.selection)
+
+        batch = LOOP.run(do_getitems())
+        return self.transform_fn(batch)
 
     @deprecated(details="Use with_skip instead")
     def skip(self, skip: int) -> "Permutation":
