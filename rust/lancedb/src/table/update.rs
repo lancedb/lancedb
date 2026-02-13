@@ -117,9 +117,8 @@ mod tests {
     use crate::query::{ExecutableQuery, Select};
     use arrow_array::{
         record_batch, Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array,
-        Float64Array, Int32Array, Int64Array, LargeStringArray, RecordBatch, RecordBatchIterator,
-        RecordBatchReader, StringArray, TimestampMillisecondArray, TimestampNanosecondArray,
-        UInt32Array,
+        Float64Array, Int32Array, Int64Array, LargeStringArray, RecordBatch, StringArray,
+        TimestampMillisecondArray, TimestampNanosecondArray, UInt32Array,
     };
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
@@ -167,51 +166,46 @@ mod tests {
             ),
         ]));
 
-        let record_batch_iter = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int32Array::from_iter_values(0..10)),
-                    Arc::new(Int64Array::from_iter_values(0..10)),
-                    Arc::new(UInt32Array::from_iter_values(0..10)),
-                    Arc::new(StringArray::from_iter_values(vec![
-                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-                    ])),
-                    Arc::new(LargeStringArray::from_iter_values(vec![
-                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-                    ])),
-                    Arc::new(Float32Array::from_iter_values((0..10).map(|i| i as f32))),
-                    Arc::new(Float64Array::from_iter_values((0..10).map(|i| i as f64))),
-                    Arc::new(Into::<BooleanArray>::into(vec![
-                        true, false, true, false, true, false, true, false, true, false,
-                    ])),
-                    Arc::new(Date32Array::from_iter_values(0..10)),
-                    Arc::new(TimestampNanosecondArray::from_iter_values(0..10)),
-                    Arc::new(TimestampMillisecondArray::from_iter_values(0..10)),
-                    Arc::new(
-                        create_fixed_size_list(
-                            Float32Array::from_iter_values((0..20).map(|i| i as f32)),
-                            2,
-                        )
-                        .unwrap(),
-                    ),
-                    Arc::new(
-                        create_fixed_size_list(
-                            Float64Array::from_iter_values((0..20).map(|i| i as f64)),
-                            2,
-                        )
-                        .unwrap(),
-                    ),
-                ],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
+        let batch = RecordBatch::try_new(
             schema.clone(),
-        );
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..10)),
+                Arc::new(Int64Array::from_iter_values(0..10)),
+                Arc::new(UInt32Array::from_iter_values(0..10)),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                ])),
+                Arc::new(LargeStringArray::from_iter_values(vec![
+                    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                ])),
+                Arc::new(Float32Array::from_iter_values((0..10).map(|i| i as f32))),
+                Arc::new(Float64Array::from_iter_values((0..10).map(|i| i as f64))),
+                Arc::new(Into::<BooleanArray>::into(vec![
+                    true, false, true, false, true, false, true, false, true, false,
+                ])),
+                Arc::new(Date32Array::from_iter_values(0..10)),
+                Arc::new(TimestampNanosecondArray::from_iter_values(0..10)),
+                Arc::new(TimestampMillisecondArray::from_iter_values(0..10)),
+                Arc::new(
+                    create_fixed_size_list(
+                        Float32Array::from_iter_values((0..20).map(|i| i as f32)),
+                        2,
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    create_fixed_size_list(
+                        Float64Array::from_iter_values((0..20).map(|i| i as f64)),
+                        2,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
 
         let table = conn
-            .create_table("my_table", record_batch_iter)
+            .create_table("my_table", batch)
             .execute()
             .await
             .unwrap();
@@ -338,15 +332,13 @@ mod tests {
         Ok(FixedSizeListArray::from(data))
     }
 
-    fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+    fn make_test_batch() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
-        RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![Arc::new(Int32Array::from_iter_values(0..10))],
-            )],
-            schema,
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..10))],
         )
+        .unwrap()
     }
 
     #[tokio::test]
@@ -367,12 +359,8 @@ mod tests {
         )
         .unwrap();
 
-        let schema = batch.schema();
-        // need the iterator for create table
-        let record_batch_iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
-
         let table = conn
-            .create_table("my_table", record_batch_iter)
+            .create_table("my_table", batch)
             .execute()
             .await
             .unwrap();
@@ -430,7 +418,7 @@ mod tests {
             .await
             .unwrap();
         let tbl = conn
-            .create_table("my_table", make_test_batches())
+            .create_table("my_table", make_test_batch())
             .execute()
             .await
             .unwrap();

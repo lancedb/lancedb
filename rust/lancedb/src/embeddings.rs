@@ -18,7 +18,7 @@ use std::{
 };
 
 use arrow_array::{Array, RecordBatch, RecordBatchReader};
-use arrow_schema::{DataType, Field, SchemaBuilder};
+use arrow_schema::{DataType, Field, SchemaBuilder, SchemaRef};
 // use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -190,6 +190,112 @@ impl<R: RecordBatchReader> WithEmbeddings<R> {
     }
 }
 
+/// Compute embedding arrays for a batch.
+///
+/// When multiple embedding functions are defined, they are computed in parallel using
+/// scoped threads. For a single embedding function, computation is done inline.
+fn compute_embedding_arrays(
+    batch: &RecordBatch,
+    embeddings: &[(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)],
+) -> Result<Vec<Arc<dyn Array>>> {
+    if embeddings.len() == 1 {
+        let (fld, func) = &embeddings[0];
+        let src_column =
+            batch
+                .column_by_name(&fld.source_column)
+                .ok_or_else(|| Error::InvalidInput {
+                    message: format!("Source column '{}' not found", fld.source_column),
+                })?;
+        return Ok(vec![func.compute_source_embeddings(src_column.clone())?]);
+    }
+
+    // Parallel path: multiple embeddings
+    std::thread::scope(|s| {
+        let handles: Vec<_> = embeddings
+            .iter()
+            .map(|(fld, func)| {
+                let src_column = batch.column_by_name(&fld.source_column).ok_or_else(|| {
+                    Error::InvalidInput {
+                        message: format!("Source column '{}' not found", fld.source_column),
+                    }
+                })?;
+
+                let handle = s.spawn(move || func.compute_source_embeddings(src_column.clone()));
+
+                Ok(handle)
+            })
+            .collect::<Result<_>>()?;
+
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().map_err(|e| Error::Runtime {
+                    message: format!("Thread panicked during embedding computation: {:?}", e),
+                })?
+            })
+            .collect()
+    })
+}
+
+/// Compute the output schema when embeddings are applied to a base schema.
+///
+/// This returns the schema with embedding columns appended.
+pub fn compute_output_schema(
+    base_schema: &SchemaRef,
+    embeddings: &[(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)],
+) -> Result<SchemaRef> {
+    let mut sb: SchemaBuilder = base_schema.as_ref().into();
+
+    for (ed, func) in embeddings {
+        let src_field = base_schema
+            .field_with_name(&ed.source_column)
+            .map_err(|_| Error::InvalidInput {
+                message: format!("Source column '{}' not found in schema", ed.source_column),
+            })?;
+
+        let field_name = ed
+            .dest_column
+            .clone()
+            .unwrap_or_else(|| format!("{}_embedding", &ed.source_column));
+
+        sb.push(Field::new(
+            field_name,
+            func.dest_type()?.into_owned(),
+            src_field.is_nullable(),
+        ));
+    }
+
+    Ok(Arc::new(sb.finish()))
+}
+
+/// Compute embeddings for a batch and append as new columns.
+///
+/// This function computes embeddings using the provided embedding functions and
+/// appends them as new columns to the batch.
+pub fn compute_embeddings_for_batch(
+    batch: RecordBatch,
+    embeddings: &[(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)],
+) -> Result<RecordBatch> {
+    let embedding_arrays = compute_embedding_arrays(&batch, embeddings)?;
+
+    let mut result = batch;
+    for ((fld, _), embedding) in embeddings.iter().zip(embedding_arrays.iter()) {
+        let dst_field_name = fld
+            .dest_column
+            .clone()
+            .unwrap_or_else(|| format!("{}_embedding", &fld.source_column));
+
+        let dst_field = Field::new(
+            dst_field_name,
+            embedding.data_type().clone(),
+            embedding.nulls().is_some(),
+        );
+
+        result = result.try_with_column(dst_field, embedding.clone())?;
+    }
+    Ok(result)
+}
+
 impl<R: RecordBatchReader> WithEmbeddings<R> {
     fn dest_fields(&self) -> Result<Vec<Field>> {
         let schema = self.inner.schema();
@@ -240,48 +346,6 @@ impl<R: RecordBatchReader> WithEmbeddings<R> {
             column_definitions,
         })
     }
-
-    fn compute_embeddings_parallel(&self, batch: &RecordBatch) -> Result<Vec<Arc<dyn Array>>> {
-        if self.embeddings.len() == 1 {
-            let (fld, func) = &self.embeddings[0];
-            let src_column =
-                batch
-                    .column_by_name(&fld.source_column)
-                    .ok_or_else(|| Error::InvalidInput {
-                        message: format!("Source column '{}' not found", fld.source_column),
-                    })?;
-            return Ok(vec![func.compute_source_embeddings(src_column.clone())?]);
-        }
-
-        // Parallel path: multiple embeddings
-        std::thread::scope(|s| {
-            let handles: Vec<_> = self
-                .embeddings
-                .iter()
-                .map(|(fld, func)| {
-                    let src_column = batch.column_by_name(&fld.source_column).ok_or_else(|| {
-                        Error::InvalidInput {
-                            message: format!("Source column '{}' not found", fld.source_column),
-                        }
-                    })?;
-
-                    let handle =
-                        s.spawn(move || func.compute_source_embeddings(src_column.clone()));
-
-                    Ok(handle)
-                })
-                .collect::<Result<_>>()?;
-
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.join().map_err(|e| Error::Runtime {
-                        message: format!("Thread panicked during embedding computation: {:?}", e),
-                    })?
-                })
-                .collect()
-        })
-    }
 }
 
 impl<R: RecordBatchReader> Iterator for MaybeEmbedded<R> {
@@ -309,37 +373,13 @@ impl<R: RecordBatchReader> Iterator for WithEmbeddings<R> {
     fn next(&mut self) -> Option<Self::Item> {
         let batch = self.inner.next()?;
         match batch {
-            Ok(batch) => {
-                let embeddings = match self.compute_embeddings_parallel(&batch) {
-                    Ok(emb) => emb,
-                    Err(e) => {
-                        return Some(Err(arrow_schema::ArrowError::ComputeError(format!(
-                            "Error computing embedding: {}",
-                            e
-                        ))))
-                    }
-                };
-
-                let mut batch = batch;
-                for ((fld, _), embedding) in self.embeddings.iter().zip(embeddings.iter()) {
-                    let dst_field_name = fld
-                        .dest_column
-                        .clone()
-                        .unwrap_or_else(|| format!("{}_embedding", &fld.source_column));
-
-                    let dst_field = Field::new(
-                        dst_field_name,
-                        embedding.data_type().clone(),
-                        embedding.nulls().is_some(),
-                    );
-
-                    match batch.try_with_column(dst_field.clone(), embedding.clone()) {
-                        Ok(b) => batch = b,
-                        Err(e) => return Some(Err(e)),
-                    };
-                }
-                Some(Ok(batch))
-            }
+            Ok(batch) => match compute_embeddings_for_batch(batch, &self.embeddings) {
+                Ok(batch_with_embeddings) => Some(Ok(batch_with_embeddings)),
+                Err(e) => Some(Err(arrow_schema::ArrowError::ComputeError(format!(
+                    "Error computing embedding: {}",
+                    e
+                )))),
+            },
             Err(e) => Some(Err(e)),
         }
     }
