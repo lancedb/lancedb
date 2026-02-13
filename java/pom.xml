@@ -6,7 +6,7 @@
 
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-parent</artifactId>
-    <version>0.26.0-final.0</version>
+    <version>0.26.2-final.0</version>
     <packaging>pom</packaging>
     <name>${project.artifactId}</name>
     <description>LanceDB Java SDK Parent POM</description>
@@ -159,6 +159,19 @@
             <plugin>
                 <groupId>com.diffplug.spotless</groupId>
                 <artifactId>spotless-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>license-maven-plugin</artifactId>
+                <version>2.4.0</version>
+                <configuration>
+                    <outputDirectory>${project.basedir}</outputDirectory>
+                    <thirdPartyFilename>JAVA_THIRD_PARTY_LICENSES.md</thirdPartyFilename>
+                    <fileTemplate>/org/codehaus/mojo/license/third-party-file-groupByLicense.ftl</fileTemplate>
+                    <includedScopes>compile,runtime</includedScopes>
+                    <excludedScopes>test,provided</excludedScopes>
+                    <sortArtifactByName>true</sortArtifactByName>
+                </configuration>
             </plugin>
         </plugins>
         <pluginManagement>

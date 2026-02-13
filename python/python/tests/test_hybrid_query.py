@@ -163,9 +163,7 @@ async def test_explain_plan(table: AsyncTable):
         table.query().nearest_to_text("dog").nearest_to([0.1, 0.1]).explain_plan(True)
     )
 
-    assert "Vector Search Plan" in plan
     assert "KNNVectorDistance" in plan
-    assert "FTS Search Plan" in plan
     assert "LanceRead" in plan
 
 

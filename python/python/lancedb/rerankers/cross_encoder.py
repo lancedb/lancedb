@@ -50,6 +50,9 @@ class CrossEncoderReranker(Reranker):
         if self.device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    def __str__(self):
+        return f"CrossEncoderReranker(model_name={self.model_name})"
+
     @cached_property
     def model(self):
         sbert = attempt_import_or_raise("sentence_transformers")

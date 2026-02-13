@@ -904,7 +904,9 @@ class Table(ABC):
         ----------
         field_names: str or list of str
             The name(s) of the field to index.
-            can be only str if use_tantivy=True for now.
+            If ``use_tantivy`` is False (default), only a single field name
+            (str) is supported. To index multiple fields, create a separate
+            FTS index for each field.
         replace: bool, default False
             If True, replace the existing index if it exists. Note that this is
             not yet an atomic operation; the index will be temporarily
@@ -2298,7 +2300,11 @@ class LanceTable(Table):
     ):
         if not use_tantivy:
             if not isinstance(field_names, str):
-                raise ValueError("field_names must be a string when use_tantivy=False")
+                raise ValueError(
+                    "Native FTS indexes can only be created on a single field "
+                    "at a time. To search over multiple text fields, create a "
+                    "separate FTS index for each field."
+                )
 
             if tokenizer_name is None:
                 tokenizer_configs = {
