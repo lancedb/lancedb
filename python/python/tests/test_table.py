@@ -327,6 +327,33 @@ def test_add_struct(mem_db: DBConnection):
     table.add(data)
 
 
+def test_add_nullable_struct_with_none(mem_db: DBConnection):
+    # https://github.com/lancedb/lancedb/issues/2654
+    schema = pa.schema(
+        [
+            pa.field("id", pa.string()),
+            pa.field(
+                "data",
+                pa.struct([pa.field("x", pa.float32())]),
+                nullable=True,
+            ),
+        ]
+    )
+
+    table = mem_db.create_table("test_nullable_struct", schema=schema)
+
+    # Adding a row with a non-null struct should work
+    table.add([{"id": "1", "data": {"x": 1.0}}])
+
+    # Adding a row with None for the nullable struct field should also work
+    table.add([{"id": "2", "data": None}])
+
+    result = table.to_arrow()
+    assert result.num_rows == 2
+    assert result.column("id").to_pylist() == ["1", "2"]
+    assert result.column("data").to_pylist() == [{"x": 1.0}, None]
+
+
 def test_add_subschema(mem_db: DBConnection):
     schema = pa.schema(
         [
