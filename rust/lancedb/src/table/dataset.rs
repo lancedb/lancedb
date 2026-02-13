@@ -2,10 +2,13 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::{
+    fmt,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
+use futures::future::{BoxFuture, Shared};
+use futures::FutureExt;
 use lance::{dataset::refs, Dataset};
 
 use crate::{error::Result, utils::background_cache::BackgroundCache, Error};
@@ -18,6 +21,7 @@ use crate::{error::Result, utils::background_cache::BackgroundCache, Error};
 pub struct DatasetConsistencyWrapper {
     state: Arc<Mutex<DatasetRef>>,
     bg_cache: Option<BackgroundCache<Arc<Dataset>, Error>>,
+    strong_reload: Option<CoalescingReloader>,
 }
 
 /// Internal state tracking the dataset and its consistency mode.
@@ -29,6 +33,7 @@ enum DatasetRef {
     /// In this mode, the dataset is always the latest version.
     Latest {
         dataset: Arc<Dataset>,
+        #[allow(dead_code)]
         read_consistency_interval: Option<Duration>,
         last_consistency_check: Option<Instant>,
     },
@@ -54,19 +59,73 @@ impl DatasetRef {
             Self::TimeTravel { version, .. } => Some(*version),
         }
     }
+}
 
-    fn is_up_to_date(&self) -> bool {
-        match self {
-            Self::Latest {
-                read_consistency_interval,
-                last_consistency_check,
-                ..
-            } => match (read_consistency_interval, last_consistency_check) {
-                (None, _) => true,
-                (Some(_), None) => false,
-                (Some(interval), Some(last_check)) => last_check.elapsed() < *interval,
-            },
-            Self::TimeTravel { dataset, version } => dataset.version().version == *version,
+type SharedResultFut = Shared<BoxFuture<'static, std::result::Result<Arc<Dataset>, Arc<Error>>>>;
+
+struct InflightReload {
+    started_at: Instant,
+    future: SharedResultFut,
+}
+
+#[derive(Clone)]
+struct CoalescingReloader {
+    inflight: Arc<Mutex<Option<InflightReload>>>,
+}
+
+impl fmt::Debug for CoalescingReloader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CoalescingReloader")
+            .field("has_inflight", &self.inflight.lock().unwrap().is_some())
+            .finish()
+    }
+}
+
+impl CoalescingReloader {
+    fn new() -> Self {
+        Self {
+            inflight: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    async fn get(&self, dataset_state: &Arc<Mutex<DatasetRef>>) -> Result<Arc<Dataset>> {
+        let request_time = Instant::now();
+
+        loop {
+            let (fut, started_at) = {
+                let mut inflight = self.inflight.lock().unwrap();
+
+                if let Some(existing) = inflight.as_ref() {
+                    (existing.future.clone(), existing.started_at)
+                } else {
+                    let started_at = Instant::now();
+                    let state = dataset_state.clone();
+                    let inflight_ref = self.inflight.clone();
+
+                    let fut = async move {
+                        let result = checkout_latest_dataset(state).await.map_err(Arc::new);
+                        *inflight_ref.lock().unwrap() = None;
+                        result
+                    }
+                    .boxed()
+                    .shared();
+
+                    *inflight = Some(InflightReload {
+                        started_at,
+                        future: fut.clone(),
+                    });
+                    (fut, started_at)
+                }
+            };
+
+            let result = fut.await.map_err(unwrap_shared_error)?;
+
+            // A reload that started after our request guarantees we see
+            // at least the state that existed when we asked.
+            if started_at >= request_time {
+                return Ok(result);
+            }
+            // Otherwise the reload was too old — loop to start/join a new one.
         }
     }
 }
@@ -78,6 +137,10 @@ impl DatasetConsistencyWrapper {
             Some(d) if d > Duration::ZERO => Some(BackgroundCache::new(d, d / 2)),
             _ => None,
         };
+        let strong_reload = match read_consistency_interval {
+            Some(d) if d == Duration::ZERO => Some(CoalescingReloader::new()),
+            _ => None,
+        };
         Self {
             state: Arc::new(Mutex::new(DatasetRef::Latest {
                 dataset: Arc::new(dataset),
@@ -85,6 +148,7 @@ impl DatasetConsistencyWrapper {
                 last_consistency_check: Some(Instant::now()),
             })),
             bg_cache,
+            strong_reload,
         }
     }
 
@@ -107,8 +171,11 @@ impl DatasetConsistencyWrapper {
                 .map_err(unwrap_shared_error);
         }
 
-        // Lazy or strong consistency
-        self.ensure_up_to_date().await?;
+        if let Some(reloader) = &self.strong_reload {
+            return reloader.get(&self.state).await;
+        }
+
+        // Lazy consistency: return cached
         let state = self.state.lock().unwrap();
         Ok(state.dataset().clone())
     }
@@ -230,20 +297,6 @@ impl DatasetConsistencyWrapper {
 
         match reload_info {
             ReloadInfo::Latest => {
-                let latest_version = dataset.latest_version_id().await?;
-                if latest_version == dataset.version().version {
-                    // Already up to date, just refresh the check time
-                    let mut state = self.state.lock().unwrap();
-                    if let DatasetRef::Latest {
-                        last_consistency_check,
-                        ..
-                    } = &mut *state
-                    {
-                        *last_consistency_check = Some(Instant::now());
-                    }
-                    return Ok(());
-                }
-
                 let mut dataset_clone = (*dataset).clone();
                 dataset_clone.checkout_latest().await?;
 
@@ -276,19 +329,6 @@ impl DatasetConsistencyWrapper {
         Ok(())
     }
 
-    /// Ensures that the dataset is loaded and up-to-date with consistency and
-    /// version parameters.
-    async fn ensure_up_to_date(&self) -> Result<()> {
-        let up_to_date = {
-            let state = self.state.lock().unwrap();
-            state.is_up_to_date()
-        };
-        if !up_to_date {
-            self.reload().await?;
-        }
-        Ok(())
-    }
-
     fn invalidate_bg_cache(&self) {
         if let Some(bg_cache) = &self.bg_cache {
             bg_cache.invalidate();
@@ -302,22 +342,42 @@ async fn fetch_latest_dataset(state: Arc<Mutex<DatasetRef>>) -> Result<Arc<Datas
         state.dataset().clone()
     };
 
-    let latest_version = dataset.latest_version_id().await?;
-    if latest_version == dataset.version().version {
-        return Ok(dataset);
+    let mut ds = (*dataset).clone();
+    ds.checkout_latest().await?;
+    let new_arc = Arc::new(ds);
+
+    {
+        let mut state = state.lock().unwrap();
+        if let DatasetRef::Latest { dataset, .. } = &mut *state {
+            if new_arc.manifest().version >= dataset.manifest().version {
+                *dataset = new_arc.clone();
+            }
+        }
     }
+
+    Ok(new_arc)
+}
+
+async fn checkout_latest_dataset(state: Arc<Mutex<DatasetRef>>) -> Result<Arc<Dataset>> {
+    let dataset = {
+        let state = state.lock().unwrap();
+        state.dataset().clone()
+    };
 
     let mut ds = (*dataset).clone();
     ds.checkout_latest().await?;
     let new_arc = Arc::new(ds);
 
-    // Update the mutex state so version comparisons stay current
     {
         let mut state = state.lock().unwrap();
-        if let DatasetRef::Latest { dataset, .. } = &mut *state {
-            if new_arc.manifest().version > dataset.manifest().version {
-                *dataset = new_arc.clone();
-            }
+        if let DatasetRef::Latest {
+            dataset,
+            last_consistency_check,
+            ..
+        } = &mut *state
+        {
+            *dataset = new_arc.clone();
+            *last_consistency_check = Some(Instant::now());
         }
     }
 
@@ -340,9 +400,22 @@ enum ReloadInfo {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use arrow_array::{record_batch, Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
-    use lance::dataset::{WriteMode, WriteParams};
+    use lance::{
+        dataset::{InsertBuilder, WriteMode, WriteParams},
+        io::ObjectStore,
+    };
+    use lance_table::{
+        format::Manifest,
+        io::commit::{
+            CommitError, CommitHandler, ConditionalPutCommitHandler, ManifestLocation,
+            ManifestNamingScheme, ManifestWriter,
+        },
+    };
+    use object_store::path::Path;
 
     use super::*;
 
@@ -594,5 +667,106 @@ mod tests {
         table.schema().await.unwrap();
         let stats = io_stats.incremental_stats();
         assert_eq!(stats.read_iops, 1);
+    }
+
+    #[tokio::test]
+    async fn test_strong_consistency_coalescing() {
+        #[derive(Debug)]
+        struct MockCommitHandler {
+            inner: ConditionalPutCommitHandler,
+            num_calls: Arc<AtomicUsize>,
+        }
+
+        impl Default for MockCommitHandler {
+            fn default() -> Self {
+                Self {
+                    inner: ConditionalPutCommitHandler,
+                    num_calls: Arc::new(AtomicUsize::new(0)),
+                }
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl CommitHandler for MockCommitHandler {
+            async fn resolve_latest_location(
+                &self,
+                base_path: &Path,
+                object_store: &ObjectStore,
+            ) -> lance_core::Result<ManifestLocation> {
+                self.num_calls.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                self.inner
+                    .resolve_latest_location(base_path, object_store)
+                    .await
+            }
+
+            async fn commit(
+                &self,
+                manifest: &mut Manifest,
+                indices: Option<Vec<lance_table::format::IndexMetadata>>,
+                base_path: &Path,
+                object_store: &ObjectStore,
+                manifest_writer: ManifestWriter,
+                naming_scheme: ManifestNamingScheme,
+                transaction: Option<lance_table::format::Transaction>,
+            ) -> std::result::Result<ManifestLocation, CommitError> {
+                self.inner
+                    .commit(
+                        manifest,
+                        indices,
+                        base_path,
+                        object_store,
+                        manifest_writer,
+                        naming_scheme,
+                        transaction,
+                    )
+                    .await
+            }
+        }
+
+        let handler = MockCommitHandler::default();
+        let call_count = handler.num_calls.clone();
+        let handler = Arc::new(handler) as Arc<dyn CommitHandler>;
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let dataset = InsertBuilder::new("memory://")
+            .with_params(&WriteParams {
+                commit_handler: Some(handler.clone()),
+                ..Default::default()
+            })
+            .execute(vec![batch])
+            .await
+            .unwrap();
+
+        // Reset after Dataset::write, which also calls resolve_latest_location
+        call_count.store(0, Ordering::SeqCst);
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(dataset, Some(Duration::ZERO));
+        let barrier = Arc::new(tokio::sync::Barrier::new(10));
+        let mut join_set = tokio::task::JoinSet::new();
+        for _ in 0..10 {
+            let wrapper = wrapper.clone();
+            let barrier = barrier.clone();
+            join_set.spawn(async move {
+                barrier.wait().await;
+                wrapper.get().await.unwrap();
+            });
+        }
+        for _ in 0..10 {
+            join_set.join_next().await.unwrap().unwrap();
+        }
+
+        // We expect the sequence to look like this:
+        // - Task 1 starts reload
+        // - Tasks 2-10 request a reload while Task 1 is still running.
+        // - Task 1 finishes reload (after 10ms sleep)
+        // - Tasks 2-10 see the reload started before their request, so trigger a new reload
+        // - Reload finishes, resolves tasks 2-10.
+
+        let final_count = call_count.load(Ordering::SeqCst);
+        assert!(
+            final_count <= 2,
+            "Expected 2 or fewer calls to resolve_latest_location, but got {}",
+            final_count
+        );
     }
 }
