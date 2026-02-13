@@ -29,12 +29,22 @@ pub struct AddResult {
     pub version: u64,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub enum NaNVectorBehavior {
+    /// Reject any vectors containing NaN values (the default)
+    #[default]
+    Error,
+    /// Allow NaN values to be added, but they will not be indexed for search
+    Keep,
+}
+
 /// A builder for configuring a [`crate::table::Table::add`] operation
 pub struct AddDataBuilder {
     pub(crate) parent: Arc<dyn BaseTable>,
     pub(crate) data: Box<dyn Scannable>,
     pub(crate) mode: AddDataMode,
     pub(crate) write_options: WriteOptions,
+    on_nan_vectors: NaNVectorBehavior,
     pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
 }
 
@@ -59,6 +69,8 @@ impl AddDataBuilder {
             data,
             mode: AddDataMode::Append,
             write_options: WriteOptions::default(),
+            on_nan_vectors: NaNVectorBehavior::default(),
+
             embedding_registry,
         }
     }
@@ -73,6 +85,11 @@ impl AddDataBuilder {
         self
     }
 
+    pub fn on_nan_vectors(mut self, behavior: NaNVectorBehavior) -> Self {
+        self.on_nan_vectors = behavior;
+        self
+    }
+
     pub async fn execute(self) -> Result<AddResult> {
         self.parent.clone().add(self).await
     }
@@ -82,7 +99,11 @@ impl AddDataBuilder {
 mod tests {
     use std::sync::Arc;
 
-    use arrow_array::{record_batch, RecordBatch, RecordBatchIterator};
+    use arrow::datatypes::Float64Type;
+    use arrow_array::{
+        record_batch, FixedSizeListArray, Float32Array, Int32Array, LargeStringArray, ListArray,
+        RecordBatch, RecordBatchIterator,
+    };
     use arrow_schema::{ArrowError, DataType, Field, Schema};
     use futures::TryStreamExt;
     use lance::dataset::{WriteMode, WriteParams};
@@ -94,6 +115,7 @@ mod tests {
         EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry,
     };
     use crate::query::{ExecutableQuery, QueryBase, Select};
+    use crate::table::add_data::NaNVectorBehavior;
     use crate::table::{ColumnDefinition, ColumnKind, Table, TableDefinition, WriteOptions};
     use crate::test_utils::embeddings::MockEmbed;
     use crate::Error;
@@ -339,5 +361,138 @@ mod tests {
             let embedding_col = batch.column(1);
             assert_eq!(embedding_col.null_count(), 0);
         }
+    }
+
+    #[tokio::test]
+    async fn test_add_casts_to_table_schema() {
+        let table_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("text", DataType::Utf8, false),
+            Field::new(
+                "embedding",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                false,
+            ),
+        ]));
+
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false), // Upcast integer
+            Field::new("text", DataType::LargeUtf8, false), // Re-encode string
+            // Cast list of float64 to fixed-size list of float32
+            // (This will only work if list size is correct. See next test.
+            Field::new(
+                "embedding",
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
+                false,
+            ),
+        ]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("cast_test", table_schema.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(LargeStringArray::from(vec!["hello", "world"])),
+                Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                    Some(vec![0.1, 0.2, 0.3, 0.4].into_iter().map(Some)),
+                    Some(vec![0.5, 0.6, 0.7, 0.8].into_iter().map(Some)),
+                ])),
+            ],
+        )
+        .unwrap();
+        table.add(batch).execute().await.unwrap();
+
+        let row_count = table.count_rows(None).await.unwrap();
+        assert_eq!(row_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_add_rejects_bad_vector_dimensions() {
+        let table_schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+            false,
+        )]));
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
+            false,
+        )]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("cast_test", table_schema.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(
+                ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                    Some(vec![0.1, 0.2, 0.3, 0.4].into_iter().map(Some)),
+                    Some(vec![0.5, 0.6, 0.8].into_iter().map(Some)),
+                ]),
+            )],
+        )
+        .unwrap();
+        let res = table.add(batch).execute().await;
+
+        assert!(
+            matches!(res, Err(Error::Arrow { .. })),
+            "Expected schema mismatch error due to wrong vector dimensions, but got: {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_rejects_nan_vectors() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+            false,
+        )]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("nan_test", schema.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(
+                FixedSizeListArray::try_new(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    4,
+                    Arc::new(Float32Array::from(vec![0.1, 0.2, f32::NAN, 0.4])),
+                    None,
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        let res = table.add(batch.clone()).execute().await;
+        assert!(
+            matches!(res, Err(Error::Arrow { .. })),
+            "Expected error due to NaN values in vectors, but got: {res:?}"
+        );
+
+        table
+            .add(batch)
+            .on_nan_vectors(NaNVectorBehavior::Keep)
+            .execute()
+            .await
+            .unwrap();
+
+        let row_count = table.count_rows(None).await.unwrap();
+        assert_eq!(row_count, 1);
     }
 }
