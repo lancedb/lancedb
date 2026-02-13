@@ -14,20 +14,43 @@ if TYPE_CHECKING:
 
 class RRFReranker(Reranker):
     """
-    Reranks the results using Reciprocal Rank Fusion(RRF) algorithm based
-    on the scores of vector and FTS search.
+    Rerank search results using Reciprocal Rank Fusion (RRF).
+
+    RRF is a simple yet effective algorithm for combining ranked lists.
+    It can be used for:
+
+    - Vector search reranking
+    - Full-text search reranking
+    - Hybrid search (vector + FTS) reranking
+
+    The algorithm assigns scores based on rank position:
+
+        score = 1 / (rank + K)
+
+    where rank is the 0-indexed position and K is a constant (default 60).
+
     Parameters
     ----------
     K : int, default 60
-        A constant used in the RRF formula (default is 60). Experiments
-        indicate that k = 60 was near-optimal, but that the choice is
-        not critical. See paper:
-        https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf
+        The constant used in RRF formula. Research suggests K=60 is
+        near-optimal, but the choice is not critical.
     return_score : str, default "relevance"
-        opntions are "relevance" or "all"
-        The type of score to return. If "relevance", will return only the relevance
-        score. If "all", will return all scores from the vector and FTS search along
-        with the relevance score.
+        Whether to return only "_relevance_score" or "all" scores
+        including "_distance" and "_score".
+
+    Examples
+    --------
+    >>> reranker = RRFReranker(K=60)
+    >>> # Vector search with reranking
+    >>> results = table.search(query_vector).rerank(reranker).to_arrow()
+    >>> # Hybrid search with reranking
+    >>> results = table.search(query, query_type="hybrid").rerank(reranker).to_arrow()
+
+    References
+    ----------
+    Cormack et al. (2009). "Reciprocal rank fusion outperforms condorcet
+    and individual rank learning methods." SIGIR '09.
+    https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf
     """
 
     def __init__(self, K: int = 60, return_score="relevance"):
@@ -38,6 +61,81 @@ class RRFReranker(Reranker):
 
     def __str__(self):
         return f"RRFReranker(K={self.K})"
+
+    def rerank_vector(self, query: str, vector_results: pa.Table) -> pa.Table:
+        """
+        Rerank vector search results using RRF based on result position.
+
+        Parameters
+        ----------
+        query : str
+            The query string (unused in RRF)
+        vector_results : pa.Table
+            Vector search results with _distance column
+
+        Returns
+        -------
+        pa.Table
+            Results with _relevance_score column, sorted descending
+        """
+        # Calculate RRF scores based on rank
+        vector_ids = vector_results.column("_rowid").to_pylist()
+        rrf_score_map = {}
+        for i, result_id in enumerate(vector_ids):
+            rrf_score_map[result_id] = 1.0 / (i + self.K)
+
+        # Add relevance scores
+        relevance_scores = [rrf_score_map[row_id] for row_id in vector_ids]
+        vector_results = vector_results.append_column(
+            "_relevance_score", pa.array(relevance_scores, type=pa.float32())
+        )
+
+        # Sort and handle score visibility
+        vector_results = vector_results.sort_by([("_relevance_score", "descending")])
+
+        if self.score == "relevance":
+            vector_results = self._keep_relevance_score(vector_results)
+
+        return vector_results
+
+    def rerank_fts(self, query: str, fts_results: pa.Table) -> pa.Table:
+        """
+        Rerank FTS search results using RRF based on result position.
+
+        Parameters
+        ----------
+        query : str
+            The query string (unused in RRF)
+        fts_results : pa.Table
+            FTS search results with _score column
+
+        Returns
+        -------
+        pa.Table
+            Results with _relevance_score column, sorted descending
+        """
+        # Handle empty results
+        fts_results = self._handle_empty_results(fts_results)
+
+        # Calculate RRF scores based on rank
+        fts_ids = fts_results.column("_rowid").to_pylist()
+        rrf_score_map = {}
+        for i, result_id in enumerate(fts_ids):
+            rrf_score_map[result_id] = 1.0 / (i + self.K)
+
+        # Add relevance scores
+        relevance_scores = [rrf_score_map[row_id] for row_id in fts_ids]
+        fts_results = fts_results.append_column(
+            "_relevance_score", pa.array(relevance_scores, type=pa.float32())
+        )
+
+        # Sort and handle score visibility
+        fts_results = fts_results.sort_by([("_relevance_score", "descending")])
+
+        if self.score == "relevance":
+            fts_results = self._keep_relevance_score(fts_results)
+
+        return fts_results
 
     def rerank_hybrid(
         self,

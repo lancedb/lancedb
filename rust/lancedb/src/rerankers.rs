@@ -47,12 +47,83 @@ impl std::fmt::Display for NormalizeMethod {
     }
 }
 
-/// Interface for a reranker. A reranker is used to rerank the results from a
-/// vector and FTS search. This is useful for combining the results from both
-/// search methods.
+/// Interface for a reranker. A reranker is used to rerank search results
+/// to improve relevance.
+///
+/// Rerankers can be applied to:
+/// - Vector search results only ([`rerank_vector`])
+/// - Full-text search (FTS) results only ([`rerank_fts`])
+/// - Hybrid search results combining both ([`rerank_hybrid`])
+///
+/// # Default Implementations
+///
+/// The trait provides default implementations for [`rerank_vector`] and
+/// [`rerank_fts`] that return a [`Error::NotSupported`] error. Implementors
+/// can choose to override these methods to provide custom reranking logic.
+///
+/// All rerankers must implement [`rerank_hybrid`] for combining vector and
+/// FTS search results.
+///
+/// # Examples
+///
+/// Using RRF reranker for vector search:
+///
+/// ```
+/// use lancedb::rerankers::rrf::RRFReranker;
+/// use lancedb::rerankers::Reranker;
+///
+/// # use arrow_array::RecordBatch;
+/// # async fn example(vector_results: RecordBatch) -> Result<(), Box<dyn std::error::Error>> {
+/// let reranker = RRFReranker::default();
+/// let reranked = reranker.rerank_vector("query", vector_results).await?;
+/// # Ok(())
+/// # }
+/// ```
 #[async_trait]
 pub trait Reranker: std::fmt::Debug + Sync + Send {
-    // TODO support vector reranking and FTS reranking. Currently only hybrid reranking is supported.
+    /// Rerank vector search results.
+    ///
+    /// This method receives vector search results and returns them reranked
+    /// with a `_relevance_score` column added.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns [`Error::NotSupported`] by default. Override to provide
+    /// vector-only reranking.
+    async fn rerank_vector(
+        &self,
+        _query: &str,
+        _vector_results: RecordBatch,
+    ) -> Result<RecordBatch> {
+        Err(Error::NotSupported {
+            message: format!(
+                "{:?} does not implement vector-only reranking. Only hybrid reranking is supported.",
+                self
+            ),
+        })
+    }
+
+    /// Rerank full-text search (FTS) results.
+    ///
+    /// This method receives FTS search results and returns them reranked
+    /// with a `_relevance_score` column added.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns [`Error::NotSupported`] by default. Override to provide
+    /// FTS-only reranking.
+    async fn rerank_fts(
+        &self,
+        _query: &str,
+        _fts_results: RecordBatch,
+    ) -> Result<RecordBatch> {
+        Err(Error::NotSupported {
+            message: format!(
+                "{:?} does not implement FTS-only reranking. Only hybrid reranking is supported.",
+                self
+            ),
+        })
+    }
 
     /// Rerank function receives the individual results from the vector and FTS search
     /// results. You can choose to use any of the results to generate the final results,
