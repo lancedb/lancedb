@@ -19,46 +19,26 @@ use crate::{error::Result, utils::background_cache::BackgroundCache, Error};
 /// and call [`update()`](Self::update) after writes to store the new version.
 #[derive(Debug, Clone)]
 pub struct DatasetConsistencyWrapper {
-    state: Arc<Mutex<DatasetRef>>,
-    bg_cache: Option<BackgroundCache<Arc<Dataset>, Error>>,
-    strong_reload: Option<CoalescingReloader>,
+    state: Arc<Mutex<DatasetState>>,
+    consistency: ConsistencyMode,
 }
 
-/// Internal state tracking the dataset and its consistency mode.
+/// The current dataset and whether it is pinned to a specific version.
 ///
-/// The dataset is stored as `Arc<Dataset>` for cheap cloning. The mutex
-/// is never held across `.await` points.
-#[derive(Debug, Clone)]
-enum DatasetRef {
-    /// In this mode, the dataset is always the latest version.
-    Latest {
-        dataset: Arc<Dataset>,
-        #[allow(dead_code)]
-        read_consistency_interval: Option<Duration>,
-        last_consistency_check: Option<Instant>,
-    },
-    /// In this mode, the dataset is a specific version. It cannot be mutated.
-    TimeTravel { dataset: Arc<Dataset>, version: u64 },
+/// The mutex is never held across `.await` points.
+#[derive(Debug)]
+struct DatasetState {
+    dataset: Arc<Dataset>,
+    /// `Some(version)` = pinned to a specific version (time travel),
+    /// `None` = tracking latest.
+    pinned_version: Option<u64>,
 }
 
-impl DatasetRef {
-    fn dataset(&self) -> &Arc<Dataset> {
-        match self {
-            Self::Latest { dataset, .. } => dataset,
-            Self::TimeTravel { dataset, .. } => dataset,
-        }
-    }
-
-    fn is_latest(&self) -> bool {
-        matches!(self, Self::Latest { .. })
-    }
-
-    fn time_travel_version(&self) -> Option<u64> {
-        match self {
-            Self::Latest { .. } => None,
-            Self::TimeTravel { version, .. } => Some(*version),
-        }
-    }
+#[derive(Debug, Clone)]
+enum ConsistencyMode {
+    Lazy,
+    Strong(CoalescingReloader),
+    Eventual(BackgroundCache<Arc<Dataset>, Error>),
 }
 
 type SharedResultFut = Shared<BoxFuture<'static, std::result::Result<Arc<Dataset>, Arc<Error>>>>;
@@ -88,7 +68,7 @@ impl CoalescingReloader {
         }
     }
 
-    async fn get(&self, dataset_state: &Arc<Mutex<DatasetRef>>) -> Result<Arc<Dataset>> {
+    async fn get(&self, dataset_state: &Arc<Mutex<DatasetState>>) -> Result<Arc<Dataset>> {
         let request_time = Instant::now();
 
         loop {
@@ -103,7 +83,7 @@ impl CoalescingReloader {
                     let inflight_ref = self.inflight.clone();
 
                     let fut = async move {
-                        let result = checkout_latest_dataset(state).await.map_err(Arc::new);
+                        let result = refresh_latest(state).await.map_err(Arc::new);
                         *inflight_ref.lock().unwrap() = None;
                         result
                     }
@@ -133,22 +113,17 @@ impl CoalescingReloader {
 impl DatasetConsistencyWrapper {
     /// Create a new wrapper in the latest version mode.
     pub fn new_latest(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
-        let bg_cache = match read_consistency_interval {
-            Some(d) if d > Duration::ZERO => Some(BackgroundCache::new(d, d / 2)),
-            _ => None,
-        };
-        let strong_reload = match read_consistency_interval {
-            Some(d) if d == Duration::ZERO => Some(CoalescingReloader::new()),
-            _ => None,
+        let consistency = match read_consistency_interval {
+            Some(d) if d == Duration::ZERO => ConsistencyMode::Strong(CoalescingReloader::new()),
+            Some(d) => ConsistencyMode::Eventual(BackgroundCache::new(d, d / 2)),
+            None => ConsistencyMode::Lazy,
         };
         Self {
-            state: Arc::new(Mutex::new(DatasetRef::Latest {
+            state: Arc::new(Mutex::new(DatasetState {
                 dataset: Arc::new(dataset),
-                read_consistency_interval,
-                last_consistency_check: Some(Instant::now()),
+                pinned_version: None,
             })),
-            bg_cache,
-            strong_reload,
+            consistency,
         }
     }
 
@@ -159,25 +134,34 @@ impl DatasetConsistencyWrapper {
     /// - **Strong** (`Some(ZERO)`): checks for a new version before returning.
     /// - **Eventual** (`Some(d)` where `d > 0`): returns a cached value immediately
     ///   while refreshing in the background when the TTL expires.
+    ///
+    /// If pinned to a specific version (time travel), always returns the
+    /// pinned dataset regardless of consistency mode.
     pub async fn get(&self) -> Result<Arc<Dataset>> {
-        if let Some(bg_cache) = &self.bg_cache {
-            if let Some(dataset) = bg_cache.try_get() {
-                return Ok(dataset);
+        {
+            let state = self.state.lock().unwrap();
+            if state.pinned_version.is_some() {
+                return Ok(state.dataset.clone());
             }
-            let state = self.state.clone();
-            return bg_cache
-                .get(move || fetch_latest_dataset(state))
-                .await
-                .map_err(unwrap_shared_error);
         }
 
-        if let Some(reloader) = &self.strong_reload {
-            return reloader.get(&self.state).await;
+        match &self.consistency {
+            ConsistencyMode::Eventual(bg_cache) => {
+                if let Some(dataset) = bg_cache.try_get() {
+                    return Ok(dataset);
+                }
+                let state = self.state.clone();
+                bg_cache
+                    .get(move || refresh_latest(state))
+                    .await
+                    .map_err(unwrap_shared_error)
+            }
+            ConsistencyMode::Strong(reloader) => reloader.get(&self.state).await,
+            ConsistencyMode::Lazy => {
+                let state = self.state.lock().unwrap();
+                Ok(state.dataset.clone())
+            }
         }
-
-        // Lazy consistency: return cached
-        let state = self.state.lock().unwrap();
-        Ok(state.dataset().clone())
     }
 
     /// Store a new dataset version after a write operation.
@@ -186,18 +170,17 @@ impl DatasetConsistencyWrapper {
     /// Panics if called when not in Latest mode.
     pub fn update(&self, dataset: Dataset) {
         let mut state = self.state.lock().unwrap();
-        match &mut *state {
-            DatasetRef::Latest {
-                dataset: current, ..
-            } => {
-                if dataset.manifest().version > current.manifest().version {
-                    *current = Arc::new(dataset);
-                }
-            }
-            _ => unreachable!("Dataset should be in latest mode when calling update"),
+        assert!(
+            state.pinned_version.is_none(),
+            "Dataset should be in latest mode when calling update"
+        );
+        if dataset.manifest().version > state.dataset.manifest().version {
+            state.dataset = Arc::new(dataset);
         }
         drop(state);
-        self.invalidate_bg_cache();
+        if let ConsistencyMode::Eventual(bg_cache) = &self.consistency {
+            bg_cache.invalidate();
+        }
     }
 
     /// Checkout a branch and track its HEAD for new versions.
@@ -208,45 +191,43 @@ impl DatasetConsistencyWrapper {
     /// Check that the dataset is in a mutable mode (Latest).
     pub fn ensure_mutable(&self) -> Result<()> {
         let state = self.state.lock().unwrap();
-        match &*state {
-            DatasetRef::Latest { .. } => Ok(()),
-            DatasetRef::TimeTravel { .. } => Err(crate::Error::InvalidInput {
+        if state.pinned_version.is_some() {
+            Err(crate::Error::InvalidInput {
                 message: "table cannot be modified when a specific version is checked out"
                     .to_string(),
-            }),
+            })
+        } else {
+            Ok(())
         }
     }
 
     /// Returns the version, if in time travel mode, or None otherwise.
     pub fn time_travel_version(&self) -> Option<u64> {
-        let state = self.state.lock().unwrap();
-        state.time_travel_version()
+        self.state.lock().unwrap().pinned_version
     }
 
     /// Convert into a wrapper in latest version mode.
-    pub async fn as_latest(&self, read_consistency_interval: Option<Duration>) -> Result<()> {
+    pub async fn as_latest(&self) -> Result<()> {
         let dataset = {
             let state = self.state.lock().unwrap();
-            if state.is_latest() {
+            if state.pinned_version.is_none() {
                 return Ok(());
             }
-            state.dataset().clone()
+            state.dataset.clone()
         };
 
         let latest_version = dataset.latest_version_id().await?;
         let new_dataset = dataset.checkout_version(latest_version).await?;
 
         let mut state = self.state.lock().unwrap();
-        // Re-check in case another thread already switched to Latest
-        if !state.is_latest() {
-            *state = DatasetRef::Latest {
-                dataset: Arc::new(new_dataset),
-                read_consistency_interval,
-                last_consistency_check: Some(Instant::now()),
-            };
+        if state.pinned_version.is_some() {
+            state.dataset = Arc::new(new_dataset);
+            state.pinned_version = None;
         }
         drop(state);
-        self.invalidate_bg_cache();
+        if let ConsistencyMode::Eventual(bg_cache) = &self.consistency {
+            bg_cache.invalidate();
+        }
         Ok(())
     }
 
@@ -255,16 +236,16 @@ impl DatasetConsistencyWrapper {
 
         let (should_checkout, dataset) = {
             let state = self.state.lock().unwrap();
-            let should = match &*state {
-                DatasetRef::Latest { .. } => true,
-                DatasetRef::TimeTravel { version, .. } => match &target_ref {
-                    refs::Ref::Version(_, Some(target_ver)) => version != target_ver,
+            let should = match state.pinned_version {
+                None => true,
+                Some(version) => match &target_ref {
+                    refs::Ref::Version(_, Some(target_ver)) => version != *target_ver,
                     refs::Ref::Version(_, None) => true,
-                    refs::Ref::VersionNumber(target_ver) => version != target_ver,
+                    refs::Ref::VersionNumber(target_ver) => version != *target_ver,
                     refs::Ref::Tag(_) => true,
                 },
             };
-            (should, state.dataset().clone())
+            (should, state.dataset.clone())
         };
 
         if !should_checkout {
@@ -275,43 +256,25 @@ impl DatasetConsistencyWrapper {
         let version_value = new_dataset.version().version;
 
         let mut state = self.state.lock().unwrap();
-        *state = DatasetRef::TimeTravel {
-            dataset: Arc::new(new_dataset),
-            version: version_value,
-        };
-        drop(state);
-        self.invalidate_bg_cache();
+        state.dataset = Arc::new(new_dataset);
+        state.pinned_version = Some(version_value);
         Ok(())
     }
 
     pub async fn reload(&self) -> Result<()> {
-        let (dataset, reload_info) = {
+        let (dataset, pinned_version) = {
             let state = self.state.lock().unwrap();
-            let ds = state.dataset().clone();
-            let info = match &*state {
-                DatasetRef::Latest { .. } => ReloadInfo::Latest,
-                DatasetRef::TimeTravel { version, .. } => ReloadInfo::TimeTravel(*version),
-            };
-            (ds, info)
+            (state.dataset.clone(), state.pinned_version)
         };
 
-        match reload_info {
-            ReloadInfo::Latest => {
-                let mut dataset_clone = (*dataset).clone();
-                dataset_clone.checkout_latest().await?;
-
-                let mut state = self.state.lock().unwrap();
-                if let DatasetRef::Latest {
-                    dataset,
-                    last_consistency_check,
-                    ..
-                } = &mut *state
-                {
-                    *dataset = Arc::new(dataset_clone);
-                    *last_consistency_check = Some(Instant::now());
+        match pinned_version {
+            None => {
+                refresh_latest(self.state.clone()).await?;
+                if let ConsistencyMode::Eventual(bg_cache) = &self.consistency {
+                    bg_cache.invalidate();
                 }
             }
-            ReloadInfo::TimeTravel(version) => {
+            Some(version) => {
                 if dataset.version().version == version {
                     return Ok(());
                 }
@@ -319,28 +282,18 @@ impl DatasetConsistencyWrapper {
                 let new_dataset = dataset.checkout_version(version).await?;
 
                 let mut state = self.state.lock().unwrap();
-                if let DatasetRef::TimeTravel { dataset, .. } = &mut *state {
-                    *dataset = Arc::new(new_dataset);
+                if state.pinned_version == Some(version) {
+                    state.dataset = Arc::new(new_dataset);
                 }
             }
         }
 
-        self.invalidate_bg_cache();
         Ok(())
     }
-
-    fn invalidate_bg_cache(&self) {
-        if let Some(bg_cache) = &self.bg_cache {
-            bg_cache.invalidate();
-        }
-    }
 }
 
-async fn fetch_latest_dataset(state: Arc<Mutex<DatasetRef>>) -> Result<Arc<Dataset>> {
-    let dataset = {
-        let state = state.lock().unwrap();
-        state.dataset().clone()
-    };
+async fn refresh_latest(state: Arc<Mutex<DatasetState>>) -> Result<Arc<Dataset>> {
+    let dataset = { state.lock().unwrap().dataset.clone() };
 
     let mut ds = (*dataset).clone();
     ds.checkout_latest().await?;
@@ -348,36 +301,10 @@ async fn fetch_latest_dataset(state: Arc<Mutex<DatasetRef>>) -> Result<Arc<Datas
 
     {
         let mut state = state.lock().unwrap();
-        if let DatasetRef::Latest { dataset, .. } = &mut *state {
-            if new_arc.manifest().version >= dataset.manifest().version {
-                *dataset = new_arc.clone();
-            }
-        }
-    }
-
-    Ok(new_arc)
-}
-
-async fn checkout_latest_dataset(state: Arc<Mutex<DatasetRef>>) -> Result<Arc<Dataset>> {
-    let dataset = {
-        let state = state.lock().unwrap();
-        state.dataset().clone()
-    };
-
-    let mut ds = (*dataset).clone();
-    ds.checkout_latest().await?;
-    let new_arc = Arc::new(ds);
-
-    {
-        let mut state = state.lock().unwrap();
-        if let DatasetRef::Latest {
-            dataset,
-            last_consistency_check,
-            ..
-        } = &mut *state
+        if state.pinned_version.is_none()
+            && new_arc.manifest().version >= state.dataset.manifest().version
         {
-            *dataset = new_arc.clone();
-            *last_consistency_check = Some(Instant::now());
+            state.dataset = new_arc.clone();
         }
     }
 
@@ -391,11 +318,6 @@ fn unwrap_shared_error(arc: Arc<Error>) -> Error {
             message: arc.to_string(),
         },
     }
-}
-
-enum ReloadInfo {
-    Latest,
-    TimeTravel(u64),
 }
 
 #[cfg(test)]
@@ -552,7 +474,7 @@ mod tests {
         wrapper.as_time_travel(1u64).await.unwrap();
         assert!(wrapper.ensure_mutable().is_err());
 
-        wrapper.as_latest(None).await.unwrap();
+        wrapper.as_latest().await.unwrap();
         assert!(wrapper.ensure_mutable().is_ok());
         assert_eq!(wrapper.time_travel_version(), None);
     }

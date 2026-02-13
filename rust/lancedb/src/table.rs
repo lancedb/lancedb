@@ -2494,9 +2494,7 @@ impl BaseTable for NativeTable {
     }
 
     async fn checkout_latest(&self) -> Result<()> {
-        self.dataset
-            .as_latest(self.read_consistency_interval)
-            .await?;
+        self.dataset.as_latest().await?;
         self.dataset.reload().await
     }
 
@@ -2517,9 +2515,7 @@ impl BaseTable for NativeTable {
             debug_assert_eq!(dataset.version().version, version);
             dataset.restore().await?;
         }
-        self.dataset
-            .as_latest(self.read_consistency_interval)
-            .await?;
+        self.dataset.as_latest().await?;
         Ok(())
     }
 
