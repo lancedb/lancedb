@@ -3163,6 +3163,7 @@ mod tests {
     use arrow_array::{BinaryArray, LargeBinaryArray};
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
+    use futures::TryStreamExt;
     use lance::dataset::WriteMode;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance::Dataset;
@@ -3174,6 +3175,8 @@ mod tests {
     use crate::connection::ConnectBuilder;
     use crate::index::scalar::{BTreeIndexBuilder, BitmapIndexBuilder};
     use crate::index::vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder};
+    use crate::query::{ExecutableQuery, QueryBase};
+    use crate::test_utils::connection::new_test_connection;
 
     #[tokio::test]
     async fn test_open() {
@@ -3602,6 +3605,31 @@ mod tests {
 
         table.drop_index(index_name).await.unwrap();
         assert_eq!(table.list_indices().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_select() {
+        let tc = new_test_connection().await.unwrap();
+        let db = tc.connection;
+
+        let table = db
+            .create_table("test", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+
+        let query = table.query().select(Select::dynamic(&[("i_alias", "i")]));
+
+        let result = query.execute().await;
+        let batches = result
+            .expect("should have result")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        for batch in batches {
+            assert!(batch.column_by_name("i_alias").is_some());
+        }
     }
 
     #[tokio::test]
