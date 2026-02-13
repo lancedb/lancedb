@@ -3,9 +3,11 @@
 
 pub mod insert;
 
+use crate::data::scannable::Scannable;
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
+use crate::remote::util::stream_as_ipc;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::AlterColumnsResult;
@@ -45,10 +47,10 @@ use tokio::sync::RwLock;
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
+use super::util::stream_as_body;
 use super::ARROW_STREAM_CONTENT_TYPE;
 use crate::index::waiter::wait_for_index;
 use crate::{
-    connection::NoData,
     error::Result,
     index::{IndexBuilder, IndexConfig},
     query::QueryExecutionOptions,
@@ -264,7 +266,10 @@ impl<S: HttpSend> RemoteTable<S> {
 
     fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
         // TODO: Once Phalanx supports compression, we should use it here.
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new(
+            Vec::new(),
+            &RecordBatchReader::schema(&*data),
+        )?;
 
         //  Mutex is just here to make it sync. We shouldn't have any contention.
         let mut data = Mutex::new(data);
@@ -338,6 +343,110 @@ impl<S: HttpSend> RemoteTable<S> {
             .await?;
 
         Ok(res)
+    }
+
+    /// Send a request with data from a Scannable source.
+    ///
+    /// For rescannable sources, this will retry on retryable errors by re-reading
+    /// the data. For non-rescannable sources (streams), only a single attempt is made.
+    async fn send_scannable(
+        &self,
+        req_builder: RequestBuilder,
+        data: &mut dyn Scannable,
+    ) -> Result<(String, Response)> {
+        use crate::remote::retry::RetryCounter;
+
+        // Right now, Python and Typescript don't pass down re-scannable data yet.
+        // So to preserve existing retry behavior, we have to collect data in
+        // memory for now. Once they expose rescannable data sources, we can remove this.
+        if !data.rescannable() && self.client.retry_config.retries > 0 {
+            let mut body = Vec::new();
+            stream_as_ipc(data.scan_as_stream())?
+                .try_for_each(|b| {
+                    body.extend_from_slice(&b);
+                    futures::future::ok(())
+                })
+                .await?;
+            let req_builder = req_builder.body(body);
+            return self.client.send_with_retry(req_builder, None, true).await;
+        }
+
+        let rescannable = data.rescannable();
+        let max_retries = if rescannable {
+            self.client.retry_config.retries
+        } else {
+            0
+        };
+
+        // Clone the request builder to extract the request id
+        let tmp_req = req_builder.try_clone().ok_or_else(|| Error::Runtime {
+            message: "Attempted to retry a request that cannot be cloned".to_string(),
+        })?;
+        let (_, r) = tmp_req.build_split();
+        let mut r = r.map_err(|e| Error::Runtime {
+            message: format!("Failed to build request: {}", e),
+        })?;
+        let request_id = self.client.extract_request_id(&mut r);
+        let mut retry_counter = RetryCounter::new(&self.client.retry_config, request_id.clone());
+
+        loop {
+            // Re-read data on each attempt
+            let stream = data.scan_as_stream();
+            let body = stream_as_body(stream)?;
+
+            let mut req_builder = req_builder.try_clone().ok_or_else(|| Error::Runtime {
+                message: "Attempted to retry a request that cannot be cloned".to_string(),
+            })?;
+            req_builder = req_builder.body(body);
+
+            let (c, request) = req_builder.build_split();
+            let mut request = request.map_err(|e| Error::Runtime {
+                message: format!("Failed to build request: {}", e),
+            })?;
+            self.client.set_request_id(&mut request, &request_id);
+
+            // Apply dynamic headers
+            request = self.client.apply_dynamic_headers(request).await?;
+
+            self.client.log_request(&request, &request_id);
+
+            let response = match self.client.sender.send(&c, request).await {
+                Ok(r) => r,
+                Err(err) => {
+                    if err.is_connect() {
+                        retry_counter.increment_connect_failures(err)?;
+                    } else if err.is_body() || err.is_decode() {
+                        retry_counter.increment_read_failures(err)?;
+                    } else {
+                        return Err(crate::Error::Http {
+                            source: err.into(),
+                            request_id,
+                            status_code: None,
+                        });
+                    }
+                    tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                    continue;
+                }
+            };
+
+            let status = response.status();
+
+            // Check for retryable status codes
+            if self.client.retry_config.statuses.contains(&status)
+                && retry_counter.request_failures < max_retries
+            {
+                let http_err = crate::Error::Http {
+                    source: format!("Retryable status code: {}", status).into(),
+                    request_id: request_id.clone(),
+                    status_code: Some(status),
+                };
+                retry_counter.increment_request_failures(http_err)?;
+                tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                continue;
+            }
+
+            return Ok((request_id, response));
+        }
     }
 
     pub(super) async fn handle_table_not_found(
@@ -656,8 +765,9 @@ impl<S: HttpSend> std::fmt::Display for RemoteTable<S> {
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
-    use crate::remote::client::test_utils::client_with_handler;
     use crate::remote::client::test_utils::MockSender;
+    use crate::remote::client::test_utils::{client_with_handler, client_with_handler_and_config};
+    use crate::remote::ClientConfig;
 
     impl RemoteTable<MockSender> {
         pub fn new_mock<F, T>(name: String, handler: F, version: Option<semver::Version>) -> Self
@@ -672,6 +782,23 @@ mod test_utils {
                 namespace: vec![],
                 identifier: name,
                 server_version: version.map(ServerVersion).unwrap_or_default(),
+                version: RwLock::new(None),
+                location: RwLock::new(None),
+            }
+        }
+
+        pub fn new_mock_with_config<F, T>(name: String, handler: F, config: ClientConfig) -> Self
+        where
+            F: Fn(reqwest::Request) -> http::Response<T> + Send + Sync + 'static,
+            T: Into<reqwest::Body>,
+        {
+            let client = client_with_handler_and_config(handler, config);
+            Self {
+                client,
+                name: name.clone(),
+                namespace: vec![],
+                identifier: name,
+                server_version: ServerVersion::default(),
                 version: RwLock::new(None),
                 location: RwLock::new(None),
             }
@@ -797,11 +924,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })
     }
-    async fn add(
-        &self,
-        add: AddDataBuilder<NoData>,
-        data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<AddResult> {
+    async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
         let mut request = self
             .client
@@ -815,7 +938,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             }
         }
 
-        let (request_id, response) = self.send_streaming(request, data, true).await?;
+        let (request_id, response) = self.send_scannable(request, &mut *add.data).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
         if body.trim().is_empty() {
@@ -1584,12 +1707,14 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::{collections::HashMap, pin::Pin};
 
     use super::*;
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
+    use arrow_array::{record_batch, Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
@@ -1623,7 +1748,8 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let example_data = || {
+        let example_data_for_add = || batch.clone();
+        let example_data_for_merge = || -> Box<dyn RecordBatchReader + Send> {
             Box::new(RecordBatchIterator::new(
                 [Ok(batch.clone())],
                 batch.schema(),
@@ -1636,11 +1762,11 @@ mod tests {
             Box::pin(table.schema().map_ok(|_| ())),
             Box::pin(table.count_rows(None).map_ok(|_| ())),
             Box::pin(table.update().column("a", "a + 1").execute().map_ok(|_| ())),
-            Box::pin(table.add(example_data()).execute().map_ok(|_| ())),
+            Box::pin(table.add(example_data_for_add()).execute().map_ok(|_| ())),
             Box::pin(
                 table
                     .merge_insert(&["test"])
-                    .execute(example_data())
+                    .execute(example_data_for_merge())
                     .map_ok(|_| ()),
             ),
             Box::pin(table.delete("false").map_ok(|_| ())),
@@ -1772,8 +1898,15 @@ mod tests {
     fn write_ipc_stream(data: &RecordBatch) -> Vec<u8> {
         let mut body = Vec::new();
         {
-            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &data.schema())
-                .expect("Failed to create writer");
+            let options = arrow_ipc::writer::IpcWriteOptions::default()
+                .try_with_compression(Some(arrow_ipc::CompressionType::LZ4_FRAME))
+                .expect("Failed to create IPC write options");
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
+                &mut body,
+                &data.schema(),
+                options,
+            )
+            .expect("Failed to create writer");
             writer.write(data).expect("Failed to write data");
             writer.finish().expect("Failed to finish");
         }
@@ -1831,11 +1964,7 @@ mod tests {
                 panic!("Unexpected request path: {}", request.url().path());
             }
         });
-        let result = table
-            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
-            .execute()
-            .await
-            .unwrap();
+        let result = table.add(data.clone()).execute().await.unwrap();
 
         // Check version matches expected value
         assert_eq!(result.version, expected_version);
@@ -1892,7 +2021,7 @@ mod tests {
         });
 
         let result = table
-            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
+            .add(data.clone())
             .mode(AddDataMode::Overwrite)
             .execute()
             .await
@@ -2032,7 +2161,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data = Box::new(RecordBatchIterator::new(
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -2084,7 +2213,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data = Box::new(RecordBatchIterator::new(
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -3015,7 +3144,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data = Box::new(RecordBatchIterator::new(
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
             [Ok(batch.clone())],
             batch.schema(),
         ));
@@ -3030,10 +3159,7 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let res = table
-            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
-            .execute()
-            .await;
+        let res = table.add(data.clone()).execute().await;
         assert!(matches!(res, Err(Error::NotSupported { .. })));
 
         let res = table
@@ -3295,11 +3421,7 @@ mod tests {
             }
         });
 
-        let result = table
-            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
-            .execute()
-            .await
-            .unwrap();
+        let result = table.add(data.clone()).execute().await.unwrap();
 
         assert_eq!(result.version, 2);
 
@@ -3445,5 +3567,96 @@ mod tests {
         let uri2 = table.uri().await.unwrap();
         assert_eq!(uri2, "gs://bucket/table");
         assert_eq!(call_count.load(Ordering::SeqCst), 1); // Still 1, no new call
+    }
+
+    #[tokio::test]
+    async fn test_add_retries_rescannable_data() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        // Configure with retries enabled (default is 3)
+        let config = crate::remote::ClientConfig::default();
+
+        let table = Table::new_with_handler_and_config(
+            "my_table",
+            move |_request| {
+                let count = call_count_clone.fetch_add(1, Ordering::SeqCst);
+                if count < 2 {
+                    // First two attempts fail with a retryable error (409)
+                    http::Response::builder().status(409).body("").unwrap()
+                } else {
+                    // Third attempt succeeds
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 1}"#)
+                        .unwrap()
+                }
+            },
+            config,
+        );
+
+        // RecordBatch is rescannable - should retry and succeed
+        let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
+        let result = table.add(batch).execute().await;
+
+        assert!(
+            result.is_ok(),
+            "Expected success after retries: {:?}",
+            result
+        );
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            3,
+            "Expected 2 failed attempts + 1 success = 3 total"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_no_retry_for_non_rescannable() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        // Configure with retries enabled
+        let config = crate::remote::ClientConfig::default();
+
+        let table = Table::new_with_handler_and_config(
+            "my_table",
+            move |_request| {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                // Always fail with retryable error
+                http::Response::builder().status(409).body("").unwrap()
+            },
+            config,
+        );
+
+        // RecordBatchReader is NOT rescannable - should NOT retry
+        let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
+            RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+        );
+
+        let result = table.add(reader).execute().await;
+
+        // Should fail because we can't retry non-rescannable sources
+        assert!(result.is_err());
+        // Right now, we actually do retry, so we get 3 failures. In the future
+        // this will change and we need to update the test.
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                Error::Retry {
+                    request_failures: 3,
+                    ..
+                }
+            ),
+            "Expected RequestFailed with status 409"
+        );
+        // TODO: After we implement proper non-rescannable handling, uncomment below
+        // (This is blocked on getting Python and Node to pass down re-scannable data.)
+        // assert_eq!(
+        //     call_count.load(Ordering::SeqCst),
+        //     1,
+        //     "Expected only one attempt for non-rescannable source"
+        // );
     }
 }

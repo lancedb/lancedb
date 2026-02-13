@@ -212,7 +212,7 @@ pub(crate) async fn execute_optimize(
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
+    use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use rstest::rstest;
     use std::sync::Arc;
@@ -236,10 +236,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_compact",
-                RecordBatchIterator::new(vec![Ok(batch)], schema.clone()),
-            )
+            .create_table("test_compact", batch)
             .execute()
             .await
             .unwrap();
@@ -253,11 +250,7 @@ mod tests {
                 ))],
             )
             .unwrap();
-            table
-                .add(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
-                .execute()
-                .await
-                .unwrap();
+            table.add(batch).execute().await.unwrap();
         }
 
         // Verify we have multiple fragments before compaction
@@ -322,10 +315,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_prune",
-                RecordBatchIterator::new(vec![Ok(batch)], schema.clone()),
-            )
+            .create_table("test_prune", batch)
             .execute()
             .await
             .unwrap();
@@ -339,11 +329,7 @@ mod tests {
                 ))],
             )
             .unwrap();
-            table
-                .add(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
-                .execute()
-                .await
-                .unwrap();
+            table.add(batch).execute().await.unwrap();
         }
 
         // Verify multiple versions exist
@@ -405,10 +391,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_index_optimize",
-                RecordBatchIterator::new(vec![Ok(batch)], schema.clone()),
-            )
+            .create_table("test_index_optimize", batch)
             .execute()
             .await
             .unwrap();
@@ -426,11 +409,7 @@ mod tests {
             vec![Arc::new(Int32Array::from_iter_values(100..200))],
         )
         .unwrap();
-        table
-            .add(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
-            .execute()
-            .await
-            .unwrap();
+        table.add(batch).execute().await.unwrap();
 
         // Verify index stats before optimization
         let indices = table.list_indices().await.unwrap();
@@ -474,10 +453,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_optimize_all",
-                RecordBatchIterator::new(vec![Ok(batch)], schema.clone()),
-            )
+            .create_table("test_optimize_all", batch)
             .execute()
             .await
             .unwrap();
@@ -491,11 +467,7 @@ mod tests {
                 ))],
             )
             .unwrap();
-            table
-                .add(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
-                .execute()
-                .await
-                .unwrap();
+            table.add(batch).execute().await.unwrap();
         }
 
         // Run all optimizations
@@ -559,20 +531,13 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_deferred_remap",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], schema.clone()),
-            )
+            .create_table("test_deferred_remap", batch.clone())
             .execute()
             .await
             .unwrap();
 
         // Add more data
-        table
-            .add(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
-            .execute()
-            .await
-            .unwrap();
+        table.add(batch).execute().await.unwrap();
 
         // Create an index
         table
@@ -648,20 +613,13 @@ mod tests {
         let original_schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_schema_preserved",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], schema.clone()),
-            )
+            .create_table("test_schema_preserved", batch.clone())
             .execute()
             .await
             .unwrap();
 
         // Add more data
-        table
-            .add(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
-            .execute()
-            .await
-            .unwrap();
+        table.add(batch).execute().await.unwrap();
 
         // Run compaction
         table
@@ -703,10 +661,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_empty_optimize",
-                RecordBatchIterator::new(vec![Ok(batch)], schema.clone()),
-            )
+            .create_table("test_empty_optimize", batch)
             .execute()
             .await
             .unwrap();
@@ -752,19 +707,12 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_checkout_optimize",
-                RecordBatchIterator::new(vec![Ok(batch.clone())], schema.clone()),
-            )
+            .create_table("test_checkout_optimize", batch.clone())
             .execute()
             .await
             .unwrap();
 
-        table
-            .add(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()))
-            .execute()
-            .await
-            .unwrap();
+        table.add(batch).execute().await.unwrap();
 
         table.checkout(1).await.unwrap();
 

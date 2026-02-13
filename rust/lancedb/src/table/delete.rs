@@ -34,7 +34,7 @@ pub(crate) async fn execute_delete(table: &NativeTable, predicate: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use crate::connect;
-    use arrow_array::{record_batch, Int32Array, RecordBatch, RecordBatchIterator};
+    use arrow_array::{record_batch, Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -53,10 +53,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_delete",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_delete", batch)
             .execute()
             .await
             .unwrap();
@@ -102,10 +99,7 @@ mod tests {
         let original_schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_delete_all",
-                RecordBatchIterator::new(vec![Ok(batch)], original_schema.clone()),
-            )
+            .create_table("test_delete_all", batch)
             .execute()
             .await
             .unwrap();
@@ -126,13 +120,8 @@ mod tests {
         // Create a table with 5 rows
         let batch = record_batch!(("id", Int32, [1, 2, 3, 4, 5])).unwrap();
 
-        let schema = batch.schema();
-
         let table = conn
-            .create_table(
-                "test_delete_noop",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_delete_noop", batch)
             .execute()
             .await
             .unwrap();

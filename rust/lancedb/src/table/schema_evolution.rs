@@ -89,7 +89,7 @@ pub(crate) async fn execute_drop_columns(
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{record_batch, Int32Array, RecordBatchIterator, StringArray};
+    use arrow_array::{record_batch, Int32Array, StringArray};
     use arrow_schema::DataType;
     use futures::TryStreamExt;
     use lance::dataset::ColumnAlteration;
@@ -105,13 +105,9 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
 
         let batch = record_batch!(("id", Int32, [1, 2, 3, 4, 5])).unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_add_columns",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_add_columns", batch)
             .execute()
             .await
             .unwrap();
@@ -169,13 +165,9 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
 
         let batch = record_batch!(("x", Int32, [10, 20, 30])).unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_add_multi_columns",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_add_multi_columns", batch)
             .execute()
             .await
             .unwrap();
@@ -205,13 +197,9 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
 
         let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_add_const_column",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_add_const_column", batch)
             .execute()
             .await
             .unwrap();
@@ -255,13 +243,9 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
 
         let batch = record_batch!(("old_name", Int32, [1, 2, 3])).unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_alter_rename",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_alter_rename", batch)
             .execute()
             .await
             .unwrap();
@@ -304,10 +288,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table(
-                "test_alter_nullable",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_alter_nullable", batch)
             .execute()
             .await
             .unwrap();
@@ -332,13 +313,9 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
 
         let batch = record_batch!(("num", Int32, [1, 2, 3])).unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_cast_type",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_cast_type", batch)
             .execute()
             .await
             .unwrap();
@@ -379,13 +356,9 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
 
         let batch = record_batch!(("num", Int32, [1, 2, 3])).unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_invalid_cast",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_invalid_cast", batch)
             .execute()
             .await
             .unwrap();
@@ -407,13 +380,9 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
 
         let batch = record_batch!(("a", Int32, [1, 2, 3]), ("b", Int32, [4, 5, 6])).unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_alter_multi",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_alter_multi", batch)
             .execute()
             .await
             .unwrap();
@@ -441,13 +410,9 @@ mod tests {
 
         let batch =
             record_batch!(("keep", Int32, [1, 2, 3]), ("remove", Int32, [4, 5, 6])).unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_drop_single",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_drop_single", batch)
             .execute()
             .await
             .unwrap();
@@ -478,13 +443,9 @@ mod tests {
             ("d", Int32, [7, 8])
         )
         .unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_drop_multi",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_drop_multi", batch)
             .execute()
             .await
             .unwrap();
@@ -511,13 +472,9 @@ mod tests {
             ("extra", Int32, [10, 20, 30])
         )
         .unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_drop_preserves",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_drop_preserves", batch)
             .execute()
             .await
             .unwrap();
@@ -567,13 +524,9 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
 
         let batch = record_batch!(("existing", Int32, [1, 2, 3])).unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_drop_nonexistent",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_drop_nonexistent", batch)
             .execute()
             .await
             .unwrap();
@@ -593,13 +546,9 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
 
         let batch = record_batch!(("existing", Int32, [1, 2, 3])).unwrap();
-        let schema = batch.schema();
 
         let table = conn
-            .create_table(
-                "test_alter_nonexistent",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_alter_nonexistent", batch)
             .execute()
             .await
             .unwrap();
@@ -623,13 +572,8 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
 
         let batch = record_batch!(("a", Int32, [1, 2, 3]), ("b", Int32, [4, 5, 6])).unwrap();
-        let schema = batch.schema();
-
         let table = conn
-            .create_table(
-                "test_version_increment",
-                RecordBatchIterator::new(vec![Ok(batch)], schema),
-            )
+            .create_table("test_version_increment", batch)
             .execute()
             .await
             .unwrap();
