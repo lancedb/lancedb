@@ -438,21 +438,26 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             );
         }
 
-        if let Some(v) = options.0.get("account_name") {
-            headers.insert(
-                HeaderName::from_static("x-azure-storage-account-name"),
-                HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
-                    message: format!("non-ascii storage account name '{}' provided", db_name),
-                })?,
-            );
-        }
-        if let Some(v) = options.0.get("azure_storage_account_name") {
-            headers.insert(
-                HeaderName::from_static("x-azure-storage-account-name"),
-                HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
-                    message: format!("non-ascii storage account name '{}' provided", db_name),
-                })?,
-            );
+        // Map storage options to HTTP headers for Azure configuration.
+        const OPTION_TO_HEADER: &[(&str, &str)] = &[
+            ("account_name", "x-azure-storage-account-name"),
+            ("azure_storage_account_name", "x-azure-storage-account-name"),
+            ("azure_tenant_id", "x-azure-tenant-id"),
+            ("azure_client_id", "x-azure-client-id"),
+            (
+                "azure_federated_token_file",
+                "x-azure-federated-token-file",
+            ),
+        ];
+        for (opt_key, header_name) in OPTION_TO_HEADER {
+            if let Some(v) = options.get(opt_key) {
+                headers.insert(
+                    HeaderName::from_static(header_name),
+                    HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
+                        message: format!("non-ascii value for '{}' provided", opt_key),
+                    })?,
+                );
+            }
         }
 
         for (key, value) in &config.extra_headers {

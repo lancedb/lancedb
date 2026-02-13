@@ -921,8 +921,15 @@ pub struct ConnectBuilder {
 }
 
 #[cfg(feature = "remote")]
-const ENV_VARS_TO_STORAGE_OPTS: [(&str, &str); 1] =
-    [("AZURE_STORAGE_ACCOUNT_NAME", "azure_storage_account_name")];
+const ENV_VARS_TO_STORAGE_OPTS: [(&str, &str); 4] = [
+    ("AZURE_STORAGE_ACCOUNT_NAME", "azure_storage_account_name"),
+    ("AZURE_TENANT_ID", "azure_tenant_id"),
+    ("AZURE_CLIENT_ID", "azure_client_id"),
+    (
+        "AZURE_FEDERATED_TOKEN_FILE",
+        "azure_federated_token_file",
+    ),
+];
 
 impl ConnectBuilder {
     /// Create a new [`ConnectOptions`] with the given database URI.
