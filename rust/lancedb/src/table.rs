@@ -21,7 +21,7 @@ pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
-use lance::dataset::{InsertBuilder, WhenMatched, WriteMode, WriteParams};
+use lance::dataset::{InsertBuilder, WhenMatched, WriteParams};
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::index::vector::VectorIndexParams;
@@ -2491,30 +2491,7 @@ impl BaseTable for NativeTable {
     }
 
     async fn add(&self, add: AddDataBuilder) -> Result<AddResult> {
-        let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
-            mode: match add.mode {
-                AddDataMode::Append => WriteMode::Append,
-                AddDataMode::Overwrite => WriteMode::Overwrite,
-            },
-            ..Default::default()
-        });
-
-        // Apply embeddings if configured
-        let table_def = self.table_definition().await?;
-        let data =
-            scannable_with_embeddings(add.data, &table_def, add.embedding_registry.as_ref())?;
-
-        let dataset = {
-            // Limited scope for the mutable borrow of self.dataset avoids deadlock.
-            let ds = self.dataset.get_mut().await?;
-            InsertBuilder::new(Arc::new(ds.clone()))
-                .with_params(&lance_params)
-                .execute_stream(data)
-                .await?
-        };
-        let version = dataset.manifest().version;
-        self.dataset.set_latest(dataset).await;
-        Ok(AddResult { version })
+        add_data::local_add_table(self, add).await
     }
 
     async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
