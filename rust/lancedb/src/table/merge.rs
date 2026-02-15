@@ -1,13 +1,43 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::RecordBatchReader;
+use futures::future::Either;
+use futures::{FutureExt, TryFutureExt};
+use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenMatched, WhenNotMatchedBySource};
+use serde::{Deserialize, Serialize};
 
-use crate::Result;
+use crate::error::{Error, Result};
 
-use super::{BaseTable, MergeResult};
+use super::{BaseTable, NativeTable};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MergeResult {
+    // The commit version associated with the operation.
+    // A version of `0` indicates compatibility with legacy servers that do not return
+    /// a commit version.
+    #[serde(default)]
+    pub version: u64,
+    /// Number of inserted rows (for user statistics)
+    #[serde(default)]
+    pub num_inserted_rows: u64,
+    /// Number of updated rows (for user statistics)
+    #[serde(default)]
+    pub num_updated_rows: u64,
+    /// Number of deleted rows (for user statistics)
+    /// Note: This is different from internal references to 'deleted_rows', since we technically "delete" updated rows during processing.
+    /// However those rows are not shared with the user.
+    #[serde(default)]
+    pub num_deleted_rows: u64,
+    /// Number of attempts performed during the merge operation.
+    /// This includes the initial attempt plus any retries due to transaction conflicts.
+    /// A value of 1 means the operation succeeded on the first try.
+    #[serde(default)]
+    pub num_attempts: u32,
+}
 
 /// A builder used to create and run a merge insert operation
 ///
@@ -122,5 +152,174 @@ impl MergeInsertBuilder {
     /// inserted, updated, and deleted.
     pub async fn execute(self, new_data: Box<dyn RecordBatchReader + Send>) -> Result<MergeResult> {
         self.table.clone().merge_insert(self, new_data).await
+    }
+}
+
+/// Internal implementation of the merge insert logic
+///
+/// This logic was moved from NativeTable::merge_insert to keep table.rs clean.
+pub(crate) async fn execute_merge_insert(
+    table: &NativeTable,
+    params: MergeInsertBuilder,
+    new_data: Box<dyn RecordBatchReader + Send>,
+) -> Result<MergeResult> {
+    let dataset = Arc::new(table.dataset.get().await?.clone());
+    let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
+    match (
+        params.when_matched_update_all,
+        params.when_matched_update_all_filt,
+    ) {
+        (false, _) => builder.when_matched(WhenMatched::DoNothing),
+        (true, None) => builder.when_matched(WhenMatched::UpdateAll),
+        (true, Some(filt)) => builder.when_matched(WhenMatched::update_if(&dataset, &filt)?),
+    };
+    if params.when_not_matched_insert_all {
+        builder.when_not_matched(lance::dataset::WhenNotMatched::InsertAll);
+    } else {
+        builder.when_not_matched(lance::dataset::WhenNotMatched::DoNothing);
+    }
+    if params.when_not_matched_by_source_delete {
+        let behavior = if let Some(filter) = params.when_not_matched_by_source_delete_filt {
+            WhenNotMatchedBySource::delete_if(dataset.as_ref(), &filter)?
+        } else {
+            WhenNotMatchedBySource::Delete
+        };
+        builder.when_not_matched_by_source(behavior);
+    } else {
+        builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
+    }
+    builder.use_index(params.use_index);
+
+    let future = if let Some(timeout) = params.timeout {
+        let future = builder
+            .retry_timeout(timeout)
+            .try_build()?
+            .execute_reader(new_data);
+        Either::Left(tokio::time::timeout(timeout, future).map(|res| match res {
+            Ok(Ok((new_dataset, stats))) => Ok((new_dataset, stats)),
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => Err(Error::Runtime {
+                message: "merge insert timed out".to_string(),
+            }),
+        }))
+    } else {
+        let job = builder.try_build()?;
+        Either::Right(job.execute_reader(new_data).map_err(|e| e.into()))
+    };
+    let (new_dataset, stats) = future.await?;
+    let version = new_dataset.manifest().version;
+    table.dataset.set_latest(new_dataset.as_ref().clone()).await;
+    Ok(MergeResult {
+        version,
+        num_updated_rows: stats.num_updated_rows,
+        num_inserted_rows: stats.num_inserted_rows,
+        num_deleted_rows: stats.num_deleted_rows,
+        num_attempts: stats.num_attempts,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
+    use arrow_schema::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    use crate::connect;
+
+    fn merge_insert_test_batches(offset: i32, age: i32) -> Box<dyn RecordBatchReader + Send> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("i", DataType::Int32, false),
+            Field::new("age", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(offset..(offset + 10))),
+                Arc::new(Int32Array::from_iter_values(std::iter::repeat_n(age, 10))),
+            ],
+        )
+        .unwrap();
+        Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert() {
+        let conn = connect("memory://").execute().await.unwrap();
+
+        // Create a dataset with i=0..10
+        let batches = merge_insert_test_batches(0, 0);
+        let table = conn
+            .create_table("my_table", batches)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+
+        // Create new data with i=5..15
+        let new_batches = merge_insert_test_batches(5, 1);
+
+        // Perform a "insert if not exists"
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_not_matched_insert_all();
+        let result = merge_insert_builder.execute(new_batches).await.unwrap();
+        // Only 5 rows should actually be inserted
+        assert_eq!(table.count_rows(None).await.unwrap(), 15);
+        assert_eq!(result.num_inserted_rows, 5);
+        assert_eq!(result.num_updated_rows, 0);
+        assert_eq!(result.num_deleted_rows, 0);
+        assert_eq!(result.num_attempts, 1);
+
+        // Create new data with i=15..25 (no id matches)
+        let new_batches = merge_insert_test_batches(15, 2);
+        // Perform a "bulk update" (should not affect anything)
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_matched_update_all(None);
+        merge_insert_builder.execute(new_batches).await.unwrap();
+        // No new rows should have been inserted
+        assert_eq!(table.count_rows(None).await.unwrap(), 15);
+        assert_eq!(
+            table.count_rows(Some("age = 2".to_string())).await.unwrap(),
+            0
+        );
+
+        // Conditional update that only replaces the age=0 data
+        let new_batches = merge_insert_test_batches(5, 3);
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_matched_update_all(Some("target.age = 0".to_string()));
+        merge_insert_builder.execute(new_batches).await.unwrap();
+        assert_eq!(
+            table.count_rows(Some("age = 3".to_string())).await.unwrap(),
+            5
+        );
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_use_index() {
+        let conn = connect("memory://").execute().await.unwrap();
+
+        // Create a dataset with i=0..10
+        let batches = merge_insert_test_batches(0, 0);
+        let table = conn
+            .create_table("my_table", batches)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+
+        // Test use_index=true (default behavior)
+        let new_batches = merge_insert_test_batches(5, 1);
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_not_matched_insert_all();
+        merge_insert_builder.use_index(true);
+        merge_insert_builder.execute(new_batches).await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 15);
+
+        // Test use_index=false (force table scan)
+        let new_batches = merge_insert_test_batches(15, 2);
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_not_matched_insert_all();
+        merge_insert_builder.use_index(false);
+        merge_insert_builder.execute(new_batches).await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 25);
     }
 }
