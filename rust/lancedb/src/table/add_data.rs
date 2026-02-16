@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use arrow_schema::Schema;
+use arrow_schema::{DataType, Fields, Schema};
 use futures::TryStreamExt;
 use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
 use lance_datafusion::exec::execute_plan;
@@ -14,8 +14,8 @@ use crate::embeddings::EmbeddingRegistry;
 use crate::table::datafusion::cast::cast_to_table_schema;
 use crate::table::datafusion::insert::InsertExec;
 use crate::table::datafusion::scannable_exec::ScannableExec;
-use crate::Result;
 use crate::{data::scannable::Scannable, table::NativeTable};
+use crate::{Error, Result};
 
 use super::{BaseTable, WriteOptions};
 
@@ -112,7 +112,18 @@ pub async fn local_add_table(slf: &NativeTable, add: AddDataBuilder) -> Result<A
 
     let schema = slf.schema().await?;
 
-    if can_use_datafusion(&add, &schema, has_embeddings) {
+    let is_overwrite = add
+        .write_options
+        .lance_write_params
+        .as_ref()
+        .is_some_and(|p| matches!(p.mode, WriteMode::Overwrite))
+        || matches!(add.mode, AddDataMode::Overwrite);
+
+    if !is_overwrite {
+        validate_schema(&add.data.schema(), &schema)?;
+    }
+
+    if can_use_datafusion(&add, has_embeddings) {
         let lance_params = add
             .write_options
             .lance_write_params
@@ -178,11 +189,7 @@ async fn local_add_table_new(
     Ok(AddResult { version })
 }
 
-fn can_use_datafusion(
-    builder: &AddDataBuilder,
-    table_schema: &Schema,
-    has_embeddings: bool,
-) -> bool {
+fn can_use_datafusion(builder: &AddDataBuilder, has_embeddings: bool) -> bool {
     builder.data.rescannable()
         && !has_embeddings
         && matches!(builder.mode, AddDataMode::Append)
@@ -191,6 +198,41 @@ fn can_use_datafusion(
             .lance_write_params
             .as_ref()
             .is_none_or(|p| matches!(p.mode, WriteMode::Append))
+}
+
+/// Check that the input schema is valid for insert.
+///
+/// Fields can be in different orders, so match by name.
+///
+/// If a column exists in input but not in table, error (no extra columns allowed).
+///
+/// If a column exists in table but not in input, that is okay - it may be filled with nulls.
+///
+/// If the types are not exactly the same, we will attempt to cast later - so that is also okay at this stage.
+///
+/// If the nullability is different, that is also okay - we can relax nullability when casting.
+fn validate_schema(input: &Schema, table: &Schema) -> Result<()> {
+    validate_fields(input.fields(), table.fields())
+}
+
+fn validate_fields(input: &Fields, table: &Fields) -> Result<()> {
+    for field in input {
+        match table.iter().find(|f| f.name() == field.name()) {
+            None => {
+                return Err(Error::InvalidInput {
+                    message: format!("field '{}' does not exist in table schema", field.name()),
+                });
+            }
+            Some(table_field) => {
+                if let (DataType::Struct(in_children), DataType::Struct(tbl_children)) =
+                    (field.data_type(), table_field.data_type())
+                {
+                    validate_fields(in_children, tbl_children)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -598,5 +640,110 @@ mod tests {
 
         let row_count = table.count_rows(None).await.unwrap();
         assert_eq!(row_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_add_subschema() {
+        let data = record_batch!(("id", Int64, [4, 5]), ("text", Utf8, ["foo", "bar"])).unwrap();
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_table("test", data.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let new_data = record_batch!(("id", Int64, [6, 7])).unwrap();
+        table.add(new_data).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 4);
+        assert_eq!(
+            table
+                .count_rows(Some("id IS NOT NULL".to_string()))
+                .await
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            table
+                .count_rows(Some("text IS NOT NULL".to_string()))
+                .await
+                .unwrap(),
+            2
+        );
+
+        // We can still cast
+        let new_data = record_batch!(("text", LargeUtf8, ["baz", "qux"])).unwrap();
+        table.add(new_data).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 6);
+        assert_eq!(
+            table
+                .count_rows(Some("id IS NOT NULL".to_string()))
+                .await
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            table
+                .count_rows(Some("text IS NOT NULL".to_string()))
+                .await
+                .unwrap(),
+            4
+        );
+
+        // Extra columns mean an error
+        let new_data =
+            record_batch!(("id", Int64, [8, 9]), ("extra", Utf8, ["extra1", "extra2"])).unwrap();
+        let res = table.add(new_data).execute().await;
+        assert!(
+            res.is_err(),
+            "Expected error due to extra column, but got: {res:?}"
+        );
+
+        // Insert with a subset of struct sub-fields
+        let struct_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "metadata",
+                DataType::Struct(
+                    vec![
+                        Field::new("a", DataType::Int64, true),
+                        Field::new("b", DataType::Utf8, true),
+                    ]
+                    .into(),
+                ),
+                true,
+            ),
+        ]));
+        let db2 = connect("memory://").execute().await.unwrap();
+        let table2 = db2
+            .create_empty_table("struct_test", struct_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Insert with only the "a" sub-field of the struct
+        let sub_struct_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "metadata",
+                DataType::Struct(vec![Field::new("a", DataType::Int64, true)].into()),
+                true,
+            ),
+        ]));
+        let struct_batch = RecordBatch::try_new(
+            sub_struct_schema,
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2])),
+                Arc::new(arrow_array::StructArray::from(vec![(
+                    Arc::new(Field::new("a", DataType::Int64, true)),
+                    Arc::new(arrow_array::Int64Array::from(vec![10, 20]))
+                        as Arc<dyn arrow_array::Array>,
+                )])),
+            ],
+        )
+        .unwrap();
+        table2.add(struct_batch).execute().await.unwrap();
+        assert_eq!(table2.count_rows(None).await.unwrap(), 2);
     }
 }
