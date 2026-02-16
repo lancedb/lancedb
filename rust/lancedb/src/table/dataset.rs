@@ -207,7 +207,11 @@ impl DatasetConsistencyWrapper {
     pub async fn reload(&self) -> Result<()> {
         if !self.0.read().await.need_reload().await? {
             let mut write_guard = self.0.write().await;
-            if let DatasetRef::Latest { last_consistency_check, .. } = &mut *write_guard {
+            if let DatasetRef::Latest {
+                last_consistency_check,
+                ..
+            } = &mut *write_guard
+            {
                 last_consistency_check.replace(Instant::now());
             }
             return Ok(());
@@ -216,7 +220,11 @@ impl DatasetConsistencyWrapper {
         let mut write_guard = self.0.write().await;
         // on lock escalation -- check if someone else has already reloaded
         if !write_guard.need_reload().await? {
-            if let DatasetRef::Latest { last_consistency_check, .. } = &mut *write_guard {
+            if let DatasetRef::Latest {
+                last_consistency_check,
+                ..
+            } = &mut *write_guard
+            {
                 last_consistency_check.replace(Instant::now());
             }
             return Ok(());
@@ -408,7 +416,6 @@ mod tests {
         assert_eq!(s.read_iops, 1, "step 4, elapsed={:?}", start.elapsed());
 
         // Step 5: 10 more calls — timer just reset, no lists (THIS is the regression test).
-        // Before the fix, each call would trigger a list (read_iops == 10).
         for _ in 0..10 {
             table.schema().await.unwrap();
         }
