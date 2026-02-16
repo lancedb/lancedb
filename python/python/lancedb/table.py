@@ -3733,7 +3733,7 @@ class AsyncTable:
         # _santitize_data is an old code path, but we will use it until the new code path
         # is ready.
         if on_bad_vectors != "error" or (
-            schema.metadata is not None and "embedding_functions" in schema.metadata
+            schema.metadata is not None and b"embedding_functions" in schema.metadata
         ):
             data = _sanitize_data(
                 data,
