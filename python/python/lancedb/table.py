@@ -25,7 +25,7 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-from lancedb.scannable import to_scannable
+from lancedb.scannable import _register_optional_converters, to_scannable
 
 from . import __version__
 from lancedb.arrow import peek_reader
@@ -3743,6 +3743,7 @@ class AsyncTable:
                 fill_value=fill_value,
                 allow_subschema=True,
             )
+        _register_optional_converters()
         data = to_scannable(data)
         return await self._inner.add(data, mode or "append")
 

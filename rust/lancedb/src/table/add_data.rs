@@ -190,8 +190,7 @@ async fn local_add_table_new(
 }
 
 fn can_use_datafusion(builder: &AddDataBuilder, has_embeddings: bool) -> bool {
-    builder.data.rescannable()
-        && !has_embeddings
+    !has_embeddings
         && matches!(builder.mode, AddDataMode::Append)
         && builder
             .write_options

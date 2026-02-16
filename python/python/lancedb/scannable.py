@@ -71,30 +71,43 @@ def _from_scanner(data: ds.Scanner) -> Scannable:
     )
 
 
+@singledispatch
+def to_arrow(data) -> pa.Table:
+    """Convert a single data object to a pa.Table."""
+    raise NotImplementedError(f"to_arrow not implemented for type {type(data)}")
+
+
+@to_arrow.register(pa.RecordBatch)
+def _arrow_from_batch(data: pa.RecordBatch) -> pa.Table:
+    return pa.Table.from_batches([data])
+
+
+@to_arrow.register(pa.Table)
+def _arrow_from_table(data: pa.Table) -> pa.Table:
+    return data
+
+
+@to_arrow.register(list)
+def _arrow_from_list(data: list) -> pa.Table:
+    if not data:
+        raise ValueError("Cannot create table from empty list without a schema")
+
+    if isinstance(data[0], LanceModel):
+        schema = data[0].__class__.to_arrow_schema()
+        dicts = [model_to_dict(d) for d in data]
+        return pa.Table.from_pylist(dicts, schema=schema)
+
+    return pa.Table.from_pylist(data)
+
+
 @to_scannable.register(list)
 def _from_list(data: list) -> Scannable:
     if not data:
         raise ValueError("Cannot create table from empty list without a schema")
-
-    # Handle list of LanceModels
-    if isinstance(data[0], LanceModel):
-        schema = data[0].__class__.to_arrow_schema()
-        dicts = [model_to_dict(d) for d in data]
-        table = pa.Table.from_pylist(dicts, schema=schema)
-        return Scannable(
-            schema=table.schema, num_rows=len(data), reader=table.to_reader
-        )
-
-    # Handle list of RecordBatches
-    if isinstance(data[0], pa.RecordBatch):
-        table = pa.Table.from_batches(data)
-        return Scannable(
-            schema=table.schema, num_rows=table.num_rows, reader=table.to_reader
-        )
-
-    # Handle list of dicts (most common case)
-    table = pa.Table.from_pylist(data)
-    return Scannable(schema=table.schema, num_rows=len(data), reader=table.to_reader)
+    table = to_arrow(data)
+    return Scannable(
+        schema=table.schema, num_rows=table.num_rows, reader=table.to_reader
+    )
 
 
 @to_scannable.register(dict)
@@ -102,12 +115,32 @@ def _from_dict(data: dict) -> Scannable:
     raise ValueError("Cannot add a single dictionary to a table. Use a list.")
 
 
+@to_scannable.register(LanceModel)
+def _from_lance_model(data: LanceModel) -> Scannable:
+    raise ValueError("Cannot add a single LanceModel to a table. Use a list.")
+
+
 def _from_iterable(data: Iterator) -> Scannable:
-    # Consume iterator into table (no row count hint)
-    table = pa.Table.from_pylist(list(data))
-    return Scannable(
-        schema=table.schema, num_rows=table.num_rows, reader=table.to_reader
-    )
+    first = to_arrow(next(data))
+    schema = first.schema
+
+    def iter():
+        yield from first.to_batches()
+        for item in data:
+            batch = to_arrow(item)
+            if batch.schema != schema:
+                try:
+                    batch = batch.cast(schema)
+                except pa.lib.ArrowInvalid:
+                    raise ValueError(
+                        f"Input iterator yielded a batch with schema that "
+                        f"does not match the schema of other batches.\n"
+                        f"Expected:\n{schema}\nGot:\n{batch.schema}"
+                    )
+            yield from batch.to_batches()
+
+    reader = pa.RecordBatchReader.from_batches(schema, iter())
+    return to_scannable(reader)
 
 
 _registered_modules: set[str] = set()
@@ -120,18 +153,22 @@ def _register_optional_converters():
         _registered_modules.add("pandas")
         import pandas as pd
 
+        @to_arrow.register(pd.DataFrame)
+        def _arrow_from_pandas(data: pd.DataFrame) -> pa.Table:
+            table = pa.Table.from_pandas(data, preserve_index=False)
+            return table.replace_schema_metadata(None)
+
         @to_scannable.register(pd.DataFrame)
         def _from_pandas(data: pd.DataFrame) -> Scannable:
-            # Remove pandas metadata to avoid schema conflicts
-            table = pa.Table.from_pandas(data, preserve_index=False)
-            table = table.replace_schema_metadata(None)
-            return Scannable(
-                schema=table.schema, num_rows=len(data), reader=table.to_reader
-            )
+            return to_scannable(_arrow_from_pandas(data))
 
     if "polars" in sys.modules and "polars" not in _registered_modules:
         _registered_modules.add("polars")
         import polars as pl
+
+        @to_arrow.register(pl.DataFrame)
+        def _arrow_from_polars(data: pl.DataFrame) -> pa.Table:
+            return data.to_arrow()
 
         @to_scannable.register(pl.DataFrame)
         def _from_polars(data: pl.DataFrame) -> Scannable:
