@@ -3,12 +3,12 @@
 
 
 from functools import cached_property
-from typing import Union
+from typing import List, Union
 
 import pyarrow as pa
 
 from ..util import attempt_import_or_raise
-from .base import Reranker
+from .base import Reranker, RerankableResult
 
 
 class CrossEncoderReranker(Reranker):
@@ -65,52 +65,36 @@ class CrossEncoderReranker(Reranker):
 
         return cross_encoder
 
-    def _rerank(self, result_set: pa.Table, query: str):
-        result_set = self._handle_empty_results(result_set)
-        if len(result_set) == 0:
-            return result_set
-        passages = result_set[self.column].to_pylist()
-        cross_inp = [[query, passage] for passage in passages]
-        cross_scores = self.model.predict(cross_inp)
-        result_set = result_set.append_column(
-            "_relevance_score", pa.array(cross_scores, type=pa.float32())
-        )
+    def needs_columns(self):
+        return [self.column]
 
-        return result_set
-
-    def rerank_hybrid(
+    def compute_scores(
         self,
         query: str,
-        vector_results: pa.Table,
-        fts_results: pa.Table,
-    ):
-        if self.score == "all":
-            combined_results = self._merge_and_keep_scores(vector_results, fts_results)
-        else:
-            combined_results = self.merge_results(vector_results, fts_results)
-        combined_results = self._rerank(combined_results, query)
-        # sort the results by _score
-        if self.score == "relevance":
-            combined_results = self._keep_relevance_score(combined_results)
+        results: List[RerankableResult],
+    ) -> List[pa.Array]:
+        # Merge all result tables, deduplicate, score with cross-encoder
+        tables = [r.data for r in results]
+        merged = pa.concat_tables(tables, **self._concat_tables_args)
+        if "_rowid" in merged.column_names:
+            merged = self._deduplicate(merged)
 
-        combined_results = combined_results.sort_by(
-            [("_relevance_score", "descending")]
-        )
+        if len(merged) == 0:
+            return [pa.array([], type=pa.float32()) for _ in results]
 
-        return combined_results
+        passages = merged[self.column].to_pylist()
+        cross_inp = [[query, passage] for passage in passages]
+        cross_scores = self.model.predict(cross_inp)
+        merged_scores = {
+            passage: float(score)
+            for passage, score in zip(passages, cross_scores)
+        }
 
-    def rerank_vector(self, query: str, vector_results: pa.Table):
-        vector_results = self._rerank(vector_results, query)
-        if self.score == "relevance":
-            vector_results = vector_results.drop_columns(["_distance"])
+        # Map scores back to each input result set
+        score_arrays = []
+        for result in results:
+            texts = result.data[self.column].to_pylist()
+            scores = [merged_scores.get(t, 0.0) for t in texts]
+            score_arrays.append(pa.array(scores, type=pa.float32()))
 
-        vector_results = vector_results.sort_by([("_relevance_score", "descending")])
-        return vector_results
-
-    def rerank_fts(self, query: str, fts_results: pa.Table):
-        fts_results = self._rerank(fts_results, query)
-        if self.score == "relevance":
-            fts_results = fts_results.drop_columns(["_score"])
-
-        fts_results = fts_results.sort_by([("_relevance_score", "descending")])
-        return fts_results
+        return score_arrays

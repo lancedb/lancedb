@@ -5,12 +5,12 @@
 import json
 import os
 from functools import cached_property
-from typing import Optional
+from typing import List, Optional
 
 import pyarrow as pa
 
 from ..util import attempt_import_or_raise
-from .base import Reranker
+from .base import Reranker, RerankableResult
 
 
 class OpenaiReranker(Reranker):
@@ -46,11 +46,35 @@ class OpenaiReranker(Reranker):
     def __str__(self):
         return f"OpenaiReranker(model_name={self.model_name})"
 
-    def _rerank(self, result_set: pa.Table, query: str):
-        result_set = self._handle_empty_results(result_set)
-        if len(result_set) == 0:
-            return result_set
-        docs = result_set[self.column].to_pylist()
+    @cached_property
+    def _client(self):
+        openai = attempt_import_or_raise(
+            "openai"
+        )  # TODO: force version or handle versions < 1.0
+        if os.environ.get("OPENAI_API_KEY") is None and self.api_key is None:
+            raise ValueError(
+                "OPENAI_API_KEY not set. Either set it in your environment or \
+                pass it as `api_key` argument to the CohereReranker."
+            )
+        return openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY") or self.api_key)
+
+    def needs_columns(self):
+        return [self.column]
+
+    def compute_scores(
+        self,
+        query: str,
+        results: List[RerankableResult],
+    ) -> List[pa.Array]:
+        tables = [r.data for r in results]
+        merged = pa.concat_tables(tables, **self._concat_tables_args)
+        if "_rowid" in merged.column_names:
+            merged = self._deduplicate(merged)
+
+        if len(merged) == 0:
+            return [pa.array([], type=pa.float32()) for _ in results]
+
+        docs = merged[self.column].to_pylist()
         response = self._client.chat.completions.create(
             model=self.model_name,
             response_format={"type": "json_object"},
@@ -69,64 +93,15 @@ class OpenaiReranker(Reranker):
                 {"role": "user", "content": f"Query: {query} Docs: {docs}"},
             ],
         )
-        results = json.loads(response.choices[0].message.content)["documents"]
-        docs, scores = list(
-            zip(*[(result["content"], result["relevance_score"]) for result in results])
-        )  # tuples
-        # replace the self.column column with the docs
-        result_set = result_set.drop(self.column)
-        result_set = result_set.append_column(
-            self.column, pa.array(docs, type=pa.string())
-        )
-        # add the scores
-        result_set = result_set.append_column(
-            "_relevance_score", pa.array(scores, type=pa.float32())
-        )
+        api_results = json.loads(response.choices[0].message.content)["documents"]
+        text_to_score = {
+            r["content"]: float(r["relevance_score"]) for r in api_results
+        }
 
-        return result_set
+        score_arrays = []
+        for result in results:
+            texts = result.data[self.column].to_pylist()
+            scores = [text_to_score.get(t, 0.0) for t in texts]
+            score_arrays.append(pa.array(scores, type=pa.float32()))
 
-    def rerank_hybrid(
-        self,
-        query: str,
-        vector_results: pa.Table,
-        fts_results: pa.Table,
-    ):
-        if self.score == "all":
-            combined_results = self._merge_and_keep_scores(vector_results, fts_results)
-        else:
-            combined_results = self.merge_results(vector_results, fts_results)
-        combined_results = self._rerank(combined_results, query)
-        if self.score == "relevance":
-            combined_results = self._keep_relevance_score(combined_results)
-
-        combined_results = combined_results.sort_by(
-            [("_relevance_score", "descending")]
-        )
-
-        return combined_results
-
-    def rerank_vector(self, query: str, vector_results: pa.Table):
-        vector_results = self._rerank(vector_results, query)
-        if self.score == "relevance":
-            vector_results = vector_results.drop_columns(["_distance"])
-        vector_results = vector_results.sort_by([("_relevance_score", "descending")])
-        return vector_results
-
-    def rerank_fts(self, query: str, fts_results: pa.Table):
-        fts_results = self._rerank(fts_results, query)
-        if self.score == "relevance":
-            fts_results = fts_results.drop_columns(["_score"])
-        fts_results = fts_results.sort_by([("_relevance_score", "descending")])
-        return fts_results
-
-    @cached_property
-    def _client(self):
-        openai = attempt_import_or_raise(
-            "openai"
-        )  # TODO: force version or handle versions < 1.0
-        if os.environ.get("OPENAI_API_KEY") is None and self.api_key is None:
-            raise ValueError(
-                "OPENAI_API_KEY not set. Either set it in your environment or \
-                pass it as `api_key` argument to the CohereReranker."
-            )
-        return openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY") or self.api_key)
+        return score_arrays
