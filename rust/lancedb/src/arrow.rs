@@ -155,9 +155,7 @@ impl IntoArrowStream for SendableRecordBatchStream {
 impl IntoArrowStream for datafusion_physical_plan::SendableRecordBatchStream {
     fn into_arrow(self) -> Result<SendableRecordBatchStream> {
         let schema = self.schema();
-        let stream = self.map_err(|df_err| Error::Runtime {
-            message: df_err.to_string(),
-        });
+        let stream = self.map_err(|df_err| df_err.into());
         Ok(Box::pin(SimpleRecordBatchStream::new(stream, schema)))
     }
 }

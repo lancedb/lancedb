@@ -4,6 +4,7 @@
 use std::sync::PoisonError;
 
 use arrow_schema::ArrowError;
+use datafusion_common::DataFusionError;
 use snafu::Snafu;
 
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -101,6 +102,26 @@ impl From<ArrowError> for Error {
                 Err(source) => Self::External { source },
             },
             _ => Self::Arrow { source },
+        }
+    }
+}
+
+impl From<DataFusionError> for Error {
+    fn from(source: DataFusionError) -> Self {
+        match source {
+            DataFusionError::ArrowError(source, _) => (*source).into(),
+            DataFusionError::External(source) => match source.downcast::<Self>() {
+                Ok(e) => *e,
+                Err(source) => match source.downcast::<ArrowError>() {
+                    Ok(arrow_error) => Self::Arrow {
+                        source: *arrow_error,
+                    },
+                    Err(source) => Self::External { source },
+                },
+            },
+            other => Self::External {
+                source: Box::new(other),
+            },
         }
     }
 }

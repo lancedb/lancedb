@@ -52,7 +52,7 @@ impl ScannableExec {
 
 impl DisplayAs for ScannableExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
-        todo!()
+        write!(f, "ScannableExec: num_rows={:?}", self.num_rows)
     }
 }
 
