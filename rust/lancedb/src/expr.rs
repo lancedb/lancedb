@@ -9,11 +9,12 @@
 //! # Examples
 //!
 //! ```rust
+//! use std::ops::Mul;
 //! use lancedb::expr::{col, lit};
 //!
 //! let expr = col("age").gt(lit(18));
 //! let expr = col("age").gt(lit(18)).and(col("status").eq(lit("active")));
-//! let expr = col("price").mul(lit(1.1));
+//! let expr = col("price") * lit(1.1);
 //! ```
 
 mod sql;
