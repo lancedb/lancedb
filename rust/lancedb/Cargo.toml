@@ -146,10 +146,6 @@ required-features = ["bedrock"]
 
 [[example]]
 name = "simple"
-
-[[example]]
-name = "expr_api"
-
 [[example]]
 name = "full_text_search"
 
