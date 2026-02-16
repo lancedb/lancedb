@@ -171,7 +171,7 @@ async fn local_add_table_new(
         Arc::new(ScannableExec::new(add.data));
 
     let ds_wrapper = slf.dataset.clone();
-    let ds = Arc::new(ds_wrapper.get().await?.clone());
+    let ds = Arc::new(ds_wrapper.get_mut().await?.clone());
 
     let table_schema = Schema::from(&ds.schema().clone());
     let plan = cast_to_table_schema(plan, &table_schema)?;
