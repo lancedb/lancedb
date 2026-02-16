@@ -110,7 +110,9 @@ pub async fn local_add_table(slf: &NativeTable, add: AddDataBuilder) -> Result<A
         .iter()
         .any(|cd| matches!(cd.kind, super::ColumnKind::Embedding(_)));
 
-    if can_use_datafusion(&add, has_embeddings) {
+    let schema = slf.schema().await?;
+
+    if can_use_datafusion(&add, &schema, has_embeddings) {
         let lance_params = add
             .write_options
             .lance_write_params
@@ -176,7 +178,11 @@ async fn local_add_table_new(
     Ok(AddResult { version })
 }
 
-fn can_use_datafusion(builder: &AddDataBuilder, has_embeddings: bool) -> bool {
+fn can_use_datafusion(
+    builder: &AddDataBuilder,
+    table_schema: &Schema,
+    has_embeddings: bool,
+) -> bool {
     builder.data.rescannable()
         && !has_embeddings
         && matches!(builder.mode, AddDataMode::Append)
