@@ -146,6 +146,7 @@ required-features = ["bedrock"]
 
 [[example]]
 name = "simple"
+
 [[example]]
 name = "full_text_search"
 
