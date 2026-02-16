@@ -206,12 +206,19 @@ impl DatasetConsistencyWrapper {
 
     pub async fn reload(&self) -> Result<()> {
         if !self.0.read().await.need_reload().await? {
+            let mut write_guard = self.0.write().await;
+            if let DatasetRef::Latest { last_consistency_check, .. } = &mut *write_guard {
+                last_consistency_check.replace(Instant::now());
+            }
             return Ok(());
         }
 
         let mut write_guard = self.0.write().await;
         // on lock escalation -- check if someone else has already reloaded
         if !write_guard.need_reload().await? {
+            if let DatasetRef::Latest { last_consistency_check, .. } = &mut *write_guard {
+                last_consistency_check.replace(Instant::now());
+            }
             return Ok(());
         }
 
@@ -350,5 +357,62 @@ mod tests {
         table.schema().await.unwrap();
         let stats = io_stats.incremental_stats();
         assert_eq!(stats.read_iops, 1);
+    }
+
+    /// Regression test: before the fix, the reload fast-path (no version change)
+    /// did not reset `last_consistency_check`, causing a list call on every
+    /// subsequent query once the interval expired.
+    #[tokio::test]
+    async fn test_reload_resets_consistency_timer() {
+        let db = connect("memory://")
+            .read_consistency_interval(Duration::from_secs(1))
+            .execute()
+            .await
+            .unwrap();
+        let io_stats = IoStatsHolder::default();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let table = db
+            .create_empty_table("test", schema)
+            .write_options(WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    store_params: Some(ObjectStoreParams {
+                        object_store_wrapper: Some(Arc::new(io_stats.clone())),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let start = Instant::now();
+        io_stats.incremental_stats(); // reset
+
+        // Step 1: within interval — no list
+        table.schema().await.unwrap();
+        let s = io_stats.incremental_stats();
+        assert_eq!(s.read_iops, 0, "step 1, elapsed={:?}", start.elapsed());
+
+        // Step 2: still within interval — no list
+        table.schema().await.unwrap();
+        let s = io_stats.incremental_stats();
+        assert_eq!(s.read_iops, 0, "step 2, elapsed={:?}", start.elapsed());
+
+        // Step 3: sleep past the 1s boundary
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // Step 4: interval expired — exactly 1 list, timer resets
+        table.schema().await.unwrap();
+        let s = io_stats.incremental_stats();
+        assert_eq!(s.read_iops, 1, "step 4, elapsed={:?}", start.elapsed());
+
+        // Step 5: 10 more calls — timer just reset, no lists (THIS is the regression test).
+        // Before the fix, each call would trigger a list (read_iops == 10).
+        for _ in 0..10 {
+            table.schema().await.unwrap();
+        }
+        let s = io_stats.incremental_stats();
+        assert_eq!(s.read_iops, 0, "step 5, elapsed={:?}", start.elapsed());
     }
 }
