@@ -211,11 +211,7 @@ impl DatasetConsistencyWrapper {
     }
 
     pub async fn reload(&self) -> Result<()> {
-        let mut write_guard = self.0.write().await;
-        if !write_guard.is_up_to_date() {
-            write_guard.reload().await?;
-        }
-        Ok(())
+        self.0.write().await.reload().await
     }
 
     /// Returns the version, if in time travel mode, or None otherwise
@@ -242,7 +238,12 @@ impl DatasetConsistencyWrapper {
     /// version parameters.
     async fn ensure_up_to_date(&self) -> Result<()> {
         if !self.is_up_to_date().await {
-            self.reload().await?;
+            // Re-check under write lock — another task may have reloaded
+            // while we waited for the lock.
+            let mut write_guard = self.0.write().await;
+            if !write_guard.is_up_to_date() {
+                write_guard.reload().await?;
+            }
         }
         Ok(())
     }
