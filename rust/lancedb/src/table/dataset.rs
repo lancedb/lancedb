@@ -57,15 +57,6 @@ impl DatasetRef {
         matches!(self, Self::Latest { .. })
     }
 
-    async fn need_reload(&self) -> Result<bool> {
-        Ok(match self {
-            Self::Latest { dataset, .. } => {
-                dataset.latest_version_id().await? != dataset.version().version
-            }
-            Self::TimeTravel { dataset, version } => dataset.version().version != *version,
-        })
-    }
-
     async fn as_latest(&mut self, read_consistency_interval: Option<Duration>) -> Result<()> {
         match self {
             Self::Latest { .. } => Ok(()),
@@ -205,33 +196,7 @@ impl DatasetConsistencyWrapper {
     }
 
     pub async fn reload(&self) -> Result<()> {
-        if !self.0.read().await.need_reload().await? {
-            let mut write_guard = self.0.write().await;
-            if let DatasetRef::Latest {
-                last_consistency_check,
-                ..
-            } = &mut *write_guard
-            {
-                last_consistency_check.replace(Instant::now());
-            }
-            return Ok(());
-        }
-
-        let mut write_guard = self.0.write().await;
-        // on lock escalation -- check if someone else has already reloaded
-        if !write_guard.need_reload().await? {
-            if let DatasetRef::Latest {
-                last_consistency_check,
-                ..
-            } = &mut *write_guard
-            {
-                last_consistency_check.replace(Instant::now());
-            }
-            return Ok(());
-        }
-
-        // actually need reloading
-        write_guard.reload().await
+        self.0.write().await.reload().await
     }
 
     /// Returns the version, if in time travel mode, or None otherwise
