@@ -109,6 +109,21 @@ impl DatasetRef {
         Ok(())
     }
 
+    fn is_up_to_date(&self) -> bool {
+        match self {
+            Self::Latest {
+                read_consistency_interval,
+                last_consistency_check,
+                ..
+            } => match (read_consistency_interval, last_consistency_check) {
+                (None, _) => true,
+                (Some(_), None) => false,
+                (Some(interval), Some(last_check)) => last_check.elapsed() < *interval,
+            },
+            Self::TimeTravel { dataset, version } => dataset.version().version == *version,
+        }
+    }
+
     fn time_travel_version(&self) -> Option<u64> {
         match self {
             Self::Latest { .. } => None,
@@ -196,7 +211,11 @@ impl DatasetConsistencyWrapper {
     }
 
     pub async fn reload(&self) -> Result<()> {
-        self.0.write().await.reload().await
+        let mut write_guard = self.0.write().await;
+        if !write_guard.is_up_to_date() {
+            write_guard.reload().await?;
+        }
+        Ok(())
     }
 
     /// Returns the version, if in time travel mode, or None otherwise
@@ -215,34 +234,14 @@ impl DatasetConsistencyWrapper {
         }
     }
 
-    async fn is_up_to_date(&self) -> Result<bool> {
-        let dataset_ref = self.0.read().await;
-        match &*dataset_ref {
-            DatasetRef::Latest {
-                read_consistency_interval,
-                last_consistency_check,
-                ..
-            } => match (read_consistency_interval, last_consistency_check) {
-                (None, _) => Ok(true),
-                (Some(_), None) => Ok(false),
-                (Some(read_consistency_interval), Some(last_consistency_check)) => {
-                    if &last_consistency_check.elapsed() < read_consistency_interval {
-                        Ok(true)
-                    } else {
-                        Ok(false)
-                    }
-                }
-            },
-            DatasetRef::TimeTravel { dataset, version } => {
-                Ok(dataset.version().version == *version)
-            }
-        }
+    async fn is_up_to_date(&self) -> bool {
+        self.0.read().await.is_up_to_date()
     }
 
     /// Ensures that the dataset is loaded and up-to-date with consistency and
     /// version parameters.
     async fn ensure_up_to_date(&self) -> Result<()> {
-        if !self.is_up_to_date().await? {
+        if !self.is_up_to_date().await {
             self.reload().await?;
         }
         Ok(())
