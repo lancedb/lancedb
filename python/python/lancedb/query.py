@@ -1790,8 +1790,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
                 [vector_results.schema, fts_results.schema],
             )
             empty = pa.table(
-                {col: pa.array([], type=combined_schema.field(col).type)
-                 for col in combined_schema.names}
+                {
+                    col: pa.array([], type=combined_schema.field(col).type)
+                    for col in combined_schema.names
+                }
             )
             empty = empty.append_column(
                 "_relevance_score", pa.array([], type=pa.float32())
