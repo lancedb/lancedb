@@ -3750,6 +3750,8 @@ class AsyncTable:
         except RuntimeError as e:
             if "Cast error" in str(e):
                 raise ValueError(e)
+            elif "Vector column contains NaN" in str(e):
+                raise ValueError(e)
             else:
                 raise
 

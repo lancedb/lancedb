@@ -75,7 +75,10 @@ impl Table {
             .into_iter()
             .map(|batch| {
                 batch.map_err(|e| {
-                    napi::Error::from_reason(format!("Failed to read record batch from IPC file: {}", e))
+                    napi::Error::from_reason(format!(
+                        "Failed to read record batch from IPC file: {}",
+                        e
+                    ))
                 })
             })
             .collect::<Result<Vec<_>>>()?;

@@ -13,6 +13,7 @@ use crate::data::scannable::scannable_with_embeddings;
 use crate::embeddings::EmbeddingRegistry;
 use crate::table::datafusion::cast::cast_to_table_schema;
 use crate::table::datafusion::insert::InsertExec;
+use crate::table::datafusion::reject_nan::reject_nan_vectors;
 use crate::table::datafusion::scannable_exec::ScannableExec;
 use crate::{data::scannable::Scannable, table::NativeTable};
 use crate::{Error, Result};
@@ -175,6 +176,11 @@ async fn local_add_table_new(
 
     let table_schema = Schema::from(&ds.schema().clone());
     let plan = cast_to_table_schema(plan, &table_schema)?;
+
+    let plan = match add.on_nan_vectors {
+        NaNVectorBehavior::Error => reject_nan_vectors(plan)?,
+        NaNVectorBehavior::Keep => plan,
+    };
 
     let plan = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
 
@@ -624,9 +630,10 @@ mod tests {
         )
         .unwrap();
         let res = table.add(batch.clone()).execute().await;
+        let err = res.unwrap_err();
         assert!(
-            matches!(res, Err(Error::Arrow { .. })),
-            "Expected error due to NaN values in vectors, but got: {res:?}"
+            err.to_string().contains("NaN"),
+            "Expected error mentioning NaN values, but got: {err:?}"
         );
 
         table
