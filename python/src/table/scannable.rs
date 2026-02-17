@@ -64,14 +64,14 @@ impl Scannable for PyScannable {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
 
         tokio::task::spawn_blocking(move || {
-            let mut reader = match reader {
+            let reader = match reader {
                 Ok(reader) => reader,
                 Err(e) => {
                     let _ = tx.blocking_send(Err(e));
                     return;
                 }
             };
-            while let Some(batch) = reader.next() {
+            for batch in reader {
                 match batch {
                     Ok(batch) => {
                         if tx.blocking_send(Ok(batch)).is_err() {
