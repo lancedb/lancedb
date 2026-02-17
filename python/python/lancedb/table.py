@@ -3745,7 +3745,13 @@ class AsyncTable:
             )
         _register_optional_converters()
         data = to_scannable(data)
-        return await self._inner.add(data, mode or "append")
+        try:
+            return await self._inner.add(data, mode or "append")
+        except RuntimeError as e:
+            if "Cast error" in str(e):
+                raise ValueError(e)
+            else:
+                raise
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """

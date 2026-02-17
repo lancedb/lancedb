@@ -596,7 +596,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // TODO: implement this later
     async fn test_add_rejects_nan_vectors() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "embedding",

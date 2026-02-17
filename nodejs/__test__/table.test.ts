@@ -219,6 +219,35 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       },
     );
 
+    it("should error on invalid vectors by default", async () => {
+      const db = await connect(tmpDir.name);
+      const schema = new arrow.Schema([
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(
+            2,
+            new arrow.Field("item", new arrow.Float64()),
+          ),
+          true,
+        ),
+      ]);
+      const table = await db.createEmptyTable("test", schema);
+
+      const badData = [
+        { vector: [3.1] },
+        { vector: [3.1, 4.1, 5.1] },
+        { vector: [NaN, NaN] },
+        { vector: [NaN] },
+        { vector: [NaN, 4.1] },
+      ];
+
+      for (const data of badData) {
+        await expect(table.add([data])).rejects.toThrow(
+          "Invalid vector dimension",
+        );
+      }
+    });
+
     it("should be able to omit nullable fields", async () => {
       const db = await connect(tmpDir.name);
       const schema = new arrow.Schema([
