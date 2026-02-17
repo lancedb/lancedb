@@ -79,7 +79,6 @@ impl AddDataBuilder {
             mode: AddDataMode::Append,
             write_options: WriteOptions::default(),
             on_nan_vectors: NaNVectorBehavior::default(),
-
             embedding_registry,
         }
     }
