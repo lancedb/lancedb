@@ -7,7 +7,9 @@ use std::time::Duration;
 use arrow_array::RecordBatchReader;
 use futures::future::Either;
 use futures::{FutureExt, TryFutureExt};
-use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenMatched, WhenNotMatchedBySource};
+use lance::dataset::{
+    MergeInsertBuilder as LanceMergeInsertBuilder, WhenMatched, WhenNotMatchedBySource,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
