@@ -879,13 +879,14 @@ def test_add_with_nans(mem_db: DBConnection):
     table.add(
         [
             {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [2.1, 4.1], "item": "foo", "price": 9.0},
             {"vector": [np.nan], "item": "bar", "price": 20.0},
             {"vector": [5], "item": "bar", "price": 20.0},
             {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
         ],
         on_bad_vectors="drop",
     )
-    assert len(table) == 1
+    assert len(table) == 2
     table.delete("true")
 
     # We can fill bad input with some value
