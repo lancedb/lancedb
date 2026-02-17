@@ -519,7 +519,10 @@ def test_openai_propagates_api_key(monkeypatch):
 
 @patch("time.sleep")
 def test_openai_no_retry_on_401(mock_sleep):
-    """Test that OpenAI embedding function does not retry on 401 authentication errors."""
+    """
+    Test that OpenAI embedding function does not retry on 401 authentication
+    errors.
+    """
     from lancedb.embeddings.utils import retry_with_exponential_backoff
 
     # Create a mock that raises an AuthenticationError
