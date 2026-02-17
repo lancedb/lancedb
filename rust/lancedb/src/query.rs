@@ -359,6 +359,28 @@ pub trait QueryBase {
     /// on the filter column(s).
     fn only_if(self, filter: impl AsRef<str>) -> Self;
 
+    /// Only return rows which match the filter, using an expression builder.
+    ///
+    /// Use [`crate::expr`] for building type-safe expressions:
+    ///
+    /// ```
+    /// use lancedb::expr::{col, lit};
+    /// use lancedb::query::{QueryBase, ExecutableQuery};
+    ///
+    /// # use lancedb::Table;
+    /// # async fn query(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let results = table.query()
+    ///     .only_if_expr(col("age").gt(lit(18)).and(col("status").eq(lit("active"))))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Note: Expression filters are not supported for remote/server-side queries.
+    /// Use [`QueryBase::only_if`] with SQL strings for remote tables.
+    fn only_if_expr(self, filter: datafusion_expr::Expr) -> Self;
+
     /// Perform a full text search on the table.
     ///
     /// The results will be returned in order of BM25 scores.
@@ -465,6 +487,11 @@ impl<T: HasQuery> QueryBase for T {
 
     fn only_if(mut self, filter: impl AsRef<str>) -> Self {
         self.mut_query().filter = Some(QueryFilter::Sql(filter.as_ref().to_string()));
+        self
+    }
+
+    fn only_if_expr(mut self, filter: datafusion_expr::Expr) -> Self {
+        self.mut_query().filter = Some(QueryFilter::Datafusion(filter));
         self
     }
 

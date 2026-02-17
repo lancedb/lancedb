@@ -54,6 +54,7 @@ use crate::data::scannable::{scannable_with_embeddings, Scannable};
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::expr::expr_to_sql_string;
 use crate::index::vector::VectorIndex;
 use crate::index::IndexStatistics;
 use crate::index::{vector::suggested_num_sub_vectors, Index, IndexBuilder};
@@ -2087,9 +2088,7 @@ impl NativeTable {
             QueryFilter::Substrait(_) => Err(Error::NotSupported {
                 message: "Substrait filters are not supported for server-side queries".to_string(),
             }),
-            QueryFilter::Datafusion(_) => Err(Error::NotSupported {
-                message: "Datafusion expression filters are not supported for server-side queries. Use SQL filter instead.".to_string(),
-            }),
+            QueryFilter::Datafusion(expr) => expr_to_sql_string(expr),
         }
     }
 

@@ -169,6 +169,7 @@ pub mod database;
 pub mod dataloader;
 pub mod embeddings;
 pub mod error;
+pub mod expr;
 pub mod index;
 pub mod io;
 pub mod ipc;
