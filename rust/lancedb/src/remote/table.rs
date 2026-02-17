@@ -3,11 +3,18 @@
 
 pub mod insert;
 
+use super::client::RequestResultExt;
+use super::client::{HttpSend, RestfulLanceDbClient, Sender};
+use super::db::ServerVersion;
+use super::util::stream_as_body;
+use super::ARROW_STREAM_CONTENT_TYPE;
 use crate::data::scannable::Scannable;
+use crate::index::waiter::wait_for_index;
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::remote::util::stream_as_ipc;
+use crate::table::query::create_multi_vector_plan;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::AlterColumnsResult;
@@ -18,7 +25,16 @@ use crate::table::Tags;
 use crate::table::UpdateResult;
 use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
-use crate::{DistanceType, Error, Table};
+use crate::{
+    error::Result,
+    index::{IndexBuilder, IndexConfig},
+    query::QueryExecutionOptions,
+    table::{
+        merge::MergeInsertBuilder, AddDataBuilder, BaseTable, OptimizeAction, OptimizeStats,
+        TableDefinition, UpdateBuilder,
+    },
+};
+use crate::{DistanceType, Error};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
@@ -44,22 +60,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-
-use super::client::RequestResultExt;
-use super::client::{HttpSend, RestfulLanceDbClient, Sender};
-use super::db::ServerVersion;
-use super::util::stream_as_body;
-use super::ARROW_STREAM_CONTENT_TYPE;
-use crate::index::waiter::wait_for_index;
-use crate::{
-    error::Result,
-    index::{IndexBuilder, IndexConfig},
-    query::QueryExecutionOptions,
-    table::{
-        merge::MergeInsertBuilder, AddDataBuilder, BaseTable, OptimizeAction, OptimizeStats,
-        TableDefinition, UpdateBuilder,
-    },
-};
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 const METRIC_TYPE_KEY: &str = "metric_type";
@@ -1309,7 +1309,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 .into_iter()
                 .map(|stream| Arc::new(OneShotExec::new(stream)) as Arc<dyn ExecutionPlan>)
                 .collect();
-            Table::multi_vector_plan(stream_execs)
+            create_multi_vector_plan(stream_execs)
         }
     }
 
@@ -1329,7 +1329,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 .into_iter()
                 .map(|stream| Arc::new(OneShotExec::new(stream)) as Arc<dyn ExecutionPlan>)
                 .collect();
-            let plan = Table::multi_vector_plan(stream_execs)?;
+            let plan = create_multi_vector_plan(stream_execs)?;
 
             Ok(DatasetRecordBatchStream::new(execute_plan(
                 plan,
