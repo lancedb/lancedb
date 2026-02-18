@@ -724,12 +724,58 @@ pub mod test_utils {
         }
     }
 
+    /// Consume a reqwest body into bytes, returning an error if the body
+    /// stream fails. This is used by MockSender to materialize streaming
+    /// bodies so that data pipeline errors (e.g. NaN rejection) are triggered
+    /// during mock sends just as they would be during a real HTTP upload.
+    pub async fn try_collect_body(body: reqwest::Body) -> std::result::Result<Vec<u8>, String> {
+        use http_body::Body;
+        use std::pin::Pin;
+
+        let mut body = body;
+        let mut data = Vec::new();
+        let mut body_pin = Pin::new(&mut body);
+        while let Some(frame) = futures::StreamExt::next(&mut futures::stream::poll_fn(|cx| {
+            body_pin.as_mut().poll_frame(cx)
+        }))
+        .await
+        {
+            match frame {
+                Ok(frame) => {
+                    if let Some(bytes) = frame.data_ref() {
+                        data.extend_from_slice(bytes);
+                    }
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Ok(data)
+    }
+
     impl HttpSend for MockSender {
         async fn send(
             &self,
             _client: &reqwest::Client,
-            request: reqwest::Request,
+            mut request: reqwest::Request,
         ) -> reqwest::Result<reqwest::Response> {
+            // Consume any streaming body to materialize it into bytes.
+            // This triggers data pipeline errors (e.g. NaN rejection) that
+            // would otherwise only fire when a real HTTP client reads the body.
+            if let Some(body) = request.body_mut().take() {
+                match try_collect_body(body).await {
+                    Ok(bytes) => {
+                        *request.body_mut() = Some(reqwest::Body::from(bytes));
+                    }
+                    Err(msg) => {
+                        // Simulate a failed request by returning a 500 response.
+                        return Ok(http::Response::builder()
+                            .status(500)
+                            .body(msg)
+                            .unwrap()
+                            .into());
+                    }
+                }
+            }
             let response = (self.f)(request);
             Ok(response)
         }

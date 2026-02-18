@@ -67,7 +67,9 @@ pub mod query;
 pub mod schema_evolution;
 pub mod update;
 use crate::index::waiter::wait_for_index;
-pub use add_data::{AddDataBuilder, AddDataMode, AddResult};
+#[cfg(feature = "remote")]
+pub(crate) use add_data::build_preprocessing_plan;
+pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;

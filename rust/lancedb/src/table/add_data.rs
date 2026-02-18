@@ -53,7 +53,7 @@ pub struct AddDataBuilder {
     pub(crate) data: Box<dyn Scannable>,
     pub(crate) mode: AddDataMode,
     pub(crate) write_options: WriteOptions,
-    on_nan_vectors: NaNVectorBehavior,
+    pub(crate) on_nan_vectors: NaNVectorBehavior,
     pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
 }
 
@@ -162,24 +162,31 @@ pub async fn local_add_table(slf: &NativeTable, add: AddDataBuilder) -> Result<A
     Ok(AddResult { version })
 }
 
+/// Build a DataFusion plan that casts data to the table schema and optionally
+/// rejects NaN vectors. Used by both local and remote add paths.
+pub fn build_preprocessing_plan(
+    data: Box<dyn Scannable>,
+    table_schema: &Schema,
+    on_nan_vectors: NaNVectorBehavior,
+) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
+    let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> = Arc::new(ScannableExec::new(data));
+    let plan = cast_to_table_schema(plan, table_schema)?;
+    match on_nan_vectors {
+        NaNVectorBehavior::Error => reject_nan_vectors(plan),
+        NaNVectorBehavior::Keep => Ok(plan),
+    }
+}
+
 async fn local_add_table_new(
     slf: &NativeTable,
     add: AddDataBuilder,
     lance_params: WriteParams,
 ) -> Result<AddResult> {
-    let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> =
-        Arc::new(ScannableExec::new(add.data));
-
     let ds_wrapper = slf.dataset.clone();
     let ds = Arc::new(ds_wrapper.get_mut().await?.clone());
 
     let table_schema = Schema::from(&ds.schema().clone());
-    let plan = cast_to_table_schema(plan, &table_schema)?;
-
-    let plan = match add.on_nan_vectors {
-        NaNVectorBehavior::Error => reject_nan_vectors(plan)?,
-        NaNVectorBehavior::Keep => plan,
-    };
+    let plan = build_preprocessing_plan(add.data, &table_schema, add.on_nan_vectors)?;
 
     let plan = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
 
