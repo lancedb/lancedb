@@ -1252,6 +1252,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let overwrite = matches!(add.mode, AddDataMode::Overwrite);
 
         if crate::table::can_use_datafusion(&add, false) {
+            use crate::remote::retry::RetryCounter;
+
+            let rescannable = add.data.rescannable();
             let table_schema = self.schema().await?;
             let plan = crate::table::build_preprocessing_plan(
                 add.data,
@@ -1259,7 +1262,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 add.on_nan_vectors,
             )?;
 
-            let insert = Arc::new(RemoteInsertExec::new(
+            let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
                 self.name.clone(),
                 self.identifier.clone(),
                 self.client.clone(),
@@ -1267,16 +1270,50 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 overwrite,
             ));
 
-            let stream = execute_plan(insert.clone(), Default::default())?;
-            stream.try_collect::<Vec<_>>().await.map_err(Error::from)?;
+            let mut retry_counter =
+                RetryCounter::new(&self.client.retry_config, "insert".to_string());
 
-            let add_result = insert.add_result().unwrap_or(AddResult { version: 0 });
+            loop {
+                let stream = execute_plan(insert.clone(), Default::default())?;
+                let result: Result<Vec<_>> = stream.try_collect().await.map_err(Error::from);
 
-            if overwrite {
-                self.invalidate_schema_cache();
+                match result {
+                    Ok(_) => {
+                        let add_result = insert
+                            .as_any()
+                            .downcast_ref::<RemoteInsertExec<S>>()
+                            .and_then(|i| i.add_result())
+                            .unwrap_or(AddResult { version: 0 });
+
+                        if overwrite {
+                            self.invalidate_schema_cache();
+                        }
+
+                        return Ok(add_result);
+                    }
+                    Err(err) if rescannable => {
+                        let status_code = match &err {
+                            Error::Http { status_code, .. } => *status_code,
+                            _ => None,
+                        };
+
+                        let retryable = status_code
+                            .is_some_and(|s| self.client.retry_config.statuses.contains(&s));
+
+                        if retryable
+                            && retry_counter.request_failures < self.client.retry_config.retries
+                        {
+                            retry_counter.increment_request_failures(err)?;
+                            tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                            insert = insert.reset_state()?;
+                            continue;
+                        }
+
+                        return Err(err);
+                    }
+                    Err(err) => return Err(err),
+                }
             }
-
-            return Ok(add_result);
         }
 
         // Fallback: stream data directly without DataFusion preprocessing.
@@ -4878,7 +4915,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_insert_fails() {
-        // Verify that an insert failure is properly surfaced as an error.
+        // Verify that an HTTP error from the insert endpoint is properly
+        // surfaced with the status code intact. Use 400 (non-retryable).
         let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
         let describe_body = describe_response(&batch.schema());
 
@@ -4889,13 +4927,57 @@ mod tests {
                     .body(describe_body.clone())
                     .unwrap(),
                 "/v1/table/my_table/insert/" => http::Response::builder()
-                    .status(409)
-                    .body("conflict".to_string())
+                    .status(400)
+                    .body("bad request".to_string())
                     .unwrap(),
                 path => panic!("Unexpected request path: {}", path),
             });
 
         let result = table.add(batch).execute().await;
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match &err {
+            Error::Http { status_code, .. } => {
+                assert_eq!(*status_code, Some(reqwest::StatusCode::BAD_REQUEST));
+            }
+            other => panic!("Expected Http error, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_add_retries_on_retryable_status() {
+        // Verify that rescannable data retries on retryable status codes (e.g. 502)
+        // and eventually succeeds.
+        let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
+        let describe_body = describe_response(&batch.schema());
+
+        let attempt = Arc::new(AtomicUsize::new(0));
+        let attempt_clone = attempt.clone();
+
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => {
+                    let n = attempt_clone.fetch_add(1, Ordering::SeqCst);
+                    if n < 2 {
+                        http::Response::builder()
+                            .status(502)
+                            .body("bad gateway".to_string())
+                            .unwrap()
+                    } else {
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"version": 3}"#.to_string())
+                            .unwrap()
+                    }
+                }
+                path => panic!("Unexpected request path: {}", path),
+            });
+
+        let result = table.add(batch).execute().await.unwrap();
+        assert_eq!(result.version, 3);
+        assert_eq!(attempt.load(Ordering::SeqCst), 3);
     }
 }
