@@ -63,7 +63,7 @@ impl Scannable for PyScannable {
         // Reader is blocking but stream is non-blocking, so we need to spawn a task to pull.
         let (tx, rx) = tokio::sync::mpsc::channel(1);
 
-        tokio::task::spawn_blocking(move || {
+        let join_handle = tokio::task::spawn_blocking(move || {
             let reader = match reader {
                 Ok(reader) => reader,
                 Err(e) => {
@@ -88,13 +88,31 @@ impl Scannable for PyScannable {
         });
 
         let schema = self.schema.clone();
-        let stream = futures::stream::unfold(rx, |mut rx| async move {
-            match rx.recv().await {
-                Some(Ok(batch)) => Some((Ok(batch), rx)),
-                Some(Err(e)) => Some((Err(e), rx)),
-                None => None, // Channel closed, end of stream
-            }
-        });
+        let stream = futures::stream::unfold(
+            (rx, Some(join_handle)),
+            |(mut rx, join_handle)| async move {
+                match rx.recv().await {
+                    Some(Ok(batch)) => Some((Ok(batch), (rx, join_handle))),
+                    Some(Err(e)) => Some((Err(e), (rx, join_handle))),
+                    None => {
+                        // Channel closed. Check if the task panicked — a panic
+                        // drops the sender without sending an error, so without
+                        // this check we'd silently return a truncated stream.
+                        if let Some(handle) = join_handle {
+                            if let Err(join_err) = handle.await {
+                                return Some((
+                                    Err(Error::Runtime {
+                                        message: format!("Reader task panicked: {}", join_err),
+                                    }),
+                                    (rx, None),
+                                ));
+                            }
+                        }
+                        None
+                    }
+                }
+            },
+        );
         Box::pin(SimpleRecordBatchStream::new(stream, schema))
     }
 
