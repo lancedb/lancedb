@@ -1260,6 +1260,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 add.data,
                 &table_schema,
                 add.on_nan_vectors,
+                overwrite,
             )?;
 
             let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(

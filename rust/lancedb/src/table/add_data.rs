@@ -168,9 +168,15 @@ pub fn build_preprocessing_plan(
     data: Box<dyn Scannable>,
     table_schema: &Schema,
     on_nan_vectors: NaNVectorBehavior,
+    overwrite: bool,
 ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
     let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> = Arc::new(ScannableExec::new(data));
-    let plan = cast_to_table_schema(plan, table_schema)?;
+    // Skip casting when overwriting — the input schema replaces the table schema.
+    let plan = if overwrite {
+        plan
+    } else {
+        cast_to_table_schema(plan, table_schema)?
+    };
     match on_nan_vectors {
         NaNVectorBehavior::Error => reject_nan_vectors(plan),
         NaNVectorBehavior::Keep => Ok(plan),
@@ -186,7 +192,8 @@ async fn local_add_table_new(
     let ds = Arc::new(ds_wrapper.get_mut().await?.clone());
 
     let table_schema = Schema::from(&ds.schema().clone());
-    let plan = build_preprocessing_plan(add.data, &table_schema, add.on_nan_vectors)?;
+    let overwrite = matches!(lance_params.mode, WriteMode::Overwrite);
+    let plan = build_preprocessing_plan(add.data, &table_schema, add.on_nan_vectors, overwrite)?;
 
     let plan = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
 
@@ -203,12 +210,11 @@ async fn local_add_table_new(
 
 pub fn can_use_datafusion(builder: &AddDataBuilder, has_embeddings: bool) -> bool {
     !has_embeddings
-        && matches!(builder.mode, AddDataMode::Append)
         && builder
             .write_options
             .lance_write_params
             .as_ref()
-            .is_none_or(|p| matches!(p.mode, WriteMode::Append))
+            .is_none_or(|p| matches!(p.mode, WriteMode::Append | WriteMode::Overwrite))
 }
 
 /// Check that the input schema is valid for insert.
