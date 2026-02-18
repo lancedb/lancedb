@@ -18,7 +18,7 @@ use crate::table::datafusion::scannable_exec::ScannableExec;
 use crate::{data::scannable::Scannable, table::NativeTable};
 use crate::{Error, Result};
 
-use super::{BaseTable, WriteOptions};
+use super::{BaseTable, TableDefinition, WriteOptions};
 
 #[derive(Debug, Clone, Default)]
 pub enum AddDataMode {
@@ -101,9 +101,60 @@ impl AddDataBuilder {
     pub async fn execute(self) -> Result<AddResult> {
         self.parent.clone().add(self).await
     }
+
+    /// Build a DataFusion execution plan that applies embeddings, casts data to
+    /// the table schema, and optionally rejects NaN vectors.
+    ///
+    /// Returns the plan along with whether the input is rescannable (for retry
+    /// decisions) and whether this is an overwrite operation.
+    pub(crate) fn into_plan(
+        mut self,
+        table_schema: &Schema,
+        table_def: &TableDefinition,
+    ) -> Result<PreprocessingOutput> {
+        let overwrite = self
+            .write_options
+            .lance_write_params
+            .as_ref()
+            .is_some_and(|p| matches!(p.mode, WriteMode::Overwrite))
+            || matches!(self.mode, AddDataMode::Overwrite);
+
+        self.data =
+            scannable_with_embeddings(self.data, table_def, self.embedding_registry.as_ref())?;
+
+        let rescannable = self.data.rescannable();
+        let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> =
+            Arc::new(ScannableExec::new(self.data));
+        // Skip casting when overwriting — the input schema replaces the table schema.
+        let plan = if overwrite {
+            plan
+        } else {
+            cast_to_table_schema(plan, table_schema)?
+        };
+        let plan = match self.on_nan_vectors {
+            NaNVectorBehavior::Error => reject_nan_vectors(plan)?,
+            NaNVectorBehavior::Keep => plan,
+        };
+
+        Ok(PreprocessingOutput {
+            plan,
+            overwrite,
+            rescannable,
+            write_options: self.write_options,
+            mode: self.mode,
+        })
+    }
 }
 
-pub async fn local_add_table(slf: &NativeTable, mut add: AddDataBuilder) -> Result<AddResult> {
+pub struct PreprocessingOutput {
+    pub plan: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
+    pub overwrite: bool,
+    pub rescannable: bool,
+    pub write_options: WriteOptions,
+    pub mode: AddDataMode,
+}
+
+pub async fn local_add_table(slf: &NativeTable, add: AddDataBuilder) -> Result<AddResult> {
     let table_def = slf.table_definition().await?;
     let schema = slf.schema().await?;
 
@@ -118,27 +169,29 @@ pub async fn local_add_table(slf: &NativeTable, mut add: AddDataBuilder) -> Resu
         validate_schema(&add.data.schema(), &schema)?;
     }
 
-    add.data = scannable_with_embeddings(add.data, &table_def, add.embedding_registry.as_ref())?;
+    let ds_wrapper = slf.dataset.clone();
+    let ds = Arc::new(ds_wrapper.get_mut().await?.clone());
+    let table_schema = Schema::from(&ds.schema().clone());
 
-    let lance_params = add
+    let output = add.into_plan(&table_schema, &table_def)?;
+
+    let lance_params = output
         .write_options
         .lance_write_params
-        .clone()
         .unwrap_or(WriteParams {
-            mode: match add.mode {
+            mode: match output.mode {
                 AddDataMode::Append => WriteMode::Append,
                 AddDataMode::Overwrite => WriteMode::Overwrite,
             },
             ..Default::default()
         });
 
-    let ds_wrapper = slf.dataset.clone();
-    let ds = Arc::new(ds_wrapper.get_mut().await?.clone());
-
-    let table_schema = Schema::from(&ds.schema().clone());
-    let plan = build_preprocessing_plan(add.data, &table_schema, add.on_nan_vectors, is_overwrite)?;
-
-    let plan = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
+    let plan = Arc::new(InsertExec::new(
+        ds_wrapper.clone(),
+        ds,
+        output.plan,
+        lance_params,
+    ));
 
     let stream = execute_plan(plan, Default::default())?;
     stream
@@ -148,27 +201,6 @@ pub async fn local_add_table(slf: &NativeTable, mut add: AddDataBuilder) -> Resu
 
     let version = ds_wrapper.get().await?.manifest().version;
     Ok(AddResult { version })
-}
-
-/// Build a DataFusion plan that casts data to the table schema and optionally
-/// rejects NaN vectors. Used by both local and remote add paths.
-pub fn build_preprocessing_plan(
-    data: Box<dyn Scannable>,
-    table_schema: &Schema,
-    on_nan_vectors: NaNVectorBehavior,
-    overwrite: bool,
-) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
-    let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> = Arc::new(ScannableExec::new(data));
-    // Skip casting when overwriting — the input schema replaces the table schema.
-    let plan = if overwrite {
-        plan
-    } else {
-        cast_to_table_schema(plan, table_schema)?
-    };
-    match on_nan_vectors {
-        NaNVectorBehavior::Error => reject_nan_vectors(plan),
-        NaNVectorBehavior::Keep => Ok(plan),
-    }
 }
 
 /// Check that the input schema is valid for insert.

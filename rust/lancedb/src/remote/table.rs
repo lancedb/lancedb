@@ -22,7 +22,7 @@ use crate::table::DropColumnsResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
-use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
+use crate::table::{AnyQuery, Filter, TableStatistics};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{
     error::Result,
@@ -1160,22 +1160,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         self.check_mutable().await?;
 
-        let overwrite = matches!(add.mode, AddDataMode::Overwrite);
-        let rescannable = add.data.rescannable();
         let table_schema = self.schema().await?;
-        let plan = crate::table::build_preprocessing_plan(
-            add.data,
-            &table_schema,
-            add.on_nan_vectors,
-            overwrite,
-        )?;
+        let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
+        let output = add.into_plan(&table_schema, &table_def)?;
 
         let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
             self.name.clone(),
             self.identifier.clone(),
             self.client.clone(),
-            plan,
-            overwrite,
+            output.plan,
+            output.overwrite,
         ));
 
         let mut retry_counter = RetryCounter::new(&self.client.retry_config, "insert".to_string());
@@ -1192,13 +1186,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         .and_then(|i| i.add_result())
                         .unwrap_or(AddResult { version: 0 });
 
-                    if overwrite {
+                    if output.overwrite {
                         self.invalidate_schema_cache();
                     }
 
                     return Ok(add_result);
                 }
-                Err(err) if rescannable => {
+                Err(err) if output.rescannable => {
                     let status_code = match &err {
                         Error::Http { status_code, .. } => *status_code,
                         _ => None,
@@ -1867,9 +1861,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {
-        Err(Error::NotSupported {
-            message: "table_definition is not supported on LanceDB cloud.".into(),
-        })
+        let schema = self.schema().await?;
+        TableDefinition::try_from_rich_schema(schema)
     }
     async fn uri(&self) -> Result<String> {
         // Check if we already have the location cached
@@ -2029,6 +2022,8 @@ mod tests {
     use std::{collections::HashMap, pin::Pin};
 
     use super::*;
+
+    use crate::table::AddDataMode;
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{record_batch, Int32Array, RecordBatch, RecordBatchIterator};
