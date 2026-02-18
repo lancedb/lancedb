@@ -239,6 +239,21 @@ impl PyPermutationReader {
             .collect::<PyResult<Vec<_>>>()?;
         Ok(Select::dynamic(&selection))
     }
+
+    fn table_from_py<'a>(table: Bound<'a, PyAny>) -> PyResult<Bound<'a, Table>> {
+        if table.hasattr("_inner")? {
+            Ok(table.getattr("_inner")?.downcast_into::<Table>()?)
+        } else if table.hasattr("_table")? {
+            Ok(table
+                .getattr("_table")?
+                .getattr("_inner")?
+                .downcast_into::<Table>()?)
+        } else {
+            Err(PyRuntimeError::new_err(
+                "Provided table does not appear to be a Table or RemoteTable instance",
+            ))
+        }
+    }
 }
 
 #[pymethods]
@@ -250,10 +265,8 @@ impl PyPermutationReader {
         permutation_table: Option<Bound<'py, PyAny>>,
         split: u64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let base_table = base_table.getattr("_inner")?.downcast_into::<Table>()?;
-        let permutation_table = permutation_table
-            .map(|p| PyResult::Ok(p.getattr("_inner")?.downcast_into::<Table>()?))
-            .transpose()?;
+        let base_table = Self::table_from_py(base_table)?;
+        let permutation_table = permutation_table.map(Self::table_from_py).transpose()?;
 
         let base_table = base_table.borrow().inner_ref()?.base_table().clone();
         let permutation_table = permutation_table
