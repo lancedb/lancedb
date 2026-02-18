@@ -127,47 +127,33 @@ fn check_no_nans(array: &dyn Array) -> datafusion_common::Result<()> {
             )
         })?;
 
-    let size = fsl.value_length() as usize;
-    let values = fsl.values();
-
-    // Only inspect values for non-null rows. Values backing null parent rows
-    // may contain garbage (including NaN) per the Arrow spec.
-    let has_nan = match values.data_type() {
-        DataType::Float16 => {
-            let arr = values
+    // Only inspect elements that are both in a valid parent row and non-null
+    // themselves. Values backing null parent rows or null child elements may
+    // contain garbage (including NaN) per the Arrow spec.
+    let has_nan = (0..fsl.len()).filter(|i| fsl.is_valid(*i)).any(|i| {
+        let row = fsl.value(i);
+        match row.data_type() {
+            DataType::Float16 => row
                 .as_any()
                 .downcast_ref::<arrow_array::Float16Array>()
-                .unwrap();
-            (0..fsl.len()).filter(|i| fsl.is_valid(*i)).any(|i| {
-                arr.values()[i * size..(i + 1) * size]
-                    .iter()
-                    .any(|v| v.is_nan())
-            })
-        }
-        DataType::Float32 => {
-            let arr = values
+                .unwrap()
+                .iter()
+                .any(|v| v.is_some_and(|v| v.is_nan())),
+            DataType::Float32 => row
                 .as_any()
                 .downcast_ref::<arrow_array::Float32Array>()
-                .unwrap();
-            (0..fsl.len()).filter(|i| fsl.is_valid(*i)).any(|i| {
-                arr.values()[i * size..(i + 1) * size]
-                    .iter()
-                    .any(|v| v.is_nan())
-            })
-        }
-        DataType::Float64 => {
-            let arr = values
+                .unwrap()
+                .iter()
+                .any(|v| v.is_some_and(|v| v.is_nan())),
+            DataType::Float64 => row
                 .as_any()
                 .downcast_ref::<arrow_array::Float64Array>()
-                .unwrap();
-            (0..fsl.len()).filter(|i| fsl.is_valid(*i)).any(|i| {
-                arr.values()[i * size..(i + 1) * size]
-                    .iter()
-                    .any(|v| v.is_nan())
-            })
+                .unwrap()
+                .iter()
+                .any(|v| v.is_some_and(|v| v.is_nan())),
+            _ => false,
         }
-        _ => false,
-    };
+    });
 
     if has_nan {
         return Err(datafusion_common::DataFusionError::ArrowError(
@@ -224,6 +210,26 @@ mod tests {
         )
         .unwrap();
         assert!(fsl.is_null(1));
+        assert!(check_no_nans(&fsl).is_ok());
+    }
+
+    #[test]
+    fn test_skips_null_elements_within_valid_row() {
+        // A valid row with null child elements: the underlying buffer may hold
+        // NaN but the null bitmap says they're absent — should not reject.
+        let values = Float32Array::from(vec![
+            Some(1.0),
+            None, // null element — buffer may contain NaN
+            Some(3.0),
+            None, // null element
+        ]);
+        let fsl = FixedSizeListArray::try_new(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            2,
+            Arc::new(values),
+            None, // both rows are valid
+        )
+        .unwrap();
         assert!(check_no_nans(&fsl).is_ok());
     }
 
