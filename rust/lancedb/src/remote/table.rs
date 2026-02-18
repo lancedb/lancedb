@@ -1172,7 +1172,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             output.overwrite,
         ));
 
-        let mut retry_counter = RetryCounter::new(&self.client.retry_config, "insert".to_string());
+        let mut retry_counter =
+            RetryCounter::new(&self.client.retry_config, uuid::Uuid::new_v4().to_string());
 
         loop {
             let stream = execute_plan(insert.clone(), Default::default())?;
@@ -1199,9 +1200,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                             status_code,
                             ..
                         } => {
-                            source
-                                .downcast_ref::<reqwest::Error>()
-                                .is_some_and(|e| e.is_connect())
+                            let reqwest_err = source.downcast_ref::<reqwest::Error>();
+                            reqwest_err.is_some_and(|e| e.is_connect())
+                                || reqwest_err.is_some_and(|e| e.is_body() || e.is_decode())
                                 || status_code
                                     .is_some_and(|s| self.client.retry_config.statuses.contains(&s))
                         }

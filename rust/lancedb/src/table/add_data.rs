@@ -119,6 +119,10 @@ impl AddDataBuilder {
             .is_some_and(|p| matches!(p.mode, WriteMode::Overwrite))
             || matches!(self.mode, AddDataMode::Overwrite);
 
+        if !overwrite {
+            validate_schema(&self.data.schema(), table_schema)?;
+        }
+
         self.data =
             scannable_with_embeddings(self.data, table_def, self.embedding_registry.as_ref())?;
 
@@ -156,18 +160,6 @@ pub struct PreprocessingOutput {
 
 pub async fn local_add_table(slf: &NativeTable, add: AddDataBuilder) -> Result<AddResult> {
     let table_def = slf.table_definition().await?;
-    let schema = slf.schema().await?;
-
-    let is_overwrite = add
-        .write_options
-        .lance_write_params
-        .as_ref()
-        .is_some_and(|p| matches!(p.mode, WriteMode::Overwrite))
-        || matches!(add.mode, AddDataMode::Overwrite);
-
-    if !is_overwrite {
-        validate_schema(&add.data.schema(), &schema)?;
-    }
 
     let ds_wrapper = slf.dataset.clone();
     let ds = Arc::new(ds_wrapper.get_mut().await?.clone());

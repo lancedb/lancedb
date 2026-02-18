@@ -63,14 +63,19 @@ impl<'a> RetryCounter<'a> {
     /// Increment the appropriate failure counter based on the error type.
     ///
     /// For `Error::Http` whose source is a connect error, increments
-    /// `connect_failures`. For all other errors, increments `request_failures`.
-    /// Calls `check_out_of_retries` to enforce global limits.
+    /// `connect_failures`. For read errors (`is_body` or `is_decode`),
+    /// increments `read_failures`. For all other errors, increments
+    /// `request_failures`. Calls `check_out_of_retries` to enforce global limits.
     pub fn increment_from_error(&mut self, source: crate::Error) -> crate::Result<()> {
-        let is_connect = matches!(&source, crate::Error::Http { source, .. }
-            if source.downcast_ref::<reqwest::Error>().is_some_and(|e| e.is_connect()));
+        let reqwest_err = match &source {
+            crate::Error::Http { source, .. } => source.downcast_ref::<reqwest::Error>(),
+            _ => None,
+        };
 
-        if is_connect {
+        if reqwest_err.is_some_and(|e| e.is_connect()) {
             self.connect_failures += 1;
+        } else if reqwest_err.is_some_and(|e| e.is_body() || e.is_decode()) {
+            self.read_failures += 1;
         } else {
             self.request_failures += 1;
         }
@@ -100,7 +105,7 @@ impl<'a> RetryCounter<'a> {
         let jitter = rand::random::<f32>() * self.config.backoff_jitter;
         let sleep_time = Duration::from_secs_f32(backoff + jitter);
         debug!(
-            "Retrying request {:?} ({}/{} connect, {}/{} read, {}/{} read) in {:?}",
+            "Retrying request {:?} ({}/{} connect, {}/{} request, {}/{} read) in {:?}",
             self.request_id,
             self.connect_failures,
             self.config.connect_retries,

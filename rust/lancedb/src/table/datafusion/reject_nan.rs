@@ -4,7 +4,7 @@
 //! A DataFusion projection that rejects vectors containing NaN values.
 
 use std::any::Any;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow_array::{Array, FixedSizeListArray};
 use arrow_schema::{DataType, Field, FieldRef};
@@ -16,6 +16,9 @@ use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
 
 use crate::{Error, Result};
+
+static REJECT_NAN_UDF: LazyLock<Arc<datafusion_expr::ScalarUDF>> =
+    LazyLock::new(|| Arc::new(datafusion_expr::ScalarUDF::from(RejectNanUdf::new())));
 
 /// Returns true if the field is a vector column: FixedSizeList<Float16/32/64>.
 fn is_vector_field(field: &Field) -> bool {
@@ -36,7 +39,7 @@ fn is_vector_field(field: &Field) -> bool {
 pub fn reject_nan_vectors(input: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
     let schema = input.schema();
     let config = Arc::new(ConfigOptions::default());
-    let udf = Arc::new(datafusion_expr::ScalarUDF::from(RejectNanUdf::new()));
+    let udf = REJECT_NAN_UDF.clone();
 
     let mut has_vector_cols = false;
     let mut exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = Vec::new();

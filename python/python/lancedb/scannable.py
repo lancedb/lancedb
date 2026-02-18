@@ -121,7 +121,10 @@ def _from_lance_model(data: LanceModel) -> Scannable:
 
 
 def _from_iterable(data: Iterator) -> Scannable:
-    first = to_arrow(next(data))
+    first_item = next(data, None)
+    if first_item is None:
+        raise ValueError("Cannot create table from empty iterator")
+    first = to_arrow(first_item)
     schema = first.schema
 
     def iter():
