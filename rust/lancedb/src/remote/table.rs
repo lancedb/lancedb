@@ -1200,9 +1200,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                             status_code,
                             ..
                         } => {
-                            let reqwest_err = source.downcast_ref::<reqwest::Error>();
-                            reqwest_err.is_some_and(|e| e.is_connect())
-                                || reqwest_err.is_some_and(|e| e.is_body() || e.is_decode())
+                            // Don't retry read errors (is_body/is_decode): the
+                            // server may have committed the write already, and
+                            // without an idempotency key we'd duplicate data.
+                            source
+                                .downcast_ref::<reqwest::Error>()
+                                .is_some_and(|e| e.is_connect())
                                 || status_code
                                     .is_some_and(|s| self.client.retry_config.statuses.contains(&s))
                         }
