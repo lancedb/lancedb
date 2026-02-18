@@ -103,13 +103,8 @@ impl AddDataBuilder {
     }
 }
 
-pub async fn local_add_table(slf: &NativeTable, add: AddDataBuilder) -> Result<AddResult> {
+pub async fn local_add_table(slf: &NativeTable, mut add: AddDataBuilder) -> Result<AddResult> {
     let table_def = slf.table_definition().await?;
-    let has_embeddings = table_def
-        .column_definitions
-        .iter()
-        .any(|cd| matches!(cd.kind, super::ColumnKind::Embedding(_)));
-
     let schema = slf.schema().await?;
 
     let is_overwrite = add
@@ -123,7 +118,10 @@ pub async fn local_add_table(slf: &NativeTable, add: AddDataBuilder) -> Result<A
         validate_schema(&add.data.schema(), &schema)?;
     }
 
-    if can_use_datafusion(&add, has_embeddings) {
+    // Apply embeddings before the DataFusion path so it can handle them too.
+    add.data = scannable_with_embeddings(add.data, &table_def, add.embedding_registry.as_ref())?;
+
+    if can_use_datafusion(&add) {
         let lance_params = add
             .write_options
             .lance_write_params
@@ -146,15 +144,12 @@ pub async fn local_add_table(slf: &NativeTable, add: AddDataBuilder) -> Result<A
         ..Default::default()
     });
 
-    // Apply embeddings if configured
-    let data = scannable_with_embeddings(add.data, &table_def, add.embedding_registry.as_ref())?;
-
     let dataset = {
         // Limited scope for the mutable borrow of self.dataset avoids deadlock.
         let ds = slf.dataset.get_mut().await?;
         InsertBuilder::new(Arc::new(ds.clone()))
             .with_params(&lance_params)
-            .execute_stream(data)
+            .execute_stream(add.data)
             .await?
     };
     let version = dataset.manifest().version;
@@ -208,13 +203,12 @@ async fn local_add_table_new(
     Ok(AddResult { version })
 }
 
-pub fn can_use_datafusion(builder: &AddDataBuilder, has_embeddings: bool) -> bool {
-    !has_embeddings
-        && builder
-            .write_options
-            .lance_write_params
-            .as_ref()
-            .is_none_or(|p| matches!(p.mode, WriteMode::Append | WriteMode::Overwrite))
+pub fn can_use_datafusion(builder: &AddDataBuilder) -> bool {
+    builder
+        .write_options
+        .lance_write_params
+        .as_ref()
+        .is_none_or(|p| matches!(p.mode, WriteMode::Append | WriteMode::Overwrite))
 }
 
 /// Check that the input schema is valid for insert.

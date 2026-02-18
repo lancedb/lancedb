@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
+use arrow_array::{ArrayRef, RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{ArrowError, SchemaRef};
 use async_trait::async_trait;
 use futures::stream::once;
@@ -228,6 +228,19 @@ impl WithEmbeddingsScannable {
         let table_definition = TableDefinition::new(output_schema, column_definitions);
         let output_schema = table_definition.into_rich_schema();
 
+        Self::with_schema(inner, embeddings, output_schema)
+    }
+
+    /// Create a WithEmbeddingsScannable with a specific output schema.
+    ///
+    /// Use this when the table schema is already known (e.g. during add) to
+    /// avoid nullability mismatches between the embedding function's declared
+    /// type and the table's stored type.
+    pub fn with_schema(
+        inner: Box<dyn Scannable>,
+        embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
+        output_schema: SchemaRef,
+    ) -> Result<Self> {
         Ok(Self {
             inner,
             embeddings,
@@ -245,9 +258,11 @@ impl Scannable for WithEmbeddingsScannable {
         let inner_stream = self.inner.scan_as_stream();
         let embeddings = self.embeddings.clone();
         let output_schema = self.output_schema.clone();
+        let stream_schema = output_schema.clone();
 
         let mapped_stream = inner_stream.then(move |batch_result| {
             let embeddings = embeddings.clone();
+            let output_schema = output_schema.clone();
             async move {
                 let batch = batch_result?;
                 let result = tokio::task::spawn_blocking(move || {
@@ -257,12 +272,29 @@ impl Scannable for WithEmbeddingsScannable {
                 .map_err(|e| Error::Runtime {
                     message: format!("Task panicked during embedding computation: {}", e),
                 })??;
+                // Cast columns to match the declared output schema. The data is
+                // identical but field metadata (e.g. nested nullability) may
+                // differ between the embedding function output and the table.
+                let columns: Vec<ArrayRef> = result
+                    .columns()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, col)| {
+                        let target_type = output_schema.field(i).data_type();
+                        if col.data_type() == target_type {
+                            Ok(col.clone())
+                        } else {
+                            arrow_cast::cast(col, target_type).map_err(Error::from)
+                        }
+                    })
+                    .collect::<Result<_>>()?;
+                let result = RecordBatch::try_new(output_schema, columns)?;
                 Ok(result)
             }
         });
 
         Box::pin(SimpleRecordBatchStream {
-            schema: output_schema,
+            schema: stream_schema,
             stream: mapped_stream,
         })
     }
@@ -303,8 +335,13 @@ pub fn scannable_with_embeddings(
         }
 
         if !embeddings.is_empty() {
-            return Ok(Box::new(WithEmbeddingsScannable::try_new(
-                inner, embeddings,
+            // Use the table's schema so embedding column types (including nested
+            // nullability) match what's stored, avoiding mismatches with the
+            // embedding function's declared dest_type.
+            return Ok(Box::new(WithEmbeddingsScannable::with_schema(
+                inner,
+                embeddings,
+                table_definition.schema.clone(),
             )?));
         }
     }

@@ -1251,7 +1251,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let overwrite = matches!(add.mode, AddDataMode::Overwrite);
 
-        if crate::table::can_use_datafusion(&add, false) {
+        if crate::table::can_use_datafusion(&add) {
             use crate::remote::retry::RetryCounter;
 
             let rescannable = add.data.rescannable();
