@@ -60,6 +60,29 @@ impl<'a> RetryCounter<'a> {
         self.check_out_of_retries(Box::new(source), status_code)
     }
 
+    /// Increment the appropriate failure counter based on the error type.
+    ///
+    /// For `Error::Http` whose source is a connect error, increments
+    /// `connect_failures`. For all other errors, increments `request_failures`.
+    /// Calls `check_out_of_retries` to enforce global limits.
+    pub fn increment_from_error(&mut self, source: crate::Error) -> crate::Result<()> {
+        let is_connect = matches!(&source, crate::Error::Http { source, .. }
+            if source.downcast_ref::<reqwest::Error>().is_some_and(|e| e.is_connect()));
+
+        if is_connect {
+            self.connect_failures += 1;
+        } else {
+            self.request_failures += 1;
+        }
+
+        let status_code = if let crate::Error::Http { status_code, .. } = &source {
+            *status_code
+        } else {
+            None
+        };
+        self.check_out_of_retries(Box::new(source), status_code)
+    }
+
     pub fn increment_connect_failures(&mut self, source: reqwest::Error) -> crate::Result<()> {
         self.connect_failures += 1;
         let status_code = source.status();
@@ -88,6 +111,115 @@ impl<'a> RetryCounter<'a> {
             sleep_time
         );
         sleep_time
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> ResolvedRetryConfig {
+        ResolvedRetryConfig {
+            retries: 3,
+            connect_retries: 2,
+            read_retries: 3,
+            backoff_factor: 0.0,
+            backoff_jitter: 0.0,
+            statuses: vec![reqwest::StatusCode::BAD_GATEWAY],
+        }
+    }
+
+    /// Get a real reqwest connect error by trying to connect to a refused port.
+    async fn make_connect_error() -> reqwest::Error {
+        // Port 1 is almost always refused/unavailable.
+        reqwest::Client::new()
+            .get("http://127.0.0.1:1")
+            .send()
+            .await
+            .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn test_increment_from_error_connect() {
+        let config = test_config();
+        let mut counter = RetryCounter::new(&config, "test".to_string());
+
+        let connect_err = make_connect_error().await;
+        assert!(connect_err.is_connect());
+
+        let http_err = crate::Error::Http {
+            source: Box::new(connect_err),
+            request_id: "test".to_string(),
+            status_code: None,
+        };
+
+        // First connect failure: should be ok (1 < 2)
+        counter.increment_from_error(http_err).unwrap();
+        assert_eq!(counter.connect_failures, 1);
+        assert_eq!(counter.request_failures, 0);
+
+        // Second connect failure: should hit the limit (2 >= 2)
+        let connect_err2 = make_connect_error().await;
+        let http_err2 = crate::Error::Http {
+            source: Box::new(connect_err2),
+            request_id: "test".to_string(),
+            status_code: None,
+        };
+        let result = counter.increment_from_error(http_err2);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::Error::Retry {
+                connect_failures: 2,
+                max_connect_failures: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_increment_from_error_request() {
+        let config = test_config();
+        let mut counter = RetryCounter::new(&config, "test".to_string());
+
+        let http_err = crate::Error::Http {
+            source: "bad gateway".into(),
+            request_id: "test".to_string(),
+            status_code: Some(reqwest::StatusCode::BAD_GATEWAY),
+        };
+
+        counter.increment_from_error(http_err).unwrap();
+        assert_eq!(counter.request_failures, 1);
+        assert_eq!(counter.connect_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn test_increment_from_error_respects_global_limits() {
+        // If request_failures is already at max, a connect error should still
+        // trigger the global limit check.
+        let config = test_config();
+        let mut counter = RetryCounter::new(&config, "test".to_string());
+        counter.request_failures = 3; // at max
+
+        let connect_err = make_connect_error().await;
+        let http_err = crate::Error::Http {
+            source: Box::new(connect_err),
+            request_id: "test".to_string(),
+            status_code: None,
+        };
+
+        // Even though connect_failures would be 1 (under limit of 2),
+        // request_failures is already at 3 (>= limit of 3), so this should fail.
+        let result = counter.increment_from_error(http_err);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::Error::Retry {
+                request_failures: 3,
+                connect_failures: 1,
+                ..
+            }
+        ));
     }
 }
 

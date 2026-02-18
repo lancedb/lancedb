@@ -1199,33 +1199,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                             status_code,
                             ..
                         } => {
-                            if source
+                            source
                                 .downcast_ref::<reqwest::Error>()
                                 .is_some_and(|e| e.is_connect())
-                            {
-                                retry_counter.connect_failures
-                                    < self.client.retry_config.connect_retries
-                            } else {
-                                status_code
+                                || status_code
                                     .is_some_and(|s| self.client.retry_config.statuses.contains(&s))
-                                    && retry_counter.request_failures
-                                        < self.client.retry_config.retries
-                            }
                         }
                         _ => false,
                     };
 
                     if retryable {
-                        // Determine if this was a connect error or request error
-                        // to increment the correct counter.
-                        let is_connect = matches!(&err, Error::Http { source, .. }
-                            if source.downcast_ref::<reqwest::Error>()
-                                .is_some_and(|e| e.is_connect()));
-                        if is_connect {
-                            retry_counter.connect_failures += 1;
-                        } else {
-                            retry_counter.request_failures += 1;
-                        }
+                        retry_counter.increment_from_error(err)?;
                         tokio::time::sleep(retry_counter.next_sleep_time()).await;
                         insert = insert.reset_state()?;
                         continue;
