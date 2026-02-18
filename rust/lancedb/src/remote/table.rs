@@ -8,9 +8,7 @@ use self::insert::RemoteInsertExec;
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
-use super::util::stream_as_body;
 use super::ARROW_STREAM_CONTENT_TYPE;
-use crate::data::scannable::Scannable;
 use crate::index::waiter::wait_for_index;
 use crate::index::Index;
 use crate::index::IndexStatistics;
@@ -412,95 +410,6 @@ impl<S: HttpSend> RemoteTable<S> {
             .await?;
 
         Ok(res)
-    }
-
-    /// Send a request with data from a Scannable source.
-    ///
-    /// For rescannable sources, this will retry on retryable errors by re-reading
-    /// the data. For non-rescannable sources (streams), only a single attempt is made.
-    async fn send_scannable(
-        &self,
-        req_builder: RequestBuilder,
-        data: &mut dyn Scannable,
-    ) -> Result<(String, Response)> {
-        use crate::remote::retry::RetryCounter;
-
-        let rescannable = data.rescannable();
-        let max_retries = if rescannable {
-            self.client.retry_config.retries
-        } else {
-            0
-        };
-
-        // Clone the request builder to extract the request id
-        let tmp_req = req_builder.try_clone().ok_or_else(|| Error::Runtime {
-            message: "Attempted to retry a request that cannot be cloned".to_string(),
-        })?;
-        let (_, r) = tmp_req.build_split();
-        let mut r = r.map_err(|e| Error::Runtime {
-            message: format!("Failed to build request: {}", e),
-        })?;
-        let request_id = self.client.extract_request_id(&mut r);
-        let mut retry_counter = RetryCounter::new(&self.client.retry_config, request_id.clone());
-
-        loop {
-            // Re-read data on each attempt
-            let stream = data.scan_as_stream();
-            let body = stream_as_body(stream)?;
-
-            let mut req_builder = req_builder.try_clone().ok_or_else(|| Error::Runtime {
-                message: "Attempted to retry a request that cannot be cloned".to_string(),
-            })?;
-            req_builder = req_builder.body(body);
-
-            let (c, request) = req_builder.build_split();
-            let mut request = request.map_err(|e| Error::Runtime {
-                message: format!("Failed to build request: {}", e),
-            })?;
-            self.client.set_request_id(&mut request, &request_id);
-
-            // Apply dynamic headers
-            request = self.client.apply_dynamic_headers(request).await?;
-
-            self.client.log_request(&request, &request_id);
-
-            let response = match self.client.sender.send(&c, request).await {
-                Ok(r) => r,
-                Err(err) => {
-                    if err.is_connect() {
-                        retry_counter.increment_connect_failures(err)?;
-                    } else if err.is_body() || err.is_decode() {
-                        retry_counter.increment_read_failures(err)?;
-                    } else {
-                        return Err(crate::Error::Http {
-                            source: err.into(),
-                            request_id,
-                            status_code: None,
-                        });
-                    }
-                    tokio::time::sleep(retry_counter.next_sleep_time()).await;
-                    continue;
-                }
-            };
-
-            let status = response.status();
-
-            // Check for retryable status codes
-            if self.client.retry_config.statuses.contains(&status)
-                && retry_counter.request_failures < max_retries
-            {
-                let http_err = crate::Error::Http {
-                    source: format!("Retryable status code: {}", status).into(),
-                    request_id: request_id.clone(),
-                    status_code: Some(status),
-                };
-                retry_counter.increment_request_failures(http_err)?;
-                tokio::time::sleep(retry_counter.next_sleep_time()).await;
-                continue;
-            }
-
-            return Ok((request_id, response));
-        }
     }
 
     pub(super) async fn handle_table_not_found(
@@ -1247,112 +1156,71 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         })
     }
     async fn add(&self, add: AddDataBuilder) -> Result<AddResult> {
+        use crate::remote::retry::RetryCounter;
+
         self.check_mutable().await?;
 
         let overwrite = matches!(add.mode, AddDataMode::Overwrite);
+        let rescannable = add.data.rescannable();
+        let table_schema = self.schema().await?;
+        let plan = crate::table::build_preprocessing_plan(
+            add.data,
+            &table_schema,
+            add.on_nan_vectors,
+            overwrite,
+        )?;
 
-        if crate::table::can_use_datafusion(&add) {
-            use crate::remote::retry::RetryCounter;
+        let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            plan,
+            overwrite,
+        ));
 
-            let rescannable = add.data.rescannable();
-            let table_schema = self.schema().await?;
-            let plan = crate::table::build_preprocessing_plan(
-                add.data,
-                &table_schema,
-                add.on_nan_vectors,
-                overwrite,
-            )?;
+        let mut retry_counter = RetryCounter::new(&self.client.retry_config, "insert".to_string());
 
-            let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
-                self.name.clone(),
-                self.identifier.clone(),
-                self.client.clone(),
-                plan,
-                overwrite,
-            ));
+        loop {
+            let stream = execute_plan(insert.clone(), Default::default())?;
+            let result: Result<Vec<_>> = stream.try_collect().await.map_err(Error::from);
 
-            let mut retry_counter =
-                RetryCounter::new(&self.client.retry_config, "insert".to_string());
+            match result {
+                Ok(_) => {
+                    let add_result = insert
+                        .as_any()
+                        .downcast_ref::<RemoteInsertExec<S>>()
+                        .and_then(|i| i.add_result())
+                        .unwrap_or(AddResult { version: 0 });
 
-            loop {
-                let stream = execute_plan(insert.clone(), Default::default())?;
-                let result: Result<Vec<_>> = stream.try_collect().await.map_err(Error::from);
-
-                match result {
-                    Ok(_) => {
-                        let add_result = insert
-                            .as_any()
-                            .downcast_ref::<RemoteInsertExec<S>>()
-                            .and_then(|i| i.add_result())
-                            .unwrap_or(AddResult { version: 0 });
-
-                        if overwrite {
-                            self.invalidate_schema_cache();
-                        }
-
-                        return Ok(add_result);
+                    if overwrite {
+                        self.invalidate_schema_cache();
                     }
-                    Err(err) if rescannable => {
-                        let status_code = match &err {
-                            Error::Http { status_code, .. } => *status_code,
-                            _ => None,
-                        };
 
-                        let retryable = status_code
-                            .is_some_and(|s| self.client.retry_config.statuses.contains(&s));
-
-                        if retryable
-                            && retry_counter.request_failures < self.client.retry_config.retries
-                        {
-                            retry_counter.increment_request_failures(err)?;
-                            tokio::time::sleep(retry_counter.next_sleep_time()).await;
-                            insert = insert.reset_state()?;
-                            continue;
-                        }
-
-                        return Err(err);
-                    }
-                    Err(err) => return Err(err),
+                    return Ok(add_result);
                 }
+                Err(err) if rescannable => {
+                    let status_code = match &err {
+                        Error::Http { status_code, .. } => *status_code,
+                        _ => None,
+                    };
+
+                    let retryable =
+                        status_code.is_some_and(|s| self.client.retry_config.statuses.contains(&s));
+
+                    if retryable
+                        && retry_counter.request_failures < self.client.retry_config.retries
+                    {
+                        retry_counter.increment_request_failures(err)?;
+                        tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                        insert = insert.reset_state()?;
+                        continue;
+                    }
+
+                    return Err(err);
+                }
+                Err(err) => return Err(err),
             }
         }
-
-        // Fallback: stream data directly without DataFusion preprocessing.
-        let mut req_builder = self
-            .client
-            .post(&format!("/v1/table/{}/insert/", self.identifier))
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
-
-        if overwrite {
-            req_builder = req_builder.query(&[("mode", "overwrite")]);
-        }
-
-        let mut data = add.data;
-        let (request_id, response) = self.send_scannable(req_builder, data.as_mut()).await?;
-        let response = Self::handle_table_not_found(&self.name, response, &request_id).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-
-        let body_text = response.text().await.map_err(|e| Error::Http {
-            source: Box::new(e),
-            request_id: request_id.clone(),
-            status_code: None,
-        })?;
-
-        let add_result = if body_text.trim().is_empty() {
-            AddResult { version: 0 }
-        } else {
-            serde_json::from_str(&body_text).map_err(|e| Error::Http {
-                source: format!("Failed to parse add response: {}", e).into(),
-                request_id: request_id.clone(),
-                status_code: None,
-            })?
-        };
-
-        if overwrite {
-            self.invalidate_schema_cache();
-        }
-
-        Ok(add_result)
     }
 
     async fn create_plan(

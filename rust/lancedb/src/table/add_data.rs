@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Fields, Schema};
 use futures::TryStreamExt;
-use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
+use lance::dataset::{WriteMode, WriteParams};
 use lance_datafusion::exec::execute_plan;
 use serde::{Deserialize, Serialize};
 
@@ -118,42 +118,35 @@ pub async fn local_add_table(slf: &NativeTable, mut add: AddDataBuilder) -> Resu
         validate_schema(&add.data.schema(), &schema)?;
     }
 
-    // Apply embeddings before the DataFusion path so it can handle them too.
     add.data = scannable_with_embeddings(add.data, &table_def, add.embedding_registry.as_ref())?;
 
-    if can_use_datafusion(&add) {
-        let lance_params = add
-            .write_options
-            .lance_write_params
-            .clone()
-            .unwrap_or(WriteParams {
-                mode: match add.mode {
-                    AddDataMode::Append => WriteMode::Append,
-                    AddDataMode::Overwrite => WriteMode::Overwrite,
-                },
-                ..Default::default()
-            });
-        return local_add_table_new(slf, add, lance_params).await;
-    }
+    let lance_params = add
+        .write_options
+        .lance_write_params
+        .clone()
+        .unwrap_or(WriteParams {
+            mode: match add.mode {
+                AddDataMode::Append => WriteMode::Append,
+                AddDataMode::Overwrite => WriteMode::Overwrite,
+            },
+            ..Default::default()
+        });
 
-    let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
-        mode: match add.mode {
-            AddDataMode::Append => WriteMode::Append,
-            AddDataMode::Overwrite => WriteMode::Overwrite,
-        },
-        ..Default::default()
-    });
+    let ds_wrapper = slf.dataset.clone();
+    let ds = Arc::new(ds_wrapper.get_mut().await?.clone());
 
-    let dataset = {
-        // Limited scope for the mutable borrow of self.dataset avoids deadlock.
-        let ds = slf.dataset.get_mut().await?;
-        InsertBuilder::new(Arc::new(ds.clone()))
-            .with_params(&lance_params)
-            .execute_stream(add.data)
-            .await?
-    };
-    let version = dataset.manifest().version;
-    slf.dataset.set_latest(dataset).await;
+    let table_schema = Schema::from(&ds.schema().clone());
+    let plan = build_preprocessing_plan(add.data, &table_schema, add.on_nan_vectors, is_overwrite)?;
+
+    let plan = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
+
+    let stream = execute_plan(plan, Default::default())?;
+    stream
+        .try_collect::<Vec<_>>()
+        .await
+        .map_err(crate::Error::from)?;
+
+    let version = ds_wrapper.get().await?.manifest().version;
     Ok(AddResult { version })
 }
 
@@ -176,39 +169,6 @@ pub fn build_preprocessing_plan(
         NaNVectorBehavior::Error => reject_nan_vectors(plan),
         NaNVectorBehavior::Keep => Ok(plan),
     }
-}
-
-async fn local_add_table_new(
-    slf: &NativeTable,
-    add: AddDataBuilder,
-    lance_params: WriteParams,
-) -> Result<AddResult> {
-    let ds_wrapper = slf.dataset.clone();
-    let ds = Arc::new(ds_wrapper.get_mut().await?.clone());
-
-    let table_schema = Schema::from(&ds.schema().clone());
-    let overwrite = matches!(lance_params.mode, WriteMode::Overwrite);
-    let plan = build_preprocessing_plan(add.data, &table_schema, add.on_nan_vectors, overwrite)?;
-
-    let plan = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
-
-    let stream = execute_plan(plan, Default::default())?;
-    // Consume the stream to drive the insert to completion.
-    stream
-        .try_collect::<Vec<_>>()
-        .await
-        .map_err(crate::Error::from)?;
-
-    let version = ds_wrapper.get().await?.manifest().version;
-    Ok(AddResult { version })
-}
-
-pub fn can_use_datafusion(builder: &AddDataBuilder) -> bool {
-    builder
-        .write_options
-        .lance_write_params
-        .as_ref()
-        .is_none_or(|p| matches!(p.mode, WriteMode::Append | WriteMode::Overwrite))
 }
 
 /// Check that the input schema is valid for insert.
