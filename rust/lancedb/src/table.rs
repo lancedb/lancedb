@@ -69,6 +69,8 @@ pub mod update;
 use crate::index::waiter::wait_for_index;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::build_preprocessing_plan;
+#[cfg(feature = "remote")]
+pub(crate) use add_data::can_use_datafusion;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
 pub use delete::DeleteResult;

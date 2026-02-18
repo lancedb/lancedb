@@ -201,7 +201,7 @@ async fn local_add_table_new(
     Ok(AddResult { version })
 }
 
-fn can_use_datafusion(builder: &AddDataBuilder, has_embeddings: bool) -> bool {
+pub fn can_use_datafusion(builder: &AddDataBuilder, has_embeddings: bool) -> bool {
     !has_embeddings
         && matches!(builder.mode, AddDataMode::Append)
         && builder

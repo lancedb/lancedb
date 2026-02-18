@@ -418,7 +418,6 @@ impl<S: HttpSend> RemoteTable<S> {
     ///
     /// For rescannable sources, this will retry on retryable errors by re-reading
     /// the data. For non-rescannable sources (streams), only a single attempt is made.
-    #[allow(dead_code)]
     async fn send_scannable(
         &self,
         req_builder: RequestBuilder,
@@ -1250,23 +1249,66 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn add(&self, add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
 
-        let table_schema = self.schema().await?;
-        let plan =
-            crate::table::build_preprocessing_plan(add.data, &table_schema, add.on_nan_vectors)?;
-
         let overwrite = matches!(add.mode, AddDataMode::Overwrite);
-        let insert = Arc::new(RemoteInsertExec::new(
-            self.name.clone(),
-            self.identifier.clone(),
-            self.client.clone(),
-            plan,
-            overwrite,
-        ));
 
-        let stream = execute_plan(insert.clone(), Default::default())?;
-        stream.try_collect::<Vec<_>>().await.map_err(Error::from)?;
+        if crate::table::can_use_datafusion(&add, false) {
+            let table_schema = self.schema().await?;
+            let plan = crate::table::build_preprocessing_plan(
+                add.data,
+                &table_schema,
+                add.on_nan_vectors,
+            )?;
 
-        let add_result = insert.add_result().unwrap_or(AddResult { version: 0 });
+            let insert = Arc::new(RemoteInsertExec::new(
+                self.name.clone(),
+                self.identifier.clone(),
+                self.client.clone(),
+                plan,
+                overwrite,
+            ));
+
+            let stream = execute_plan(insert.clone(), Default::default())?;
+            stream.try_collect::<Vec<_>>().await.map_err(Error::from)?;
+
+            let add_result = insert.add_result().unwrap_or(AddResult { version: 0 });
+
+            if overwrite {
+                self.invalidate_schema_cache();
+            }
+
+            return Ok(add_result);
+        }
+
+        // Fallback: stream data directly without DataFusion preprocessing.
+        let mut req_builder = self
+            .client
+            .post(&format!("/v1/table/{}/insert/", self.identifier))
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+
+        if overwrite {
+            req_builder = req_builder.query(&[("mode", "overwrite")]);
+        }
+
+        let mut data = add.data;
+        let (request_id, response) = self.send_scannable(req_builder, data.as_mut()).await?;
+        let response = Self::handle_table_not_found(&self.name, response, &request_id).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+
+        let body_text = response.text().await.map_err(|e| Error::Http {
+            source: Box::new(e),
+            request_id: request_id.clone(),
+            status_code: None,
+        })?;
+
+        let add_result = if body_text.trim().is_empty() {
+            AddResult { version: 0 }
+        } else {
+            serde_json::from_str(&body_text).map_err(|e| Error::Http {
+                source: format!("Failed to parse add response: {}", e).into(),
+                request_id: request_id.clone(),
+                status_code: None,
+            })?
+        };
 
         if overwrite {
             self.invalidate_schema_cache();
