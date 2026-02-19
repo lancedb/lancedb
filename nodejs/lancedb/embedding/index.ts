@@ -15,6 +15,7 @@ export {
 } from "./embedding_function";
 
 export * from "./registry";
+export * from "./utils";
 
 /**
  * Create a schema with embedding functions.

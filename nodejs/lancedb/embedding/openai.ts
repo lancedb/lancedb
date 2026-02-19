@@ -4,17 +4,41 @@
 import type OpenAI from "openai";
 import type { EmbeddingCreateParams } from "openai/resources/index";
 import { Float, Float32 } from "../arrow";
-import { EmbeddingFunction } from "./embedding_function";
+import { TextEmbeddingFunction } from "./embedding_function";
 import { register } from "./registry";
 
 export type OpenAIOptions = {
   apiKey: string;
   model: EmbeddingCreateParams["model"];
+  maxRetries?: number;
+  maxRequestsPerMinute?: number;
 };
 
+/**
+ * OpenAI embedding function with built-in rate limiting and retry support.
+ * 
+ * @example
+ * ```ts
+ * // Create with default rate limiting (0.9 requests per second) and retries (7 attempts)
+ * const embed = new OpenAIEmbeddingFunction({ 
+ *   model: "text-embedding-3-small",
+ *   apiKey: "your-api-key" 
+ * });
+ * 
+ * // Or customize rate limiting and retries
+ * const embed = new OpenAIEmbeddingFunction({ 
+ *   model: "text-embedding-3-small",
+ *   apiKey: "your-api-key",
+ *   maxRequestsPerMinute: 60, // 60 requests per minute
+ *   maxRetries: 5 // 5 retries with exponential backoff
+ * });
+ * 
+ * // Then use with retry and rate limiting
+ * const embeddings = await embed.computeSourceEmbeddingsWithRetry(["text1", "text2"]);
+ * ```
+ */
 @register("openai")
-export class OpenAIEmbeddingFunction extends EmbeddingFunction<
-  string,
+export class OpenAIEmbeddingFunction extends TextEmbeddingFunction<
   Partial<OpenAIOptions>
 > {
   #openai: OpenAI;
@@ -52,6 +76,22 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
 
     this.#openai = new Openai(configuration);
     this.#modelName = modelName;
+
+    // Configure rate limiting based on options or use default
+    if (options.maxRequestsPerMinute) {
+      this.rateLimit(options.maxRequestsPerMinute / 60, 1.0);
+    } else {
+      // Default is 0.9 requests per second (54 per minute)
+      this.rateLimit();
+    }
+
+    // Configure retry with exponential backoff
+    if (options.maxRetries !== undefined) {
+      this.retry(1, 2, true, options.maxRetries);
+    } else {
+      // Default is 7 retries with exponential backoff
+      this.retry();
+    }
   }
 
   protected getSensitiveKeys(): string[] {
