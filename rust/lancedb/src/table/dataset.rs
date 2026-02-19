@@ -21,8 +21,6 @@ pub struct DatasetConsistencyWrapper {
 }
 
 /// The current dataset and whether it is pinned to a specific version.
-///
-/// The mutex is never held across `.await` points.
 #[derive(Debug, Clone)]
 struct DatasetState {
     dataset: Arc<Dataset>,
@@ -40,7 +38,7 @@ enum ConsistencyMode {
     /// Periodically check for new version in the background. If the table is being
     /// regularly accessed, refresh will happen in the background. If the table is idle for a while,
     /// the next access will trigger a refresh before returning the dataset.
-    /// 
+    ///
     /// | t < TTL - refresh_window | t < TTL                           | t >= TTL            |
     /// |  Return value            | Background refresh & return value |  syncronous refresh |
     Eventual(BackgroundCache<Arc<Dataset>, Error>),
