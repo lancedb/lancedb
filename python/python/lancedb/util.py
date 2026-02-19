@@ -419,3 +419,22 @@ def batch_to_tensor(batch: pa.RecordBatch):
     """
     torch = attempt_import_or_raise("torch", "torch")
     return torch.stack([torch.from_dlpack(col) for col in batch.columns])
+
+
+def batch_to_tensor_rows(batch: pa.RecordBatch):
+    """
+    Convert a PyArrow RecordBatch to a list of PyTorch Tensor, one per row
+
+    Each column is converted to a tensor (using zero-copy via DLPack)
+    and the columns are then stacked into a single tensor.  The 2D tensor
+    is then converted to a list of tensors, one per row
+
+    Fails if torch or numpy is not installed.
+    Fails if a column's data type is not supported by PyTorch.
+    """
+    torch = attempt_import_or_raise("torch", "torch")
+    numpy = attempt_import_or_raise("numpy", "numpy")
+    columns = [col.to_numpy(zero_copy_only=False) for col in batch.columns]
+    stacked = torch.tensor(numpy.column_stack(columns))
+    rows = list(stacked.unbind(dim=0))
+    return rows

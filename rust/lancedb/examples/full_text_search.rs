@@ -3,12 +3,13 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray};
+use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 
 use futures::TryStreamExt;
 use lance_index::scalar::FullTextSearchQuery;
 use lancedb::connection::Connection;
+
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -29,7 +30,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
+fn create_some_records() -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
     const TOTAL: usize = 1000;
 
     let schema = Arc::new(Schema::new(vec![
@@ -66,7 +67,7 @@ fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
 }
 
 async fn create_table(db: &Connection) -> Result<Table> {
-    let initial_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
+    let initial_data = create_some_records()?;
     let tbl = db.create_table("my_table", initial_data).execute().await?;
     Ok(tbl)
 }

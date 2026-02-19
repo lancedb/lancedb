@@ -9,7 +9,7 @@ import json
 from ._lancedb import async_permutation_builder, PermutationReader
 from .table import LanceTable
 from .background_loop import LOOP
-from .util import batch_to_tensor
+from .util import batch_to_tensor, batch_to_tensor_rows
 from typing import Any, Callable, Iterator, Literal, Optional, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -333,7 +333,11 @@ class Transforms:
     """
 
     @staticmethod
-    def arrow2python(batch: pa.RecordBatch) -> dict[str, list[Any]]:
+    def arrow2python(batch: pa.RecordBatch) -> list[dict[str, Any]]:
+        return batch.to_pylist()
+
+    @staticmethod
+    def arrow2pythoncol(batch: pa.RecordBatch) -> dict[str, list[Any]]:
         return batch.to_pydict()
 
     @staticmethod
@@ -687,7 +691,17 @@ class Permutation:
             return
 
     def with_format(
-        self, format: Literal["numpy", "python", "pandas", "arrow", "torch", "polars"]
+        self,
+        format: Literal[
+            "numpy",
+            "python",
+            "python_col",
+            "pandas",
+            "arrow",
+            "torch",
+            "torch_col",
+            "polars",
+        ],
     ) -> "Permutation":
         """
         Set the format for batches
@@ -696,16 +710,18 @@ class Permutation:
 
         The format can be one of:
         - "numpy" - the batch will be a dict of numpy arrays (one per column)
-        - "python" - the batch will be a dict of lists (one per column)
+        - "python" - the batch will be a list of dicts (one per row)
+        - "python_col" - the batch will be a dict of lists (one entry per column)
         - "pandas" - the batch will be a pandas DataFrame
         - "arrow" - the batch will be a pyarrow RecordBatch
-        - "torch" - the batch will be a two dimensional torch tensor
+        - "torch" - the batch will be a list of tensors, one per row
+        - "torch_col" - the batch will be a 2D torch tensor (first dim indexes columns)
         - "polars" - the batch will be a polars DataFrame
 
         Conversion may or may not involve a data copy.  Lance uses Arrow internally
-        and so it is able to zero-copy to the arrow and polars.
+        and so it is able to zero-copy to the arrow and polars formats.
 
-        Conversion to torch will be zero-copy but will only support a subset of data
+        Conversion to torch_col will be zero-copy but will only support a subset of data
         types (numeric types).
 
         Conversion to numpy and/or pandas will typically be zero-copy for numeric
@@ -718,6 +734,8 @@ class Permutation:
         assert format is not None, "format is required"
         if format == "python":
             return self.with_transform(Transforms.arrow2python)
+        if format == "python_col":
+            return self.with_transform(Transforms.arrow2pythoncol)
         elif format == "numpy":
             return self.with_transform(Transforms.arrow2numpy)
         elif format == "pandas":
@@ -725,6 +743,8 @@ class Permutation:
         elif format == "arrow":
             return self.with_transform(Transforms.arrow2arrow)
         elif format == "torch":
+            return self.with_transform(batch_to_tensor_rows)
+        elif format == "torch_col":
             return self.with_transform(batch_to_tensor)
         elif format == "polars":
             return self.with_transform(Transforms.arrow2polars())
@@ -746,15 +766,20 @@ class Permutation:
 
     def __getitem__(self, index: int) -> Any:
         """
-        Return a single row from the permutation
-
-        The output will always be a python dictionary regardless of the format.
-
-        This method is mostly useful for debugging and exploration.  For actual
-        processing use [iter](#iter) or a torch data loader to perform batched
-        processing.
+        Returns a single row from the permutation by offset
         """
-        pass
+        return self.__getitems__([index])
+
+    def __getitems__(self, indices: list[int]) -> Any:
+        """
+        Returns rows from the permutation by offset
+        """
+
+        async def do_getitems():
+            return await self.reader.take_offsets(indices, selection=self.selection)
+
+        batch = LOOP.run(do_getitems())
+        return self.transform_fn(batch)
 
     @deprecated(details="Use with_skip instead")
     def skip(self, skip: int) -> "Permutation":

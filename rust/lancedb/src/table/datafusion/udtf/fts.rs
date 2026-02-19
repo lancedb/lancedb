@@ -97,7 +97,7 @@ mod tests {
         table::datafusion::BaseTableAdapter,
         Connection, Table,
     };
-    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
+    use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema as ArrowSchema};
     use datafusion::prelude::SessionContext;
 
@@ -173,14 +173,7 @@ mod tests {
 
         // Create LanceDB database and table
         let db = crate::connect("memory://test").execute().await.unwrap();
-        let table = db
-            .create_table(
-                "foo",
-                RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let table = db.create_table("foo", batch).execute().await.unwrap();
 
         // Create FTS index
         table
@@ -323,13 +316,7 @@ mod tests {
             RecordBatch::try_new(metadata_schema.clone(), vec![metadata_col, extra_col]).unwrap();
 
         let _metadata_table = db
-            .create_table(
-                "metadata",
-                RecordBatchIterator::new(
-                    vec![Ok(metadata_batch.clone())].into_iter(),
-                    metadata_schema.clone(),
-                ),
-            )
+            .create_table("metadata", metadata_batch.clone())
             .execute()
             .await
             .unwrap();
@@ -393,14 +380,7 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema.clone(), vec![id_col, text_col, category_col]).unwrap();
 
-        let table = db
-            .create_table(
-                table_name,
-                RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let table = db.create_table(table_name, batch).execute().await.unwrap();
 
         // Create FTS index
         table
@@ -546,14 +526,7 @@ mod tests {
         ]));
         let batch = RecordBatch::try_new(schema.clone(), vec![id_col, text_col]).unwrap();
 
-        let table = db
-            .create_table(
-                "docs",
-                RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let table = db.create_table("docs", batch).execute().await.unwrap();
 
         // Create FTS index with position information for phrase queries
         table
@@ -691,14 +664,7 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema.clone(), vec![id_col, title_col, content_col]).unwrap();
 
-        let table = db
-            .create_table(
-                "multi_col",
-                RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let table = db.create_table("multi_col", batch).execute().await.unwrap();
 
         // Create FTS indices on both columns
         table
@@ -963,13 +929,7 @@ mod tests {
         let metadata_batch =
             RecordBatch::try_new(metadata_schema.clone(), vec![metadata_id, extra_info]).unwrap();
         let _metadata_table = db
-            .create_table(
-                "metadata",
-                RecordBatchIterator::new(
-                    vec![Ok(metadata_batch.clone())].into_iter(),
-                    metadata_schema,
-                ),
-            )
+            .create_table("metadata", metadata_batch.clone())
             .execute()
             .await
             .unwrap();
@@ -1358,14 +1318,7 @@ mod tests {
         ]));
         let batch = RecordBatch::try_new(schema.clone(), vec![id_col, text_col]).unwrap();
 
-        let table = db
-            .create_table(
-                "docs",
-                RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let table = db.create_table("docs", batch).execute().await.unwrap();
 
         // Create FTS index with position information
         table
@@ -1510,14 +1463,7 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema.clone(), vec![id_col, title_col, content_col]).unwrap();
 
-        let table = db
-            .create_table(
-                "docs",
-                RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let table = db.create_table("docs", batch).execute().await.unwrap();
 
         // Create FTS indices on both columns
         table
@@ -1591,14 +1537,7 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema.clone(), vec![id_col, title_col, content_col]).unwrap();
 
-        let table = db
-            .create_table(
-                "docs",
-                RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema),
-            )
-            .execute()
-            .await
-            .unwrap();
+        let table = db.create_table("docs", batch).execute().await.unwrap();
 
         // Create FTS indices
         table
@@ -1724,36 +1663,23 @@ mod tests {
             .unwrap();
 
         // Create table with simple text for n-gram testing
-        let data = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                Arc::new(ArrowSchema::new(vec![
-                    Field::new("id", DataType::Int32, false),
-                    Field::new("text", DataType::Utf8, false),
-                ])),
-                vec![
-                    Arc::new(Int32Array::from(vec![1, 2, 3])),
-                    Arc::new(StringArray::from(vec![
-                        "hello world",
-                        "lance database",
-                        "lance is cool",
-                    ])),
-                ],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
+        let data = RecordBatch::try_new(
             Arc::new(ArrowSchema::new(vec![
                 Field::new("id", DataType::Int32, false),
                 Field::new("text", DataType::Utf8, false),
             ])),
-        );
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec![
+                    "hello world",
+                    "lance database",
+                    "lance is cool",
+                ])),
+            ],
+        )
+        .unwrap();
 
-        let table = Arc::new(
-            db.create_table("docs", Box::new(data))
-                .execute()
-                .await
-                .unwrap(),
-        );
+        let table = Arc::new(db.create_table("docs", data).execute().await.unwrap());
 
         // Create FTS index with n-gram tokenizer (default min_ngram_length=3)
         table
@@ -1876,43 +1802,29 @@ mod tests {
             .unwrap();
 
         // Create table with two text columns
-        let data = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                Arc::new(ArrowSchema::new(vec![
-                    Field::new("id", DataType::Int32, false),
-                    Field::new("title", DataType::Utf8, false),
-                    Field::new("content", DataType::Utf8, false),
-                ])),
-                vec![
-                    Arc::new(Int32Array::from(vec![1, 2, 3])),
-                    Arc::new(StringArray::from(vec![
-                        "Important Document",
-                        "Another Document",
-                        "Random Text",
-                    ])),
-                    Arc::new(StringArray::from(vec![
-                        "This is important information",
-                        "This has details",
-                        "Nothing special here",
-                    ])),
-                ],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
+        let data = RecordBatch::try_new(
             Arc::new(ArrowSchema::new(vec![
                 Field::new("id", DataType::Int32, false),
                 Field::new("title", DataType::Utf8, false),
                 Field::new("content", DataType::Utf8, false),
             ])),
-        );
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec![
+                    "Important Document",
+                    "Another Document",
+                    "Random Text",
+                ])),
+                Arc::new(StringArray::from(vec![
+                    "This is important information",
+                    "This has details",
+                    "Nothing special here",
+                ])),
+            ],
+        )
+        .unwrap();
 
-        let table = Arc::new(
-            db.create_table("docs", Box::new(data))
-                .execute()
-                .await
-                .unwrap(),
-        );
+        let table = Arc::new(db.create_table("docs", data).execute().await.unwrap());
 
         // Create FTS indices on both columns
         table

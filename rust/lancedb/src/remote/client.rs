@@ -491,7 +491,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     }
 
     /// Apply dynamic headers from the header provider if configured
-    async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
+    pub(crate) async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
         if let Some(ref provider) = self.header_provider {
             let headers = provider.get_headers().await?;
             let request_headers = request.headers_mut();
@@ -555,7 +555,9 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             message: "Attempted to retry a request that cannot be cloned".to_string(),
         })?;
         let (_, r) = tmp_req.build_split();
-        let mut r = r.unwrap();
+        let mut r = r.map_err(|e| Error::Runtime {
+            message: format!("Failed to build request: {}", e),
+        })?;
         let request_id = self.extract_request_id(&mut r);
         let mut retry_counter = RetryCounter::new(retry_config, request_id.clone());
 
@@ -571,7 +573,9 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             }
 
             let (c, request) = req_builder.build_split();
-            let mut request = request.unwrap();
+            let mut request = request.map_err(|e| Error::Runtime {
+                message: format!("Failed to build request: {}", e),
+            })?;
             self.set_request_id(&mut request, &request_id.clone());
 
             // Apply dynamic headers before each retry attempt
@@ -621,7 +625,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
     }
 
-    fn log_request(&self, request: &Request, request_id: &String) {
+    pub(crate) fn log_request(&self, request: &Request, request_id: &String) {
         if log::log_enabled!(log::Level::Debug) {
             let content_type = request
                 .headers()
