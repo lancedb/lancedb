@@ -329,7 +329,12 @@ def _align_field_types(
         target_field = next((f for f in target_fields if f.name == field.name), None)
         if target_field is None:
             raise ValueError(f"Field '{field.name}' not found in target schema")
-        if pa.types.is_struct(target_field.type):
+        if pa.types.is_null(field.type):
+            # Source field is all nulls (e.g. nullable struct column with no
+            # non-null values in this batch).  Use the target type directly
+            # since there is no source type structure to recurse into.
+            new_type = target_field.type
+        elif pa.types.is_struct(target_field.type):
             new_type = pa.struct(
                 _align_field_types(
                     field.type.fields,
