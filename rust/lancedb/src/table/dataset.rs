@@ -2,24 +2,13 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::{
-    fmt,
-    sync::{
-        atomic::{AtomicU64, Ordering as AtomicOrdering},
-        Arc, Mutex,
-    },
-    time::{Duration, Instant},
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 
-use futures::future::{BoxFuture, Shared};
-use futures::FutureExt;
 use lance::{dataset::refs, Dataset};
 
 use crate::{error::Result, utils::background_cache::BackgroundCache, Error};
-
-/// Grace period before starting a concurrent reload when a stale one is
-/// still running. Balances latency (starting too early wastes a reload)
-/// vs blocking on a slow reload that won't satisfy the request anyway.
-const STALE_RELOAD_GRACE: Duration = Duration::from_millis(5);
 
 /// A wrapper around a [Dataset] that provides consistency checks.
 ///
@@ -34,7 +23,7 @@ pub struct DatasetConsistencyWrapper {
 /// The current dataset and whether it is pinned to a specific version.
 ///
 /// The mutex is never held across `.await` points.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DatasetState {
     dataset: Arc<Dataset>,
     /// `Some(version)` = pinned to a specific version (time travel),
@@ -46,114 +35,15 @@ struct DatasetState {
 enum ConsistencyMode {
     /// Only update table state when explicitly asked.
     Lazy,
-    /// Always check for a new version on every read, but allow a concurrent
-    /// reload to satisfy multiple requests. A reload satisfies a request if it
-    /// started after the request was made, guaranteeing the requester sees at least
-    /// the state that existed when they asked.
-    Strong(CoalescingReloader),
-    /// Return cached value immediately while refreshing in the background when the TTL expires.
+    /// Always check for a new version on every read.
+    Strong,
+    /// Periodically check for new version in the background. If the table is being
+    /// regularly accessed, refresh will happen in the background. If the table is idle for a while,
+    /// the next access will trigger a refresh before returning the dataset.
+    /// 
+    /// | t < TTL - refresh_window | t < TTL                           | t >= TTL            |
+    /// |  Return value            | Background refresh & return value |  syncronous refresh |
     Eventual(BackgroundCache<Arc<Dataset>, Error>),
-}
-
-type SharedResultFut = Shared<BoxFuture<'static, std::result::Result<Arc<Dataset>, Arc<Error>>>>;
-
-struct InflightReload {
-    started_at: Instant,
-    future: SharedResultFut,
-    generation: u64,
-}
-
-#[derive(Clone)]
-struct CoalescingReloader {
-    inflight: Arc<Mutex<Option<InflightReload>>>,
-    next_generation: Arc<AtomicU64>,
-}
-
-impl fmt::Debug for CoalescingReloader {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CoalescingReloader")
-            .field("has_inflight", &self.inflight.lock().unwrap().is_some())
-            .finish()
-    }
-}
-
-impl CoalescingReloader {
-    fn new() -> Self {
-        Self {
-            inflight: Arc::new(Mutex::new(None)),
-            next_generation: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    /// Start a new reload, replacing any existing inflight entry.
-    ///
-    /// The caller must hold the lock on `self.inflight` (passed as `inflight`).
-    fn start_reload(
-        &self,
-        inflight: &mut Option<InflightReload>,
-        dataset_state: &Arc<Mutex<DatasetState>>,
-    ) -> SharedResultFut {
-        let generation = self.next_generation.fetch_add(1, AtomicOrdering::Relaxed);
-        let started_at = Instant::now();
-        let state = dataset_state.clone();
-        let inflight_ref = self.inflight.clone();
-
-        let fut = async move {
-            let result = refresh_latest(state).await.map_err(Arc::new);
-            // Only clear inflight if we're still the current generation.
-            // A newer reload may have replaced us.
-            let mut guard = inflight_ref.lock().unwrap();
-            if matches!(guard.as_ref(), Some(i) if i.generation == generation) {
-                *guard = None;
-            }
-            result
-        }
-        .boxed()
-        .shared();
-
-        *inflight = Some(InflightReload {
-            started_at,
-            future: fut.clone(),
-            generation,
-        });
-        fut
-    }
-
-    async fn get(&self, dataset_state: &Arc<Mutex<DatasetState>>) -> Result<Arc<Dataset>> {
-        let request_time = Instant::now();
-
-        // Check for a fresh-enough inflight reload we can join. Guard must
-        // be dropped before any `.await` (MutexGuard is !Send).
-        let (stale_running, join_fut) = {
-            let inflight = self.inflight.lock().unwrap();
-            match inflight.as_ref() {
-                Some(e) if e.started_at >= request_time => (false, Some(e.future.clone())),
-                Some(_) => (true, None),
-                None => (false, None),
-            }
-        };
-
-        if let Some(fut) = join_fut {
-            return fut.await.map_err(unwrap_shared_error);
-        }
-
-        if stale_running {
-            // A stale reload is running. Wait briefly so that other
-            // concurrent requests arrive and can share our reload.
-            tokio::time::sleep(STALE_RELOAD_GRACE).await;
-        }
-
-        // Start or replace. Re-check under lock in case a fresh reload
-        // was started by another task while we were sleeping.
-        let fut = {
-            let mut inflight = self.inflight.lock().unwrap();
-            match inflight.as_ref() {
-                Some(e) if e.started_at >= request_time => e.future.clone(),
-                _ => self.start_reload(&mut inflight, dataset_state),
-            }
-        };
-        fut.await.map_err(unwrap_shared_error)
-    }
 }
 
 impl DatasetConsistencyWrapper {
@@ -161,9 +51,10 @@ impl DatasetConsistencyWrapper {
     pub fn new_latest(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
         let dataset = Arc::new(dataset);
         let consistency = match read_consistency_interval {
-            Some(d) if d == Duration::ZERO => ConsistencyMode::Strong(CoalescingReloader::new()),
+            Some(d) if d == Duration::ZERO => ConsistencyMode::Strong,
             Some(d) => {
-                let cache = BackgroundCache::new(d, d / 2);
+                let refresh_window = std::time::Duration::from_secs(3);
+                let cache = BackgroundCache::new(d, refresh_window);
                 cache.seed(dataset.clone());
                 ConsistencyMode::Eventual(cache)
             }
@@ -207,7 +98,7 @@ impl DatasetConsistencyWrapper {
                     .await
                     .map_err(unwrap_shared_error)
             }
-            ConsistencyMode::Strong(reloader) => reloader.get(&self.state).await,
+            ConsistencyMode::Strong => refresh_latest(self.state.clone()).await,
             ConsistencyMode::Lazy => {
                 let state = self.state.lock().unwrap();
                 Ok(state.dataset.clone())
@@ -373,22 +264,14 @@ fn unwrap_shared_error(arc: Arc<Error>) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
 
-    use arrow_array::{record_batch, Int32Array, RecordBatch, RecordBatchIterator};
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
     use lance::{
-        dataset::{InsertBuilder, WriteMode, WriteParams},
-        io::{ObjectStore, ObjectStoreParams},
+        dataset::{WriteMode, WriteParams},
+        io::ObjectStoreParams,
     };
-    use lance_table::{
-        format::Manifest,
-        io::commit::{
-            CommitError, CommitHandler, ConditionalPutCommitHandler, ManifestLocation,
-            ManifestNamingScheme, ManifestWriter,
-        },
-    };
-    use object_store::path::Path;
 
     use super::*;
 
@@ -640,107 +523,6 @@ mod tests {
         table.schema().await.unwrap();
         let stats = io_stats.incremental_stats();
         assert_eq!(stats.read_iops, 1);
-    }
-
-    #[tokio::test]
-    async fn test_strong_consistency_coalescing() {
-        #[derive(Debug)]
-        struct MockCommitHandler {
-            inner: ConditionalPutCommitHandler,
-            num_calls: Arc<AtomicUsize>,
-        }
-
-        impl Default for MockCommitHandler {
-            fn default() -> Self {
-                Self {
-                    inner: ConditionalPutCommitHandler,
-                    num_calls: Arc::new(AtomicUsize::new(0)),
-                }
-            }
-        }
-
-        #[async_trait::async_trait]
-        impl CommitHandler for MockCommitHandler {
-            async fn resolve_latest_location(
-                &self,
-                base_path: &Path,
-                object_store: &ObjectStore,
-            ) -> lance_core::Result<ManifestLocation> {
-                self.num_calls.fetch_add(1, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                self.inner
-                    .resolve_latest_location(base_path, object_store)
-                    .await
-            }
-
-            async fn commit(
-                &self,
-                manifest: &mut Manifest,
-                indices: Option<Vec<lance_table::format::IndexMetadata>>,
-                base_path: &Path,
-                object_store: &ObjectStore,
-                manifest_writer: ManifestWriter,
-                naming_scheme: ManifestNamingScheme,
-                transaction: Option<lance_table::format::Transaction>,
-            ) -> std::result::Result<ManifestLocation, CommitError> {
-                self.inner
-                    .commit(
-                        manifest,
-                        indices,
-                        base_path,
-                        object_store,
-                        manifest_writer,
-                        naming_scheme,
-                        transaction,
-                    )
-                    .await
-            }
-        }
-
-        let handler = MockCommitHandler::default();
-        let call_count = handler.num_calls.clone();
-        let handler = Arc::new(handler) as Arc<dyn CommitHandler>;
-        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
-        let dataset = InsertBuilder::new("memory://")
-            .with_params(&WriteParams {
-                commit_handler: Some(handler.clone()),
-                ..Default::default()
-            })
-            .execute(vec![batch])
-            .await
-            .unwrap();
-
-        // Reset after Dataset::write, which also calls resolve_latest_location
-        call_count.store(0, Ordering::SeqCst);
-
-        let wrapper = DatasetConsistencyWrapper::new_latest(dataset, Some(Duration::ZERO));
-        let barrier = Arc::new(tokio::sync::Barrier::new(10));
-        let mut join_set = tokio::task::JoinSet::new();
-        for _ in 0..10 {
-            let wrapper = wrapper.clone();
-            let barrier = barrier.clone();
-            join_set.spawn(async move {
-                barrier.wait().await;
-                wrapper.get().await.unwrap();
-            });
-        }
-        for _ in 0..10 {
-            join_set.join_next().await.unwrap().unwrap();
-        }
-
-        // We expect the sequence to look like this:
-        // - Task 1 starts reload
-        // - Tasks 2-10 request a reload while Task 1 is still running.
-        // - Task 1 finishes reload (after 10ms sleep)
-        // - Tasks 2-10 see the reload started before their request, so trigger a new reload
-        // - Reload finishes, resolves tasks 2-10.
-
-        let final_count = call_count.load(Ordering::SeqCst);
-        assert!(
-            final_count <= 2,
-            "Expected 2 or fewer calls to resolve_latest_location, but got {}",
-            final_count
-        );
     }
 
     /// Regression test: before the fix, the reload fast-path (no version change)
