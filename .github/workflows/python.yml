@@ -25,7 +25,7 @@ jobs:
   lint:
     name: "Lint"
     timeout-minutes: 30
-    runs-on: "ubuntu-22.04"
+    runs-on: "ubuntu-24.04"
     defaults:
       run:
         shell: bash
@@ -195,7 +195,7 @@ jobs:
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels
-  pydantic1x:
+  min-deps:
     timeout-minutes: 30
     runs-on: "ubuntu-24.04"
     defaults:
@@ -217,7 +217,6 @@ jobs:
           python-version: "3.10"
       - name: Install lancedb
         run: |
-          pip install "pydantic<2"
           pip install pyarrow==16
           pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests]
           pip install tantivy
