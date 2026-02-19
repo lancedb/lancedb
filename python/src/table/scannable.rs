@@ -15,7 +15,7 @@ use lancedb::{
 };
 use pyo3::{types::PyAnyMethods, FromPyObject, Py, PyAny, Python};
 
-/// Adapter that implements SourceData for a Python reader factory callable.
+/// Adapter that implements Scannable for a Python reader factory callable.
 ///
 /// This holds a Python callable that returns a RecordBatchReader when called.
 /// For rescannable sources, the callable can be invoked multiple times to

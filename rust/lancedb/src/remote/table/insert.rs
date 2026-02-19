@@ -75,12 +75,12 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         self.add_result.lock().unwrap().clone()
     }
 
-    /// Stream the input as an IPC body, capturing any stream errors into the
-    /// provided channel. Errors from the input plan (e.g. NaN rejection) would
-    /// otherwise be swallowed inside the HTTP body upload; by stashing them in
-    /// the channel we can surface them with their original message after the
-    /// request completes.
-    fn stream_as_ipc_body(
+    /// Stream the input into an HTTP body as an Arrow IPC stream, capturing any
+    /// stream errors into the provided channel. Errors from the input plan
+    /// (e.g. NaN rejection) would otherwise be swallowed inside the HTTP body
+    /// upload; by stashing them in the channel we can surface them with their
+    /// original message after the request completes.
+    fn stream_as_http_body(
         data: SendableRecordBatchStream,
         error_tx: tokio::sync::oneshot::Sender<DataFusionError>,
     ) -> DataFusionResult<reqwest::Body> {
@@ -228,7 +228,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
             }
 
             let (error_tx, mut error_rx) = tokio::sync::oneshot::channel();
-            let body = Self::stream_as_ipc_body(input_stream, error_tx)?;
+            let body = Self::stream_as_http_body(input_stream, error_tx)?;
             let request = request.body(body);
 
             let result: DataFusionResult<(String, _)> = async {

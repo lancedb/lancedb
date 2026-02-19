@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import singledispatch
 from typing import Callable, Iterator, Optional
 import sys
+from lancedb.arrow import to_arrow, _register_optional_converters as _register_to_arrow_converters
 import pyarrow as pa
 import pyarrow.dataset as ds
 
@@ -17,7 +18,9 @@ class Scannable:
     num_rows: Optional[int]
     # Factory function to create a new reader each time (supports re-scanning)
     reader: Callable[[], pa.RecordBatchReader]
-    # Whether calling reader() multiple times yields fresh data
+    # Whether reader can be called more than once. For example, an iterator can
+    # only be consumed once, while a DataFrame can be converted to a new reader
+    # each time.
     rescannable: bool = True
 
 
@@ -69,35 +72,6 @@ def _from_scanner(data: ds.Scanner) -> Scannable:
         reader=data.to_reader,
         rescannable=False,
     )
-
-
-@singledispatch
-def to_arrow(data) -> pa.Table:
-    """Convert a single data object to a pa.Table."""
-    raise NotImplementedError(f"to_arrow not implemented for type {type(data)}")
-
-
-@to_arrow.register(pa.RecordBatch)
-def _arrow_from_batch(data: pa.RecordBatch) -> pa.Table:
-    return pa.Table.from_batches([data])
-
-
-@to_arrow.register(pa.Table)
-def _arrow_from_table(data: pa.Table) -> pa.Table:
-    return data
-
-
-@to_arrow.register(list)
-def _arrow_from_list(data: list) -> pa.Table:
-    if not data:
-        raise ValueError("Cannot create table from empty list without a schema")
-
-    if isinstance(data[0], LanceModel):
-        schema = data[0].__class__.to_arrow_schema()
-        dicts = [model_to_dict(d) for d in data]
-        return pa.Table.from_pylist(dicts, schema=schema)
-
-    return pa.Table.from_pylist(data)
 
 
 @to_scannable.register(list)

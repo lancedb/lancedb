@@ -4,18 +4,15 @@
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Fields, Schema};
-use futures::TryStreamExt;
-use lance::dataset::{WriteMode, WriteParams};
-use lance_datafusion::exec::execute_plan;
+use lance::dataset::WriteMode;
 use serde::{Deserialize, Serialize};
 
 use crate::data::scannable::scannable_with_embeddings;
+use crate::data::scannable::Scannable;
 use crate::embeddings::EmbeddingRegistry;
 use crate::table::datafusion::cast::cast_to_table_schema;
-use crate::table::datafusion::insert::InsertExec;
 use crate::table::datafusion::reject_nan::reject_nan_vectors;
 use crate::table::datafusion::scannable_exec::ScannableExec;
-use crate::{data::scannable::Scannable, table::NativeTable};
 use crate::{Error, Result};
 
 use super::{BaseTable, TableDefinition, WriteOptions};
@@ -93,6 +90,12 @@ impl AddDataBuilder {
         self
     }
 
+    /// Configure how to handle NaN values in vector columns.
+    ///
+    /// By default, any vectors containing NaN values will be rejected with an
+    /// error, since NaNs cannot be indexed for search. Setting this to `Keep`
+    /// will allow NaN values to be added to the table, but they will not be
+    /// indexed and will not be searchable.
     pub fn on_nan_vectors(mut self, behavior: NaNVectorBehavior) -> Self {
         self.on_nan_vectors = behavior;
         self
@@ -156,43 +159,6 @@ pub struct PreprocessingOutput {
     pub rescannable: bool,
     pub write_options: WriteOptions,
     pub mode: AddDataMode,
-}
-
-pub async fn local_add_table(slf: &NativeTable, add: AddDataBuilder) -> Result<AddResult> {
-    let table_def = slf.table_definition().await?;
-
-    let ds_wrapper = slf.dataset.clone();
-    let ds = Arc::new(ds_wrapper.get_mut().await?.clone());
-    let table_schema = Schema::from(&ds.schema().clone());
-
-    let output = add.into_plan(&table_schema, &table_def)?;
-
-    let lance_params = output
-        .write_options
-        .lance_write_params
-        .unwrap_or(WriteParams {
-            mode: match output.mode {
-                AddDataMode::Append => WriteMode::Append,
-                AddDataMode::Overwrite => WriteMode::Overwrite,
-            },
-            ..Default::default()
-        });
-
-    let plan = Arc::new(InsertExec::new(
-        ds_wrapper.clone(),
-        ds,
-        output.plan,
-        lance_params,
-    ));
-
-    let stream = execute_plan(plan, Default::default())?;
-    stream
-        .try_collect::<Vec<_>>()
-        .await
-        .map_err(crate::Error::from)?;
-
-    let version = ds_wrapper.get().await?.manifest().version;
-    Ok(AddResult { version })
 }
 
 /// Check that the input schema is valid for insert.

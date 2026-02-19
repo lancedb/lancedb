@@ -10,15 +10,18 @@ use datafusion_expr::Expr;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::ExecutionPlan;
 use futures::StreamExt;
+use futures::TryStreamExt;
 use lance::dataset::builder::DatasetBuilder;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
+use lance::dataset::WriteMode;
 use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::index::vector::VectorIndexParams;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
+use lance_datafusion::exec::execute_plan;
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::vector::bq::RQBuildParams;
@@ -49,6 +52,7 @@ use crate::index::IndexStatistics;
 use crate::index::{vector::suggested_num_sub_vectors, Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
+use crate::table::datafusion::insert::InsertExec;
 use crate::utils::{
     supported_bitmap_data_type, supported_btree_data_type, supported_fts_data_type,
     supported_label_list_data_type, supported_vector_data_type, PatchReadParam, PatchWriteParam,
@@ -2108,7 +2112,40 @@ impl BaseTable for NativeTable {
     }
 
     async fn add(&self, add: AddDataBuilder) -> Result<AddResult> {
-        add_data::local_add_table(self, add).await
+        let table_def = self.table_definition().await?;
+
+        let ds_wrapper = self.dataset.clone();
+        let ds = Arc::new(ds_wrapper.get_mut().await?.clone());
+        let table_schema = Schema::from(&ds.schema().clone());
+
+        let output = add.into_plan(&table_schema, &table_def)?;
+
+        let lance_params = output
+            .write_options
+            .lance_write_params
+            .unwrap_or(WriteParams {
+                mode: match output.mode {
+                    AddDataMode::Append => WriteMode::Append,
+                    AddDataMode::Overwrite => WriteMode::Overwrite,
+                },
+                ..Default::default()
+            });
+
+        let plan = Arc::new(InsertExec::new(
+            ds_wrapper.clone(),
+            ds,
+            output.plan,
+            lance_params,
+        ));
+
+        let stream = execute_plan(plan, Default::default())?;
+        stream
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(crate::Error::from)?;
+
+        let version = ds_wrapper.get().await?.manifest().version;
+        Ok(AddResult { version })
     }
 
     async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
