@@ -3,7 +3,10 @@
 
 use std::{
     fmt,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -12,6 +15,11 @@ use futures::FutureExt;
 use lance::{dataset::refs, Dataset};
 
 use crate::{error::Result, utils::background_cache::BackgroundCache, Error};
+
+/// Grace period before starting a concurrent reload when a stale one is
+/// still running. Balances latency (starting too early wastes a reload)
+/// vs blocking on a slow reload that won't satisfy the request anyway.
+const STALE_RELOAD_GRACE: Duration = Duration::from_millis(5);
 
 /// A wrapper around a [Dataset] that provides consistency checks.
 ///
@@ -36,8 +44,14 @@ struct DatasetState {
 
 #[derive(Debug, Clone)]
 enum ConsistencyMode {
+    /// Only update table state when explicitly asked.
     Lazy,
+    /// Always check for a new version on every read, but allow a concurrent
+    /// reload to satisfy multiple requests. A reload satisfies a request if it
+    /// started after the request was made, guaranteeing the requester sees at least
+    /// the state that existed when they asked.
     Strong(CoalescingReloader),
+    /// Return cached value immediately while refreshing in the background when the TTL expires.
     Eventual(BackgroundCache<Arc<Dataset>, Error>),
 }
 
@@ -46,11 +60,13 @@ type SharedResultFut = Shared<BoxFuture<'static, std::result::Result<Arc<Dataset
 struct InflightReload {
     started_at: Instant,
     future: SharedResultFut,
+    generation: u64,
 }
 
 #[derive(Clone)]
 struct CoalescingReloader {
     inflight: Arc<Mutex<Option<InflightReload>>>,
+    next_generation: Arc<AtomicU64>,
 }
 
 impl fmt::Debug for CoalescingReloader {
@@ -65,62 +81,97 @@ impl CoalescingReloader {
     fn new() -> Self {
         Self {
             inflight: Arc::new(Mutex::new(None)),
+            next_generation: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Start a new reload, replacing any existing inflight entry.
+    ///
+    /// The caller must hold the lock on `self.inflight` (passed as `inflight`).
+    fn start_reload(
+        &self,
+        inflight: &mut Option<InflightReload>,
+        dataset_state: &Arc<Mutex<DatasetState>>,
+    ) -> SharedResultFut {
+        let generation = self.next_generation.fetch_add(1, AtomicOrdering::Relaxed);
+        let started_at = Instant::now();
+        let state = dataset_state.clone();
+        let inflight_ref = self.inflight.clone();
+
+        let fut = async move {
+            let result = refresh_latest(state).await.map_err(Arc::new);
+            // Only clear inflight if we're still the current generation.
+            // A newer reload may have replaced us.
+            let mut guard = inflight_ref.lock().unwrap();
+            if matches!(guard.as_ref(), Some(i) if i.generation == generation) {
+                *guard = None;
+            }
+            result
+        }
+        .boxed()
+        .shared();
+
+        *inflight = Some(InflightReload {
+            started_at,
+            future: fut.clone(),
+            generation,
+        });
+        fut
     }
 
     async fn get(&self, dataset_state: &Arc<Mutex<DatasetState>>) -> Result<Arc<Dataset>> {
         let request_time = Instant::now();
 
-        loop {
-            let (fut, started_at) = {
-                let mut inflight = self.inflight.lock().unwrap();
-
-                if let Some(existing) = inflight.as_ref() {
-                    (existing.future.clone(), existing.started_at)
-                } else {
-                    let started_at = Instant::now();
-                    let state = dataset_state.clone();
-                    let inflight_ref = self.inflight.clone();
-
-                    let fut = async move {
-                        let result = refresh_latest(state).await.map_err(Arc::new);
-                        *inflight_ref.lock().unwrap() = None;
-                        result
-                    }
-                    .boxed()
-                    .shared();
-
-                    *inflight = Some(InflightReload {
-                        started_at,
-                        future: fut.clone(),
-                    });
-                    (fut, started_at)
-                }
-            };
-
-            let result = fut.await.map_err(unwrap_shared_error)?;
-
-            // A reload that started after our request guarantees we see
-            // at least the state that existed when we asked.
-            if started_at >= request_time {
-                return Ok(result);
+        // Check for a fresh-enough inflight reload we can join. Guard must
+        // be dropped before any `.await` (MutexGuard is !Send).
+        let (stale_running, join_fut) = {
+            let inflight = self.inflight.lock().unwrap();
+            match inflight.as_ref() {
+                Some(e) if e.started_at >= request_time => (false, Some(e.future.clone())),
+                Some(_) => (true, None),
+                None => (false, None),
             }
-            // Otherwise the reload was too old — loop to start/join a new one.
+        };
+
+        if let Some(fut) = join_fut {
+            return fut.await.map_err(unwrap_shared_error);
         }
+
+        if stale_running {
+            // A stale reload is running. Wait briefly so that other
+            // concurrent requests arrive and can share our reload.
+            tokio::time::sleep(STALE_RELOAD_GRACE).await;
+        }
+
+        // Start or replace. Re-check under lock in case a fresh reload
+        // was started by another task while we were sleeping.
+        let fut = {
+            let mut inflight = self.inflight.lock().unwrap();
+            match inflight.as_ref() {
+                Some(e) if e.started_at >= request_time => e.future.clone(),
+                _ => self.start_reload(&mut inflight, dataset_state),
+            }
+        };
+        fut.await.map_err(unwrap_shared_error)
     }
 }
 
 impl DatasetConsistencyWrapper {
     /// Create a new wrapper in the latest version mode.
     pub fn new_latest(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
+        let dataset = Arc::new(dataset);
         let consistency = match read_consistency_interval {
             Some(d) if d == Duration::ZERO => ConsistencyMode::Strong(CoalescingReloader::new()),
-            Some(d) => ConsistencyMode::Eventual(BackgroundCache::new(d, d / 2)),
+            Some(d) => {
+                let cache = BackgroundCache::new(d, d / 2);
+                cache.seed(dataset.clone());
+                ConsistencyMode::Eventual(cache)
+            }
             None => ConsistencyMode::Lazy,
         };
         Self {
             state: Arc::new(Mutex::new(DatasetState {
-                dataset: Arc::new(dataset),
+                dataset,
                 pinned_version: None,
             })),
             consistency,

@@ -161,6 +161,14 @@ where
     ///
     /// Any in-flight background fetch from before this call will not update the
     /// cache (the generation counter prevents stale writes).
+    /// Pre-populate the cache with an initial value.
+    ///
+    /// This avoids a blocking fetch on the first [`get()`](Self::get) call.
+    pub fn seed(&self, value: V) {
+        let mut cache = self.inner.lock().unwrap();
+        cache.state = State::Current(value, clock::now());
+    }
+
     pub fn invalidate(&self) {
         let mut cache = self.inner.lock().unwrap();
         cache.state = State::Empty;
