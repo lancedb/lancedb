@@ -39,6 +39,9 @@ enum ConsistencyMode {
     /// regularly accessed, refresh will happen in the background. If the table is idle for a while,
     /// the next access will trigger a refresh before returning the dataset.
     ///
+    /// read_consistency_interval = TTL
+    /// refresh_window = min(3s, TTL/4)
+    ///
     /// | t < TTL - refresh_window | t < TTL                           | t >= TTL            |
     /// |  Return value            | Background refresh & return value |  syncronous refresh |
     Eventual(BackgroundCache<Arc<Dataset>, Error>),
@@ -51,7 +54,7 @@ impl DatasetConsistencyWrapper {
         let consistency = match read_consistency_interval {
             Some(d) if d == Duration::ZERO => ConsistencyMode::Strong,
             Some(d) => {
-                let refresh_window = std::time::Duration::from_secs(3);
+                let refresh_window = std::cmp::min(std::time::Duration::from_secs(3), d / 4);
                 let cache = BackgroundCache::new(d, refresh_window);
                 cache.seed(dataset.clone());
                 ConsistencyMode::Eventual(cache)
