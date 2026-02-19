@@ -16,9 +16,23 @@ use lance::dataset::ROW_ID;
 use crate::error::{Error, Result};
 use crate::rerankers::{Reranker, RELEVANCE_SCORE};
 
-/// Reranks the results using Reciprocal Rank Fusion(RRF) algorithm based
-/// on the scores of vector and FTS search.
+/// Reranks search results using Reciprocal Rank Fusion (RRF) algorithm.
 ///
+/// RRF is a simple yet effective method for combining ranked lists. It assigns
+/// scores based on the formula: `score = 1 / (rank + k)`, where `rank` is the
+/// position in the results (0-indexed) and `k` is a constant (default 60).
+///
+/// # Supported Modes
+///
+/// - **Vector-only**: Reranks vector search results based on their position
+/// - **FTS-only**: Reranks full-text search results based on their position
+/// - **Hybrid**: Combines vector and FTS results using RRF fusion
+///
+/// # References
+///
+/// Cormack, G. V., Clarke, C. L., & Buettcher, S. (2009).
+/// "Reciprocal rank fusion outperforms condorcet and individual rank learning methods"
+/// SIGIR '09. https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf
 #[derive(Debug)]
 pub struct RRFReranker {
     k: f32,
@@ -44,6 +58,128 @@ impl Default for RRFReranker {
 
 #[async_trait]
 impl Reranker for RRFReranker {
+    async fn rerank_vector(
+        &self,
+        _query: &str,
+        vector_results: RecordBatch,
+    ) -> Result<RecordBatch> {
+        // Extract row IDs
+        let row_ids = vector_results
+            .column_by_name(ROW_ID)
+            .ok_or(Error::InvalidInput {
+                message: format!("expected column {} not found", ROW_ID),
+            })?;
+        let row_ids: UInt64Array = downcast_array(&row_ids);
+
+        // Calculate RRF scores based on rank (position in results)
+        let mut rrf_score_map = BTreeMap::new();
+        for (i, &result_id) in row_ids.values().iter().enumerate() {
+            let score = 1.0 / (i as f32 + self.k);
+            rrf_score_map.insert(result_id, score);
+        }
+
+        // Create relevance score array
+        let relevance_scores = Float32Array::from_iter_values(
+            row_ids
+                .values()
+                .iter()
+                .map(|row_id| *rrf_score_map.get(row_id).unwrap()),
+        );
+
+        // Sort by relevance score descending
+        let sort_indices = sort_to_indices(
+            &relevance_scores,
+            Some(SortOptions {
+                descending: true,
+                ..Default::default()
+            }),
+            None,
+        )?;
+
+        // Add relevance score column
+        let mut columns = vector_results.columns().to_vec();
+        columns.push(Arc::new(relevance_scores));
+
+        // Sort all columns
+        let columns = columns
+            .iter()
+            .map(|c| take(c, &sort_indices, None).unwrap())
+            .collect();
+
+        // Add relevance score to schema
+        let mut fields = vector_results.schema().fields().to_vec();
+        fields.push(Arc::new(Field::new(
+            RELEVANCE_SCORE,
+            DataType::Float32,
+            false,
+        )));
+        let schema = Schema::new(fields);
+
+        let result = RecordBatch::try_new(Arc::new(schema), columns)?;
+        Ok(result)
+    }
+
+    async fn rerank_fts(
+        &self,
+        _query: &str,
+        fts_results: RecordBatch,
+    ) -> Result<RecordBatch> {
+        // Extract row IDs
+        let row_ids = fts_results
+            .column_by_name(ROW_ID)
+            .ok_or(Error::InvalidInput {
+                message: format!("expected column {} not found", ROW_ID),
+            })?;
+        let row_ids: UInt64Array = downcast_array(&row_ids);
+
+        // Calculate RRF scores based on rank (position in results)
+        let mut rrf_score_map = BTreeMap::new();
+        for (i, &result_id) in row_ids.values().iter().enumerate() {
+            let score = 1.0 / (i as f32 + self.k);
+            rrf_score_map.insert(result_id, score);
+        }
+
+        // Create relevance score array
+        let relevance_scores = Float32Array::from_iter_values(
+            row_ids
+                .values()
+                .iter()
+                .map(|row_id| *rrf_score_map.get(row_id).unwrap()),
+        );
+
+        // Sort by relevance score descending
+        let sort_indices = sort_to_indices(
+            &relevance_scores,
+            Some(SortOptions {
+                descending: true,
+                ..Default::default()
+            }),
+            None,
+        )?;
+
+        // Add relevance score column
+        let mut columns = fts_results.columns().to_vec();
+        columns.push(Arc::new(relevance_scores));
+
+        // Sort all columns
+        let columns = columns
+            .iter()
+            .map(|c| take(c, &sort_indices, None).unwrap())
+            .collect();
+
+        // Add relevance score to schema
+        let mut fields = fts_results.schema().fields().to_vec();
+        fields.push(Arc::new(Field::new(
+            RELEVANCE_SCORE,
+            DataType::Float32,
+            false,
+        )));
+        let schema = Schema::new(fields);
+
+        let result = RecordBatch::try_new(Arc::new(schema), columns)?;
+        Ok(result)
+    }
+
     async fn rerank_hybrid(
         &self,
         _query: &str,
