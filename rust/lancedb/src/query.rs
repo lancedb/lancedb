@@ -4,8 +4,12 @@
 use std::sync::Arc;
 use std::{future::Future, time::Duration};
 
+use arrow::array::downcast_array;
 use arrow::compute::concat_batches;
-use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
+use arrow_array::{
+    make_array, Array, Float16Array, Float32Array, Float64Array, RecordBatch, UInt32Array,
+    UInt64Array,
+};
 use arrow_schema::{DataType, SchemaRef};
 use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
@@ -21,7 +25,7 @@ use lance_io::stream::RecordBatchStreamAdapter;
 
 use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
-use crate::rerankers::{check_reranker_result, NormalizeMethod, Reranker};
+use crate::rerankers::{check_reranker_result, NormalizeMethod, Reranker, RELEVANCE_SCORE};
 use crate::table::BaseTable;
 use crate::utils::TimeoutStream;
 use crate::DistanceType;
@@ -886,6 +890,163 @@ pub struct VectorQuery {
     request: VectorQueryRequest,
 }
 
+/// Restore a column from original values using rowid-based lookup.
+///
+/// When merging hybrid results, column values get displaced. This restores
+/// the original per-subquery values by looking up each result row's id in
+/// the original rowid array.
+///
+/// # Arguments
+/// - results: The merged result batch
+/// - result_row_ids: The _rowid column from the result
+/// - col_name: Name of the column to restore
+/// - orig_row_ids: The _rowid array from the original sub-query
+/// - orig_values: The original column values (in original row order)
+fn restore_column_by_rowid(
+    mut results: RecordBatch,
+    result_row_ids: &UInt64Array,
+    col_name: &str,
+    orig_row_ids: &UInt64Array,
+    orig_values: &Arc<dyn Array>,
+) -> Result<RecordBatch> {
+    let lookup: std::collections::HashMap<u64, u32> = orig_row_ids
+        .values()
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (*id, i as u32))
+        .collect();
+    let indices: UInt32Array = result_row_ids
+        .values()
+        .iter()
+        .map(|id| lookup.get(id).copied())
+        .collect();
+    let restored = arrow::compute::take(orig_values.as_ref(), &indices, None)?;
+    results = results.drop_column(col_name)?;
+    results = results.try_with_column(
+        arrow_schema::Field::new(col_name, restored.data_type().clone(), true),
+        restored,
+    )?;
+    Ok(results)
+}
+
+/// Apply user-specified column selection to the final hybrid search results.
+///
+/// This is done after reranking rather than on the sub-queries, because the
+/// sub-queries produce `_score` / `_distance` which get fused into
+/// `_relevance_score` by the reranker. Pushing the user's select into
+/// sub-queries would cause contradictory errors (e.g. selecting `_score` on
+/// the vector sub-query which only has `_distance`).
+fn apply_hybrid_select(batch: RecordBatch, select: &Select) -> Result<RecordBatch> {
+    // Note: per-sub-query projections are pushed down in execute_hybrid() via
+    // build_hybrid_subquery_select() for I/O efficiency. This function handles
+    // the *final* projection on the merged/reranked result.
+    match select {
+        Select::All => {
+            // Drop _score and _distance from default output for backward compat;
+            // users must explicitly select them to see them.
+            let drop: Vec<&str> = [SCORE_COL, DIST_COL]
+                .iter()
+                .filter(|c| batch.schema().index_of(c).is_ok())
+                .copied()
+                .collect();
+            let mut result = batch;
+            for col in drop {
+                result = result.drop_column(col)?;
+            }
+            Ok(result)
+        }
+        Select::Columns(columns) => {
+            let indices: Vec<usize> = columns
+                .iter()
+                .map(|name| {
+                    batch
+                        .schema()
+                        .index_of(name)
+                        .map_err(|_| Error::InvalidInput {
+                            message: format!(
+                                "Column '{}' does not exist in the table. Available columns: {:?}",
+                                name,
+                                batch
+                                    .schema()
+                                    .fields()
+                                    .iter()
+                                    .map(|f| f.name().as_str())
+                                    .collect::<Vec<_>>()
+                            ),
+                        })
+                })
+                .collect::<Result<_>>()?;
+
+            Ok(batch.project(&indices)?)
+        }
+        Select::Dynamic(cols) => {
+            // Expressions that are literal references to post-rerank columns
+            // (_relevance_score, _score, _distance) are resolved here from
+            // the merged result. All other expressions were already evaluated
+            // by the sub-queries under their output name.
+            let hybrid_only: &[&str] = &[RELEVANCE_SCORE, SCORE_COL, DIST_COL];
+            let schema = batch.schema();
+            let mut fields = Vec::with_capacity(cols.len());
+            let mut arrays: Vec<Arc<dyn Array>> = Vec::with_capacity(cols.len());
+            for (name, expr) in cols {
+                let source = if hybrid_only.contains(&expr.as_str()) {
+                    expr.as_str()
+                } else {
+                    name.as_str()
+                };
+                let idx = schema.index_of(source).map_err(|_| Error::InvalidInput {
+                    message: format!(
+                        "dynamic select column '{}' not found in result. Available: {:?}",
+                        source,
+                        schema.fields().iter().map(|f| f.name()).collect::<Vec<_>>()
+                    ),
+                })?;
+                let col = batch.column(idx);
+                fields.push(arrow_schema::Field::new(
+                    name,
+                    col.data_type().clone(),
+                    col.is_nullable(),
+                ));
+                arrays.push(col.clone());
+            }
+            Ok(RecordBatch::try_new(
+                Arc::new(arrow_schema::Schema::new(fields)),
+                arrays,
+            )?)
+        }
+    }
+}
+
+/// Build a projection for a hybrid sub-query that preserves projection pushdown.
+///
+/// Takes the user's requested columns and adjusts them for a specific sub-query:
+/// - Removes `remove_col` (the score column that this sub-query doesn't produce)
+/// - Removes `_relevance_score` (only exists after reranking, not in sub-queries)
+/// - Ensures `ensure_col` (the score column this sub-query *does* produce) is included
+/// - Ensures `_rowid` is included (needed by the reranker for merging)
+fn build_hybrid_subquery_select(
+    user_cols: &[String],
+    remove_col: &str,
+    ensure_col: &str,
+) -> Vec<String> {
+    let mut cols: Vec<String> = user_cols
+        .iter()
+        .filter(|c| {
+            c.as_str() != remove_col && c.as_str() != ensure_col && c.as_str() != RELEVANCE_SCORE
+        })
+        .cloned()
+        .collect();
+
+    if !cols.iter().any(|c| c.as_str() == ensure_col) {
+        cols.push(ensure_col.to_string());
+    }
+    if !cols.iter().any(|c| c.as_str() == ROW_ID) {
+        cols.push(ROW_ID.to_string());
+    }
+
+    cols
+}
+
 impl VectorQuery {
     fn new(base: Query) -> Self {
         Self {
@@ -1113,12 +1274,46 @@ impl VectorQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        let user_select = self.request.base.select.clone();
+
         // clone query and specify we want to include row IDs, which can be needed for reranking
         let mut fts_query = Query::new(self.parent.clone());
         fts_query.request = self.request.base.clone();
         fts_query = fts_query.with_row_id();
 
         let mut vector_query = self.clone().with_row_id();
+
+        // Push sanitized column projections to sub-queries for I/O efficiency.
+        // Each sub-query gets the user's columns minus the score column it
+        // doesn't produce, plus the score column it *does* produce and _rowid
+        // (both needed by the reranker).
+        match &user_select {
+            Select::Columns(cols) => {
+                let fts_cols = build_hybrid_subquery_select(cols, DIST_COL, SCORE_COL);
+                fts_query.request.select = Select::Columns(fts_cols);
+
+                let vec_cols = build_hybrid_subquery_select(cols, SCORE_COL, DIST_COL);
+                vector_query.request.base.select = Select::Columns(vec_cols);
+            }
+            Select::Dynamic(cols) => {
+                // Strip entries that are literal references to post-rerank
+                // columns; those are resolved in apply_hybrid_select instead.
+                let hybrid_only: &[&str] = &[RELEVANCE_SCORE, SCORE_COL, DIST_COL];
+                let sub_query_cols: Vec<_> = cols
+                    .iter()
+                    .filter(|(_, expr)| !hybrid_only.contains(&expr.as_str()))
+                    .cloned()
+                    .collect();
+                let sub_select = if sub_query_cols.is_empty() {
+                    Select::All
+                } else {
+                    Select::Dynamic(sub_query_cols)
+                };
+                fts_query.request.select = sub_select.clone();
+                vector_query.request.base.select = sub_select;
+            }
+            Select::All => {}
+        }
 
         vector_query.request.base.full_text_search = None;
         let (fts_results, vec_results) = try_join!(
@@ -1132,12 +1327,43 @@ impl VectorQuery {
         )?;
 
         // try to get the schema to use when combining batches.
-        // if either
-        let (fts_schema, vec_schema) = hybrid::query_schemas(&fts_results, &vec_results);
+        // if both queries returned no results, build empty schemas that include
+        // the table's columns so they're preserved in the final output.
+        let (fts_schema, vec_schema) = if fts_results.is_empty() && vec_results.is_empty() {
+            let table_schema = self.parent.schema().await?;
+            let fts_schema =
+                hybrid::build_empty_schema_with_table_columns(&table_schema, SCORE_COL);
+            let vec_schema =
+                hybrid::build_empty_schema_with_table_columns(&table_schema, DIST_COL);
+            (Arc::new(fts_schema), Arc::new(vec_schema))
+        } else {
+            hybrid::query_schemas(&fts_results, &vec_results)
+        };
 
         // concatenate all the batches together
         let mut fts_results = concat_batches(&fts_schema, fts_results.iter())?;
         let mut vec_results = concat_batches(&vec_schema, vec_results.iter())?;
+
+        // Save the original (pre-normalization) scores so they can be restored
+        // after reranking. merge_results concatenates by position using the FTS
+        // schema, which silently mixes _distance values under the _score name,
+        // so we need to restore the correct values by _rowid lookup.
+        let original_distances: Option<(UInt64Array, Arc<dyn Array>)> = if vec_results.num_rows()
+            > 0
+        {
+            let row_ids: UInt64Array = downcast_array(vec_results.column_by_name(ROW_ID).unwrap());
+            let distances = vec_results.column_by_name(DIST_COL).unwrap().clone();
+            Some((row_ids, distances))
+        } else {
+            None
+        };
+        let original_scores: Option<(UInt64Array, Arc<dyn Array>)> = if fts_results.num_rows() > 0 {
+            let row_ids: UInt64Array = downcast_array(fts_results.column_by_name(ROW_ID).unwrap());
+            let scores = fts_results.column_by_name(SCORE_COL).unwrap().clone();
+            Some((row_ids, scores))
+        } else {
+            None
+        };
 
         if matches!(self.request.base.norm, Some(NormalizeMethod::Rank)) {
             vec_results = hybrid::rank(vec_results, DIST_COL, None)?;
@@ -1169,6 +1395,28 @@ impl VectorQuery {
 
         check_reranker_result(&results)?;
 
+        // Restore original _distance and _score columns by _rowid lookup.
+        // Rows from the other sub-query get null values.
+        let result_row_ids: UInt64Array = downcast_array(results.column_by_name(ROW_ID).unwrap());
+        if let Some((orig_row_ids, orig_values)) = &original_distances {
+            results = restore_column_by_rowid(
+                results,
+                &result_row_ids,
+                DIST_COL,
+                orig_row_ids,
+                orig_values,
+            )?;
+        }
+        if let Some((orig_row_ids, orig_values)) = &original_scores {
+            results = restore_column_by_rowid(
+                results,
+                &result_row_ids,
+                SCORE_COL,
+                orig_row_ids,
+                orig_values,
+            )?;
+        }
+
         let limit = self.request.base.limit.unwrap_or(DEFAULT_TOP_K);
         if results.num_rows() > limit {
             results = results.slice(0, limit);
@@ -1177,6 +1425,8 @@ impl VectorQuery {
         if !self.request.base.with_row_id {
             results = results.drop_column(ROW_ID)?;
         }
+
+        results = apply_hybrid_select(results, &user_select)?;
 
         Ok(SendableRecordBatchStream::from(
             RecordBatchStreamAdapter::new(results.schema(), stream::iter([Ok(results)])),
@@ -1385,6 +1635,7 @@ mod tests {
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
+    use lance_arrow::SchemaExt;
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use rand::seq::IndexedRandom;
     use tempfile::tempdir;
@@ -1969,7 +2220,7 @@ mod tests {
             .unwrap();
         let batch = &results[0];
         assert_eq!(0, batch.num_rows());
-        assert_eq!(2, batch.num_columns());
+        assert_eq!(batch.schema().field_names(), &["text", "vector", "_relevance_score"]);
     }
 
     // TODO: Implement a good FTS test data generator in lance_datagen.
@@ -2161,5 +2412,217 @@ mod tests {
         ids.sort();
 
         assert_eq!(ids, vec![1, 5, 17]);
+    }
+
+    async fn hybrid_test_table(tmp_dir: &tempfile::TempDir) -> Table {
+        let dataset_path = tmp_dir.path();
+        let conn = connect(dataset_path.to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let dims = 2;
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("text", DataType::Utf8, false),
+            ArrowField::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    dims,
+                ),
+                false,
+            ),
+        ]));
+
+        let text = StringArray::from(vec!["dog", "cat", "a", "b"]);
+        let vectors = vec![
+            Some(vec![Some(0.0), Some(0.0)]),
+            Some(vec![Some(-2.0), Some(-2.0)]),
+            Some(vec![Some(50.0), Some(50.0)]),
+            Some(vec![Some(-30.0), Some(-30.0)]),
+        ];
+        let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(vectors, dims);
+
+        let record_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(text), Arc::new(vector)]).unwrap();
+        let record_batch_iter =
+            RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
+        let table = conn
+            .create_table("my_table", record_batch_iter)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["text"], crate::index::Index::FTS(Default::default()))
+            .replace(true)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+    }
+
+    /// Assert that `.select()` with any column subset returns correct projections.
+    ///
+    /// Runs the query with `Select::All` to discover default columns, then
+    /// verifies every permutation of every non-empty subset of columns
+    /// (including `extra_columns`) matches a projection of the full result.
+    async fn assert_select_projections<F, Fut>(make_query: F, extra_columns: &[&str])
+    where
+        F: Fn(Select) -> Fut,
+        Fut: std::future::Future<Output = RecordBatch>,
+    {
+        use itertools::Itertools;
+
+        let default = make_query(Select::All).await;
+        let mut all_columns: Vec<String> = default
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+
+        for col in extra_columns {
+            assert!(
+                !all_columns.contains(&col.to_string()),
+                "extra column {} should not be in default output",
+                col
+            );
+            all_columns.push(col.to_string());
+        }
+
+        let all_refs: Vec<&str> = all_columns.iter().map(|s| s.as_str()).collect();
+        let full = make_query(Select::columns(&all_refs)).await;
+
+        for r in 1..=all_columns.len() {
+            for perm in all_columns.iter().permutations(r) {
+                let cols: Vec<&str> = perm.iter().map(|s| s.as_str()).collect();
+                let actual = make_query(Select::columns(&cols)).await;
+                let indices: Vec<usize> = cols
+                    .iter()
+                    .map(|c| full.schema().index_of(c).unwrap())
+                    .collect();
+                let expected = full.project(&indices).unwrap();
+                assert_eq!(
+                    actual,
+                    expected,
+                    "select({:?}) mismatch:\n  actual cols: {:?}\n  expected cols: {:?}",
+                    cols,
+                    actual
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|f| f.name())
+                        .collect::<Vec<_>>(),
+                    expected
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|f| f.name())
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_select_projections() {
+        let tmp_dir = tempdir().unwrap();
+        let table = hybrid_test_table(&tmp_dir).await;
+
+        assert_select_projections(
+            |select| {
+                let table = table.clone();
+                async move {
+                    let results = table
+                        .query()
+                        .full_text_search(FullTextSearchQuery::new("b".to_string()))
+                        .select(select)
+                        .limit(2)
+                        .nearest_to(&[-10.0, -10.0])
+                        .unwrap()
+                        .execute()
+                        .await
+                        .unwrap()
+                        .try_collect::<Vec<_>>()
+                        .await
+                        .unwrap();
+                    concat_batches(&results[0].schema(), results.iter()).unwrap()
+                }
+            },
+            &["_score", "_distance"],
+        )
+        .await;
+
+        // Verify null patterns: each row came from at least one sub-query,
+        // so at least one of _score/_distance must be non-null.
+        let results = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("b".to_string()))
+            .select(Select::columns(&["_score", "_distance"]))
+            .limit(4)
+            .nearest_to(&[-10.0, -10.0])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let batch = &results[0];
+        let scores = batch.column_by_name("_score").unwrap();
+        let distances = batch.column_by_name("_distance").unwrap();
+        for i in 0..batch.num_rows() {
+            assert!(
+                !scores.is_null(i) || !distances.is_null(i),
+                "row {} should have at least one non-null score",
+                i
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_select_dynamic() {
+        let tmp_dir = tempdir().unwrap();
+        let table = hybrid_test_table(&tmp_dir).await;
+
+        // Dynamic selects should return exactly the requested columns.
+        let cases: Vec<Vec<(&str, &str)>> = vec![
+            vec![("upper_text", "upper(text)")],
+            vec![("upper_text", "upper(text)"), ("text", "text")],
+            vec![("text", "text")],
+            vec![("t1", "upper(text)"), ("t2", "lower(text)"), ("t3", "text")],
+            vec![("hybrid_score", "_relevance_score"), ("t2", "text")],
+            vec![("s", "_score"), ("d", "_distance")],
+            vec![("hybrid_score", "_relevance_score")],
+        ];
+
+        for dynamic_cols in &cases {
+            let expected_names: Vec<&str> = dynamic_cols.iter().map(|(name, _)| *name).collect();
+            let results = table
+                .query()
+                .full_text_search(FullTextSearchQuery::new("b".to_string()))
+                .select(Select::dynamic(dynamic_cols))
+                .limit(2)
+                .nearest_to(&[-10.0, -10.0])
+                .unwrap()
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+
+            let batch = &results[0];
+            let schema = batch.schema();
+            let col_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+            assert_eq!(
+                col_names, expected_names,
+                "dynamic select {:?} should return exactly {:?}",
+                dynamic_cols, expected_names
+            );
+        }
     }
 }

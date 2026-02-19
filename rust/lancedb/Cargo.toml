@@ -89,6 +89,7 @@ semver = { workspace = true }
 
 [dev-dependencies]
 anyhow = "1"
+itertools = "0.14"
 tempfile = "3.5.0"
 random_word = { version = "0.4.3", features = ["en"] }
 uuid = { version = "1.7.0", features = ["v4"] }
