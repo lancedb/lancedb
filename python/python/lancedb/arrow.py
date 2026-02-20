@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from functools import singledispatch
-import sys
 from typing import List, Optional, Tuple, Union
 
 from lancedb.pydantic import LanceModel, model_to_dict

@@ -3,13 +3,13 @@
 
 from dataclasses import dataclass
 from functools import singledispatch
-from typing import Callable, Iterator, Optional
 import sys
+from typing import Callable, Iterator, Optional
 from lancedb.arrow import to_arrow
 import pyarrow as pa
 import pyarrow.dataset as ds
 
-from .pydantic import LanceModel, model_to_dict
+from .pydantic import LanceModel
 
 
 @dataclass
