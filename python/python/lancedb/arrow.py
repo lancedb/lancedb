@@ -90,6 +90,7 @@ def to_arrow(data) -> pa.Table:
     """Convert a single data object to a pa.Table."""
     raise NotImplementedError(f"to_arrow not implemented for type {type(data)}")
 
+
 @to_arrow.register(pa.RecordBatch)
 def _arrow_from_batch(data: pa.RecordBatch) -> pa.Table:
     return pa.Table.from_batches([data])

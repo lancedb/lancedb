@@ -8,6 +8,7 @@ use arrow::{
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType},
 };
+use futures::StreamExt;
 use lancedb::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     data::scannable::Scannable,
@@ -113,7 +114,7 @@ impl Scannable for PyScannable {
                 }
             },
         );
-        Box::pin(SimpleRecordBatchStream::new(stream, schema))
+        Box::pin(SimpleRecordBatchStream::new(stream.fuse(), schema))
     }
 
     fn num_rows(&self) -> Option<usize> {

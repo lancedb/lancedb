@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import singledispatch
 from typing import Callable, Iterator, Optional
 import sys
-from lancedb.arrow import to_arrow, _register_optional_converters as _register_to_arrow_converters
+from lancedb.arrow import to_arrow
 import pyarrow as pa
 import pyarrow.dataset as ds
 
