@@ -157,10 +157,6 @@ where
         }
     }
 
-    /// Invalidate the cache. The next [`get()`](Self::get) will start a fresh fetch.
-    ///
-    /// Any in-flight background fetch from before this call will not update the
-    /// cache (the generation counter prevents stale writes).
     /// Pre-populate the cache with an initial value.
     ///
     /// This avoids a blocking fetch on the first [`get()`](Self::get) call.
@@ -169,6 +165,10 @@ where
         cache.state = State::Current(value, clock::now());
     }
 
+    /// Invalidate the cache. The next [`get()`](Self::get) will start a fresh fetch.
+    ///
+    /// Any in-flight background fetch from before this call will not update the
+    /// cache (the generation counter prevents stale writes).
     pub fn invalidate(&self) {
         let mut cache = self.inner.lock().unwrap();
         cache.state = State::Empty;
