@@ -109,7 +109,9 @@ impl DatasetConsistencyWrapper {
 
     /// Store a new dataset version after a write operation.
     ///
-    /// Only stores the dataset if its version is newer than the current one.
+    /// Only stores the dataset if its version is at least as new as the current one.
+    /// Same-version updates are accepted for operations like manifest path migration
+    /// that modify the dataset without creating a new version.
     /// If the wrapper has since transitioned to time-travel mode (e.g. via a
     /// concurrent [`as_time_travel`](Self::as_time_travel) call), the update
     /// is silently ignored — the write already committed to storage.
@@ -121,7 +123,7 @@ impl DatasetConsistencyWrapper {
             // cached pointer.
             return;
         }
-        if dataset.manifest().version > state.dataset.manifest().version {
+        if dataset.manifest().version >= state.dataset.manifest().version {
             state.dataset = Arc::new(dataset);
         }
         drop(state);
