@@ -188,6 +188,7 @@ impl ExecutionPlan for InsertExec {
         let input_stream: SendableRecordBatchStream = Box::pin(RecordBatchStreamAdapter::new(
             input_schema,
             input_stream.map_ok(move |batch| {
+                let _timer = baseline.elapsed_compute().timer();
                 baseline.record_output(batch.num_rows());
                 output_bytes.add(batch.get_array_memory_size());
                 batch

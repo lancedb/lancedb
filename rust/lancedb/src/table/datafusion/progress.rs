@@ -215,8 +215,14 @@ pub fn detailed_progress_callback() -> impl Fn(PlanProgress) + Send + Sync + 'st
         node_lines: Vec::new(),
     }));
 
+    // Column width for the node name (including indentation).
+    const NAME_WIDTH: usize = 24;
+
     move |p: PlanProgress| {
         let mut s = state.lock().unwrap();
+
+        // Compute total bytes across all nodes for the main bar message.
+        let total_bytes: usize = p.nodes.iter().map(|n| n.output_bytes).max().unwrap_or(0);
 
         // Initialize or update the main progress bar from the leaf node.
         if let Some(leaf) = p.leaf() {
@@ -232,7 +238,6 @@ pub fn detailed_progress_callback() -> impl Fn(PlanProgress) + Send + Sync + 'st
                     .unwrap()
                     .progress_chars("=> "),
                 );
-                pb.set_message("Adding data");
                 let pb = pb.with_finish(ProgressFinish::AndLeave);
                 let pb = s.multi.add(pb);
                 s.main_bar = Some(pb);
@@ -240,6 +245,7 @@ pub fn detailed_progress_callback() -> impl Fn(PlanProgress) + Send + Sync + 'st
 
             let bar = s.main_bar.as_ref().unwrap();
             bar.set_position(leaf.output_rows as u64);
+            bar.set_message(format!("Adding data ({})", HumanBytes(total_bytes as u64)));
 
             if let Some(total) = leaf.total_rows {
                 if bar.length() != Some(total as u64) {
@@ -255,8 +261,8 @@ pub fn detailed_progress_callback() -> impl Fn(PlanProgress) + Send + Sync + 'st
             let pb = pb.with_finish(ProgressFinish::AndLeave);
             let pb = s.multi.add(pb);
             pb.set_message(format!(
-                "{:<20} {:>12}  {:>10}  {:>10}",
-                "Node", "Rows", "Bytes", "Time"
+                "{:<NAME_WIDTH$} {:>12}  {:>10}  {:>12}  {:>10}",
+                "Node", "Rows", "Bytes", "Compute", "Elapsed"
             ));
             s.header = Some(pb);
         }
@@ -271,12 +277,13 @@ pub fn detailed_progress_callback() -> impl Fn(PlanProgress) + Send + Sync + 'st
         }
 
         // Update each node's status line.
+        let wall_elapsed = format!("{:.1?}", p.elapsed);
         for (i, node) in p.nodes.iter().enumerate() {
             let indent = "  ".repeat(node.depth);
-            let elapsed = format!("{:.1?}", node.elapsed_compute);
+            let name = format!("{indent}{}", node.name);
+            let compute = format!("{:.1?}", node.elapsed_compute);
             let msg = format!(
-                "{indent}{:<20} {:>12}  {:>10}  {elapsed:>10}",
-                node.name,
+                "{name:<NAME_WIDTH$} {:>12}  {:>10}  {compute:>12}  {wall_elapsed:>10}",
                 format!("{} rows", node.output_rows),
                 format!("{}", HumanBytes(node.output_bytes as u64)),
             );
