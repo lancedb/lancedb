@@ -308,7 +308,7 @@ def test_instructor_embedding(tmp_path):
     os.environ.get("GOOGLE_API_KEY") is None, reason="GOOGLE_API_KEY not set"
 )
 def test_gemini_embedding(tmp_path):
-    model = get_registry().get("gemini-text").create(max_retries=0)
+    model = get_registry().get("gemini-text").create(max_retries=0, dims=512)
 
     class TextModel(LanceModel):
         text: str = model.SourceField()
@@ -319,7 +319,7 @@ def test_gemini_embedding(tmp_path):
     tbl = db.create_table("test", schema=TextModel, mode="overwrite")
 
     tbl.add(df)
-    assert len(tbl.to_pandas()["vector"][0]) == model.ndims()
+    assert len(tbl.to_pandas()["vector"][0]) == model.ndims() == 512
     assert tbl.search("hello").limit(1).to_pandas()["text"][0] == "hello world"
 
 
