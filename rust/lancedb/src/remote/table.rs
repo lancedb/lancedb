@@ -23,6 +23,7 @@ use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
 use crate::table::{AnyQuery, Filter, TableStatistics};
+use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{
     error::Result,
@@ -41,8 +42,7 @@ use async_trait::async_trait;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
-use futures::future::Shared;
-use futures::{FutureExt, TryStreamExt};
+use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
@@ -57,7 +57,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
@@ -65,58 +65,6 @@ const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
 const SCHEMA_CACHE_REFRESH_WINDOW: Duration = Duration::from_secs(5);
-
-type SharedSchemaFuture =
-    Shared<futures::future::BoxFuture<'static, std::result::Result<SchemaRef, Arc<Error>>>>;
-
-enum SchemaState {
-    Empty,
-    Current(SchemaRef, Instant),
-    Refreshing {
-        previous: Option<(SchemaRef, Instant)>,
-        future: SharedSchemaFuture,
-    },
-}
-
-struct SchemaCache {
-    state: SchemaState,
-    /// Incremented on invalidation. Background fetches check this to avoid
-    /// overwriting with stale data after a concurrent invalidation.
-    generation: u64,
-}
-
-enum SchemaAction {
-    Return(SchemaRef),
-    Wait(SharedSchemaFuture),
-}
-
-impl SchemaState {
-    /// Returns the schema if it's fresh (not in the refresh window).
-    fn fresh_schema(&self) -> Option<SchemaRef> {
-        match self {
-            Self::Current(schema, cached_at) => {
-                let elapsed = clock::now().duration_since(*cached_at);
-                if elapsed < SCHEMA_CACHE_TTL - SCHEMA_CACHE_REFRESH_WINDOW {
-                    Some(schema.clone())
-                } else {
-                    None
-                }
-            }
-            Self::Refreshing {
-                previous: Some((schema, cached_at)),
-                ..
-            } => {
-                let elapsed = clock::now().duration_since(*cached_at);
-                if elapsed < SCHEMA_CACHE_TTL - SCHEMA_CACHE_REFRESH_WINDOW {
-                    Some(schema.clone())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-}
 
 pub struct RemoteTags<'a, S: HttpSend = Sender> {
     inner: &'a RemoteTable<S>,
@@ -262,7 +210,7 @@ pub struct RemoteTable<S: HttpSend = Sender> {
 
     version: RwLock<Option<u64>>,
     location: RwLock<Option<String>>,
-    schema_cache: Arc<Mutex<SchemaCache>>,
+    schema_cache: BackgroundCache<SchemaRef, Error>,
 }
 
 impl<S: HttpSend> std::fmt::Debug for RemoteTable<S> {
@@ -290,10 +238,7 @@ impl<S: HttpSend> RemoteTable<S> {
             server_version,
             version: RwLock::new(None),
             location: RwLock::new(None),
-            schema_cache: Arc::new(Mutex::new(SchemaCache {
-                state: SchemaState::Empty,
-                generation: 0,
-            })),
+            schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
         }
     }
 
@@ -739,9 +684,7 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     fn invalidate_schema_cache(&self) {
-        let mut cache = self.schema_cache.lock().unwrap();
-        cache.state = SchemaState::Empty;
-        cache.generation += 1;
+        self.schema_cache.invalidate();
     }
 
     fn handle_error_invalidation(&self, error: &Error) {
@@ -755,119 +698,6 @@ impl<S: HttpSend> RemoteTable<S> {
                 self.invalidate_schema_cache();
             }
         }
-    }
-
-    fn determine_schema_action(
-        &self,
-        cache: &mut SchemaCache,
-        version: Option<u64>,
-    ) -> SchemaAction {
-        match &cache.state {
-            SchemaState::Empty => {
-                let (shared, _) = self.start_schema_fetch(cache, version, None);
-                SchemaAction::Wait(shared)
-            }
-            SchemaState::Current(schema, cached_at) => {
-                let elapsed = clock::now().duration_since(*cached_at);
-                if elapsed < SCHEMA_CACHE_TTL - SCHEMA_CACHE_REFRESH_WINDOW {
-                    SchemaAction::Return(schema.clone())
-                } else if elapsed < SCHEMA_CACHE_TTL {
-                    // In refresh window: start background fetch, return current value
-                    let schema = schema.clone();
-                    let previous = Some((schema.clone(), *cached_at));
-                    let _ = self.start_schema_fetch(cache, version, previous);
-                    SchemaAction::Return(schema)
-                } else {
-                    // Expired: must wait for fetch
-                    let previous = Some((schema.clone(), *cached_at));
-                    let (shared, _) = self.start_schema_fetch(cache, version, previous);
-                    SchemaAction::Wait(shared)
-                }
-            }
-            SchemaState::Refreshing { previous, future } => {
-                // If the background fetch already completed (spawned task hasn't
-                // run yet to update state), transition the state and re-evaluate.
-                if let Some(result) = future.peek() {
-                    match result {
-                        Ok(schema) => {
-                            cache.state = SchemaState::Current(schema.clone(), clock::now());
-                        }
-                        Err(_) => {
-                            cache.state = match previous.clone() {
-                                Some((s, t)) => SchemaState::Current(s, t),
-                                None => SchemaState::Empty,
-                            };
-                        }
-                    }
-                    return self.determine_schema_action(cache, version);
-                }
-
-                if let Some((schema, cached_at)) = previous {
-                    if clock::now().duration_since(*cached_at) < SCHEMA_CACHE_TTL {
-                        SchemaAction::Return(schema.clone())
-                    } else {
-                        SchemaAction::Wait(future.clone())
-                    }
-                } else {
-                    SchemaAction::Wait(future.clone())
-                }
-            }
-        }
-    }
-
-    fn start_schema_fetch(
-        &self,
-        cache: &mut SchemaCache,
-        version: Option<u64>,
-        previous: Option<(SchemaRef, Instant)>,
-    ) -> (SharedSchemaFuture, u64) {
-        let client = self.client.clone();
-        let identifier = self.identifier.clone();
-        let table_name = self.name.clone();
-        let generation = cache.generation;
-
-        let shared = async move {
-            fetch_schema(&client, &identifier, &table_name, version)
-                .await
-                .map_err(Arc::new)
-        }
-        .boxed()
-        .shared();
-
-        // Spawn task to eagerly drive the future and update state on completion
-        let schema_cache = self.schema_cache.clone();
-        let fut_for_spawn = shared.clone();
-        tokio::spawn(async move {
-            let result = fut_for_spawn.await;
-            let mut cache = schema_cache.lock().unwrap();
-            // Only update if no invalidation has happened since we started
-            if cache.generation != generation {
-                return;
-            }
-            match result {
-                Ok(schema) => {
-                    cache.state = SchemaState::Current(schema, clock::now());
-                }
-                Err(_) => {
-                    // Revert to previous cached value if available
-                    let prev = match &cache.state {
-                        SchemaState::Refreshing { previous, .. } => previous.clone(),
-                        _ => None,
-                    };
-                    cache.state = match prev {
-                        Some((s, t)) => SchemaState::Current(s, t),
-                        None => SchemaState::Empty,
-                    };
-                }
-            }
-        });
-
-        cache.state = SchemaState::Refreshing {
-            previous,
-            future: shared.clone(),
-        };
-
-        (shared, generation)
     }
 }
 
@@ -949,8 +779,8 @@ impl<S: HttpSend> std::fmt::Display for RemoteTable<S> {
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
-    use crate::remote::client::test_utils::MockSender;
-    use crate::remote::client::test_utils::{client_with_handler, client_with_handler_and_config};
+    use crate::remote::client::test_utils::client_with_handler;
+    use crate::remote::client::test_utils::{client_with_handler_and_config, MockSender};
     use crate::remote::ClientConfig;
 
     impl RemoteTable<MockSender> {
@@ -968,10 +798,7 @@ mod test_utils {
                 server_version: version.map(ServerVersion).unwrap_or_default(),
                 version: RwLock::new(None),
                 location: RwLock::new(None),
-                schema_cache: Arc::new(Mutex::new(SchemaCache {
-                    state: SchemaState::Empty,
-                    generation: 0,
-                })),
+                schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
             }
         }
 
@@ -989,10 +816,7 @@ mod test_utils {
                 server_version: ServerVersion::default(),
                 version: RwLock::new(None),
                 location: RwLock::new(None),
-                schema_cache: Arc::new(Mutex::new(SchemaCache {
-                    state: SchemaState::Empty,
-                    generation: 0,
-                })),
+                schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
             }
         }
     }
@@ -1092,28 +916,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn schema(&self) -> Result<SchemaRef> {
-        // Fast path: check if cache is fresh (not even in refresh window)
-        {
-            let cache = self.schema_cache.lock().unwrap();
-            if let Some(schema) = cache.state.fresh_schema() {
-                return Ok(schema);
-            }
+        if let Some(schema) = self.schema_cache.try_get() {
+            return Ok(schema);
         }
 
-        // Slow path: may need to fetch or start background refresh
         let version = self.current_version().await;
-        let action = {
-            let mut cache = self.schema_cache.lock().unwrap();
-            self.determine_schema_action(&mut cache, version)
-        };
+        let client = self.client.clone();
+        let identifier = self.identifier.clone();
+        let table_name = self.name.clone();
 
-        match action {
-            SchemaAction::Return(schema) => Ok(schema),
-            SchemaAction::Wait(fut) => match fut.await {
-                Ok(schema) => Ok(schema),
-                Err(arc_err) => Err(unwrap_shared_error(arc_err)),
-            },
-        }
+        self.schema_cache
+            .get(move || async move {
+                fetch_schema(&client, &identifier, &table_name, version).await
+            })
+            .await
+            .map_err(unwrap_shared_error)
     }
 
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
@@ -1987,42 +1804,6 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
     }
 }
 
-// Clock module for testing with mock time
-#[cfg(test)]
-mod clock {
-    use std::cell::Cell;
-    use std::time::{Duration, Instant};
-
-    thread_local! {
-        static MOCK_NOW: Cell<Option<Instant>> = const { Cell::new(None) };
-    }
-
-    pub fn now() -> Instant {
-        MOCK_NOW.with(|mock| mock.get().unwrap_or_else(Instant::now))
-    }
-
-    pub fn advance_by(duration: Duration) {
-        MOCK_NOW.with(|mock| {
-            let current = mock.get().unwrap_or_else(Instant::now);
-            mock.set(Some(current + duration));
-        });
-    }
-
-    #[allow(dead_code)]
-    pub fn clear_mock() {
-        MOCK_NOW.with(|mock| mock.set(None));
-    }
-}
-
-#[cfg(not(test))]
-mod clock {
-    use std::time::Instant;
-
-    pub fn now() -> Instant {
-        Instant::now()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2048,6 +1829,7 @@ mod tests {
     use crate::index::vector::{IvfFlatIndexBuilder, IvfHnswSqIndexBuilder};
     use crate::remote::db::DEFAULT_SERVER_VERSION;
     use crate::remote::JSON_CONTENT_TYPE;
+    use crate::utils::background_cache::clock;
     use crate::{
         index::{vector::IvfPqIndexBuilder, Index, IndexStatistics, IndexType},
         query::{ExecutableQuery, QueryBase},

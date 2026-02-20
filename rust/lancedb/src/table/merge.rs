@@ -165,7 +165,7 @@ pub(crate) async fn execute_merge_insert(
     params: MergeInsertBuilder,
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
-    let dataset = Arc::new(table.dataset.get().await?.clone());
+    let dataset = table.dataset.get().await?;
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,
@@ -210,7 +210,7 @@ pub(crate) async fn execute_merge_insert(
     };
     let (new_dataset, stats) = future.await?;
     let version = new_dataset.manifest().version;
-    table.dataset.set_latest(new_dataset.as_ref().clone()).await;
+    table.dataset.update(new_dataset.as_ref().clone());
     Ok(MergeResult {
         version,
         num_updated_rows: stats.num_updated_rows,

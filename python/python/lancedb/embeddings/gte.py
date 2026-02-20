@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import warnings
 from typing import List, Union
 
 import numpy as np
@@ -15,6 +16,8 @@ from .utils import weak_lru
 @register("gte-text")
 class GteEmbeddings(TextEmbeddingFunction):
     """
+    Deprecated: GTE embeddings should be used through sentence-transformers.
+
     An embedding function that uses GTE-LARGE MLX format(for Apple silicon devices only)
     as well as the standard cpu/gpu version from: https://huggingface.co/thenlper/gte-large.
 
@@ -61,6 +64,13 @@ class GteEmbeddings(TextEmbeddingFunction):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        warnings.warn(
+            "GTE embeddings as a standalone embedding function are deprecated. "
+            "Use the 'sentence-transformers' embedding function with a GTE model "
+            "instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
         self._ndims = None
         if kwargs:
             self.mlx = kwargs.get("mlx", False)
