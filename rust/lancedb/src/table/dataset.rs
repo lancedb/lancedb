@@ -110,13 +110,17 @@ impl DatasetConsistencyWrapper {
     /// Store a new dataset version after a write operation.
     ///
     /// Only stores the dataset if its version is newer than the current one.
-    /// Panics if called when not in Latest mode.
+    /// If the wrapper has since transitioned to time-travel mode (e.g. via a
+    /// concurrent [`as_time_travel`](Self::as_time_travel) call), the update
+    /// is silently ignored — the write already committed to storage.
     pub fn update(&self, dataset: Dataset) {
         let mut state = self.state.lock().unwrap();
-        assert!(
-            state.pinned_version.is_none(),
-            "Dataset should be in latest mode when calling update"
-        );
+        if state.pinned_version.is_some() {
+            // A concurrent as_time_travel() beat us here. The write succeeded
+            // in storage, but since we're now pinned we don't advance the
+            // cached pointer.
+            return;
+        }
         if dataset.manifest().version > state.dataset.manifest().version {
             state.dataset = Arc::new(dataset);
         }
@@ -524,6 +528,31 @@ mod tests {
         table.schema().await.unwrap();
         let stats = io_stats.incremental_stats();
         assert_eq!(stats.read_iops, 1);
+    }
+
+    /// Regression test: a write that races with as_time_travel() must not panic.
+    ///
+    /// Sequence: ensure_mutable() passes → as_time_travel() completes → write
+    /// calls update().  Previously the assert!() in update() would fire.
+    #[tokio::test]
+    async fn test_update_after_concurrent_time_travel_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds_v1 = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds_v1, None);
+
+        // Simulate: as_time_travel() completes just before the write's update().
+        wrapper.as_time_travel(1u64).await.unwrap();
+        assert_eq!(wrapper.time_travel_version(), Some(1));
+
+        // The write already committed to storage; now it calls update().
+        // This must not panic, and the wrapper must stay pinned.
+        let ds_v2 = append_to_dataset(uri).await;
+        wrapper.update(ds_v2);
+
+        let ds = wrapper.get().await.unwrap();
+        assert_eq!(ds.version().version, 1);
     }
 
     /// Regression test: before the fix, the reload fast-path (no version change)
