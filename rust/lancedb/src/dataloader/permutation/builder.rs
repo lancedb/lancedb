@@ -57,7 +57,7 @@ pub struct PermutationConfig {
 }
 
 /// Strategy for shuffling the data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ShuffleStrategy {
     /// The data is randomly shuffled
     ///
@@ -78,13 +78,8 @@ pub enum ShuffleStrategy {
     /// The data is not shuffled
     ///
     /// This is useful for debugging and testing.
+    #[default]
     None,
-}
-
-impl Default for ShuffleStrategy {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Builder for creating a permutation table.
