@@ -8,6 +8,7 @@ on:
     paths:
       - Cargo.toml
       - python/**
+      - rust/**
       - .github/workflows/python.yml
 
 concurrency:
