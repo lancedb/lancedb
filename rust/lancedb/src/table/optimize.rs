@@ -105,12 +105,10 @@ pub struct OptimizeStats {
 /// This logic was moved from NativeTable to keep table.rs clean.
 pub(crate) async fn optimize_indices(table: &NativeTable, options: &OptimizeOptions) -> Result<()> {
     info!("LanceDB: optimizing indices: {:?}", options);
-    table
-        .dataset
-        .get_mut()
-        .await?
-        .optimize_indices(options)
-        .await?;
+    table.dataset.ensure_mutable()?;
+    let mut dataset = (*table.dataset.get().await?).clone();
+    dataset.optimize_indices(options).await?;
+    table.dataset.update(dataset);
     Ok(())
 }
 
@@ -131,10 +129,9 @@ pub(crate) async fn cleanup_old_versions(
     delete_unverified: Option<bool>,
     error_if_tagged_old_versions: Option<bool>,
 ) -> Result<RemovalStats> {
-    Ok(table
-        .dataset
-        .get_mut()
-        .await?
+    table.dataset.ensure_mutable()?;
+    let dataset = table.dataset.get().await?;
+    Ok(dataset
         .cleanup_old_versions(older_than, delete_unverified, error_if_tagged_old_versions)
         .await?)
 }
@@ -150,8 +147,10 @@ pub(crate) async fn compact_files_impl(
     options: CompactionOptions,
     remap_options: Option<Arc<dyn IndexRemapperOptions>>,
 ) -> Result<CompactionMetrics> {
-    let mut dataset_mut = table.dataset.get_mut().await?;
-    let metrics = compact_files(&mut dataset_mut, options, remap_options).await?;
+    table.dataset.ensure_mutable()?;
+    let mut dataset = (*table.dataset.get().await?).clone();
+    let metrics = compact_files(&mut dataset, options, remap_options).await?;
+    table.dataset.update(dataset);
     Ok(metrics)
 }
 

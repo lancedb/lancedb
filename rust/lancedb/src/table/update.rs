@@ -78,11 +78,13 @@ pub(crate) async fn execute_update(
     table: &NativeTable,
     update: UpdateBuilder,
 ) -> Result<UpdateResult> {
+    table.dataset.ensure_mutable()?;
+
     // 1. Snapshot the current dataset
-    let dataset = table.dataset.get().await?.clone();
+    let dataset = table.dataset.get().await?;
 
     // 2. Initialize the Lance Core builder
-    let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
+    let mut builder = LanceUpdateBuilder::new(dataset);
 
     // 3. Apply the filter (WHERE clause)
     if let Some(predicate) = update.filter {
@@ -99,10 +101,7 @@ pub(crate) async fn execute_update(
     let res = operation.execute().await?;
 
     // 6. Update the table's view of the latest version
-    table
-        .dataset
-        .set_latest(res.new_dataset.as_ref().clone())
-        .await;
+    table.dataset.update(res.new_dataset.as_ref().clone());
 
     Ok(UpdateResult {
         rows_updated: res.rows_updated,

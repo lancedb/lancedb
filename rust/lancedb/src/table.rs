@@ -1640,11 +1640,10 @@ impl NativeTable {
         left_on: &str,
         right_on: &str,
     ) -> Result<()> {
-        self.dataset
-            .get_mut()
-            .await?
-            .merge(batches, left_on, right_on)
-            .await?;
+        self.dataset.ensure_mutable()?;
+        let mut dataset = (*self.dataset.get().await?).clone();
+        dataset.merge(batches, left_on, right_on).await?;
+        self.dataset.update(dataset);
         Ok(())
     }
 
@@ -1964,8 +1963,10 @@ impl NativeTable {
     /// You can use [Self::uses_v2_manifest_paths] to check if the table is already
     /// using V2 manifest paths.
     pub async fn migrate_manifest_paths_v2(&self) -> Result<()> {
-        let mut dataset = self.dataset.get_mut().await?;
+        self.dataset.ensure_mutable()?;
+        let mut dataset = (*self.dataset.get().await?).clone();
         dataset.migrate_manifest_paths_v2().await?;
+        self.dataset.update(dataset);
         Ok(())
     }
 
@@ -1980,17 +1981,21 @@ impl NativeTable {
         &self,
         upsert_values: impl IntoIterator<Item = (String, String)>,
     ) -> Result<()> {
-        let mut dataset = self.dataset.get_mut().await?;
+        self.dataset.ensure_mutable()?;
+        let mut dataset = (*self.dataset.get().await?).clone();
         dataset.update_config(upsert_values).await?;
+        self.dataset.update(dataset);
         Ok(())
     }
 
     /// Delete keys from the config
     pub async fn delete_config_keys(&self, delete_keys: &[&str]) -> Result<()> {
-        let mut dataset = self.dataset.get_mut().await?;
+        self.dataset.ensure_mutable()?;
+        let mut dataset = (*self.dataset.get().await?).clone();
         // TODO: update this when we implement metadata APIs
         #[allow(deprecated)]
         dataset.delete_config_keys(delete_keys).await?;
+        self.dataset.update(dataset);
         Ok(())
     }
 
@@ -1999,10 +2004,12 @@ impl NativeTable {
         &self,
         upsert_values: impl IntoIterator<Item = (String, String)>,
     ) -> Result<()> {
-        let mut dataset = self.dataset.get_mut().await?;
+        self.dataset.ensure_mutable()?;
+        let mut dataset = (*self.dataset.get().await?).clone();
         // TODO: update this when we implement metadata APIs
         #[allow(deprecated)]
         dataset.replace_schema_metadata(upsert_values).await?;
+        self.dataset.update(dataset);
         Ok(())
     }
 
@@ -2017,8 +2024,10 @@ impl NativeTable {
         &self,
         new_values: impl IntoIterator<Item = (u32, HashMap<String, String>)>,
     ) -> Result<()> {
-        let mut dataset = self.dataset.get_mut().await?;
+        self.dataset.ensure_mutable()?;
+        let mut dataset = (*self.dataset.get().await?).clone();
         dataset.replace_field_metadata(new_values).await?;
+        self.dataset.update(dataset);
         Ok(())
     }
 }
@@ -2054,9 +2063,7 @@ impl BaseTable for NativeTable {
     }
 
     async fn checkout_latest(&self) -> Result<()> {
-        self.dataset
-            .as_latest(self.read_consistency_interval)
-            .await?;
+        self.dataset.as_latest().await?;
         self.dataset.reload().await
     }
 
@@ -2065,24 +2072,19 @@ impl BaseTable for NativeTable {
     }
 
     async fn restore(&self) -> Result<()> {
-        let version =
-            self.dataset
-                .time_travel_version()
-                .await
-                .ok_or_else(|| Error::InvalidInput {
-                    message: "you must run checkout before running restore".to_string(),
-                })?;
+        let version = self
+            .dataset
+            .time_travel_version()
+            .ok_or_else(|| Error::InvalidInput {
+                message: "you must run checkout before running restore".to_string(),
+            })?;
         {
-            // Use get_mut_unchecked as restore is the only "write" operation that is allowed
-            // when the table is in time travel mode.
-            // Also, drop the guard after .restore because as_latest will need it
-            let mut dataset = self.dataset.get_mut_unchecked().await?;
+            // restore is the only "write" operation allowed in time travel mode
+            let mut dataset = (*self.dataset.get().await?).clone();
             debug_assert_eq!(dataset.version().version, version);
             dataset.restore().await?;
         }
-        self.dataset
-            .as_latest(self.read_consistency_interval)
-            .await?;
+        self.dataset.as_latest().await?;
         Ok(())
     }
 
@@ -2121,16 +2123,15 @@ impl BaseTable for NativeTable {
         let data =
             scannable_with_embeddings(add.data, &table_def, add.embedding_registry.as_ref())?;
 
-        let dataset = {
-            // Limited scope for the mutable borrow of self.dataset avoids deadlock.
-            let ds = self.dataset.get_mut().await?;
-            InsertBuilder::new(Arc::new(ds.clone()))
-                .with_params(&lance_params)
-                .execute_stream(data)
-                .await?
-        };
+        self.dataset.ensure_mutable()?;
+        let ds = self.dataset.get().await?;
+        let dataset = InsertBuilder::new(ds)
+            .with_params(&lance_params)
+            .execute_stream(data)
+            .await?;
+
         let version = dataset.manifest().version;
-        self.dataset.set_latest(dataset).await;
+        self.dataset.update(dataset);
         Ok(AddResult { version })
     }
 
@@ -2147,7 +2148,8 @@ impl BaseTable for NativeTable {
         let lance_idx_params = self.make_index_params(field, opts.index.clone()).await?;
         let index_type = self.get_index_type_for_field(field, &opts.index);
         let columns = [field.name().as_str()];
-        let mut dataset = self.dataset.get_mut().await?;
+        self.dataset.ensure_mutable()?;
+        let mut dataset = (*self.dataset.get().await?).clone();
         let mut builder = dataset
             .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
             .train(opts.train)
@@ -2157,12 +2159,15 @@ impl BaseTable for NativeTable {
             builder = builder.name(name);
         }
         builder.await?;
+        self.dataset.update(dataset);
         Ok(())
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {
-        let mut dataset = self.dataset.get_mut().await?;
+        self.dataset.ensure_mutable()?;
+        let mut dataset = (*self.dataset.get().await?).clone();
         dataset.drop_index(index_name).await?;
+        self.dataset.update(dataset);
         Ok(())
     }
 

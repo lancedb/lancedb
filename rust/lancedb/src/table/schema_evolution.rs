@@ -52,11 +52,12 @@ pub(crate) async fn execute_add_columns(
     transforms: NewColumnTransform,
     read_columns: Option<Vec<String>>,
 ) -> Result<AddColumnsResult> {
-    let mut dataset = table.dataset.get_mut().await?;
+    table.dataset.ensure_mutable()?;
+    let mut dataset = (*table.dataset.get().await?).clone();
     dataset.add_columns(transforms, read_columns, None).await?;
-    Ok(AddColumnsResult {
-        version: dataset.version().version,
-    })
+    let version = dataset.version().version;
+    table.dataset.update(dataset);
+    Ok(AddColumnsResult { version })
 }
 
 /// Internal implementation of the alter columns logic.
@@ -66,11 +67,12 @@ pub(crate) async fn execute_alter_columns(
     table: &NativeTable,
     alterations: &[ColumnAlteration],
 ) -> Result<AlterColumnsResult> {
-    let mut dataset = table.dataset.get_mut().await?;
+    table.dataset.ensure_mutable()?;
+    let mut dataset = (*table.dataset.get().await?).clone();
     dataset.alter_columns(alterations).await?;
-    Ok(AlterColumnsResult {
-        version: dataset.version().version,
-    })
+    let version = dataset.version().version;
+    table.dataset.update(dataset);
+    Ok(AlterColumnsResult { version })
 }
 
 /// Internal implementation of the drop columns logic.
@@ -80,11 +82,12 @@ pub(crate) async fn execute_drop_columns(
     table: &NativeTable,
     columns: &[&str],
 ) -> Result<DropColumnsResult> {
-    let mut dataset = table.dataset.get_mut().await?;
+    table.dataset.ensure_mutable()?;
+    let mut dataset = (*table.dataset.get().await?).clone();
     dataset.drop_columns(columns).await?;
-    Ok(DropColumnsResult {
-        version: dataset.version().version,
-    })
+    let version = dataset.version().version;
+    table.dataset.update(dataset);
+    Ok(DropColumnsResult { version })
 }
 
 #[cfg(test)]
