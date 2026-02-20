@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use datafusion_common::{stats::Precision, DataFusionError, Result as DFResult, Statistics};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
-use datafusion_physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
+use datafusion_physical_plan::metrics::{
+    BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
+};
 use datafusion_physical_plan::{
     execution_plan::EmissionType, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
 };
@@ -107,8 +109,10 @@ impl ExecutionPlan for ScannableExec {
         };
 
         let baseline = BaselineMetrics::new(&self.metrics, partition);
+        let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(partition);
         let stream = stream.into_df_stream().map_ok(move |batch| {
             baseline.record_output(batch.num_rows());
+            output_bytes.add(batch.get_array_memory_size());
             batch
         });
 

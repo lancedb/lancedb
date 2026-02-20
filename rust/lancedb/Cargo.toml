@@ -86,6 +86,7 @@ candle-transformers = { version = "0.9.1", optional = true }
 candle-nn = { version = "0.9.1", optional = true }
 tokenizers = { version = "0.19.1", optional = true }
 semver = { workspace = true }
+indicatif = { version = "0.17", optional = true }
 
 [dev-dependencies]
 anyhow = "1"
@@ -129,6 +130,7 @@ sentence-transformers = [
     "dep:candle-nn",
     "dep:tokenizers",
 ]
+progress = ["dep:indicatif"]
 
 [[example]]
 name = "openai"

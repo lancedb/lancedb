@@ -4982,6 +4982,7 @@ dependencies = [
  "hf-hub",
  "http 1.3.1",
  "http-body 1.0.1",
+ "indicatif",
  "lance",
  "lance-arrow",
  "lance-core",

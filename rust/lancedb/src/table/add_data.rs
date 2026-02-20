@@ -104,6 +104,31 @@ impl AddDataBuilder {
         self
     }
 
+    /// Display a terminal progress bar during the add operation.
+    ///
+    /// When `detailed` is false, shows a single bar tracking rows read from the
+    /// data source. When `detailed` is true, shows one bar per execution plan
+    /// node (data read, write, etc.).
+    ///
+    /// Requires the `progress` feature.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let batch = arrow_array::record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+    /// table.add(batch).progress_bar(false).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "progress")]
+    pub fn progress_bar(self, detailed: bool) -> Self {
+        if detailed {
+            self.progress(super::datafusion::progress::detailed_progress_callback())
+        } else {
+            self.progress(super::datafusion::progress::simple_progress_callback())
+        }
+    }
+
     /// Set a callback to receive progress updates during the add operation.
     ///
     /// The callback is invoked at regular intervals with a [`crate::table::datafusion::progress::PlanProgress`]

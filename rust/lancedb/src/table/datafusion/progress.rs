@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use datafusion_physical_plan::metrics::MetricValue;
 use datafusion_physical_plan::ExecutionPlan;
 
 /// Progress snapshot for a single node in the execution plan tree.
@@ -21,6 +22,8 @@ pub struct NodeProgress {
     pub depth: usize,
     /// Number of output rows reported by this node so far.
     pub output_rows: usize,
+    /// Number of output bytes reported by this node so far.
+    pub output_bytes: usize,
     /// Elapsed compute time reported by this node.
     pub elapsed_compute: Duration,
     /// Total rows expected, if known from partition statistics.
@@ -69,6 +72,14 @@ fn collect_node_metrics(
 
     let output_rows = metrics.as_ref().and_then(|m| m.output_rows()).unwrap_or(0);
 
+    let output_bytes = metrics
+        .as_ref()
+        .and_then(|m| {
+            m.sum(|metric| matches!(metric.value(), MetricValue::OutputBytes(_)))
+                .map(|v| v.as_usize())
+        })
+        .unwrap_or(0);
+
     let elapsed_compute_ns = metrics
         .as_ref()
         .and_then(|m| m.elapsed_compute())
@@ -80,6 +91,7 @@ fn collect_node_metrics(
         name: plan.name().to_string(),
         depth,
         output_rows,
+        output_bytes,
         elapsed_compute: Duration::from_nanos(elapsed_compute_ns as u64),
         total_rows,
     });
@@ -133,6 +145,146 @@ impl Drop for PlanProgressMonitor {
     }
 }
 
+/// Create a progress callback that displays a single terminal progress bar
+/// tracking the leaf node (data source).
+///
+/// The bar shows rows processed, throughput, and ETA when the total row count
+/// is known. It is finished automatically when dropped.
+///
+/// Requires the `progress` feature.
+#[cfg(feature = "progress")]
+pub fn simple_progress_callback() -> impl Fn(PlanProgress) + Send + Sync + 'static {
+    use indicatif::{ProgressBar, ProgressFinish, ProgressStyle};
+    use std::sync::OnceLock;
+
+    let bar: Arc<OnceLock<ProgressBar>> = Arc::new(OnceLock::new());
+
+    move |p: PlanProgress| {
+        let Some(leaf) = p.leaf() else { return };
+
+        let bar = bar.get_or_init(|| {
+            let pb = match leaf.total_rows {
+                Some(total) => ProgressBar::new(total as u64),
+                None => ProgressBar::new_spinner(),
+            };
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "{msg} [{bar:40}] {pos}/{len} rows ({per_sec}, eta {eta})",
+                )
+                .unwrap()
+                .progress_chars("=> "),
+            );
+            pb.set_message("Adding data");
+            pb.with_finish(ProgressFinish::AndLeave)
+        });
+
+        bar.set_position(leaf.output_rows as u64);
+
+        if let Some(total) = leaf.total_rows {
+            if bar.length() != Some(total as u64) {
+                bar.set_length(total as u64);
+            }
+        }
+    }
+}
+
+/// Create a progress callback that displays a terminal progress bar with a
+/// live-updating table of per-node metrics.
+///
+/// Shows one overall progress bar tracking the leaf node (data source), followed
+/// by a table with one row per execution plan node showing output rows, output
+/// bytes, and elapsed compute time.
+///
+/// Requires the `progress` feature.
+#[cfg(feature = "progress")]
+pub fn detailed_progress_callback() -> impl Fn(PlanProgress) + Send + Sync + 'static {
+    use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
+    use std::sync::Mutex;
+
+    struct State {
+        multi: MultiProgress,
+        main_bar: Option<ProgressBar>,
+        header: Option<ProgressBar>,
+        node_lines: Vec<ProgressBar>,
+    }
+
+    let state = Arc::new(Mutex::new(State {
+        multi: MultiProgress::new(),
+        main_bar: None,
+        header: None,
+        node_lines: Vec::new(),
+    }));
+
+    move |p: PlanProgress| {
+        let mut s = state.lock().unwrap();
+
+        // Initialize or update the main progress bar from the leaf node.
+        if let Some(leaf) = p.leaf() {
+            if s.main_bar.is_none() {
+                let pb = match leaf.total_rows {
+                    Some(total) => ProgressBar::new(total as u64),
+                    None => ProgressBar::new_spinner(),
+                };
+                pb.set_style(
+                    ProgressStyle::with_template(
+                        "{msg} [{bar:40}] {pos}/{len} rows ({per_sec}, eta {eta})",
+                    )
+                    .unwrap()
+                    .progress_chars("=> "),
+                );
+                pb.set_message("Adding data");
+                let pb = pb.with_finish(ProgressFinish::AndLeave);
+                let pb = s.multi.add(pb);
+                s.main_bar = Some(pb);
+            }
+
+            let bar = s.main_bar.as_ref().unwrap();
+            bar.set_position(leaf.output_rows as u64);
+
+            if let Some(total) = leaf.total_rows {
+                if bar.length() != Some(total as u64) {
+                    bar.set_length(total as u64);
+                }
+            }
+        }
+
+        // Add the header row once.
+        if s.header.is_none() && !p.nodes.is_empty() {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(ProgressStyle::with_template("  {msg}").unwrap());
+            let pb = pb.with_finish(ProgressFinish::AndLeave);
+            let pb = s.multi.add(pb);
+            pb.set_message(format!(
+                "{:<20} {:>12}  {:>10}  {:>10}",
+                "Node", "Rows", "Bytes", "Time"
+            ));
+            s.header = Some(pb);
+        }
+
+        // Ensure we have one status line per node.
+        while s.node_lines.len() < p.nodes.len() {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(ProgressStyle::with_template("  {msg}").unwrap());
+            let pb = pb.with_finish(ProgressFinish::AndLeave);
+            let pb = s.multi.add(pb);
+            s.node_lines.push(pb);
+        }
+
+        // Update each node's status line.
+        for (i, node) in p.nodes.iter().enumerate() {
+            let indent = "  ".repeat(node.depth);
+            let elapsed = format!("{:.1?}", node.elapsed_compute);
+            let msg = format!(
+                "{indent}{:<20} {:>12}  {:>10}  {elapsed:>10}",
+                node.name,
+                format!("{} rows", node.output_rows),
+                format!("{}", HumanBytes(node.output_bytes as u64)),
+            );
+            s.node_lines[i].set_message(msg);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +330,50 @@ mod tests {
         // We don't assert on exact count since it's timing-dependent
     }
 
+    #[cfg(feature = "progress")]
+    #[tokio::test]
+    async fn test_progress_bar_simple() {
+        let db = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("progress_bar_simple", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let new_data = record_batch!(("id", Int32, [4, 5, 6])).unwrap();
+        table
+            .add(new_data)
+            .progress_bar(false)
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 6);
+    }
+
+    #[cfg(feature = "progress")]
+    #[tokio::test]
+    async fn test_progress_bar_detailed() {
+        let db = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("progress_bar_detailed", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let new_data = record_batch!(("id", Int32, [4, 5, 6])).unwrap();
+        table
+            .add(new_data)
+            .progress_bar(true)
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 6);
+    }
+
     #[tokio::test]
     async fn test_collect_node_metrics() {
         let new_data = vec![record_batch!(("id", Int32, [4, 5])).unwrap()];
@@ -196,5 +392,6 @@ mod tests {
         assert_eq!(nodes[0].depth, 0);
         assert_eq!(nodes[0].name, "ScannableExec");
         assert_eq!(nodes[0].output_rows, 2);
+        assert!(nodes[0].output_bytes > 0);
     }
 }
