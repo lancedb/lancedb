@@ -294,10 +294,12 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (data, mode, show_progress=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: PyScannable,
         mode: String,
+        show_progress: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_.inner_ref()?.add(data);
         if mode == "append" {
@@ -306,6 +308,9 @@ impl Table {
             op = op.mode(AddDataMode::Overwrite);
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
+        }
+        if let Some(detailed) = show_progress {
+            op = op.progress_bar(detailed);
         }
 
         future_into_py(self_.py(), async move {

@@ -974,6 +974,7 @@ class Table(ABC):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
+        show_progress: Optional[bool] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -995,6 +996,10 @@ class Table(ABC):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        show_progress: Optional[bool], default None
+            If set, display a terminal progress bar during the add operation.
+            ``False`` shows a single overall bar; ``True`` shows a detailed
+            per-node metrics table.
 
         Returns
         -------
@@ -2449,6 +2454,7 @@ class LanceTable(Table):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
+        show_progress: Optional[bool] = None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -2467,6 +2473,10 @@ class LanceTable(Table):
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        show_progress: Optional[bool], default None
+            If set, display a terminal progress bar during the add operation.
+            ``False`` shows a single overall bar; ``True`` shows a detailed
+            per-node metrics table.
 
         Returns
         -------
@@ -2475,7 +2485,11 @@ class LanceTable(Table):
         """
         return LOOP.run(
             self._table.add(
-                data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+                data,
+                mode=mode,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                show_progress=show_progress,
             )
         )
 
@@ -3701,6 +3715,7 @@ class AsyncTable:
         mode: Optional[Literal["append", "overwrite"]] = "append",
         on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
+        show_progress: Optional[bool] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -3722,6 +3737,10 @@ class AsyncTable:
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        show_progress: Optional[bool], default None
+            If set, display a terminal progress bar during the add operation.
+            ``False`` shows a single overall bar; ``True`` shows a detailed
+            per-node metrics table.
 
         """
         schema = await self.schema()
@@ -3746,7 +3765,9 @@ class AsyncTable:
         _register_optional_converters()
         data = to_scannable(data)
         try:
-            return await self._inner.add(data, mode or "append")
+            return await self._inner.add(
+                data, mode or "append", show_progress=show_progress
+            )
         except RuntimeError as e:
             if "Cast error" in str(e):
                 raise ValueError(e)
