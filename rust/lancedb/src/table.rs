@@ -53,6 +53,7 @@ use crate::index::{vector::suggested_num_sub_vectors, Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
+use crate::table::datafusion::progress::PlanProgressMonitor;
 use crate::utils::{
     supported_bitmap_data_type, supported_btree_data_type, supported_fts_data_type,
     supported_label_list_data_type, supported_vector_data_type, PatchReadParam, PatchWriteParam,
@@ -2181,6 +2182,17 @@ impl BaseTable for NativeTable {
                 Ok::<_, Error>(())
             }));
         }
+
+        let mut _monitor = None;
+        if let Some(callback) = output.progress_callback {
+            let task = PlanProgressMonitor::start(
+                insert_exec.clone(),
+                callback,
+                std::time::Duration::from_millis(30),
+            );
+            _monitor = Some(task);
+        }
+
         for handle in handles {
             handle.await.map_err(|e| Error::Runtime {
                 message: format!("Insert task panicked: {}", e),

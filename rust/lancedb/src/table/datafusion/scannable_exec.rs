@@ -7,9 +7,11 @@ use std::sync::{Arc, Mutex};
 use datafusion_common::{stats::Precision, DataFusionError, Result as DFResult, Statistics};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion_physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion_physical_plan::{
     execution_plan::EmissionType, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
 };
+use futures::TryStreamExt;
 
 use crate::{arrow::SendableRecordBatchStreamExt, data::scannable::Scannable};
 
@@ -18,6 +20,7 @@ pub struct ScannableExec {
     source: Mutex<Box<dyn Scannable>>,
     num_rows: Option<usize>,
     properties: PlanProperties,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl std::fmt::Debug for ScannableExec {
@@ -46,6 +49,7 @@ impl ScannableExec {
             source,
             num_rows,
             properties,
+            metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 }
@@ -102,7 +106,19 @@ impl ExecutionPlan for ScannableExec {
             Err(poison) => poison.into_inner().scan_as_stream(),
         };
 
-        Ok(stream.into_df_stream())
+        let baseline = BaselineMetrics::new(&self.metrics, partition);
+        let stream = stream.into_df_stream().map_ok(move |batch| {
+            baseline.record_output(batch.num_rows());
+            batch
+        });
+
+        Ok(Box::pin(
+            datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(self.schema(), stream),
+        ))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> DFResult<Statistics> {

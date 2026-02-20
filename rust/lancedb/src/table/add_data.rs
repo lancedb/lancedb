@@ -11,6 +11,7 @@ use crate::data::scannable::scannable_with_embeddings;
 use crate::data::scannable::Scannable;
 use crate::embeddings::EmbeddingRegistry;
 use crate::table::datafusion::cast::cast_to_table_schema;
+use crate::table::datafusion::progress::ProgressCallback;
 use crate::table::datafusion::reject_nan::reject_nan_vectors;
 use crate::table::datafusion::scannable_exec::ScannableExec;
 use crate::{Error, Result};
@@ -52,6 +53,7 @@ pub struct AddDataBuilder {
     pub(crate) write_options: WriteOptions,
     pub(crate) on_nan_vectors: NaNVectorBehavior,
     pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    pub(crate) progress_callback: Option<ProgressCallback>,
 }
 
 impl std::fmt::Debug for AddDataBuilder {
@@ -77,6 +79,7 @@ impl AddDataBuilder {
             write_options: WriteOptions::default(),
             on_nan_vectors: NaNVectorBehavior::default(),
             embedding_registry,
+            progress_callback: None,
         }
     }
 
@@ -98,6 +101,18 @@ impl AddDataBuilder {
     /// indexed and will not be searchable.
     pub fn on_nan_vectors(mut self, behavior: NaNVectorBehavior) -> Self {
         self.on_nan_vectors = behavior;
+        self
+    }
+
+    /// Set a callback to receive progress updates during the add operation.
+    ///
+    /// The callback is invoked at regular intervals with a [`crate::table::datafusion::progress::PlanProgress`]
+    /// snapshot containing per-node metrics (rows processed, elapsed time, etc.).
+    pub fn progress(
+        mut self,
+        callback: impl Fn(super::datafusion::progress::PlanProgress) + Send + Sync + 'static,
+    ) -> Self {
+        self.progress_callback = Some(Arc::new(callback));
         self
     }
 
@@ -149,6 +164,7 @@ impl AddDataBuilder {
             rescannable,
             write_options: self.write_options,
             mode: self.mode,
+            progress_callback: self.progress_callback,
         })
     }
 }
@@ -159,6 +175,7 @@ pub struct PreprocessingOutput {
     pub rescannable: bool,
     pub write_options: WriteOptions,
     pub mode: AddDataMode,
+    pub progress_callback: Option<ProgressCallback>,
 }
 
 /// Check that the input schema is valid for insert.
