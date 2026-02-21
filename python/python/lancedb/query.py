@@ -34,9 +34,104 @@ from lancedb.background_loop import LOOP
 from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .dependencies import pandas as pd
-from .rerankers.base import Reranker
+from .rerankers.base import Reranker, VectorResult, FtsResult, RerankableResult
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
+
+
+def _apply_reranker(
+    reranker: Reranker,
+    query: str,
+    result_sets: List[Tuple[pa.Table, str]],
+    return_score: str = "relevance",
+) -> pa.Table:
+    """Apply a reranker using the new ``compute_scores`` API.
+
+    Parameters
+    ----------
+    reranker : Reranker
+        The reranker instance.
+    query : str
+        The search query string.
+    result_sets : list of (pa.Table, str)
+        Each element is ``(table, kind)`` where *kind* is ``"vector"``
+        or ``"fts"``.
+    return_score : str
+        ``"relevance"`` to drop ``_distance``/``_score``, or ``"all"``
+        to keep them.
+
+    Returns
+    -------
+    pa.Table
+        Merged, scored, sorted, and projected result table.
+    """
+    # Wrap raw tables in typed result objects
+    wrapped: List[RerankableResult] = []
+    for table, kind in result_sets:
+        if kind == "vector":
+            wrapped.append(VectorResult(data=table))
+        else:
+            wrapped.append(FtsResult(data=table))
+
+    # Handle all-empty case
+    if all(len(r.data) == 0 for r in wrapped):
+        empty = result_sets[0][0]
+        return empty.append_column(
+            "_relevance_score", pa.array([], type=pa.float32())
+        )
+
+    # Filter out empty tables before passing to reranker
+    non_empty = [r for r in wrapped if len(r.data) > 0]
+
+    # Project down to only the columns the reranker needs (projection pushdown).
+    # We keep the original tables for the final result, but pass filtered
+    # copies to compute_scores so the reranker sees less data.
+    needed_cols = set(reranker.needs_columns()) | {"_rowid"}
+    filtered = []
+    for r in non_empty:
+        cols_to_keep = [c for c in r.data.column_names if c in needed_cols]
+        filtered.append(type(r)(data=r.data.select(cols_to_keep)))
+    score_arrays = reranker.compute_scores(query, filtered)
+
+    # Attach scores to each non-empty table
+    scored_tables = []
+    for result, scores in zip(non_empty, score_arrays):
+        tbl = result.data.append_column("_relevance_score", scores)
+        scored_tables.append(tbl)
+
+    # Merge if multiple
+    if len(scored_tables) == 1:
+        combined = scored_tables[0]
+    else:
+        concat_args = {"promote_options": "default"}
+        from packaging.version import Version
+
+        if Version(pa.__version__).major <= 13:
+            concat_args = {"promote": True}
+        combined = pa.concat_tables(scored_tables, **concat_args)
+
+    # Deduplicate by _rowid if present
+    if "_rowid" in combined.column_names:
+        combined = reranker._deduplicate(combined)
+
+    # Sort descending by relevance
+    combined = combined.sort_by([("_relevance_score", "descending")])
+
+    # Project columns based on return_score
+    if return_score == "relevance":
+        for col in ["_distance", "_score"]:
+            if col in combined.column_names:
+                combined = combined.drop_columns([col])
+    elif return_score == "all":
+        # Ensure _distance and _score columns exist even when one result set
+        # was empty (e.g. FTS returned 0 rows → no _score column).
+        for col in ["_distance", "_score"]:
+            if col not in combined.column_names:
+                combined = combined.append_column(
+                    col, pa.nulls(len(combined), type=pa.float32())
+                )
+
+    return combined
 from .util import flatten_columns
 from lancedb._lancedb import fts_query_to_json
 from typing_extensions import Annotated
@@ -1345,7 +1440,12 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         )
         if self._reranker is not None:
             rs_table = result_set.read_all()
-            result_set = self._reranker.rerank_vector(self._str_query, rs_table)
+            result_set = _apply_reranker(
+                self._reranker,
+                self._str_query,
+                [(rs_table, "vector")],
+                return_score=self._reranker.score,
+            )
             check_reranker_result(result_set)
             # convert result_set back to RecordBatchReader
             result_set = pa.RecordBatchReader.from_batches(
@@ -1522,7 +1622,12 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         results = self._table._execute_query(query, timeout=timeout)
         results = results.read_all()
         if self._reranker is not None:
-            results = self._reranker.rerank_fts(self._query, results)
+            results = _apply_reranker(
+                self._reranker,
+                self._query,
+                [(results, "fts")],
+                return_score=self._reranker.score,
+            )
             check_reranker_result(results)
         return results
 
@@ -1612,7 +1717,12 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             output_tbl = output_tbl.append_column("_rowid", row_ids)
 
         if self._reranker is not None:
-            output_tbl = self._reranker.rerank_fts(self._query, output_tbl)
+            output_tbl = _apply_reranker(
+                self._reranker,
+                self._query,
+                [(output_tbl, "fts")],
+                return_score=self._reranker.score,
+            )
         return output_tbl
 
     def rerank(self, reranker: Reranker) -> LanceFtsQueryBuilder:
@@ -1831,7 +1941,22 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
                 LanceHybridQueryBuilder._normalize_scores(original_scores),
             )
 
-        results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
+        result_sets = []
+        if vector_results.num_rows > 0:
+            result_sets.append((vector_results, "vector"))
+        if fts_results.num_rows > 0:
+            result_sets.append((fts_results, "fts"))
+        if len(result_sets) == 0:
+            results = vector_results.append_column(
+                "_relevance_score", pa.array([], type=pa.float32())
+            )
+        else:
+            results = _apply_reranker(
+                reranker,
+                fts_query,
+                result_sets,
+                return_score=reranker.score,
+            )
 
         check_reranker_result(results)
 
@@ -2824,7 +2949,12 @@ class AsyncFTSQuery(AsyncStandardQuery):
         reader = await super().to_batches(timeout=timeout)
         results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
-            results = self._reranker.rerank_fts(self.get_query(), results)
+            results = _apply_reranker(
+                self._reranker,
+                self.get_query(),
+                [(results, "fts")],
+                return_score=self._reranker.score,
+            )
         return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 
@@ -3081,7 +3211,12 @@ class AsyncVectorQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         reader = await super().to_batches(timeout=timeout)
         results = pa.Table.from_batches(await reader.read_all(), reader.schema)
         if self._reranker:
-            results = self._reranker.rerank_vector(self._query_string, results)
+            results = _apply_reranker(
+                self._reranker,
+                self._query_string,
+                [(results, "vector")],
+                return_score=self._reranker.score,
+            )
         return AsyncRecordBatchReader(results, max_batch_length=max_batch_length)
 
 

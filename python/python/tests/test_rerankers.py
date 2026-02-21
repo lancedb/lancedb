@@ -23,6 +23,8 @@ from lancedb.rerankers import (
     AnswerdotaiRerankers,
     VoyageAIReranker,
     MRRReranker,
+    FtsResult,
+    VectorResult,
 )
 from lancedb.table import LanceTable
 
@@ -191,22 +193,6 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         ascending_relevance_err
     )
 
-    # Multi-vector search setting
-    rs1 = table.search(query, vector_column_name="vector").limit(10).with_row_id(True)
-    rs2 = (
-        table.search(query, vector_column_name="meta_vector")
-        .limit(10)
-        .with_row_id(True)
-    )
-    result = reranker.rerank_multivector([rs1, rs2], query)
-    assert len(result) == 20
-    result_deduped = reranker.rerank_multivector(
-        [rs1, rs2, rs1], query, deduplicate=True
-    )
-    assert len(result_deduped) <= 20
-    result_arrow = reranker.rerank_multivector([rs1.to_arrow(), rs2.to_arrow()], query)
-    assert len(result) == 20 and result == result_arrow
-
 
 def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
     table, schema = get_test_table(tmp_path, use_tantivy)
@@ -305,7 +291,14 @@ def test_linear_combination(tmp_path, use_tantivy):
         }
     )
 
-    combined_results = reranker.merge_results(vector_results, fts_results, 1.0)
+    from lancedb.query import _apply_reranker
+
+    combined_results = _apply_reranker(
+        reranker,
+        "",
+        [(vector_results, "vector"), (fts_results, "fts")],
+        return_score="relevance",
+    )
     assert len(combined_results) == 6
     assert "_rowid" in combined_results.column_names
     assert "_text" in combined_results.column_names
@@ -326,28 +319,6 @@ def test_rrf_reranker(tmp_path, use_tantivy):
 def test_mrr_reranker(tmp_path, use_tantivy):
     reranker = MRRReranker()
     _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
-
-    # Test multi-vector part
-    table, schema = get_test_table(tmp_path, use_tantivy)
-    query = "single player experience"
-    rs1 = table.search(query, vector_column_name="vector").limit(10).with_row_id(True)
-    rs2 = (
-        table.search(query, vector_column_name="meta_vector")
-        .limit(10)
-        .with_row_id(True)
-    )
-    result = reranker.rerank_multivector([rs1, rs2])
-    assert "_relevance_score" in result.column_names
-    assert len(result) <= 20
-
-    if len(result) > 1:
-        assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-            "The _relevance_score should be descending."
-        )
-
-    # Test with duplicate results
-    result_deduped = reranker.rerank_multivector([rs1, rs2, rs1])
-    assert len(result_deduped) == len(result)
 
 
 def test_rrf_reranker_distance():
@@ -617,3 +588,130 @@ def test_cross_encoder_reranker_return_all(tmp_path, use_tantivy):
     assert "_relevance_score" in result.column_names
     assert "_score" in result.column_names
     assert "_distance" in result.column_names
+
+
+# ---------------------------------------------------------------
+# Tests for the new compute_scores API
+# ---------------------------------------------------------------
+
+
+def test_compute_scores_rrf():
+    """Test RRFReranker.compute_scores directly."""
+    reranker = RRFReranker(K=60)
+
+    vector_table = pa.table(
+        {"_rowid": [0, 1, 2], "text": ["a", "b", "c"], "_distance": [0.1, 0.2, 0.3]}
+    )
+    fts_table = pa.table(
+        {"_rowid": [1, 2, 3], "text": ["b", "c", "d"], "_score": [0.9, 0.8, 0.7]}
+    )
+
+    results = [VectorResult(data=vector_table), FtsResult(data=fts_table)]
+    score_arrays = reranker.compute_scores("test query", results)
+
+    # Should return one array per input
+    assert len(score_arrays) == 2
+    assert len(score_arrays[0]) == 3  # aligned to vector_table
+    assert len(score_arrays[1]) == 3  # aligned to fts_table
+    assert score_arrays[0].type == pa.float32()
+    assert score_arrays[1].type == pa.float32()
+
+    # Row 1 appears in both sets so its score should be higher than row 0 or row 3
+    # Row 1 is rank 2 in vector (score: 1/(2+60)) and rank 1 in fts (score: 1/(1+60))
+    row1_vector_score = score_arrays[0][1].as_py()
+    row0_vector_score = score_arrays[0][0].as_py()
+    assert row1_vector_score > row0_vector_score
+
+
+def test_compute_scores_rrf_single_vector():
+    """Test RRFReranker.compute_scores with single vector input."""
+    reranker = RRFReranker(K=60)
+
+    vector_table = pa.table(
+        {"_rowid": [0, 1, 2], "text": ["a", "b", "c"], "_distance": [0.1, 0.2, 0.3]}
+    )
+
+    results = [VectorResult(data=vector_table)]
+    score_arrays = reranker.compute_scores("test query", results)
+
+    assert len(score_arrays) == 1
+    assert len(score_arrays[0]) == 3
+    # First result (rank 1) should have highest score
+    assert score_arrays[0][0].as_py() > score_arrays[0][1].as_py()
+
+
+def test_compute_scores_linear_combination():
+    """Test LinearCombinationReranker.compute_scores directly."""
+    reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
+
+    vector_table = pa.table(
+        {"_rowid": [0, 1, 2], "_distance": [0.1, 0.2, 0.3], "text": ["a", "b", "c"]}
+    )
+    fts_table = pa.table(
+        {"_rowid": [1, 2, 3], "_score": [0.9, 0.8, 0.7], "text": ["b", "c", "d"]}
+    )
+
+    results = [VectorResult(data=vector_table), FtsResult(data=fts_table)]
+    score_arrays = reranker.compute_scores("test query", results)
+
+    assert len(score_arrays) == 2
+    assert len(score_arrays[0]) == 3
+    assert len(score_arrays[1]) == 3
+    assert score_arrays[0].type == pa.float32()
+
+    # Row 1 has both distance and score; row 0 has only distance (uses fill for fts)
+    # Both should produce valid float scores
+    for arr in score_arrays:
+        for i in range(len(arr)):
+            assert arr[i].as_py() is not None
+
+
+def test_compute_scores_mrr():
+    """Test MRRReranker.compute_scores directly."""
+    reranker = MRRReranker(weight_vector=0.5, weight_fts=0.5)
+
+    vector_table = pa.table(
+        {"_rowid": [0, 1, 2], "text": ["a", "b", "c"], "_distance": [0.1, 0.2, 0.3]}
+    )
+    fts_table = pa.table(
+        {"_rowid": [1, 2, 3], "text": ["b", "c", "d"], "_score": [0.9, 0.8, 0.7]}
+    )
+
+    results = [VectorResult(data=vector_table), FtsResult(data=fts_table)]
+    score_arrays = reranker.compute_scores("test query", results)
+
+    assert len(score_arrays) == 2
+    assert len(score_arrays[0]) == 3
+    assert len(score_arrays[1]) == 3
+    assert score_arrays[0].type == pa.float32()
+
+
+def test_compute_scores_mrr_multivector():
+    """Test MRRReranker.compute_scores with multiple vector inputs."""
+    reranker = MRRReranker()
+
+    vec1 = pa.table({"_rowid": [0, 1, 2], "text": ["a", "b", "c"]})
+    vec2 = pa.table({"_rowid": [1, 2, 3], "text": ["b", "c", "d"]})
+
+    results = [VectorResult(data=vec1), VectorResult(data=vec2)]
+    score_arrays = reranker.compute_scores("test query", results)
+
+    assert len(score_arrays) == 2
+    # Row 1 appears in both: should have higher score than row 0 (only in vec1)
+    row1_score = score_arrays[0][1].as_py()  # row 1 in vec1
+    row0_score = score_arrays[0][0].as_py()  # row 0 in vec1
+    assert row1_score > row0_score
+
+
+def test_compute_scores_empty():
+    """Test compute_scores with empty input."""
+    reranker = RRFReranker()
+
+    empty_table = pa.table({"_rowid": pa.array([], type=pa.int64())})
+    results = [VectorResult(data=empty_table)]
+    score_arrays = reranker.compute_scores("test query", results)
+
+    assert len(score_arrays) == 1
+    assert len(score_arrays[0]) == 0
+
+

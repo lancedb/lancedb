@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-from .base import Reranker
+from .base import Reranker, RerankableResult, FtsResult, VectorResult
 from .cohere import CohereReranker
 from .colbert import ColbertReranker
 from .cross_encoder import CrossEncoderReranker
@@ -15,6 +15,9 @@ from .voyageai import VoyageAIReranker
 
 __all__ = [
     "Reranker",
+    "RerankableResult",
+    "FtsResult",
+    "VectorResult",
     "CrossEncoderReranker",
     "CohereReranker",
     "LinearCombinationReranker",
