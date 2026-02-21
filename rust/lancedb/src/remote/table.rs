@@ -3,17 +3,16 @@
 
 pub mod insert;
 
+use self::insert::RemoteInsertExec;
+
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
-use super::util::stream_as_body;
 use super::ARROW_STREAM_CONTENT_TYPE;
-use crate::data::scannable::Scannable;
 use crate::index::waiter::wait_for_index;
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
-use crate::remote::util::stream_as_ipc;
 use crate::table::query::create_multi_vector_plan;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
@@ -23,7 +22,7 @@ use crate::table::DropColumnsResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
-use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
+use crate::table::{AnyQuery, Filter, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{
@@ -356,110 +355,6 @@ impl<S: HttpSend> RemoteTable<S> {
             .await?;
 
         Ok(res)
-    }
-
-    /// Send a request with data from a Scannable source.
-    ///
-    /// For rescannable sources, this will retry on retryable errors by re-reading
-    /// the data. For non-rescannable sources (streams), only a single attempt is made.
-    async fn send_scannable(
-        &self,
-        req_builder: RequestBuilder,
-        data: &mut dyn Scannable,
-    ) -> Result<(String, Response)> {
-        use crate::remote::retry::RetryCounter;
-
-        // Right now, Python and Typescript don't pass down re-scannable data yet.
-        // So to preserve existing retry behavior, we have to collect data in
-        // memory for now. Once they expose rescannable data sources, we can remove this.
-        if !data.rescannable() && self.client.retry_config.retries > 0 {
-            let mut body = Vec::new();
-            stream_as_ipc(data.scan_as_stream())?
-                .try_for_each(|b| {
-                    body.extend_from_slice(&b);
-                    futures::future::ok(())
-                })
-                .await?;
-            let req_builder = req_builder.body(body);
-            return self.client.send_with_retry(req_builder, None, true).await;
-        }
-
-        let rescannable = data.rescannable();
-        let max_retries = if rescannable {
-            self.client.retry_config.retries
-        } else {
-            0
-        };
-
-        // Clone the request builder to extract the request id
-        let tmp_req = req_builder.try_clone().ok_or_else(|| Error::Runtime {
-            message: "Attempted to retry a request that cannot be cloned".to_string(),
-        })?;
-        let (_, r) = tmp_req.build_split();
-        let mut r = r.map_err(|e| Error::Runtime {
-            message: format!("Failed to build request: {}", e),
-        })?;
-        let request_id = self.client.extract_request_id(&mut r);
-        let mut retry_counter = RetryCounter::new(&self.client.retry_config, request_id.clone());
-
-        loop {
-            // Re-read data on each attempt
-            let stream = data.scan_as_stream();
-            let body = stream_as_body(stream)?;
-
-            let mut req_builder = req_builder.try_clone().ok_or_else(|| Error::Runtime {
-                message: "Attempted to retry a request that cannot be cloned".to_string(),
-            })?;
-            req_builder = req_builder.body(body);
-
-            let (c, request) = req_builder.build_split();
-            let mut request = request.map_err(|e| Error::Runtime {
-                message: format!("Failed to build request: {}", e),
-            })?;
-            self.client.set_request_id(&mut request, &request_id);
-
-            // Apply dynamic headers
-            request = self.client.apply_dynamic_headers(request).await?;
-
-            self.client.log_request(&request, &request_id);
-
-            let response = match self.client.sender.send(&c, request).await {
-                Ok(r) => r,
-                Err(err) => {
-                    if err.is_connect() {
-                        retry_counter.increment_connect_failures(err)?;
-                    } else if err.is_body() || err.is_decode() {
-                        retry_counter.increment_read_failures(err)?;
-                    } else {
-                        return Err(crate::Error::Http {
-                            source: err.into(),
-                            request_id,
-                            status_code: None,
-                        });
-                    }
-                    tokio::time::sleep(retry_counter.next_sleep_time()).await;
-                    continue;
-                }
-            };
-
-            let status = response.status();
-
-            // Check for retryable status codes
-            if self.client.retry_config.statuses.contains(&status)
-                && retry_counter.request_failures < max_retries
-            {
-                let http_err = crate::Error::Http {
-                    source: format!("Retryable status code: {}", status).into(),
-                    request_id: request_id.clone(),
-                    status_code: Some(status),
-                };
-                retry_counter.increment_request_failures(http_err)?;
-                tokio::time::sleep(retry_counter.next_sleep_time()).await;
-                continue;
-            }
-
-            return Ok((request_id, response));
-        }
     }
 
     pub(super) async fn handle_table_not_found(
@@ -1077,39 +972,75 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })
     }
-    async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
-        self.check_mutable().await?;
-        let mut request = self
-            .client
-            .post(&format!("/v1/table/{}/insert/", self.identifier))
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+    async fn add(&self, add: AddDataBuilder) -> Result<AddResult> {
+        use crate::remote::retry::RetryCounter;
 
-        match add.mode {
-            AddDataMode::Append => {}
-            AddDataMode::Overwrite => {
-                request = request.query(&[("mode", "overwrite")]);
+        self.check_mutable().await?;
+
+        let table_schema = self.schema().await?;
+        let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
+        let output = add.into_plan(&table_schema, &table_def)?;
+
+        let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            output.plan,
+            output.overwrite,
+        ));
+
+        let mut retry_counter =
+            RetryCounter::new(&self.client.retry_config, uuid::Uuid::new_v4().to_string());
+
+        loop {
+            let stream = execute_plan(insert.clone(), Default::default())?;
+            let result: Result<Vec<_>> = stream.try_collect().await.map_err(Error::from);
+
+            match result {
+                Ok(_) => {
+                    let add_result = insert
+                        .as_any()
+                        .downcast_ref::<RemoteInsertExec<S>>()
+                        .and_then(|i| i.add_result())
+                        .unwrap_or(AddResult { version: 0 });
+
+                    if output.overwrite {
+                        self.invalidate_schema_cache();
+                    }
+
+                    return Ok(add_result);
+                }
+                Err(err) if output.rescannable => {
+                    let retryable = match &err {
+                        Error::Http {
+                            source,
+                            status_code,
+                            ..
+                        } => {
+                            // Don't retry read errors (is_body/is_decode): the
+                            // server may have committed the write already, and
+                            // without an idempotency key we'd duplicate data.
+                            source
+                                .downcast_ref::<reqwest::Error>()
+                                .is_some_and(|e| e.is_connect())
+                                || status_code
+                                    .is_some_and(|s| self.client.retry_config.statuses.contains(&s))
+                        }
+                        _ => false,
+                    };
+
+                    if retryable {
+                        retry_counter.increment_from_error(err)?;
+                        tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                        insert = insert.reset_state()?;
+                        continue;
+                    }
+
+                    return Err(err);
+                }
+                Err(err) => return Err(err),
             }
         }
-
-        let (request_id, response) = self.send_scannable(request, &mut *add.data).await?;
-        let response = self.check_table_response(&request_id, response).await?;
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        if body.trim().is_empty() {
-            // Backward compatible with old servers
-            return Ok(AddResult { version: 0 });
-        }
-
-        let add_response: AddResult = serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse add response: {}", e).into(),
-            request_id,
-            status_code: None,
-        })?;
-
-        if matches!(add.mode, AddDataMode::Overwrite) {
-            self.invalidate_schema_cache();
-        }
-
-        Ok(add_response)
     }
 
     async fn create_plan(
@@ -1756,9 +1687,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {
-        Err(Error::NotSupported {
-            message: "table_definition is not supported on LanceDB cloud.".into(),
-        })
+        let schema = self.schema().await?;
+        TableDefinition::try_from_rich_schema(schema)
     }
     async fn uri(&self) -> Result<String> {
         // Check if we already have the location cached
@@ -1882,6 +1812,8 @@ mod tests {
     use std::{collections::HashMap, pin::Pin};
 
     use super::*;
+
+    use crate::table::AddDataMode;
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{record_batch, Int32Array, RecordBatch, RecordBatchIterator};
@@ -2095,6 +2027,16 @@ mod tests {
         body
     }
 
+    /// Build a JSON describe response for the given schema.
+    fn describe_response(schema: &Schema) -> String {
+        let json_schema = JsonSchema::try_from(schema).unwrap();
+        serde_json::to_string(&json!({
+            "version": 1,
+            "schema": json_schema,
+        }))
+        .unwrap()
+    }
+
     #[rstest]
     #[case("", 0)]
     #[case("{}", 0)]
@@ -2111,30 +2053,35 @@ mod tests {
         // Clone response_body to give it 'static lifetime for the closure
         let response_body = response_body.to_string();
 
+        let describe_body = describe_response(&data.schema());
         let (sender, receiver) = std::sync::mpsc::channel();
-        let table = Table::new_with_handler("my_table", move |mut request| {
-            if request.url().path() == "/v1/table/my_table/insert/" {
-                assert_eq!(request.method(), "POST");
-                assert!(request
-                    .url()
-                    .query_pairs()
-                    .filter(|(k, _)| k == "mode")
-                    .all(|(_, v)| v == "append"));
-                assert_eq!(
-                    request.headers().get("Content-Type").unwrap(),
-                    ARROW_STREAM_CONTENT_TYPE
-                );
-                let mut body_out = reqwest::Body::from(Vec::new());
-                std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
-                sender.send(body_out).unwrap();
-                http::Response::builder()
+        let table =
+            Table::new_with_handler("my_table", move |mut request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
                     .status(200)
-                    .body(response_body.clone())
-                    .unwrap()
-            } else {
-                panic!("Unexpected request path: {}", request.url().path());
-            }
-        });
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => {
+                    assert_eq!(request.method(), "POST");
+                    assert!(request
+                        .url()
+                        .query_pairs()
+                        .filter(|(k, _)| k == "mode")
+                        .all(|(_, v)| v == "append"));
+                    assert_eq!(
+                        request.headers().get("Content-Type").unwrap(),
+                        ARROW_STREAM_CONTENT_TYPE
+                    );
+                    let mut body_out = reqwest::Body::from(Vec::new());
+                    std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+                    sender.send(body_out).unwrap();
+                    http::Response::builder()
+                        .status(200)
+                        .body(response_body.clone())
+                        .unwrap()
+                }
+                path => panic!("Unexpected request path: {}", path),
+            });
         let result = table.add(data.clone()).execute().await.unwrap();
 
         // Check version matches expected value
@@ -2157,39 +2104,50 @@ mod tests {
         )
         .unwrap();
 
+        let describe_body = describe_response(&data.schema());
         let (sender, receiver) = std::sync::mpsc::channel();
-        let table = Table::new_with_handler("my_table", move |mut request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/table/my_table/insert/");
-            assert_eq!(
-                request
-                    .url()
-                    .query_pairs()
-                    .find(|(k, _)| k == "mode")
-                    .map(|kv| kv.1)
-                    .as_deref(),
-                Some("overwrite"),
-                "Expected mode=overwrite"
-            );
-
-            assert_eq!(
-                request.headers().get("Content-Type").unwrap(),
-                ARROW_STREAM_CONTENT_TYPE
-            );
-
-            let mut body_out = reqwest::Body::from(Vec::new());
-            std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
-            sender.send(body_out).unwrap();
-
-            if old_server {
-                http::Response::builder().status(200).body("").unwrap()
-            } else {
-                http::Response::builder()
+        let table =
+            Table::new_with_handler("my_table", move |mut request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
                     .status(200)
-                    .body(r#"{"version": 43}"#)
-                    .unwrap()
-            }
-        });
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => {
+                    assert_eq!(request.method(), "POST");
+                    assert_eq!(
+                        request
+                            .url()
+                            .query_pairs()
+                            .find(|(k, _)| k == "mode")
+                            .map(|kv| kv.1)
+                            .as_deref(),
+                        Some("overwrite"),
+                        "Expected mode=overwrite"
+                    );
+
+                    assert_eq!(
+                        request.headers().get("Content-Type").unwrap(),
+                        ARROW_STREAM_CONTENT_TYPE
+                    );
+
+                    let mut body_out = reqwest::Body::from(Vec::new());
+                    std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+                    sender.send(body_out).unwrap();
+
+                    if old_server {
+                        http::Response::builder()
+                            .status(200)
+                            .body("".to_string())
+                            .unwrap()
+                    } else {
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"version": 43}"#.to_string())
+                            .unwrap()
+                    }
+                }
+                path => panic!("Unexpected request path: {}", path),
+            });
 
         let result = table
             .add(data.clone())
@@ -2204,6 +2162,131 @@ mod tests {
         let body = collect_body(body).await;
         let expected_body = write_ipc_stream(&data);
         assert_eq!(&body, &expected_body);
+    }
+
+    #[tokio::test]
+    async fn test_add_preprocessing() {
+        use crate::table::NaNVectorBehavior;
+        use arrow_array::{FixedSizeListArray, Float32Array, Int64Array};
+
+        // The table schema: {id: Int64, vec: FixedSizeList<Float32>[3]}
+        let table_schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 3),
+                false,
+            ),
+        ]);
+        let json_schema = JsonSchema::try_from(&table_schema).unwrap();
+        let describe_body = serde_json::to_string(&json!({
+            "version": 1,
+            "schema": json_schema,
+        }))
+        .unwrap();
+
+        // ---- Part 1: NaN vectors should be rejected by default ----
+        let nan_data = RecordBatch::try_new(
+            Arc::new(table_schema.clone()),
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(
+                    FixedSizeListArray::try_new(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        3,
+                        Arc::new(Float32Array::from(vec![1.0, f32::NAN, 3.0])),
+                        None,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let describe_body_clone = describe_body.clone();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body_clone.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 2}"#.to_string())
+                    .unwrap(),
+                path => panic!("Unexpected path: {path}"),
+            });
+
+        let result = table.add(nan_data).execute().await;
+        assert!(result.is_err(), "NaN vectors should be rejected by default");
+        assert!(
+            result.unwrap_err().to_string().contains("NaN"),
+            "error should mention NaN"
+        );
+
+        // ---- Part 2: With Keep, should handle casting and missing columns ----
+        // Input: {id: Int32 (needs cast to Int64), vec: FixedSizeList<Float32>[3] with NaN}
+        // Table expects Int64 for id; NaN should be kept.
+        let input_schema = Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 3),
+                false,
+            ),
+        ]);
+        let cast_data = RecordBatch::try_new(
+            Arc::new(input_schema),
+            vec![
+                Arc::new(Int32Array::from(vec![42])),
+                Arc::new(
+                    FixedSizeListArray::try_new(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        3,
+                        Arc::new(Float32Array::from(vec![1.0, f32::NAN, 3.0])),
+                        None,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table =
+            Table::new_with_handler("my_table", move |mut request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => {
+                    let mut body_out = reqwest::Body::from(Vec::new());
+                    std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+                    sender.send(body_out).unwrap();
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 2}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {path}"),
+            });
+
+        table
+            .add(cast_data)
+            .on_nan_vectors(NaNVectorBehavior::Keep)
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify the data sent to the server was cast to the table schema.
+        let body = receiver.recv().unwrap();
+        let body = collect_body(body).await;
+        let cursor = std::io::Cursor::new(body);
+        let mut reader = arrow_ipc::reader::StreamReader::try_new(cursor, None).unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert_eq!(batch.schema().field(0).data_type(), &DataType::Int64);
+        let ids: &Int64Array = batch.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(ids.value(0), 42);
     }
 
     #[rstest]
@@ -3572,23 +3655,29 @@ mod tests {
         )
         .unwrap();
 
+        let describe_body = describe_response(&data.schema());
         let (sender, receiver) = std::sync::mpsc::channel();
         let table = Table::new_with_handler("prod$metrics", move |mut request| {
-            if request.url().path() == "/v1/table/prod$metrics/insert/" {
-                assert_eq!(request.method(), "POST");
-                assert_eq!(
-                    request.headers().get("Content-Type").unwrap(),
-                    ARROW_STREAM_CONTENT_TYPE
-                );
-                let mut body_out = reqwest::Body::from(Vec::new());
-                std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
-                sender.send(body_out).unwrap();
-                http::Response::builder()
+            match request.url().path() {
+                "/v1/table/prod$metrics/describe/" => http::Response::builder()
                     .status(200)
-                    .body(r#"{"version": 2}"#)
-                    .unwrap()
-            } else {
-                panic!("Unexpected request path: {}", request.url().path());
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/prod$metrics/insert/" => {
+                    assert_eq!(request.method(), "POST");
+                    assert_eq!(
+                        request.headers().get("Content-Type").unwrap(),
+                        ARROW_STREAM_CONTENT_TYPE
+                    );
+                    let mut body_out = reqwest::Body::from(Vec::new());
+                    std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+                    sender.send(body_out).unwrap();
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 2}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected request path: {}", path),
             }
         });
 
@@ -4480,93 +4569,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_add_retries_rescannable_data() {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_clone = call_count.clone();
-
-        // Configure with retries enabled (default is 3)
-        let config = crate::remote::ClientConfig::default();
-
-        let table = Table::new_with_handler_and_config(
-            "my_table",
-            move |_request| {
-                let count = call_count_clone.fetch_add(1, Ordering::SeqCst);
-                if count < 2 {
-                    // First two attempts fail with a retryable error (409)
-                    http::Response::builder().status(409).body("").unwrap()
-                } else {
-                    // Third attempt succeeds
-                    http::Response::builder()
-                        .status(200)
-                        .body(r#"{"version": 1}"#)
-                        .unwrap()
-                }
-            },
-            config,
-        );
-
-        // RecordBatch is rescannable - should retry and succeed
+    async fn test_add_insert_fails() {
+        // Verify that an HTTP error from the insert endpoint is properly
+        // surfaced with the status code intact. Use 400 (non-retryable).
         let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
-        let result = table.add(batch).execute().await;
+        let describe_body = describe_response(&batch.schema());
 
-        assert!(
-            result.is_ok(),
-            "Expected success after retries: {:?}",
-            result
-        );
-        assert_eq!(
-            call_count.load(Ordering::SeqCst),
-            3,
-            "Expected 2 failed attempts + 1 success = 3 total"
-        );
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => http::Response::builder()
+                    .status(400)
+                    .body("bad request".to_string())
+                    .unwrap(),
+                path => panic!("Unexpected request path: {}", path),
+            });
+
+        let result = table.add(batch).execute().await;
+        let err = result.unwrap_err();
+        match &err {
+            Error::Http { status_code, .. } => {
+                assert_eq!(*status_code, Some(reqwest::StatusCode::BAD_REQUEST));
+            }
+            other => panic!("Expected Http error, got: {:?}", other),
+        }
     }
 
     #[tokio::test]
-    async fn test_add_no_retry_for_non_rescannable() {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_clone = call_count.clone();
-
-        // Configure with retries enabled
-        let config = crate::remote::ClientConfig::default();
-
-        let table = Table::new_with_handler_and_config(
-            "my_table",
-            move |_request| {
-                call_count_clone.fetch_add(1, Ordering::SeqCst);
-                // Always fail with retryable error
-                http::Response::builder().status(409).body("").unwrap()
-            },
-            config,
-        );
-
-        // RecordBatchReader is NOT rescannable - should NOT retry
+    async fn test_add_retries_on_retryable_status() {
+        // Verify that rescannable data retries on retryable status codes (e.g. 502)
+        // and eventually succeeds.
         let batch = record_batch!(("a", Int32, [1, 2, 3])).unwrap();
-        let reader: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
-            RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
-        );
+        let describe_body = describe_response(&batch.schema());
 
-        let result = table.add(reader).execute().await;
+        let attempt = Arc::new(AtomicUsize::new(0));
+        let attempt_clone = attempt.clone();
 
-        // Should fail because we can't retry non-rescannable sources
-        assert!(result.is_err());
-        // Right now, we actually do retry, so we get 3 failures. In the future
-        // this will change and we need to update the test.
-        assert!(
-            matches!(
-                result.unwrap_err(),
-                Error::Retry {
-                    request_failures: 3,
-                    ..
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => {
+                    let n = attempt_clone.fetch_add(1, Ordering::SeqCst);
+                    if n < 2 {
+                        http::Response::builder()
+                            .status(502)
+                            .body("bad gateway".to_string())
+                            .unwrap()
+                    } else {
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"version": 3}"#.to_string())
+                            .unwrap()
+                    }
                 }
-            ),
-            "Expected RequestFailed with status 409"
-        );
-        // TODO: After we implement proper non-rescannable handling, uncomment below
-        // (This is blocked on getting Python and Node to pass down re-scannable data.)
-        // assert_eq!(
-        //     call_count.load(Ordering::SeqCst),
-        //     1,
-        //     "Expected only one attempt for non-rescannable source"
-        // );
+                path => panic!("Unexpected request path: {}", path),
+            });
+
+        let result = table.add(batch).execute().await.unwrap();
+        assert_eq!(result.version, 3);
+        assert_eq!(attempt.load(Ordering::SeqCst), 3);
     }
 }

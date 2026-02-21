@@ -10,15 +10,18 @@ use datafusion_expr::Expr;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::ExecutionPlan;
 use futures::StreamExt;
+use futures::TryStreamExt;
 use lance::dataset::builder::DatasetBuilder;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
-use lance::dataset::{InsertBuilder, WriteMode, WriteParams};
+use lance::dataset::WriteMode;
+use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::index::vector::VectorIndexParams;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
+use lance_datafusion::exec::execute_plan;
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::vector::bq::RQBuildParams;
@@ -40,7 +43,7 @@ use std::format;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::data::scannable::{scannable_with_embeddings, Scannable};
+use crate::data::scannable::Scannable;
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -49,6 +52,7 @@ use crate::index::IndexStatistics;
 use crate::index::{vector::suggested_num_sub_vectors, Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
+use crate::table::datafusion::insert::InsertExec;
 use crate::utils::{
     supported_bitmap_data_type, supported_btree_data_type, supported_fts_data_type,
     supported_label_list_data_type, supported_vector_data_type, PatchReadParam, PatchWriteParam,
@@ -67,7 +71,7 @@ pub mod query;
 pub mod schema_evolution;
 pub mod update;
 use crate::index::waiter::wait_for_index;
-pub use add_data::{AddDataBuilder, AddDataMode, AddResult};
+pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;
@@ -2110,28 +2114,41 @@ impl BaseTable for NativeTable {
     }
 
     async fn add(&self, add: AddDataBuilder) -> Result<AddResult> {
-        let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
-            mode: match add.mode {
-                AddDataMode::Append => WriteMode::Append,
-                AddDataMode::Overwrite => WriteMode::Overwrite,
-            },
-            ..Default::default()
-        });
-
-        // Apply embeddings if configured
         let table_def = self.table_definition().await?;
-        let data =
-            scannable_with_embeddings(add.data, &table_def, add.embedding_registry.as_ref())?;
 
         self.dataset.ensure_mutable()?;
+        let ds_wrapper = self.dataset.clone();
         let ds = self.dataset.get().await?;
-        let dataset = InsertBuilder::new(ds)
-            .with_params(&lance_params)
-            .execute_stream(data)
-            .await?;
 
-        let version = dataset.manifest().version;
-        self.dataset.update(dataset);
+        let table_schema = Schema::from(&ds.schema().clone());
+
+        let output = add.into_plan(&table_schema, &table_def)?;
+
+        let lance_params = output
+            .write_options
+            .lance_write_params
+            .unwrap_or(WriteParams {
+                mode: match output.mode {
+                    AddDataMode::Append => WriteMode::Append,
+                    AddDataMode::Overwrite => WriteMode::Overwrite,
+                },
+                ..Default::default()
+            });
+
+        let plan = Arc::new(InsertExec::new(
+            ds_wrapper.clone(),
+            ds,
+            output.plan,
+            lance_params,
+        ));
+
+        let stream = execute_plan(plan, Default::default())?;
+        stream
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(crate::Error::from)?;
+
+        let version = ds_wrapper.get().await?.manifest().version;
         Ok(AddResult { version })
     }
 

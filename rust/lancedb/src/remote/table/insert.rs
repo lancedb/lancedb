@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 
 use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
 use arrow_ipc::CompressionType;
-use arrow_schema::ArrowError;
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr::EquivalenceProperties;
@@ -76,7 +75,15 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         self.add_result.lock().unwrap().clone()
     }
 
-    fn stream_as_body(data: SendableRecordBatchStream) -> DataFusionResult<reqwest::Body> {
+    /// Stream the input into an HTTP body as an Arrow IPC stream, capturing any
+    /// stream errors into the provided channel. Errors from the input plan
+    /// (e.g. NaN rejection) would otherwise be swallowed inside the HTTP body
+    /// upload; by stashing them in the channel we can surface them with their
+    /// original message after the request completes.
+    fn stream_as_http_body(
+        data: SendableRecordBatchStream,
+        error_tx: tokio::sync::oneshot::Sender<DataFusionError>,
+    ) -> DataFusionResult<reqwest::Body> {
         let options = arrow_ipc::writer::IpcWriteOptions::default()
             .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
         let writer = arrow_ipc::writer::StreamWriter::try_new_with_options(
@@ -85,26 +92,44 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             options,
         )?;
 
-        let stream = futures::stream::try_unfold((data, writer), move |(mut data, mut writer)| {
-            async move {
+        let stream = futures::stream::try_unfold(
+            (data, writer, Some(error_tx), false),
+            move |(mut data, mut writer, error_tx, finished)| async move {
+                if finished {
+                    return Ok(None);
+                }
                 match data.next().await {
                     Some(Ok(batch)) => {
-                        writer.write(&batch)?;
+                        writer
+                            .write(&batch)
+                            .map_err(|e| std::io::Error::other(e.to_string()))?;
                         let buffer = std::mem::take(writer.get_mut());
-                        Ok(Some((buffer, (data, writer))))
+                        Ok(Some((buffer, (data, writer, error_tx, false))))
                     }
-                    Some(Err(e)) => Err(e),
+                    Some(Err(e)) => {
+                        // Send the original error through the channel before
+                        // returning a generic error to reqwest.
+                        if let Some(tx) = error_tx {
+                            let _ = tx.send(e);
+                        }
+                        Err(std::io::Error::other(
+                            "input stream error (see error channel)",
+                        ))
+                    }
                     None => {
-                        if let Err(ArrowError::IpcError(_msg)) = writer.finish() {
-                            // Will error if already closed.
-                            return Ok(None);
-                        };
+                        writer
+                            .finish()
+                            .map_err(|e| std::io::Error::other(e.to_string()))?;
                         let buffer = std::mem::take(writer.get_mut());
-                        Ok(Some((buffer, (data, writer))))
+                        if buffer.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some((buffer, (data, writer, None, true))))
+                        }
                     }
                 }
-            }
-        });
+            },
+        );
 
         Ok(reqwest::Body::wrap_stream(stream))
     }
@@ -202,23 +227,40 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
                 request = request.query(&[("mode", "overwrite")]);
             }
 
-            let body = Self::stream_as_body(input_stream)?;
+            let (error_tx, mut error_rx) = tokio::sync::oneshot::channel();
+            let body = Self::stream_as_http_body(input_stream, error_tx)?;
             let request = request.body(body);
 
-            let (request_id, response) = client
-                .send(request)
-                .await
-                .map_err(|e| DataFusionError::External(Box::new(e)))?;
-
-            let response =
-                RemoteTable::<Sender>::handle_table_not_found(&table_name, response, &request_id)
+            let result: DataFusionResult<(String, _)> = async {
+                let (request_id, response) = client
+                    .send(request)
                     .await
                     .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
-            let response = client
-                .check_response(&request_id, response)
+                let response = RemoteTable::<Sender>::handle_table_not_found(
+                    &table_name,
+                    response,
+                    &request_id,
+                )
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                let response = client
+                    .check_response(&request_id, response)
+                    .await
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                Ok((request_id, response))
+            }
+            .await;
+
+            // If the request failed due to an input stream error, surface the
+            // original error (e.g. NaN rejection) instead of the HTTP error.
+            if let Ok(stream_err) = error_rx.try_recv() {
+                return Err(stream_err);
+            }
+
+            let (request_id, response) = result?;
 
             let body_text = response.text().await.map_err(|e| {
                 DataFusionError::External(Box::new(Error::Http {
