@@ -8,6 +8,7 @@ on:
     paths:
       - Cargo.toml
       - nodejs/**
+      - rust/**
       - docs/src/js/**
       - .github/workflows/nodejs.yml
       - docker-compose.yml
