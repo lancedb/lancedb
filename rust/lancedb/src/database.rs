@@ -85,8 +85,10 @@ pub type TableBuilderCallback = Box<dyn FnOnce(OpenTableRequest) -> OpenTableReq
 
 /// Describes what happens when creating a table and a table with
 /// the same name already exists
+#[derive(Default)]
 pub enum CreateTableMode {
     /// If the table already exists, an error is returned
+    #[default]
     Create,
     /// If the table already exists, it is opened.  Any provided data is
     /// ignored.  The function will be passed an OpenTableBuilder to customize
@@ -101,12 +103,6 @@ impl CreateTableMode {
         callback: impl FnOnce(OpenTableRequest) -> OpenTableRequest + Send + 'static,
     ) -> Self {
         Self::ExistOk(Box::new(callback))
-    }
-}
-
-impl Default for CreateTableMode {
-    fn default() -> Self {
-        Self::Create
     }
 }
 

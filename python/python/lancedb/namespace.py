@@ -44,7 +44,7 @@ from lance_namespace import (
     ListNamespacesRequest,
     CreateNamespaceRequest,
     DropNamespaceRequest,
-    CreateEmptyTableRequest,
+    DeclareTableRequest,
 )
 from lancedb.table import AsyncTable, LanceTable, Table
 from lancedb.util import validate_table_name
@@ -318,20 +318,20 @@ class LanceNamespaceDBConnection(DBConnection):
 
         if location is None:
             # Table doesn't exist or mode is "create", reserve a new location
-            create_empty_request = CreateEmptyTableRequest(
+            declare_request = DeclareTableRequest(
                 id=table_id,
                 location=None,
                 properties=self.storage_options if self.storage_options else None,
             )
-            create_empty_response = self._ns.create_empty_table(create_empty_request)
+            declare_response = self._ns.declare_table(declare_request)
 
-            if not create_empty_response.location:
+            if not declare_response.location:
                 raise ValueError(
-                    "Table location is missing from create_empty_table response"
+                    "Table location is missing from declare_table response"
                 )
 
-            location = create_empty_response.location
-            namespace_storage_options = create_empty_response.storage_options
+            location = declare_response.location
+            namespace_storage_options = declare_response.storage_options
 
         # Merge storage options: self.storage_options < user options < namespace options
         merged_storage_options = dict(self.storage_options)
@@ -759,20 +759,20 @@ class AsyncLanceNamespaceDBConnection:
 
         if location is None:
             # Table doesn't exist or mode is "create", reserve a new location
-            create_empty_request = CreateEmptyTableRequest(
+            declare_request = DeclareTableRequest(
                 id=table_id,
                 location=None,
                 properties=self.storage_options if self.storage_options else None,
             )
-            create_empty_response = self._ns.create_empty_table(create_empty_request)
+            declare_response = self._ns.declare_table(declare_request)
 
-            if not create_empty_response.location:
+            if not declare_response.location:
                 raise ValueError(
-                    "Table location is missing from create_empty_table response"
+                    "Table location is missing from declare_table response"
                 )
 
-            location = create_empty_response.location
-            namespace_storage_options = create_empty_response.storage_options
+            location = declare_response.location
+            namespace_storage_options = declare_response.storage_options
 
         # Merge storage options: self.storage_options < user options < namespace options
         merged_storage_options = dict(self.storage_options)

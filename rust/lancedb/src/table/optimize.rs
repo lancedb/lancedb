@@ -26,8 +26,10 @@ use crate::error::Result;
 /// optimize different parts of the table on disk.
 ///
 /// By default, it optimizes everything, as [`OptimizeAction::All`].
+#[derive(Default)]
 pub enum OptimizeAction {
     /// Run all optimizations with default values
+    #[default]
     All,
     /// Compacts files in the dataset
     ///
@@ -82,12 +84,6 @@ pub enum OptimizeAction {
     /// For example, when using IVF, an index will create clusters.  Optimizing an index assigns unindexed
     /// data to the existing clusters, but it does not move the clusters or create new clusters.
     Index(OptimizeOptions),
-}
-
-impl Default for OptimizeAction {
-    fn default() -> Self {
-        Self::All
-    }
 }
 
 /// Statistics about the optimization.
