@@ -78,8 +78,11 @@ jobs:
         fetch-depth: 0
         lfs: true
     - uses: actions/setup-node@v3
+      name: Setup Node.js 20 for build
       with:
-        node-version: ${{ matrix.node-version }}
+        # @napi-rs/cli v3 requires Node >= 20.12 (via @inquirer/prompts@8).
+        # Build always on Node 20; tests run on the matrix version below.
+        node-version: 20
         cache: 'npm'
         cache-dependency-path: nodejs/package-lock.json
     - uses: Swatinem/rust-cache@v2
@@ -87,12 +90,16 @@ jobs:
       run: |
         sudo apt update
         sudo apt install -y protobuf-compiler libssl-dev
-        npm install -g @napi-rs/cli
     - name: Build
       run: |
         npm ci --include=optional
         npm run build:debug -- --profile ci
-        npm run tsc
+    - uses: actions/setup-node@v3
+      name: Setup Node.js ${{ matrix.node-version }} for test
+      with:
+        node-version: ${{ matrix.node-version }}
+    - name: Compile TypeScript
+      run: npm run tsc
     - name: Setup localstack
       working-directory: .
       run: docker compose up --detach --wait
@@ -145,7 +152,6 @@ jobs:
     - name: Install dependencies
       run: |
         brew install protobuf
-        npm install -g @napi-rs/cli
     - name: Build
       run: |
         npm ci --include=optional

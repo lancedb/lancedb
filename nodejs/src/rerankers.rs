@@ -3,10 +3,7 @@
 
 use arrow_array::RecordBatch;
 use async_trait::async_trait;
-use napi::{
-    bindgen_prelude::*,
-    threadsafe_function::{ErrorStrategy, ThreadsafeFunction},
-};
+use napi::{bindgen_prelude::*, threadsafe_function::ThreadsafeFunction};
 use napi_derive::napi;
 
 use lancedb::ipc::batches_to_ipc_file;
@@ -15,27 +12,28 @@ use lancedb::{error::Error, ipc::ipc_file_to_batches};
 
 use crate::error::NapiErrorExt;
 
+type RerankHybridFn = ThreadsafeFunction<
+    RerankHybridCallbackArgs,
+    Promise<Buffer>,
+    RerankHybridCallbackArgs,
+    Status,
+    false,
+>;
+
 /// Reranker implementation that "wraps" a NodeJS Reranker implementation.
 /// This contains references to the callbacks that can be used to invoke the
 /// reranking methods on the NodeJS implementation and handles serializing the
 /// record batches to Arrow IPC buffers.
-#[napi]
 pub struct Reranker {
-    /// callback to the Javascript which will call the rerankHybrid method of
-    /// some Reranker implementation
-    rerank_hybrid: ThreadsafeFunction<RerankHybridCallbackArgs, ErrorStrategy::CalleeHandled>,
+    rerank_hybrid: RerankHybridFn,
 }
 
-#[napi]
 impl Reranker {
-    #[napi]
-    pub fn new(callbacks: RerankerCallbacks) -> Self {
-        let rerank_hybrid = callbacks
-            .rerank_hybrid
-            .create_threadsafe_function(0, move |ctx| Ok(vec![ctx.value]))
-            .unwrap();
-
-        Self { rerank_hybrid }
+    pub fn new(
+        rerank_hybrid: Function<RerankHybridCallbackArgs, Promise<Buffer>>,
+    ) -> napi::Result<Self> {
+        let rerank_hybrid = rerank_hybrid.build_threadsafe_function().build()?;
+        Ok(Self { rerank_hybrid })
     }
 }
 
@@ -49,16 +47,16 @@ impl lancedb::rerankers::Reranker for Reranker {
     ) -> lancedb::error::Result<RecordBatch> {
         let callback_args = RerankHybridCallbackArgs {
             query: query.to_string(),
-            vec_results: batches_to_ipc_file(&[vector_results])?,
-            fts_results: batches_to_ipc_file(&[fts_results])?,
+            vec_results: Buffer::from(batches_to_ipc_file(&[vector_results])?.as_ref()),
+            fts_results: Buffer::from(batches_to_ipc_file(&[fts_results])?.as_ref()),
         };
         let promised_buffer: Promise<Buffer> = self
             .rerank_hybrid
-            .call_async(Ok(callback_args))
+            .call_async(callback_args)
             .await
             .map_err(|e| Error::Runtime {
-                message: format!("napi error status={}, reason={}", e.status, e.reason),
-            })?;
+            message: format!("napi error status={}, reason={}", e.status, e.reason),
+        })?;
         let buffer = promised_buffer.await.map_err(|e| Error::Runtime {
             message: format!("napi error status={}, reason={}", e.status, e.reason),
         })?;
@@ -78,15 +76,10 @@ impl std::fmt::Debug for Reranker {
 }
 
 #[napi(object)]
-pub struct RerankerCallbacks {
-    pub rerank_hybrid: JsFunction,
-}
-
-#[napi(object)]
 pub struct RerankHybridCallbackArgs {
     pub query: String,
-    pub vec_results: Vec<u8>,
-    pub fts_results: Vec<u8>,
+    pub vec_results: Buffer,
+    pub fts_results: Buffer,
 }
 
 fn buffer_to_record_batch(buffer: Buffer) -> Result<RecordBatch> {

@@ -21,19 +21,16 @@
   },
   "types": "dist/index.d.ts",
   "napi": {
-    "name": "lancedb",
-    "triples": {
-      "defaults": false,
-      "additional": [
-        "aarch64-apple-darwin",
-        "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu",
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-        "x86_64-pc-windows-msvc",
-        "aarch64-pc-windows-msvc"
-      ]
-    }
+    "binaryName": "lancedb",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl",
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc"
+    ]
   },
   "license": "Apache-2.0",
   "repository": {
@@ -46,7 +43,7 @@
     "@aws-sdk/client-s3": "^3.33.0",
     "@biomejs/biome": "^1.7.3",
     "@jest/globals": "^29.7.0",
-    "@napi-rs/cli": "^2.18.3",
+    "@napi-rs/cli": "^3.5.1",
     "@types/axios": "^0.14.0",
     "@types/jest": "^29.1.2",
     "@types/node": "^22.7.4",
@@ -75,9 +72,9 @@
   "os": ["darwin", "linux", "win32"],
   "scripts": {
     "artifacts": "napi artifacts",
-    "build:debug": "napi build --platform --no-const-enum --dts ../lancedb/native.d.ts --js ../lancedb/native.js lancedb",
+    "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir lancedb",
     "postbuild:debug": "shx mkdir -p dist && shx cp lancedb/*.node dist/",
-    "build:release": "napi build --platform --no-const-enum --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js dist/",
+    "build:release": "napi build --platform --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir dist",
     "postbuild:release": "shx mkdir -p dist && shx cp lancedb/*.node dist/",
     "build": "npm run build:debug && npm run tsc",
     "build-release": "npm run build:release && npm run tsc",
@@ -91,7 +88,7 @@
     "prepublishOnly": "napi prepublish -t npm",
     "test": "jest --verbose",
     "integration": "S3_TEST=1 npm run test",
-    "universal": "napi universal",
+    "universal": "napi universalize",
     "version": "napi version"
   },
   "dependencies": {
