@@ -12,18 +12,20 @@ use lancedb::{error::Error, ipc::ipc_file_to_batches};
 
 use crate::error::NapiErrorExt;
 
+type RerankHybridFn = ThreadsafeFunction<
+    RerankHybridCallbackArgs,
+    Promise<Buffer>,
+    RerankHybridCallbackArgs,
+    Status,
+    false,
+>;
+
 /// Reranker implementation that "wraps" a NodeJS Reranker implementation.
 /// This contains references to the callbacks that can be used to invoke the
 /// reranking methods on the NodeJS implementation and handles serializing the
 /// record batches to Arrow IPC buffers.
 pub struct Reranker {
-    rerank_hybrid: ThreadsafeFunction<
-        RerankHybridCallbackArgs,
-        Promise<Buffer>,
-        RerankHybridCallbackArgs,
-        Status,
-        false,
-    >,
+    rerank_hybrid: RerankHybridFn,
 }
 
 impl Reranker {

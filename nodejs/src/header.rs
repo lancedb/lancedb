@@ -6,13 +6,14 @@ use napi_derive::napi;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+type GetHeadersFn = ThreadsafeFunction<(), Promise<HashMap<String, String>>, (), Status, false>;
+
 /// JavaScript HeaderProvider implementation that wraps a JavaScript callback.
 /// This is the only native header provider - all header provider implementations
 /// should provide a JavaScript function that returns headers.
 #[napi]
 pub struct JsHeaderProvider {
-    get_headers_fn:
-        Arc<ThreadsafeFunction<(), Promise<HashMap<String, String>>, (), Status, false>>,
+    get_headers_fn: Arc<GetHeadersFn>,
 }
 
 impl Clone for JsHeaderProvider {
