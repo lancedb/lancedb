@@ -20,8 +20,8 @@ use napi_derive::napi;
 use crate::error::convert_error;
 use crate::error::NapiErrorExt;
 use crate::iterator::RecordBatchIterator;
+use crate::rerankers::RerankHybridCallbackArgs;
 use crate::rerankers::Reranker;
-use crate::rerankers::RerankerCallbacks;
 use crate::util::{parse_distance_type, schema_to_buffer};
 
 #[napi]
@@ -42,7 +42,7 @@ impl Query {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: napi::JsObject) -> napi::Result<()> {
+    pub fn full_text_search(&mut self, query: Object) -> napi::Result<()> {
         let query = parse_fts_query(query)?;
         self.inner = self.inner.clone().full_text_search(query);
         Ok(())
@@ -235,7 +235,7 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: napi::JsObject) -> napi::Result<()> {
+    pub fn full_text_search(&mut self, query: Object) -> napi::Result<()> {
         let query = parse_fts_query(query)?;
         self.inner = self.inner.clone().full_text_search(query);
         Ok(())
@@ -272,11 +272,13 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn rerank(&mut self, callbacks: RerankerCallbacks) {
-        self.inner = self
-            .inner
-            .clone()
-            .rerank(Arc::new(Reranker::new(callbacks)));
+    pub fn rerank(
+        &mut self,
+        rerank_hybrid: Function<RerankHybridCallbackArgs, Promise<Buffer>>,
+    ) -> napi::Result<()> {
+        let reranker = Reranker::new(rerank_hybrid)?;
+        self.inner = self.inner.clone().rerank(Arc::new(reranker));
+        Ok(())
     }
 
     #[napi(catch_unwind)]
@@ -523,12 +525,12 @@ impl JsFullTextQuery {
     }
 }
 
-fn parse_fts_query(query: napi::JsObject) -> napi::Result<FullTextSearchQuery> {
-    if let Ok(Some(query)) = query.get::<_, &JsFullTextQuery>("query") {
+fn parse_fts_query(query: Object) -> napi::Result<FullTextSearchQuery> {
+    if let Ok(Some(query)) = query.get::<&JsFullTextQuery>("query") {
         Ok(FullTextSearchQuery::new_query(query.inner.clone()))
-    } else if let Ok(Some(query_text)) = query.get::<_, String>("query") {
+    } else if let Ok(Some(query_text)) = query.get::<String>("query") {
         let mut query_text = query_text;
-        let columns = query.get::<_, Option<Vec<String>>>("columns")?.flatten();
+        let columns = query.get::<Option<Vec<String>>>("columns")?.flatten();
 
         let is_phrase =
             query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');

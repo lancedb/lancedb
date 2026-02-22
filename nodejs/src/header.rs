@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use napi::{
-    bindgen_prelude::*,
-    threadsafe_function::{ErrorStrategy, ThreadsafeFunction},
-};
+use napi::{bindgen_prelude::*, threadsafe_function::ThreadsafeFunction};
 use napi_derive::napi;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,7 +11,8 @@ use std::sync::Arc;
 /// should provide a JavaScript function that returns headers.
 #[napi]
 pub struct JsHeaderProvider {
-    get_headers_fn: Arc<ThreadsafeFunction<(), ErrorStrategy::CalleeHandled>>,
+    get_headers_fn:
+        Arc<ThreadsafeFunction<(), Promise<HashMap<String, String>>, (), Status, false>>,
 }
 
 impl Clone for JsHeaderProvider {
@@ -29,9 +27,12 @@ impl Clone for JsHeaderProvider {
 impl JsHeaderProvider {
     /// Create a new JsHeaderProvider from a JavaScript callback
     #[napi(constructor)]
-    pub fn new(get_headers_callback: JsFunction) -> Result<Self> {
+    pub fn new(
+        get_headers_callback: Function<(), Promise<HashMap<String, String>>>,
+    ) -> Result<Self> {
         let get_headers_fn = get_headers_callback
-            .create_threadsafe_function(0, |ctx| Ok(vec![ctx.value]))
+            .build_threadsafe_function()
+            .build()
             .map_err(|e| {
                 Error::new(
                     Status::GenericFailure,
@@ -51,7 +52,7 @@ impl lancedb::remote::HeaderProvider for JsHeaderProvider {
     async fn get_headers(&self) -> lancedb::error::Result<HashMap<String, String>> {
         // Call the JavaScript function asynchronously
         let promise: Promise<HashMap<String, String>> =
-            self.get_headers_fn.call_async(Ok(())).await.map_err(|e| {
+            self.get_headers_fn.call_async(()).await.map_err(|e| {
                 lancedb::error::Error::Runtime {
                     message: format!("Failed to call JavaScript get_headers: {}", e),
                 }
