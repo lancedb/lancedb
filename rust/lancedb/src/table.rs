@@ -6,11 +6,11 @@
 use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
+use datafusion_execution::TaskContext;
 use datafusion_expr::Expr;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::ExecutionPlan;
 use futures::StreamExt;
-use futures::TryStreamExt;
 use lance::dataset::builder::DatasetBuilder;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
@@ -21,7 +21,6 @@ use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::vector::utils::infer_vector_dim;
 use lance::index::vector::VectorIndexParams;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
-use lance_datafusion::exec::execute_plan;
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::vector::bq::RQBuildParams;
@@ -43,7 +42,7 @@ use std::format;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::data::scannable::Scannable;
+use crate::data::scannable::{estimate_write_partitions, PeekedScannable, Scannable};
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
@@ -2113,7 +2112,7 @@ impl BaseTable for NativeTable {
         }
     }
 
-    async fn add(&self, add: AddDataBuilder) -> Result<AddResult> {
+    async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         let table_def = self.table_definition().await?;
 
         self.dataset.ensure_mutable()?;
@@ -2121,6 +2120,24 @@ impl BaseTable for NativeTable {
         let ds = self.dataset.get().await?;
 
         let table_schema = Schema::from(&ds.schema().clone());
+
+        // Peek at the first batch to estimate a good partition count for
+        // write parallelism.
+        let mut peeked = PeekedScannable::new(add.data);
+        let num_partitions = if let Some(first_batch) = peeked.peek().await {
+            let max_partitions = std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1);
+            estimate_write_partitions(
+                first_batch.get_array_memory_size(),
+                first_batch.num_rows(),
+                peeked.num_rows(),
+                max_partitions,
+            )
+        } else {
+            1
+        };
+        add.data = Box::new(peeked);
 
         let output = add.into_plan(&table_schema, &table_def)?;
 
@@ -2135,18 +2152,41 @@ impl BaseTable for NativeTable {
                 ..Default::default()
             });
 
-        let plan = Arc::new(InsertExec::new(
-            ds_wrapper.clone(),
-            ds,
-            output.plan,
-            lance_params,
-        ));
+        // Repartition for write parallelism if beneficial.
+        let plan = if num_partitions > 1 {
+            Arc::new(
+                datafusion_physical_plan::repartition::RepartitionExec::try_new(
+                    output.plan,
+                    datafusion_physical_plan::Partitioning::RoundRobinBatch(num_partitions),
+                )?,
+            ) as Arc<dyn ExecutionPlan>
+        } else {
+            output.plan
+        };
 
-        let stream = execute_plan(plan, Default::default())?;
-        stream
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(crate::Error::from)?;
+        let insert_exec = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
+
+        // Execute all partitions in parallel.
+        let task_ctx = Arc::new(TaskContext::default());
+        let mut handles = Vec::with_capacity(num_partitions);
+        for partition in 0..num_partitions {
+            let exec = insert_exec.clone();
+            let ctx = task_ctx.clone();
+            handles.push(tokio::spawn(async move {
+                let mut stream = exec
+                    .execute(partition, ctx)
+                    .map_err(|e| -> Error { e.into() })?;
+                while let Some(batch) = stream.next().await {
+                    batch.map_err(|e| -> Error { e.into() })?;
+                }
+                Ok::<_, Error>(())
+            }));
+        }
+        for handle in handles {
+            handle.await.map_err(|e| Error::Runtime {
+                message: format!("Insert task panicked: {}", e),
+            })??;
+        }
 
         let version = ds_wrapper.get().await?.manifest().version;
         Ok(AddResult { version })

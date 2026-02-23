@@ -294,6 +294,20 @@ mod tests {
 
     impl std::error::Error for MyError {}
 
+    fn assert_preserves_external_error(err: &Error) {
+        assert!(
+            matches!(err, Error::External { .. }),
+            "Expected Error::External, got: {err:?}"
+        );
+        // The original MyError message should be preserved through the
+        // error chain, even if the error gets wrapped multiple times by
+        // lance's insert pipeline.
+        assert!(
+            err.to_string().contains("MyError occurred"),
+            "Expected original error message to be preserved, got: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn test_add_preserves_reader_error() {
         let table = create_test_table().await;
@@ -309,7 +323,7 @@ mod tests {
 
         let result = table.add(reader).execute().await;
 
-        assert!(result.is_err());
+        assert_preserves_external_error(&result.unwrap_err());
     }
 
     #[tokio::test]
@@ -331,7 +345,7 @@ mod tests {
 
         let result = table.add(stream).execute().await;
 
-        assert!(result.is_err());
+        assert_preserves_external_error(&result.unwrap_err());
     }
 
     #[tokio::test]

@@ -9,13 +9,6 @@
 
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, RecordBatch, RecordBatchIterator, RecordBatchReader};
-use arrow_schema::{ArrowError, SchemaRef};
-use async_trait::async_trait;
-use futures::stream::once;
-use futures::StreamExt;
-use lance_datafusion::utils::StreamingWriteSource;
-
 use crate::arrow::{
     SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream,
 };
@@ -25,6 +18,12 @@ use crate::embeddings::{
 };
 use crate::table::{ColumnDefinition, ColumnKind, TableDefinition};
 use crate::{Error, Result};
+use arrow_array::{ArrayRef, RecordBatch, RecordBatchIterator, RecordBatchReader};
+use arrow_schema::{ArrowError, SchemaRef};
+use async_trait::async_trait;
+use futures::stream::once;
+use futures::StreamExt;
+use lance_datafusion::utils::StreamingWriteSource;
 
 pub trait Scannable: Send {
     /// Returns the schema of the data.
@@ -349,6 +348,135 @@ pub fn scannable_with_embeddings(
     Ok(inner)
 }
 
+/// A wrapper that buffers the first RecordBatch from a Scannable so we can
+/// inspect it (e.g. to estimate data size) without losing it.
+pub(crate) struct PeekedScannable {
+    inner: Box<dyn Scannable>,
+    peeked: Option<RecordBatch>,
+    /// The first item from the stream, if it was an error. Stored so we can
+    /// re-emit it from `scan_as_stream` instead of silently dropping it.
+    first_error: Option<crate::Error>,
+    stream: Option<SendableRecordBatchStream>,
+}
+
+impl PeekedScannable {
+    pub fn new(inner: Box<dyn Scannable>) -> Self {
+        Self {
+            inner,
+            peeked: None,
+            first_error: None,
+            stream: None,
+        }
+    }
+
+    /// Reads and buffers the first batch from the inner scannable.
+    /// Returns a clone of it. Subsequent calls return the same batch.
+    ///
+    /// Returns `None` if the stream is empty or the first item is an error.
+    /// Errors are preserved and re-emitted by `scan_as_stream`.
+    pub async fn peek(&mut self) -> Option<RecordBatch> {
+        if self.peeked.is_some() {
+            return self.peeked.clone();
+        }
+        // Already peeked and got an error or empty stream.
+        if self.stream.is_some() || self.first_error.is_some() {
+            return None;
+        }
+        let mut stream = self.inner.scan_as_stream();
+        match stream.next().await {
+            Some(Ok(batch)) => {
+                self.peeked = Some(batch.clone());
+                self.stream = Some(stream);
+                Some(batch)
+            }
+            Some(Err(e)) => {
+                self.first_error = Some(e);
+                self.stream = Some(stream);
+                None
+            }
+            None => {
+                self.stream = Some(stream);
+                None
+            }
+        }
+    }
+}
+
+impl Scannable for PeekedScannable {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+
+    fn num_rows(&self) -> Option<usize> {
+        self.inner.num_rows()
+    }
+
+    fn rescannable(&self) -> bool {
+        self.inner.rescannable()
+    }
+
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        let schema = self.inner.schema();
+
+        // If peek() hit an error, prepend it so downstream sees the error.
+        let error_item = self.first_error.take().map(Err);
+
+        match (self.peeked.take(), self.stream.take()) {
+            (Some(batch), Some(rest)) => {
+                let prepend = futures::stream::once(std::future::ready(Ok(batch)));
+                Box::pin(SimpleRecordBatchStream {
+                    schema,
+                    stream: prepend.chain(rest),
+                })
+            }
+            (Some(batch), None) => Box::pin(SimpleRecordBatchStream {
+                schema,
+                stream: futures::stream::once(std::future::ready(Ok(batch))),
+            }),
+            (None, Some(rest)) => {
+                if let Some(err) = error_item {
+                    let prepend = futures::stream::once(std::future::ready(err));
+                    Box::pin(SimpleRecordBatchStream {
+                        schema,
+                        stream: prepend.chain(rest),
+                    })
+                } else {
+                    rest
+                }
+            }
+            (None, None) => {
+                // peek() was never called — just delegate
+                self.inner.scan_as_stream()
+            }
+        }
+    }
+}
+
+/// Compute the number of write partitions based on data size estimates.
+///
+/// `sample_bytes` and `sample_rows` come from a representative batch and are
+/// used to estimate per-row size. `total_rows_hint` is the total row count
+/// when known; otherwise `sample_rows` is used as the estimate.
+///
+/// Targets roughly 1 million rows or 2 GB per partition, capped at
+/// `max_partitions` (typically the number of available CPU cores).
+pub(crate) fn estimate_write_partitions(
+    sample_bytes: usize,
+    sample_rows: usize,
+    total_rows_hint: Option<usize>,
+    max_partitions: usize,
+) -> usize {
+    if sample_rows == 0 {
+        return 1;
+    }
+    let bytes_per_row = sample_bytes / sample_rows;
+    let total_rows = total_rows_hint.unwrap_or(sample_rows);
+    let total_bytes = total_rows * bytes_per_row;
+    let by_rows = total_rows.div_ceil(1_000_000);
+    let by_bytes = total_bytes.div_ceil(2 * 1024 * 1024 * 1024);
+    by_rows.max(by_bytes).max(1).min(max_partitions)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +571,249 @@ mod tests {
         let result2 = stream2.next().await;
         assert!(result2.is_some());
         assert!(result2.unwrap().is_err());
+    }
+
+    mod peeked_scannable_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn test_peek_returns_first_batch() {
+            let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+            let mut peeked = PeekedScannable::new(Box::new(batch.clone()));
+
+            let first = peeked.peek().await.unwrap();
+            assert_eq!(first, batch);
+        }
+
+        #[tokio::test]
+        async fn test_peek_is_idempotent() {
+            let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+            let mut peeked = PeekedScannable::new(Box::new(batch.clone()));
+
+            let first = peeked.peek().await.unwrap();
+            let second = peeked.peek().await.unwrap();
+            assert_eq!(first, second);
+        }
+
+        #[tokio::test]
+        async fn test_scan_after_peek_returns_all_data() {
+            let batches = vec![
+                record_batch!(("id", Int64, [1, 2])).unwrap(),
+                record_batch!(("id", Int64, [3, 4, 5])).unwrap(),
+            ];
+            let mut peeked = PeekedScannable::new(Box::new(batches.clone()));
+
+            let first = peeked.peek().await.unwrap();
+            assert_eq!(first, batches[0]);
+
+            let result: Vec<RecordBatch> = peeked.scan_as_stream().try_collect().await.unwrap();
+            assert_eq!(result.len(), 2);
+            assert_eq!(result[0], batches[0]);
+            assert_eq!(result[1], batches[1]);
+        }
+
+        #[tokio::test]
+        async fn test_scan_without_peek_passes_through() {
+            let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+            let mut peeked = PeekedScannable::new(Box::new(batch.clone()));
+
+            let result: Vec<RecordBatch> = peeked.scan_as_stream().try_collect().await.unwrap();
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0], batch);
+        }
+
+        #[tokio::test]
+        async fn test_delegates_num_rows() {
+            let batches = vec![
+                record_batch!(("id", Int64, [1, 2])).unwrap(),
+                record_batch!(("id", Int64, [3])).unwrap(),
+            ];
+            let peeked = PeekedScannable::new(Box::new(batches));
+            assert_eq!(peeked.num_rows(), Some(3));
+        }
+
+        #[tokio::test]
+        async fn test_delegates_rescannable() {
+            let batch = record_batch!(("id", Int64, [1])).unwrap();
+            let peeked_rescannable = PeekedScannable::new(Box::new(batch));
+            assert!(peeked_rescannable.rescannable());
+
+            let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+                "id",
+                arrow_schema::DataType::Int64,
+                false,
+            )]));
+            let inner_stream =
+                futures::stream::iter(vec![Ok(record_batch!(("id", Int64, [1])).unwrap())]);
+            let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+                schema,
+                stream: inner_stream,
+            });
+            let peeked_non_rescannable = PeekedScannable::new(Box::new(stream));
+            assert!(!peeked_non_rescannable.rescannable());
+        }
+
+        #[tokio::test]
+        async fn test_non_rescannable_stream_data_preserved() {
+            let batches = vec![
+                record_batch!(("id", Int64, [1, 2])).unwrap(),
+                record_batch!(("id", Int64, [3])).unwrap(),
+            ];
+            let schema = batches[0].schema();
+            let inner = futures::stream::iter(batches.clone().into_iter().map(Ok));
+            let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+                schema,
+                stream: inner,
+            });
+
+            let mut peeked = PeekedScannable::new(Box::new(stream));
+            assert!(!peeked.rescannable());
+
+            let first = peeked.peek().await.unwrap();
+            assert_eq!(first, batches[0]);
+
+            // All data is still available via scan_as_stream
+            let result: Vec<RecordBatch> = peeked.scan_as_stream().try_collect().await.unwrap();
+            assert_eq!(result.len(), 2);
+            assert_eq!(result[0], batches[0]);
+            assert_eq!(result[1], batches[1]);
+        }
+
+        #[tokio::test]
+        async fn test_error_in_first_batch_propagates() {
+            let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+                "id",
+                arrow_schema::DataType::Int64,
+                false,
+            )]));
+            let inner = futures::stream::iter(vec![Err(Error::InvalidInput {
+                message: "first batch error".to_string(),
+            })]);
+            let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+                schema,
+                stream: inner,
+            });
+
+            let mut peeked = PeekedScannable::new(Box::new(stream));
+
+            // peek returns None for errors
+            assert!(peeked.peek().await.is_none());
+
+            // But the error should come through when scanning
+            let mut stream = peeked.scan_as_stream();
+            let first = stream.next().await.unwrap();
+            assert!(first.is_err());
+            let err = first.unwrap_err();
+            assert!(
+                err.to_string().contains("first batch error"),
+                "Expected error to be preserved, got: {err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_error_in_later_batch_propagates() {
+            let good_batch = record_batch!(("id", Int64, [1, 2])).unwrap();
+            let schema = good_batch.schema();
+            let inner = futures::stream::iter(vec![
+                Ok(good_batch.clone()),
+                Err(Error::InvalidInput {
+                    message: "second batch error".to_string(),
+                }),
+            ]);
+            let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+                schema,
+                stream: inner,
+            });
+
+            let mut peeked = PeekedScannable::new(Box::new(stream));
+
+            // peek succeeds with the first batch
+            let first = peeked.peek().await.unwrap();
+            assert_eq!(first, good_batch);
+
+            // scan_as_stream should yield the first batch, then the error
+            let mut stream = peeked.scan_as_stream();
+            let batch1 = stream.next().await.unwrap().unwrap();
+            assert_eq!(batch1, good_batch);
+
+            let batch2 = stream.next().await.unwrap();
+            assert!(batch2.is_err());
+            let err = batch2.unwrap_err();
+            assert!(
+                err.to_string().contains("second batch error"),
+                "Expected error to be preserved, got: {err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_empty_stream_returns_none() {
+            let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+                "id",
+                arrow_schema::DataType::Int64,
+                false,
+            )]));
+            let inner = futures::stream::empty();
+            let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+                schema,
+                stream: inner,
+            });
+
+            let mut peeked = PeekedScannable::new(Box::new(stream));
+            assert!(peeked.peek().await.is_none());
+
+            // Scanning an empty (post-peek) stream should yield nothing
+            let result: Vec<RecordBatch> = peeked.scan_as_stream().try_collect().await.unwrap();
+            assert!(result.is_empty());
+        }
+    }
+
+    mod estimate_write_partitions_tests {
+        use super::*;
+
+        #[test]
+        fn test_small_data_single_partition() {
+            // 100 rows * 24 bytes/row = 2400 bytes — well under both thresholds
+            assert_eq!(estimate_write_partitions(2400, 100, Some(100), 8), 1);
+        }
+
+        #[test]
+        fn test_scales_by_row_count() {
+            // 2.5M rows at 24 bytes/row — row threshold dominates
+            // ceil(2_500_000 / 1_000_000) = 3
+            assert_eq!(estimate_write_partitions(72, 3, Some(2_500_000), 8), 3);
+        }
+
+        #[test]
+        fn test_scales_by_byte_size() {
+            // 100k rows at 40KB/row = ~4GB total → ceil(4GB / 2GB) = 2
+            let sample_bytes = 40_000 * 10;
+            assert_eq!(
+                estimate_write_partitions(sample_bytes, 10, Some(100_000), 8),
+                2
+            );
+        }
+
+        #[test]
+        fn test_capped_at_max_partitions() {
+            // 10M rows would want 10 partitions, but capped at 4
+            assert_eq!(estimate_write_partitions(72, 3, Some(10_000_000), 4), 4);
+        }
+
+        #[test]
+        fn test_zero_sample_rows_returns_one() {
+            assert_eq!(estimate_write_partitions(0, 0, Some(1_000_000), 8), 1);
+        }
+
+        #[test]
+        fn test_no_row_hint_uses_sample_size() {
+            // Without a hint, uses sample_rows (3), which is small
+            assert_eq!(estimate_write_partitions(72, 3, None, 8), 1);
+        }
+
+        #[test]
+        fn test_always_at_least_one() {
+            assert_eq!(estimate_write_partitions(24, 1, Some(1), 8), 1);
+        }
     }
 
     mod embedding_tests {
