@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use lance_io::object_store::{ObjectStoreParams, StorageOptionsAccessor};
 use lance_namespace::{
     models::{
         CreateEmptyTableRequest, CreateNamespaceRequest, CreateNamespaceResponse,
@@ -212,45 +213,75 @@ impl Database for LanceNamespaceDatabase {
             ..Default::default()
         };
 
-        let location = match self.namespace.declare_table(declare_request).await {
-            Ok(response) => response.location.ok_or_else(|| Error::Runtime {
-                message: "Table location is missing from declare_table response".to_string(),
-            })?,
-            Err(e) => {
-                // Check if the error is "not supported" and try create_empty_table as fallback
-                let err_str = e.to_string().to_lowercase();
-                if err_str.contains("not supported") || err_str.contains("not implemented") {
-                    warn!(
-                        "declare_table is not supported by the namespace client, \
+        let (location, initial_storage_options) =
+            match self.namespace.declare_table(declare_request).await {
+                Ok(response) => {
+                    let loc = response.location.ok_or_else(|| Error::Runtime {
+                        message: "Table location is missing from declare_table response"
+                            .to_string(),
+                    })?;
+                    // Use storage options from response, fall back to self.storage_options
+                    let opts = response
+                        .storage_options
+                        .or_else(|| Some(self.storage_options.clone()))
+                        .filter(|o| !o.is_empty());
+                    (loc, opts)
+                }
+                Err(e) => {
+                    // Check if the error is "not supported" and try create_empty_table as fallback
+                    let err_str = e.to_string().to_lowercase();
+                    if err_str.contains("not supported") || err_str.contains("not implemented") {
+                        warn!(
+                            "declare_table is not supported by the namespace client, \
                         falling back to deprecated create_empty_table. \
                         create_empty_table is deprecated and will be removed in Lance 3.0.0. \
                         Please upgrade your namespace client to support declare_table."
-                    );
-                    #[allow(deprecated)]
-                    let create_empty_request = CreateEmptyTableRequest {
-                        id: Some(table_id.clone()),
-                        ..Default::default()
-                    };
+                        );
+                        #[allow(deprecated)]
+                        let create_empty_request = CreateEmptyTableRequest {
+                            id: Some(table_id.clone()),
+                            ..Default::default()
+                        };
 
-                    #[allow(deprecated)]
-                    let create_response = self
-                        .namespace
-                        .create_empty_table(create_empty_request)
-                        .await
-                        .map_err(|e| Error::Runtime {
-                            message: format!("Failed to create empty table: {}", e),
+                        #[allow(deprecated)]
+                        let create_response = self
+                            .namespace
+                            .create_empty_table(create_empty_request)
+                            .await
+                            .map_err(|e| Error::Runtime {
+                                message: format!("Failed to create empty table: {}", e),
+                            })?;
+
+                        let loc = create_response.location.ok_or_else(|| Error::Runtime {
+                            message: "Table location is missing from create_empty_table response"
+                                .to_string(),
                         })?;
-
-                    create_response.location.ok_or_else(|| Error::Runtime {
-                        message: "Table location is missing from create_empty_table response"
-                            .to_string(),
-                    })?
-                } else {
-                    return Err(Error::Runtime {
-                        message: format!("Failed to declare table: {}", e),
-                    });
+                        // For deprecated path, use self.storage_options
+                        let opts = if self.storage_options.is_empty() {
+                            None
+                        } else {
+                            Some(self.storage_options.clone())
+                        };
+                        (loc, opts)
+                    } else {
+                        return Err(Error::Runtime {
+                            message: format!("Failed to declare table: {}", e),
+                        });
+                    }
                 }
-            }
+            };
+
+        let write_params = if let Some(storage_opts) = initial_storage_options {
+            let mut params = request.write_options.lance_write_params.unwrap_or_default();
+            let store_params = params
+                .store_params
+                .get_or_insert_with(ObjectStoreParams::default);
+            store_params.storage_options_accessor = Some(Arc::new(
+                StorageOptionsAccessor::with_static_options(storage_opts),
+            ));
+            Some(params)
+        } else {
+            request.write_options.lance_write_params
         };
 
         let native_table = NativeTable::create_from_namespace(
@@ -260,7 +291,7 @@ impl Database for LanceNamespaceDatabase {
             request.namespace.clone(),
             request.data,
             None, // write_store_wrapper not used for namespace connections
-            request.write_options.lance_write_params,
+            write_params,
             self.read_consistency_interval,
             self.server_side_query_enabled,
             self.session.clone(),
