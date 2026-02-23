@@ -574,6 +574,8 @@ mod tests {
     }
 
     mod peeked_scannable_tests {
+        use crate::test_utils::TestCustomError;
+
         use super::*;
 
         #[tokio::test]
@@ -633,27 +635,6 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_delegates_rescannable() {
-            let batch = record_batch!(("id", Int64, [1])).unwrap();
-            let peeked_rescannable = PeekedScannable::new(Box::new(batch));
-            assert!(peeked_rescannable.rescannable());
-
-            let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
-                "id",
-                arrow_schema::DataType::Int64,
-                false,
-            )]));
-            let inner_stream =
-                futures::stream::iter(vec![Ok(record_batch!(("id", Int64, [1])).unwrap())]);
-            let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
-                schema,
-                stream: inner_stream,
-            });
-            let peeked_non_rescannable = PeekedScannable::new(Box::new(stream));
-            assert!(!peeked_non_rescannable.rescannable());
-        }
-
-        #[tokio::test]
         async fn test_non_rescannable_stream_data_preserved() {
             let batches = vec![
                 record_batch!(("id", Int64, [1, 2])).unwrap(),
@@ -668,6 +649,7 @@ mod tests {
 
             let mut peeked = PeekedScannable::new(Box::new(stream));
             assert!(!peeked.rescannable());
+            assert_eq!(peeked.num_rows(), None);
 
             let first = peeked.peek().await.unwrap();
             assert_eq!(first, batches[0]);
@@ -686,8 +668,8 @@ mod tests {
                 arrow_schema::DataType::Int64,
                 false,
             )]));
-            let inner = futures::stream::iter(vec![Err(Error::InvalidInput {
-                message: "first batch error".to_string(),
+            let inner = futures::stream::iter(vec![Err(Error::External {
+                source: Box::new(TestCustomError),
             })]);
             let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
                 schema,
@@ -705,8 +687,8 @@ mod tests {
             assert!(first.is_err());
             let err = first.unwrap_err();
             assert!(
-                err.to_string().contains("first batch error"),
-                "Expected error to be preserved, got: {err}"
+                matches!(&err, Error::External { source } if source.downcast_ref::<TestCustomError>().is_some()),
+                "Expected TestCustomError to be preserved, got: {err}"
             );
         }
 
@@ -716,8 +698,8 @@ mod tests {
             let schema = good_batch.schema();
             let inner = futures::stream::iter(vec![
                 Ok(good_batch.clone()),
-                Err(Error::InvalidInput {
-                    message: "second batch error".to_string(),
+                Err(Error::External {
+                    source: Box::new(TestCustomError),
                 }),
             ]);
             let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
@@ -740,8 +722,8 @@ mod tests {
             assert!(batch2.is_err());
             let err = batch2.unwrap_err();
             assert!(
-                err.to_string().contains("second batch error"),
-                "Expected error to be preserved, got: {err}"
+                matches!(&err, Error::External { source } if source.downcast_ref::<TestCustomError>().is_some()),
+                "Expected TestCustomError to be preserved, got: {err}"
             );
         }
 

@@ -219,6 +219,7 @@ mod tests {
     use crate::table::add_data::NaNVectorBehavior;
     use crate::table::{ColumnDefinition, ColumnKind, Table, TableDefinition, WriteOptions};
     use crate::test_utils::embeddings::MockEmbed;
+    use crate::test_utils::TestCustomError;
     use crate::Error;
 
     use super::AddDataMode;
@@ -283,27 +284,16 @@ mod tests {
         test_add_with_data(stream).await;
     }
 
-    #[derive(Debug)]
-    struct MyError;
-
-    impl std::fmt::Display for MyError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "MyError occurred")
-        }
-    }
-
-    impl std::error::Error for MyError {}
-
     fn assert_preserves_external_error(err: &Error) {
         assert!(
-            matches!(err, Error::External { .. }),
+            matches!(err, Error::External { source } if source.downcast_ref::<TestCustomError>().is_some()),
             "Expected Error::External, got: {err:?}"
         );
-        // The original MyError message should be preserved through the
+        // The original TestCustomError message should be preserved through the
         // error chain, even if the error gets wrapped multiple times by
         // lance's insert pipeline.
         assert!(
-            err.to_string().contains("MyError occurred"),
+            err.to_string().contains("TestCustomError occurred"),
             "Expected original error message to be preserved, got: {err}"
         );
     }
@@ -315,7 +305,7 @@ mod tests {
         let schema = first_batch.schema();
         let iterator = vec![
             Ok(first_batch),
-            Err(ArrowError::ExternalError(Box::new(MyError))),
+            Err(ArrowError::ExternalError(Box::new(TestCustomError))),
         ];
         let reader: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
             RecordBatchIterator::new(iterator.into_iter(), schema.clone()),
@@ -334,7 +324,7 @@ mod tests {
         let iterator = vec![
             Ok(first_batch),
             Err(Error::External {
-                source: Box::new(MyError),
+                source: Box::new(TestCustomError),
             }),
         ];
         let stream = futures::stream::iter(iterator);
