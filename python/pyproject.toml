@@ -61,7 +61,7 @@ tests = [
     "pyarrow-stubs",
     "pylance>=1.0.0b14",
     "requests",
-    "datafusion",
+    "datafusion<52",
 ]
 dev = [
     "ruff",
