@@ -154,6 +154,7 @@ jobs:
               set -e &&
               sudo apt-get update &&
               sudo apt-get install -y protobuf-compiler &&
+              rustup target add aarch64-unknown-linux-musl &&
               export EXTRA_ARGS="-x"
     name: build - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
