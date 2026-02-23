@@ -133,6 +133,7 @@ jobs:
               set -e &&
               sudo apt-get update &&
               sudo apt-get install -y protobuf-compiler pkg-config &&
+              rustup target add x86_64-unknown-linux-musl &&
               export EXTRA_ARGS="-x"
           - target: aarch64-unknown-linux-gnu
             host: ubuntu-2404-8x-x64
@@ -186,10 +187,6 @@ jobs:
             .cargo-cache
             target/
           key: nodejs-${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
-      - name: Setup toolchain
-        run: ${{ matrix.settings.setup }}
-        if: ${{ matrix.settings.setup }}
-        shell: bash
       - name: Install dependencies
         run: npm ci
       - name: Install Zig
