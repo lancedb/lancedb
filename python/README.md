@@ -1,4 +1,4 @@
-# LanceDB
+# LanceDB Python SDK
 
 A Python library for [LanceDB](https://github.com/lancedb/lancedb).
 
