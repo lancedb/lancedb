@@ -946,12 +946,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let version = self.current_version().await;
 
         if let Some(filter) = filter {
-            let Filter::Sql(filter) = filter else {
-                return Err(Error::NotSupported {
-                    message: "querying a remote table with a datafusion filter".to_string(),
-                });
+            let filter_sql = match filter {
+                Filter::Sql(sql) => sql.clone(),
+                Filter::Datafusion(expr) => expr_to_sql_string(&expr)?,
             };
-            request = request.json(&serde_json::json!({ "predicate": filter, "version": version }));
+            request = request.json(&serde_json::json!({ "predicate": filter_sql, "version": version }));
         } else {
             let body = serde_json::json!({ "version": version });
             request = request.json(&body);
