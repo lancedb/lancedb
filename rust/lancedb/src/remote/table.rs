@@ -950,7 +950,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 Filter::Sql(sql) => sql.clone(),
                 Filter::Datafusion(expr) => expr_to_sql_string(&expr)?,
             };
-            request = request.json(&serde_json::json!({ "predicate": filter_sql, "version": version }));
+            request =
+                request.json(&serde_json::json!({ "predicate": filter_sql, "version": version }));
         } else {
             let body = serde_json::json!({ "version": version });
             request = request.json(&body);
