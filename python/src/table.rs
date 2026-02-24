@@ -22,7 +22,7 @@ use pyo3::{
     exceptions::{PyKeyError, PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
-    Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
+    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -294,12 +294,12 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (data, mode, show_progress=false))]
+    #[pyo3(signature = (data, mode, progress=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: PyScannable,
         mode: String,
-        show_progress: bool,
+        progress: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_.inner_ref()?.add(data);
         if mode == "append" {
@@ -309,8 +309,22 @@ impl Table {
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
         }
-        if show_progress {
-            op = op.progress_bar();
+        if let Some(bar) = progress {
+            let last_rows = std::sync::atomic::AtomicUsize::new(0);
+            op = op.progress(move |p| {
+                let current = p.output_rows();
+                let prev = last_rows.swap(current, std::sync::atomic::Ordering::Relaxed);
+                Python::attach(|py| {
+                    // Set total if known and not yet set on the bar.
+                    if let Some(total) = p.total_rows() {
+                        let _ = bar.setattr(py, "total", total);
+                    }
+                    let delta = current.saturating_sub(prev);
+                    if delta > 0 {
+                        let _ = bar.call_method1(py, "update", (delta,));
+                    }
+                });
+            });
         }
 
         future_into_py(self_.py(), async move {

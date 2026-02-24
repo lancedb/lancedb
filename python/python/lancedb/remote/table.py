@@ -315,7 +315,7 @@ class RemoteTable(Table):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        show_progress: bool = False,
+        progress=None,
     ) -> AddResult:
         """Add more data to the [Table](Table). It has the same API signature as
         the OSS version.
@@ -338,8 +338,8 @@ class RemoteTable(Table):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
-        show_progress: bool, default False
-            If True, display a terminal progress bar during the add operation.
+        progress: optional, default None
+            A tqdm-compatible progress bar to update during the add operation.
 
         Returns
         -------
@@ -352,7 +352,7 @@ class RemoteTable(Table):
                 mode=mode,
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
-                show_progress=show_progress,
+                progress=progress,
             )
         )
 

@@ -138,7 +138,7 @@ class Table:
         self,
         data: pa.RecordBatchReader,
         mode: Literal["append", "overwrite"],
-        show_progress: bool = False,
+        progress: Optional[Any] = None,
     ) -> AddResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]

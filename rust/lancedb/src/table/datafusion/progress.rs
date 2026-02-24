@@ -111,48 +111,6 @@ impl Drop for PlanProgressMonitor {
     }
 }
 
-/// Create a progress callback that displays a terminal progress bar tracking
-/// rows written.
-///
-/// The bar shows rows processed, throughput, and ETA when the total row count
-/// is known. It is finished automatically when dropped.
-///
-/// Requires the `progress` feature.
-#[cfg(feature = "progress")]
-pub fn progress_bar_callback() -> impl Fn(PlanProgress) + Send + Sync + 'static {
-    use indicatif::{HumanBytes, ProgressBar, ProgressFinish, ProgressStyle};
-    use std::sync::OnceLock;
-
-    let bar: Arc<OnceLock<ProgressBar>> = Arc::new(OnceLock::new());
-
-    move |p: PlanProgress| {
-        let bar = bar.get_or_init(|| {
-            let pb = match p.total_rows {
-                Some(total) => ProgressBar::new(total as u64),
-                None => ProgressBar::new_spinner(),
-            };
-            pb.set_style(
-                ProgressStyle::with_template(
-                    "{msg} [{bar:40}] {pos}/{len} rows ({per_sec}, eta {eta})",
-                )
-                .unwrap()
-                .progress_chars("=> "),
-            );
-            pb.set_message("Writing");
-            pb.with_finish(ProgressFinish::AndLeave)
-        });
-
-        bar.set_position(p.output_rows as u64);
-        bar.set_message(format!("Writing ({})", HumanBytes(p.output_bytes as u64)));
-
-        if let Some(total) = p.total_rows {
-            if bar.length() != Some(total as u64) {
-                bar.set_length(total as u64);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,23 +147,6 @@ mod tests {
             .execute()
             .await
             .unwrap();
-
-        assert_eq!(table.count_rows(None).await.unwrap(), 6);
-    }
-
-    #[cfg(feature = "progress")]
-    #[tokio::test]
-    async fn test_progress_bar() {
-        let db = connect("memory://").execute().await.unwrap();
-        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
-        let table = db
-            .create_table("progress_bar_test", batch)
-            .execute()
-            .await
-            .unwrap();
-
-        let new_data = record_batch!(("id", Int32, [4, 5, 6])).unwrap();
-        table.add(new_data).progress_bar().execute().await.unwrap();
 
         assert_eq!(table.count_rows(None).await.unwrap(), 6);
     }

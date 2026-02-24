@@ -104,30 +104,22 @@ impl AddDataBuilder {
         self
     }
 
-    /// Display a terminal progress bar during the add operation.
+    /// Set a callback to receive progress updates during the add operation.
     ///
-    /// Shows rows processed, bytes written, throughput, and ETA when the total
-    /// row count is known.
-    ///
-    /// Requires the `progress` feature.
+    /// The callback is invoked at regular intervals with a [`PlanProgress`]
+    /// snapshot containing rows processed, bytes written, and elapsed time.
     ///
     /// ```
     /// # use lancedb::Table;
     /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// let batch = arrow_array::record_batch!(("id", Int32, [1, 2, 3])).unwrap();
-    /// table.add(batch).progress_bar().execute().await?;
+    /// table.add(batch)
+    ///     .progress(|p| println!("{}/{:?} rows", p.output_rows(), p.total_rows()))
+    ///     .execute()
+    ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(feature = "progress")]
-    pub fn progress_bar(self) -> Self {
-        self.progress(super::datafusion::progress::progress_bar_callback())
-    }
-
-    /// Set a callback to receive progress updates during the add operation.
-    ///
-    /// The callback is invoked at regular intervals with a [`PlanProgress`]
-    /// snapshot containing rows processed, bytes written, and elapsed time.
     pub fn progress(
         mut self,
         callback: impl Fn(super::datafusion::progress::PlanProgress) + Send + Sync + 'static,
