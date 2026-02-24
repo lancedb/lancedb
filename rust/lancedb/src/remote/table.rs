@@ -202,7 +202,6 @@ impl<S: HttpSend + 'static> Tags for RemoteTags<'_, S> {
 }
 
 pub struct RemoteTable<S: HttpSend = Sender> {
-    #[allow(dead_code)]
     client: RestfulLanceDbClient<S>,
     name: String,
     namespace: Vec<String>,

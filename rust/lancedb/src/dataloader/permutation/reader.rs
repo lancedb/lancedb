@@ -426,6 +426,7 @@ impl PermutationReader {
             row_ids_query = row_ids_query.limit(limit as usize);
         }
         let mut row_ids = row_ids_query.execute().await?;
+        let mut idx_offset = 0;
         while let Some(batch) = row_ids.try_next().await? {
             let row_ids = batch
                 .column(0)
@@ -433,8 +434,9 @@ impl PermutationReader {
                 .values()
                 .to_vec();
             for (i, row_id) in row_ids.iter().enumerate() {
-                offset_map.insert(i as u64, *row_id);
+                offset_map.insert(i as u64 + idx_offset, *row_id);
             }
+            idx_offset += batch.num_rows() as u64;
         }
         let offset_map = Arc::new(offset_map);
         *offset_map_ref = Some(offset_map.clone());
@@ -844,5 +846,107 @@ mod tests {
             .values()
             .to_vec();
         assert_eq!(idx_values, vec![row_ids[2] as i32]);
+    }
+
+    #[tokio::test]
+    async fn test_filtered_permutation_full_iteration() {
+        use crate::dataloader::permutation::builder::PermutationBuilder;
+
+        // Create a base table with 10000 rows where idx goes 0..10000.
+        // Filter to even values only, giving 5000 rows in the permutation.
+        let base_table = lance_datagen::gen_batch()
+            .col("idx", lance_datagen::array::step::<Int32Type>())
+            .into_mem_table("tbl", RowCount::from(10000), BatchCount::from(1))
+            .await;
+
+        let permutation_table = PermutationBuilder::new(base_table.clone())
+            .with_filter("idx % 2 = 0".to_string())
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(permutation_table.count_rows(None).await.unwrap(), 5000);
+
+        let reader = PermutationReader::try_from_tables(
+            base_table.base_table().clone(),
+            permutation_table.base_table().clone(),
+            0,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(reader.count_rows(), 5000);
+
+        // Iterate through all batches using a batch size that doesn't evenly divide
+        // the row count (5000 / 128 = 39 full batches + 1 batch of 8 rows).
+        let batch_size = 128;
+        let mut stream = reader
+            .read(
+                Select::All,
+                QueryExecutionOptions {
+                    max_batch_length: batch_size,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let mut total_rows = 0u64;
+        let mut all_idx_values = Vec::new();
+        while let Some(batch) = stream.try_next().await.unwrap() {
+            assert!(batch.num_rows() <= batch_size as usize);
+            total_rows += batch.num_rows() as u64;
+            let idx_col = batch.column(0).as_primitive::<Int32Type>().values();
+            all_idx_values.extend(idx_col.iter().copied());
+        }
+
+        assert_eq!(total_rows, 5000);
+        assert_eq!(all_idx_values.len(), 5000);
+
+        // Every value should be even (from the filter)
+        assert!(all_idx_values.iter().all(|v| v % 2 == 0));
+
+        // Should have 5000 unique values
+        let unique: std::collections::HashSet<i32> = all_idx_values.iter().copied().collect();
+        assert_eq!(unique.len(), 5000);
+
+        // Use take_offsets to fetch rows from the beginning, middle, and end
+        // of the permutation. The values should match what we saw during iteration.
+
+        // Beginning
+        let batch = reader.take_offsets(&[0, 1, 2], Select::All).await.unwrap();
+        assert_eq!(batch.num_rows(), 3);
+        let idx_values = batch
+            .column(0)
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+        assert_eq!(idx_values, &all_idx_values[0..3]);
+
+        // Middle
+        let batch = reader
+            .take_offsets(&[2499, 2500, 2501], Select::All)
+            .await
+            .unwrap();
+        assert_eq!(batch.num_rows(), 3);
+        let idx_values = batch
+            .column(0)
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+        assert_eq!(idx_values, &all_idx_values[2499..2502]);
+
+        // End (last 3 rows)
+        let batch = reader
+            .take_offsets(&[4997, 4998, 4999], Select::All)
+            .await
+            .unwrap();
+        assert_eq!(batch.num_rows(), 3);
+        let idx_values = batch
+            .column(0)
+            .as_primitive::<Int32Type>()
+            .values()
+            .to_vec();
+        assert_eq!(idx_values, &all_idx_values[4997..5000]);
     }
 }
