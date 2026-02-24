@@ -974,7 +974,7 @@ class Table(ABC):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
-        show_progress: Optional[bool] = None,
+        show_progress: bool = False,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -996,10 +996,8 @@ class Table(ABC):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
-        show_progress: Optional[bool], default None
-            If set, display a terminal progress bar during the add operation.
-            ``False`` shows a single overall bar; ``True`` shows a detailed
-            per-node metrics table.
+        show_progress: bool, default False
+            If True, display a terminal progress bar during the add operation.
 
         Returns
         -------
@@ -2454,7 +2452,7 @@ class LanceTable(Table):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
-        show_progress: Optional[bool] = None,
+        show_progress: bool = False,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -2473,10 +2471,8 @@ class LanceTable(Table):
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
-        show_progress: Optional[bool], default None
-            If set, display a terminal progress bar during the add operation.
-            ``False`` shows a single overall bar; ``True`` shows a detailed
-            per-node metrics table.
+        show_progress: bool, default False
+            If True, display a terminal progress bar during the add operation.
 
         Returns
         -------
@@ -3715,7 +3711,7 @@ class AsyncTable:
         mode: Optional[Literal["append", "overwrite"]] = "append",
         on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
-        show_progress: Optional[bool] = None,
+        show_progress: bool = False,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -3737,10 +3733,8 @@ class AsyncTable:
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
-        show_progress: Optional[bool], default None
-            If set, display a terminal progress bar during the add operation.
-            ``False`` shows a single overall bar; ``True`` shows a detailed
-            per-node metrics table.
+        show_progress: bool, default False
+            If True, display a terminal progress bar during the add operation.
 
         """
         schema = await self.schema()

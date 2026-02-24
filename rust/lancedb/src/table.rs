@@ -74,7 +74,7 @@ pub mod update;
 use crate::index::waiter::wait_for_index;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
-pub use datafusion::progress::{NodeProgress, PlanProgress};
+pub use datafusion::progress::PlanProgress;
 pub use delete::DeleteResult;
 use futures::future::join_all;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
