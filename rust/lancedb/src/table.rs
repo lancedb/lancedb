@@ -10,6 +10,7 @@ use datafusion_execution::TaskContext;
 use datafusion_expr::Expr;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::ExecutionPlan;
+use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use lance::dataset::builder::DatasetBuilder;
 pub use lance::dataset::ColumnAlteration;
@@ -2125,9 +2126,7 @@ impl BaseTable for NativeTable {
         // write parallelism.
         let mut peeked = PeekedScannable::new(add.data);
         let num_partitions = if let Some(first_batch) = peeked.peek().await {
-            let max_partitions = std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(1);
+            let max_partitions = lance_core::utils::tokio::get_num_compute_intensive_cpus();
             estimate_write_partitions(
                 first_batch.get_array_memory_size(),
                 first_batch.num_rows(),
@@ -2168,7 +2167,7 @@ impl BaseTable for NativeTable {
 
         // Execute all partitions in parallel.
         let task_ctx = Arc::new(TaskContext::default());
-        let mut handles = Vec::with_capacity(num_partitions);
+        let handles = FuturesUnordered::new();
         for partition in 0..num_partitions {
             let exec = insert_exec.clone();
             let ctx = task_ctx.clone();

@@ -435,11 +435,8 @@ impl Scannable for PeekedScannable {
             }),
             (None, Some(rest)) => {
                 if let Some(err) = error_item {
-                    let prepend = futures::stream::once(std::future::ready(err));
-                    Box::pin(SimpleRecordBatchStream {
-                        schema,
-                        stream: prepend.chain(rest),
-                    })
+                    let stream = futures::stream::once(std::future::ready(err));
+                    Box::pin(SimpleRecordBatchStream { schema, stream })
                 } else {
                     rest
                 }
@@ -456,7 +453,8 @@ impl Scannable for PeekedScannable {
 ///
 /// `sample_bytes` and `sample_rows` come from a representative batch and are
 /// used to estimate per-row size. `total_rows_hint` is the total row count
-/// when known; otherwise `sample_rows` is used as the estimate.
+/// when known; otherwise `sample_rows` row count is used as a lower bound
+/// estimate.
 ///
 /// Targets roughly 1 million rows or 2 GB per partition, capped at
 /// `max_partitions` (typically the number of available CPU cores).
