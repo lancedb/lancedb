@@ -18,17 +18,12 @@ pub struct DeleteResult {
 ///
 /// This logic was moved from NativeTable::delete to keep table.rs clean.
 pub(crate) async fn execute_delete(table: &NativeTable, predicate: &str) -> Result<DeleteResult> {
-    // We access the dataset from the table. Since this is in the same module hierarchy (super),
-    // and 'dataset' is pub(crate), we can access it.
-    let mut dataset = table.dataset.get_mut().await?;
-
-    // Perform the actual delete on the Lance dataset
+    table.dataset.ensure_mutable()?;
+    let mut dataset = (*table.dataset.get().await?).clone();
     dataset.delete(predicate).await?;
-
-    // Return the result with the new version
-    Ok(DeleteResult {
-        version: dataset.version().version,
-    })
+    let version = dataset.version().version;
+    table.dataset.update(dataset);
+    Ok(DeleteResult { version })
 }
 
 #[cfg(test)]

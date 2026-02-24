@@ -71,6 +71,17 @@ impl Table {
     pub async fn add(&self, buf: Buffer, mode: String) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
+        let batches = batches
+            .into_iter()
+            .map(|batch| {
+                batch.map_err(|e| {
+                    napi::Error::from_reason(format!(
+                        "Failed to read record batch from IPC file: {}",
+                        e
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut op = self.inner_ref()?.add(batches);
 
         op = if mode == "append" {

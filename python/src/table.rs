@@ -7,6 +7,7 @@ use crate::{
     error::PythonErrorExt,
     index::{extract_index_params, IndexConfig},
     query::{Query, TakeQuery},
+    table::scannable::PyScannable,
 };
 use arrow::{
     datatypes::{DataType, Schema},
@@ -24,6 +25,8 @@ use pyo3::{
     Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
+
+mod scannable;
 
 /// Statistics about a compaction operation.
 #[pyclass(get_all)]
@@ -293,12 +296,10 @@ impl Table {
 
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
-        data: Bound<'_, PyAny>,
+        data: PyScannable,
         mode: String,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let batches: Box<dyn arrow::array::RecordBatchReader + Send> =
-            Box::new(ArrowArrayStreamReader::from_pyarrow_bound(&data)?);
-        let mut op = self_.inner_ref()?.add(batches);
+        let mut op = self_.inner_ref()?.add(data);
         if mode == "append" {
             op = op.mode(AddDataMode::Append);
         } else if mode == "overwrite" {

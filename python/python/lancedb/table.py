@@ -25,6 +25,8 @@ from typing import (
 )
 from urllib.parse import urlparse
 
+from lancedb.scannable import _register_optional_converters, to_scannable
+
 from . import __version__
 from lancedb.arrow import peek_reader
 from lancedb.background_loop import LOOP
@@ -3727,18 +3729,31 @@ class AsyncTable:
             on_bad_vectors = "error"
         if fill_value is None:
             fill_value = 0.0
-        data = _sanitize_data(
-            data,
-            schema,
-            metadata=schema.metadata,
-            on_bad_vectors=on_bad_vectors,
-            fill_value=fill_value,
-            allow_subschema=True,
-        )
-        if isinstance(data, pa.Table):
-            data = data.to_reader()
 
-        return await self._inner.add(data, mode or "append")
+        # _santitize_data is an old code path, but we will use it until the
+        # new code path is ready.
+        if on_bad_vectors != "error" or (
+            schema.metadata is not None and b"embedding_functions" in schema.metadata
+        ):
+            data = _sanitize_data(
+                data,
+                schema,
+                metadata=schema.metadata,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                allow_subschema=True,
+            )
+        _register_optional_converters()
+        data = to_scannable(data)
+        try:
+            return await self._inner.add(data, mode or "append")
+        except RuntimeError as e:
+            if "Cast error" in str(e):
+                raise ValueError(e)
+            elif "Vector column contains NaN" in str(e):
+                raise ValueError(e)
+            else:
+                raise
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """

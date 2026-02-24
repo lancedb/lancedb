@@ -60,7 +60,7 @@ pub struct OpenTableOptions {
     pub storage_options: Option<HashMap<String, String>>,
 }
 
-#[napi::module_init]
+#[napi_derive::module_init]
 fn init() {
     let env = Env::new()
         .filter_or("LANCEDB_LOG", "warn")

@@ -27,9 +27,10 @@ use crate::{
 pub const SPLIT_ID_COLUMN: &str = "split_id";
 
 /// Strategy for assigning rows to splits
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum SplitStrategy {
     /// All rows will have split id 0
+    #[default]
     NoSplit,
     /// Rows will be randomly assigned to splits
     ///
@@ -71,15 +72,6 @@ pub enum SplitStrategy {
     ///
     /// If this strategy is used then the counts/percentages in the SplitSizes are ignored.
     Calculated { calculation: String },
-}
-
-// The default is not to split the data
-//
-// All data will be assigned to a single split.
-impl Default for SplitStrategy {
-    fn default() -> Self {
-        Self::NoSplit
-    }
 }
 
 impl SplitStrategy {

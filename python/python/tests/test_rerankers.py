@@ -531,6 +531,78 @@ def test_empty_result_reranker():
         )
 
 
+def test_empty_hybrid_result_reranker():
+    """Test that hybrid search with empty results after filtering doesn't crash.
+
+    Regression test for https://github.com/lancedb/lancedb/issues/2425
+    """
+    from lancedb.query import LanceHybridQueryBuilder
+
+    # Simulate empty vector and FTS results with the expected schema
+    vector_schema = pa.schema(
+        [
+            ("text", pa.string()),
+            ("vector", pa.list_(pa.float32(), 4)),
+            ("_rowid", pa.uint64()),
+            ("_distance", pa.float32()),
+        ]
+    )
+    fts_schema = pa.schema(
+        [
+            ("text", pa.string()),
+            ("vector", pa.list_(pa.float32(), 4)),
+            ("_rowid", pa.uint64()),
+            ("_score", pa.float32()),
+        ]
+    )
+    empty_vector = pa.table(
+        {
+            "text": pa.array([], type=pa.string()),
+            "vector": pa.array([], type=pa.list_(pa.float32(), 4)),
+            "_rowid": pa.array([], type=pa.uint64()),
+            "_distance": pa.array([], type=pa.float32()),
+        },
+        schema=vector_schema,
+    )
+    empty_fts = pa.table(
+        {
+            "text": pa.array([], type=pa.string()),
+            "vector": pa.array([], type=pa.list_(pa.float32(), 4)),
+            "_rowid": pa.array([], type=pa.uint64()),
+            "_score": pa.array([], type=pa.float32()),
+        },
+        schema=fts_schema,
+    )
+
+    for reranker in [LinearCombinationReranker(), RRFReranker()]:
+        result = LanceHybridQueryBuilder._combine_hybrid_results(
+            fts_results=empty_fts,
+            vector_results=empty_vector,
+            norm="score",
+            fts_query="nonexistent query",
+            reranker=reranker,
+            limit=10,
+            with_row_ids=False,
+        )
+        assert len(result) == 0
+        assert "_relevance_score" in result.column_names
+        assert "_rowid" not in result.column_names
+
+    # Also test with with_row_ids=True
+    result = LanceHybridQueryBuilder._combine_hybrid_results(
+        fts_results=empty_fts,
+        vector_results=empty_vector,
+        norm="score",
+        fts_query="nonexistent query",
+        reranker=LinearCombinationReranker(),
+        limit=10,
+        with_row_ids=True,
+    )
+    assert len(result) == 0
+    assert "_relevance_score" in result.column_names
+    assert "_rowid" in result.column_names
+
+
 @pytest.mark.parametrize("use_tantivy", [True, False])
 def test_cross_encoder_reranker_return_all(tmp_path, use_tantivy):
     pytest.importorskip("sentence_transformers")

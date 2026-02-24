@@ -6,6 +6,7 @@ import io
 import os
 from typing import TYPE_CHECKING, List, Union
 import urllib.parse as urlparse
+import warnings
 
 import numpy as np
 import pyarrow as pa
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 
 @register("siglip")
 class SigLipEmbeddings(EmbeddingFunction):
+    # Deprecated: prefer CLIP embeddings via `open-clip`.
     model_name: str = "google/siglip-base-patch16-224"
     device: str = "cpu"
     batch_size: int = 64
@@ -36,6 +38,12 @@ class SigLipEmbeddings(EmbeddingFunction):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        warnings.warn(
+            "SigLip embeddings are deprecated. Use CLIP embeddings via the "
+            "'open-clip' embedding function instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
         transformers = attempt_import_or_raise("transformers")
         self._torch = attempt_import_or_raise("torch")
 
