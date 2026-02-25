@@ -49,7 +49,6 @@ impl PlanProgress {
 
 fn collect_root_metrics(plan: &Arc<dyn ExecutionPlan>) -> (usize, usize, Option<usize>) {
     let metrics = plan.metrics();
-    let stats = plan.partition_statistics(None);
 
     let output_rows = metrics.as_ref().and_then(|m| m.output_rows()).unwrap_or(0);
 
@@ -61,7 +60,18 @@ fn collect_root_metrics(plan: &Arc<dyn ExecutionPlan>) -> (usize, usize, Option<
         })
         .unwrap_or(0);
 
-    let total_rows = stats.ok().and_then(|s| s.num_rows.get_value().copied());
+    // The root node is a sink (e.g. InsertExec) which doesn't report
+    // partition statistics. Look at its direct child for total_rows.
+    // We catch panics because some DataFusion nodes (e.g. ProjectionExec)
+    // can panic when column_statistics is empty.
+    let total_rows = plan.children().first().and_then(|child| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            child.partition_statistics(None).ok()
+        }))
+        .ok()
+        .flatten()
+        .and_then(|s| s.num_rows.get_value().copied())
+    });
 
     (output_rows, output_bytes, total_rows)
 }
@@ -71,9 +81,13 @@ pub type ProgressCallback = Arc<dyn Fn(PlanProgress) + Send + Sync>;
 
 /// Monitors a DataFusion execution plan by polling its metrics at regular
 /// intervals. The monitor runs a background tokio task that is aborted when
-/// the monitor is dropped.
+/// the monitor is dropped. A final snapshot is always emitted on drop so
+/// callers see the completed state even for fast operations.
 pub struct PlanProgressMonitor {
     handle: tokio::task::JoinHandle<()>,
+    plan: Arc<dyn ExecutionPlan>,
+    callback: ProgressCallback,
+    start: Instant,
 }
 
 impl PlanProgressMonitor {
@@ -87,27 +101,43 @@ impl PlanProgressMonitor {
         interval: Duration,
     ) -> Self {
         let start = Instant::now();
+        let poll_plan = plan.clone();
+        let poll_callback = callback.clone();
         let handle = tokio::spawn(async move {
             let mut tick = tokio::time::interval(interval);
             loop {
                 tick.tick().await;
-                let (output_rows, output_bytes, total_rows) = collect_root_metrics(&plan);
+                let (output_rows, output_bytes, total_rows) = collect_root_metrics(&poll_plan);
                 let progress = PlanProgress {
                     elapsed: start.elapsed(),
                     output_rows,
                     output_bytes,
                     total_rows,
                 };
-                callback(progress);
+                poll_callback(progress);
             }
         });
-        Self { handle }
+        Self {
+            handle,
+            plan,
+            callback,
+            start,
+        }
     }
 }
 
 impl Drop for PlanProgressMonitor {
     fn drop(&mut self) {
         self.handle.abort();
+        // Emit a final snapshot so callers always see the completed state.
+        let (output_rows, output_bytes, total_rows) = collect_root_metrics(&self.plan);
+        let progress = PlanProgress {
+            elapsed: self.start.elapsed(),
+            output_rows,
+            output_bytes,
+            total_rows,
+        };
+        (self.callback)(progress);
     }
 }
 
@@ -149,6 +179,83 @@ mod tests {
             .unwrap();
 
         assert_eq!(table.count_rows(None).await.unwrap(), 6);
+    }
+
+    #[tokio::test]
+    async fn test_progress_total_rows_known() {
+        let db = connect("memory://").execute().await.unwrap();
+
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("total_known", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let seen_total = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = seen_total.clone();
+
+        // RecordBatch implements Scannable with num_rows() -> Some(3)
+        let new_data = record_batch!(("id", Int32, [4, 5, 6])).unwrap();
+        table
+            .add(new_data)
+            .progress(move |p| {
+                seen.lock().unwrap().push(p.total_rows());
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let totals = seen_total.lock().unwrap();
+        // At least one callback should have fired with total_rows = Some(3)
+        assert!(
+            totals.contains(&Some(3)),
+            "expected total_rows=Some(3) in at least one callback, got: {:?}",
+            *totals
+        );
+    }
+
+    #[tokio::test]
+    async fn test_progress_total_rows_unknown() {
+        use arrow_array::RecordBatchIterator;
+
+        let db = connect("memory://").execute().await.unwrap();
+
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let table = db
+            .create_table("total_unknown", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let seen_total = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = seen_total.clone();
+
+        // RecordBatchReader does not provide num_rows, so total_rows should be None
+        let schema = arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+            "id",
+            arrow_schema::DataType::Int32,
+            false,
+        )]);
+        let new_data: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(
+                vec![Ok(record_batch!(("id", Int32, [4, 5, 6])).unwrap())],
+                Arc::new(schema),
+            ));
+        table
+            .add(new_data)
+            .progress(move |p| {
+                seen.lock().unwrap().push(p.total_rows());
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let totals = seen_total.lock().unwrap();
+        // All callbacks should report total_rows = None
+        for t in totals.iter() {
+            assert_eq!(*t, None, "expected total_rows=None, got: {:?}", t);
+        }
     }
 
     #[tokio::test]

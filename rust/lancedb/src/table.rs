@@ -2167,6 +2167,15 @@ impl BaseTable for NativeTable {
 
         let insert_exec = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
 
+        // Start progress monitor before execution so it can observe the full run.
+        let _monitor = output.progress_callback.map(|callback| {
+            PlanProgressMonitor::start(
+                insert_exec.clone(),
+                callback,
+                std::time::Duration::from_millis(30),
+            )
+        });
+
         // Execute all partitions in parallel.
         let task_ctx = Arc::new(TaskContext::default());
         let handles = FuturesUnordered::new();
@@ -2182,16 +2191,6 @@ impl BaseTable for NativeTable {
                 }
                 Ok::<_, Error>(())
             }));
-        }
-
-        let mut _monitor = None;
-        if let Some(callback) = output.progress_callback {
-            let task = PlanProgressMonitor::start(
-                insert_exec.clone(),
-                callback,
-                std::time::Duration::from_millis(30),
-            );
-            _monitor = Some(task);
         }
 
         for handle in handles {
