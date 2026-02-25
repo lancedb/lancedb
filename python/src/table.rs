@@ -316,26 +316,37 @@ impl Table {
                 op = op.progress(move |p| {
                     Python::attach(|py| {
                         let dict = PyDict::new(py);
-                        let _ = dict.set_item("output_rows", p.output_rows());
-                        let _ = dict.set_item("output_bytes", p.output_bytes());
-                        let _ = dict.set_item("total_rows", p.total_rows());
-                        let _ = dict.set_item("elapsed_seconds", p.elapsed().as_secs_f64());
-                        let _ = progress_obj.call1(py, (dict,));
+                        dict.set_item("output_rows", p.output_rows()).ok();
+                        dict.set_item("output_bytes", p.output_bytes()).ok();
+                        dict.set_item("total_rows", p.total_rows()).ok();
+                        dict.set_item("elapsed_seconds", p.elapsed().as_secs_f64())
+                            .ok();
+                        if let Err(e) = progress_obj.call1(py, (dict,)) {
+                            eprintln!("progress callback error: {e}");
+                        }
                     });
                 });
             } else {
                 // tqdm-like: has update() method.
                 let last_rows = std::sync::atomic::AtomicUsize::new(0);
+                let total_set = std::sync::atomic::AtomicBool::new(false);
                 op = op.progress(move |p| {
                     let current = p.output_rows();
                     let prev = last_rows.swap(current, std::sync::atomic::Ordering::Relaxed);
                     Python::attach(|py| {
                         if let Some(total) = p.total_rows() {
-                            let _ = progress_obj.setattr(py, "total", total);
+                            if !total_set.load(std::sync::atomic::Ordering::Relaxed) {
+                                if let Err(e) = progress_obj.setattr(py, "total", total) {
+                                    eprintln!("progress setattr error: {e}");
+                                }
+                                total_set.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
                         }
                         let delta = current.saturating_sub(prev);
                         if delta > 0 {
-                            let _ = progress_obj.call_method1(py, "update", (delta,));
+                            if let Err(e) = progress_obj.call_method1(py, "update", (delta,)) {
+                                eprintln!("progress update error: {e}");
+                            }
                         }
                     });
                 });

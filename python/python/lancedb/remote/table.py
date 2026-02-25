@@ -4,7 +4,7 @@
 from datetime import timedelta
 import logging
 from functools import cached_property
-from typing import Dict, Iterable, List, Optional, Union, Literal
+from typing import Any, Dict, Iterable, List, Optional, Union, Literal
 import warnings
 
 from lancedb._lancedb import (
@@ -315,7 +315,7 @@ class RemoteTable(Table):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        progress=None,
+        progress: Optional[Any] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table). It has the same API signature as
         the OSS version.

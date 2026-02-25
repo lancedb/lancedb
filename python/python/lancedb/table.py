@@ -974,7 +974,7 @@ class Table(ABC):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
-        progress=None,
+        progress: Optional[Any] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -2465,7 +2465,7 @@ class LanceTable(Table):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
-        progress=None,
+        progress: Optional[Any] = None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -3725,7 +3725,7 @@ class AsyncTable:
         mode: Optional[Literal["append", "overwrite"]] = "append",
         on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
-        progress=None,
+        progress: Optional[Any] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
