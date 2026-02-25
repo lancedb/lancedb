@@ -155,7 +155,9 @@ impl AddDataBuilder {
 
 pub struct PreprocessingOutput {
     pub plan: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
     pub overwrite: bool,
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
     pub rescannable: bool,
     pub write_options: WriteOptions,
     pub mode: AddDataMode,
