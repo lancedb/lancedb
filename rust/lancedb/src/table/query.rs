@@ -184,6 +184,15 @@ pub async fn create_plan(
         Select::Dynamic(ref select_with_transform) => {
             scanner.project_with_transform(select_with_transform.as_slice())?;
         }
+        Select::Expr(ref expr_pairs) => {
+            let sql_pairs: crate::Result<Vec<(String, String)>> = expr_pairs
+                .iter()
+                .map(|(name, expr)| {
+                    expr_to_sql_string(expr).map(|sql| (name.clone(), sql))
+                })
+                .collect();
+            scanner.project_with_transform(sql_pairs?.as_slice())?;
+        }
         Select::All => {}
     }
 
@@ -338,6 +347,21 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                                 .to_string(),
                     });
                 }
+                Select::Expr(pairs) => {
+                    let sql_pairs: crate::Result<Vec<(String, String)>> = pairs
+                        .iter()
+                        .map(|(name, expr)| {
+                            expr_to_sql_string(expr).map(|sql| (name.clone(), sql))
+                        })
+                        .collect();
+                    let sql_pairs = sql_pairs?;
+                    Some(Box::new(QueryTableRequestColumns {
+                        column_names: None,
+                        column_aliases: Some(
+                            sql_pairs.into_iter().collect(),
+                        ),
+                    }))
+                }
             };
 
             // Check for unsupported features
@@ -408,6 +432,21 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                         message: "Dynamic columns are not supported for server-side query"
                             .to_string(),
                     });
+                }
+                Select::Expr(pairs) => {
+                    let sql_pairs: crate::Result<Vec<(String, String)>> = pairs
+                        .iter()
+                        .map(|(name, expr)| {
+                            expr_to_sql_string(expr).map(|sql| (name.clone(), sql))
+                        })
+                        .collect();
+                    let sql_pairs = sql_pairs?;
+                    Some(Box::new(QueryTableRequestColumns {
+                        column_names: None,
+                        column_aliases: Some(
+                            sql_pairs.into_iter().collect(),
+                        ),
+                    }))
                 }
             };
 

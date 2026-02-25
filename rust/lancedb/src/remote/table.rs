@@ -477,6 +477,16 @@ impl<S: HttpSend> RemoteTable<S> {
                     }));
                 body["columns"] = alias_map.into();
             }
+            Select::Expr(pairs) => {
+                let alias_map: Result<serde_json::Map<String, serde_json::Value>> = pairs
+                    .iter()
+                    .map(|(name, expr)| {
+                        expr_to_sql_string(expr)
+                            .map(|sql| (name.clone(), serde_json::Value::String(sql)))
+                    })
+                    .collect();
+                body["columns"] = alias_map?.into();
+            }
         }
 
         if params.fast_search {
