@@ -12,7 +12,9 @@ use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr::EquivalenceProperties;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion_physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion_physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+};
 use futures::StreamExt;
 use http::header::CONTENT_TYPE;
 
@@ -25,10 +27,12 @@ use crate::Error;
 
 /// ExecutionPlan for inserting data into a remote LanceDB table.
 ///
-/// This plan:
-/// 1. Requires single partition (no parallel remote inserts yet)
-/// 2. Streams data as Arrow IPC to `/v1/table/{id}/insert/` endpoint
-/// 3. Stores AddResult for retrieval after execution
+/// Streams data as Arrow IPC to `/v1/table/{id}/insert/` endpoint.
+///
+/// When `upload_id` is set, inserts are staged as part of a multipart write
+/// session and the plan supports multiple partitions for parallel uploads.
+/// Without `upload_id`, the plan requires a single partition and commits
+/// immediately.
 #[derive(Debug)]
 pub struct RemoteInsertExec<S: HttpSend = Sender> {
     table_name: String,
@@ -38,10 +42,11 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     overwrite: bool,
     properties: PlanProperties,
     add_result: Arc<Mutex<Option<AddResult>>>,
+    upload_id: Option<String>,
 }
 
 impl<S: HttpSend + 'static> RemoteInsertExec<S> {
-    /// Create a new RemoteInsertExec.
+    /// Create a new single-partition RemoteInsertExec.
     pub fn new(
         table_name: String,
         identifier: String,
@@ -49,10 +54,49 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         input: Arc<dyn ExecutionPlan>,
         overwrite: bool,
     ) -> Self {
+        Self::new_inner(table_name, identifier, client, input, overwrite, None)
+    }
+
+    /// Create a multi-partition RemoteInsertExec for use with multipart writes.
+    ///
+    /// Each partition's insert is staged under the given `upload_id` without
+    /// committing. The caller is responsible for calling the complete (or abort)
+    /// endpoint after all partitions finish.
+    pub fn new_multipart(
+        table_name: String,
+        identifier: String,
+        client: RestfulLanceDbClient<S>,
+        input: Arc<dyn ExecutionPlan>,
+        overwrite: bool,
+        upload_id: String,
+    ) -> Self {
+        Self::new_inner(
+            table_name,
+            identifier,
+            client,
+            input,
+            overwrite,
+            Some(upload_id),
+        )
+    }
+
+    fn new_inner(
+        table_name: String,
+        identifier: String,
+        client: RestfulLanceDbClient<S>,
+        input: Arc<dyn ExecutionPlan>,
+        overwrite: bool,
+        upload_id: Option<String>,
+    ) -> Self {
+        let num_partitions = if upload_id.is_some() {
+            input.output_partitioning().partition_count()
+        } else {
+            1
+        };
         let schema = COUNT_SCHEMA.clone();
         let properties = PlanProperties::new(
             EquivalenceProperties::new(schema),
-            datafusion_physical_plan::Partitioning::UnknownPartitioning(1),
+            datafusion_physical_plan::Partitioning::UnknownPartitioning(num_partitions),
             datafusion_physical_plan::execution_plan::EmissionType::Final,
             datafusion_physical_plan::execution_plan::Boundedness::Bounded,
         );
@@ -65,6 +109,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             overwrite,
             properties,
             add_result: Arc::new(Mutex::new(None)),
+            upload_id,
         }
     }
 
@@ -174,8 +219,11 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
     }
 
     fn required_input_distribution(&self) -> Vec<datafusion_physical_plan::Distribution> {
-        // Until we have a separate commit endpoint, we need to do all inserts in a single partition
-        vec![datafusion_physical_plan::Distribution::SinglePartition]
+        if self.upload_id.is_some() {
+            vec![datafusion_physical_plan::Distribution::UnspecifiedDistribution]
+        } else {
+            vec![datafusion_physical_plan::Distribution::SinglePartition]
+        }
     }
 
     fn benefits_from_input_partitioning(&self) -> Vec<bool> {
@@ -191,12 +239,13 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
                 "RemoteInsertExec requires exactly one child".to_string(),
             ));
         }
-        Ok(Arc::new(Self::new(
+        Ok(Arc::new(Self::new_inner(
             self.table_name.clone(),
             self.identifier.clone(),
             self.client.clone(),
             children[0].clone(),
             self.overwrite,
+            self.upload_id.clone(),
         )))
     }
 
@@ -205,18 +254,20 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
-        if partition != 0 {
+        if self.upload_id.is_none() && partition != 0 {
             return Err(DataFusionError::Internal(
-                "RemoteInsertExec only supports single partition execution".to_string(),
+                "RemoteInsertExec only supports single partition execution without upload_id"
+                    .to_string(),
             ));
         }
 
-        let input_stream = self.input.execute(0, context)?;
+        let input_stream = self.input.execute(partition, context)?;
         let client = self.client.clone();
         let identifier = self.identifier.clone();
         let overwrite = self.overwrite;
         let add_result = self.add_result.clone();
         let table_name = self.table_name.clone();
+        let upload_id = self.upload_id.clone();
 
         let stream = futures::stream::once(async move {
             let mut request = client
@@ -225,6 +276,9 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
 
             if overwrite {
                 request = request.query(&[("mode", "overwrite")]);
+            }
+            if let Some(ref uid) = upload_id {
+                request = request.query(&[("upload_id", uid.as_str())]);
             }
 
             let (error_tx, mut error_rx) = tokio::sync::oneshot::channel();
@@ -262,28 +316,30 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
 
             let (request_id, response) = result?;
 
-            let body_text = response.text().await.map_err(|e| {
-                DataFusionError::External(Box::new(Error::Http {
-                    source: Box::new(e),
-                    request_id: request_id.clone(),
-                    status_code: None,
-                }))
-            })?;
-
-            let parsed_result = if body_text.trim().is_empty() {
-                // Backward compatible with old servers
-                AddResult { version: 0 }
-            } else {
-                serde_json::from_str(&body_text).map_err(|e| {
+            // For multipart writes, the staging response is not the final
+            // version. Only parse AddResult for non-multipart inserts.
+            if upload_id.is_none() {
+                let body_text = response.text().await.map_err(|e| {
                     DataFusionError::External(Box::new(Error::Http {
-                        source: format!("Failed to parse add response: {}", e).into(),
+                        source: Box::new(e),
                         request_id: request_id.clone(),
                         status_code: None,
                     }))
-                })?
-            };
+                })?;
 
-            {
+                let parsed_result = if body_text.trim().is_empty() {
+                    // Backward compatible with old servers
+                    AddResult { version: 0 }
+                } else {
+                    serde_json::from_str(&body_text).map_err(|e| {
+                        DataFusionError::External(Box::new(Error::Http {
+                            source: format!("Failed to parse add response: {}", e).into(),
+                            request_id: request_id.clone(),
+                            status_code: None,
+                        }))
+                    })?
+                };
+
                 let mut res_lock = add_result.lock().map_err(|_| {
                     DataFusionError::Execution("Failed to acquire lock for add_result".to_string())
                 })?;
