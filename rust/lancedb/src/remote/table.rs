@@ -872,13 +872,26 @@ mod test_utils {
             F: Fn(reqwest::Request) -> http::Response<T> + Send + Sync + 'static,
             T: Into<reqwest::Body>,
         {
+            Self::new_mock_with_version_and_config(name, handler, None, config)
+        }
+
+        pub fn new_mock_with_version_and_config<F, T>(
+            name: String,
+            handler: F,
+            version: Option<semver::Version>,
+            config: ClientConfig,
+        ) -> Self
+        where
+            F: Fn(reqwest::Request) -> http::Response<T> + Send + Sync + 'static,
+            T: Into<reqwest::Body>,
+        {
             let client = client_with_handler_and_config(handler, config);
             Self {
                 client,
                 name: name.clone(),
                 namespace: vec![],
                 identifier: name,
-                server_version: ServerVersion::default(),
+                server_version: version.map(ServerVersion).unwrap_or_default(),
                 version: RwLock::new(None),
                 location: RwLock::new(None),
                 schema_cache: BackgroundCache::new(SCHEMA_CACHE_TTL, SCHEMA_CACHE_REFRESH_WINDOW),
@@ -888,6 +901,31 @@ mod test_utils {
 }
 
 impl<S: HttpSend + 'static> RemoteTable<S> {
+    fn is_retryable_write_error(&self, err: &Error) -> bool {
+        match err {
+            Error::Http {
+                source,
+                status_code,
+                ..
+            } => {
+                // Don't retry read errors (is_body/is_decode): the
+                // server may have committed the write already, and
+                // without an idempotency key we'd duplicate data.
+                source
+                    .downcast_ref::<reqwest::Error>()
+                    .is_some_and(|e| e.is_connect())
+                    || status_code.is_some_and(|s| self.client.retry_config.statuses.contains(&s))
+            }
+            // send_with_retry exhausted its internal retries on a retryable
+            // status. The outer loop can still retry the whole operation with
+            // a fresh session.
+            Error::Retry { status_code, .. } => {
+                status_code.is_some_and(|s| self.client.retry_config.statuses.contains(&s))
+            }
+            _ => false,
+        }
+    }
+
     async fn add_single_partition(&self, output: PreprocessingOutput) -> Result<AddResult> {
         use crate::remote::retry::RetryCounter;
 
@@ -920,33 +958,11 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
 
                     return Ok(add_result);
                 }
-                Err(err) if output.rescannable => {
-                    let retryable = match &err {
-                        Error::Http {
-                            source,
-                            status_code,
-                            ..
-                        } => {
-                            // Don't retry read errors (is_body/is_decode): the
-                            // server may have committed the write already, and
-                            // without an idempotency key we'd duplicate data.
-                            source
-                                .downcast_ref::<reqwest::Error>()
-                                .is_some_and(|e| e.is_connect())
-                                || status_code
-                                    .is_some_and(|s| self.client.retry_config.statuses.contains(&s))
-                        }
-                        _ => false,
-                    };
-
-                    if retryable {
-                        retry_counter.increment_from_error(err)?;
-                        tokio::time::sleep(retry_counter.next_sleep_time()).await;
-                        insert = insert.reset_state()?;
-                        continue;
-                    }
-
-                    return Err(err);
+                Err(err) if output.rescannable && self.is_retryable_write_error(&err) => {
+                    retry_counter.increment_from_error(err)?;
+                    tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                    insert = insert.reset_state()?;
+                    continue;
                 }
                 Err(err) => return Err(err),
             }
@@ -958,21 +974,25 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         output: PreprocessingOutput,
         num_partitions: usize,
     ) -> Result<AddResult> {
-        let upload_id = self.create_multipart_write().await?;
+        use crate::remote::retry::RetryCounter;
 
-        let result = self
-            .execute_multipart_inserts(&upload_id, &output, num_partitions)
-            .await;
+        let mut retry_counter =
+            RetryCounter::new(&self.client.retry_config, uuid::Uuid::new_v4().to_string());
 
-        match result {
-            Ok(()) => {
-                let add_result = self.complete_multipart_write(&upload_id).await;
-                match add_result {
+        loop {
+            let upload_id = self.create_multipart_write().await?;
+
+            let result = self
+                .execute_multipart_inserts(&upload_id, &output, num_partitions)
+                .await;
+
+            match result {
+                Ok(()) => match self.complete_multipart_write(&upload_id).await {
                     Ok(result) => {
                         if output.overwrite {
                             self.invalidate_schema_cache();
                         }
-                        Ok(result)
+                        return Ok(result);
                     }
                     Err(e) => {
                         if let Err(abort_err) = self.abort_multipart_write(&upload_id).await {
@@ -982,19 +1002,29 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
                                 abort_err
                             );
                         }
-                        Err(e)
+                        if output.rescannable && self.is_retryable_write_error(&e) {
+                            retry_counter.increment_from_error(e)?;
+                            tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                            continue;
+                        }
+                        return Err(e);
                     }
+                },
+                Err(e) => {
+                    if let Err(abort_err) = self.abort_multipart_write(&upload_id).await {
+                        log::warn!(
+                            "Failed to abort multipart write {}: {}",
+                            upload_id,
+                            abort_err
+                        );
+                    }
+                    if output.rescannable && self.is_retryable_write_error(&e) {
+                        retry_counter.increment_from_error(e)?;
+                        tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                        continue;
+                    }
+                    return Err(e);
                 }
-            }
-            Err(e) => {
-                if let Err(abort_err) = self.abort_multipart_write(&upload_id).await {
-                    log::warn!(
-                        "Failed to abort multipart write {}: {}",
-                        upload_id,
-                        abort_err
-                    );
-                }
-                Err(e)
             }
         }
     }
@@ -2001,6 +2031,7 @@ mod tests {
 
     use super::*;
 
+    use crate::remote::client::{ClientConfig, RetryConfig};
     use crate::table::AddDataMode;
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
@@ -5116,11 +5147,11 @@ mod tests {
 
                 if path == "/v1/table/my_table/insert/" {
                     let count = insert_count_c.fetch_add(1, Ordering::SeqCst);
-                    // Fail on the first insert
+                    // Fail on the first insert with non-retryable status
                     if count == 0 {
                         return http::Response::builder()
-                            .status(500)
-                            .body("Internal Server Error".to_string())
+                            .status(400)
+                            .body("Bad Request".to_string())
                             .unwrap();
                     }
                     return http::Response::builder()
@@ -5189,8 +5220,8 @@ mod tests {
 
                 if path == "/v1/table/my_table/multipart_write/complete" {
                     return http::Response::builder()
-                        .status(500)
-                        .body("Internal Server Error".to_string())
+                        .status(400)
+                        .body("Bad Request".to_string())
                         .unwrap();
                 }
 
@@ -5210,6 +5241,162 @@ mod tests {
         let result = table.add(vec![batch]).execute().await;
 
         assert!(result.is_err());
+        assert_eq!(abort_count.load(Ordering::SeqCst), 1);
+    }
+
+    fn retry_config_no_backoff() -> ClientConfig {
+        ClientConfig {
+            retry_config: RetryConfig {
+                retries: Some(3),
+                connect_retries: Some(3),
+                read_retries: Some(3),
+                backoff_factor: Some(0.0),
+                backoff_jitter: Some(0.0),
+                statuses: Some(vec![502, 503]),
+            },
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_write_retry_on_partition_failure() {
+        // All inserts for the first upload session return 503 (retryable).
+        // After exhausting internal retries, the outer loop retries with a
+        // new session and succeeds.
+        let create_count = Arc::new(AtomicUsize::new(0));
+        let complete_count = Arc::new(AtomicUsize::new(0));
+        let abort_count = Arc::new(AtomicUsize::new(0));
+
+        let create_count_c = create_count.clone();
+        let complete_count_c = complete_count.clone();
+        let abort_count_c = abort_count.clone();
+
+        let table = Table::new_with_handler_version_and_config(
+            "my_table",
+            semver::Version::new(0, 4, 0),
+            move |request| {
+                let path = request.url().path();
+                let query = request.url().query().unwrap_or("");
+
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/create" {
+                    let n = create_count_c.fetch_add(1, Ordering::SeqCst);
+                    let body = format!(r#"{{"upload_id": "upload-{}"}}"#, n + 1);
+                    return http::Response::builder().status(200).body(body).unwrap();
+                }
+
+                if path == "/v1/table/my_table/insert/" {
+                    // Fail all inserts for the first session
+                    if query.contains("upload_id=upload-1") {
+                        return http::Response::builder()
+                            .status(503)
+                            .body("Service Unavailable".to_string())
+                            .unwrap();
+                    }
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 1}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/complete" {
+                    complete_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 7}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/abort" {
+                    abort_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(String::new())
+                        .unwrap();
+                }
+
+                panic!("Unexpected request path: {}", path);
+            },
+            retry_config_no_backoff(),
+        );
+
+        let batch = make_large_batch();
+        let result = table.add(vec![batch]).execute().await.unwrap();
+
+        assert_eq!(result.version, 7);
+        assert_eq!(create_count.load(Ordering::SeqCst), 2);
+        assert_eq!(abort_count.load(Ordering::SeqCst), 1);
+        assert_eq!(complete_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_write_retry_on_complete_failure() {
+        // Complete returns 503 for the first session, succeeds for the second.
+        let create_count = Arc::new(AtomicUsize::new(0));
+        let abort_count = Arc::new(AtomicUsize::new(0));
+
+        let create_count_c = create_count.clone();
+        let abort_count_c = abort_count.clone();
+
+        let table = Table::new_with_handler_version_and_config(
+            "my_table",
+            semver::Version::new(0, 4, 0),
+            move |request| {
+                let path = request.url().path();
+                let query = request.url().query().unwrap_or("");
+
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/create" {
+                    let n = create_count_c.fetch_add(1, Ordering::SeqCst);
+                    let body = format!(r#"{{"upload_id": "upload-{}"}}"#, n + 1);
+                    return http::Response::builder().status(200).body(body).unwrap();
+                }
+
+                if path == "/v1/table/my_table/insert/" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 1}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/complete" {
+                    // Fail complete for first session
+                    if query.contains("upload_id=upload-1") {
+                        return http::Response::builder()
+                            .status(503)
+                            .body("Service Unavailable".to_string())
+                            .unwrap();
+                    }
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 9}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/abort" {
+                    abort_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(String::new())
+                        .unwrap();
+                }
+
+                panic!("Unexpected request path: {}", path);
+            },
+            retry_config_no_backoff(),
+        );
+
+        let batch = make_large_batch();
+        let result = table.add(vec![batch]).execute().await.unwrap();
+
+        assert_eq!(result.version, 9);
+        assert_eq!(create_count.load(Ordering::SeqCst), 2);
         assert_eq!(abort_count.load(Ordering::SeqCst), 1);
     }
 }
