@@ -10,6 +10,7 @@ use super::ARROW_STREAM_CONTENT_TYPE;
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
+use crate::data::scannable::{estimate_write_partitions, PeekedScannable, Scannable};
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::index::waiter::wait_for_index;
@@ -23,7 +24,7 @@ use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
 use crate::table::query::create_multi_vector_plan;
-use crate::table::{AnyQuery, Filter, TableStatistics};
+use crate::table::{AnyQuery, Filter, PreprocessingOutput, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error};
@@ -43,7 +44,7 @@ use async_trait::async_trait;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
-use futures::TryStreamExt;
+use futures::{StreamExt, TryStreamExt};
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, StatusCode};
 use lance::arrow::json::{JsonDataType, JsonSchema};
@@ -614,6 +615,66 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(bodies)
     }
 
+    async fn create_multipart_write(&self) -> Result<String> {
+        let request = self.client.post(&format!(
+            "/v1/table/{}/multipart_write/create",
+            self.identifier
+        ));
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse multipart create response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+        parsed["upload_id"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| Error::Http {
+                source: "Missing upload_id in multipart create response".into(),
+                request_id: String::new(),
+                status_code: None,
+            })
+    }
+
+    async fn complete_multipart_write(&self, upload_id: &str) -> Result<AddResult> {
+        let request = self
+            .client
+            .post(&format!(
+                "/v1/table/{}/multipart_write/complete",
+                self.identifier
+            ))
+            .query(&[("upload_id", upload_id)]);
+        let (request_id, response) = self.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse multipart complete response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
+        let version = parsed["version"].as_u64().ok_or_else(|| Error::Http {
+            source: "Missing version in multipart complete response".into(),
+            request_id: String::new(),
+            status_code: None,
+        })?;
+        Ok(AddResult { version })
+    }
+
+    async fn abort_multipart_write(&self, upload_id: &str) -> Result<()> {
+        let request = self
+            .client
+            .post(&format!(
+                "/v1/table/{}/multipart_write/abort",
+                self.identifier
+            ))
+            .query(&[("upload_id", upload_id)]);
+        let (request_id, response) = self.send(request, true).await?;
+        self.check_table_response(&request_id, response).await?;
+        Ok(())
+    }
+
     async fn check_mutable(&self) -> Result<()> {
         let read_guard = self.version.read().await;
         match *read_guard {
@@ -836,6 +897,166 @@ mod test_utils {
     }
 }
 
+impl<S: HttpSend + 'static> RemoteTable<S> {
+    async fn add_single_partition(&self, output: PreprocessingOutput) -> Result<AddResult> {
+        use crate::remote::retry::RetryCounter;
+
+        let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            output.plan,
+            output.overwrite,
+        ));
+
+        let mut retry_counter =
+            RetryCounter::new(&self.client.retry_config, uuid::Uuid::new_v4().to_string());
+
+        loop {
+            let stream = execute_plan(insert.clone(), Default::default())?;
+            let result: Result<Vec<_>> = stream.try_collect().await.map_err(Error::from);
+
+            match result {
+                Ok(_) => {
+                    let add_result = insert
+                        .as_any()
+                        .downcast_ref::<RemoteInsertExec<S>>()
+                        .and_then(|i| i.add_result())
+                        .unwrap_or(AddResult { version: 0 });
+
+                    if output.overwrite {
+                        self.invalidate_schema_cache();
+                    }
+
+                    return Ok(add_result);
+                }
+                Err(err) if output.rescannable => {
+                    let retryable = match &err {
+                        Error::Http {
+                            source,
+                            status_code,
+                            ..
+                        } => {
+                            // Don't retry read errors (is_body/is_decode): the
+                            // server may have committed the write already, and
+                            // without an idempotency key we'd duplicate data.
+                            source
+                                .downcast_ref::<reqwest::Error>()
+                                .is_some_and(|e| e.is_connect())
+                                || status_code
+                                    .is_some_and(|s| self.client.retry_config.statuses.contains(&s))
+                        }
+                        _ => false,
+                    };
+
+                    if retryable {
+                        retry_counter.increment_from_error(err)?;
+                        tokio::time::sleep(retry_counter.next_sleep_time()).await;
+                        insert = insert.reset_state()?;
+                        continue;
+                    }
+
+                    return Err(err);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    async fn add_multipart(
+        &self,
+        output: PreprocessingOutput,
+        num_partitions: usize,
+    ) -> Result<AddResult> {
+        let upload_id = self.create_multipart_write().await?;
+
+        let result = self
+            .execute_multipart_inserts(&upload_id, &output, num_partitions)
+            .await;
+
+        match result {
+            Ok(()) => {
+                let add_result = self.complete_multipart_write(&upload_id).await;
+                match add_result {
+                    Ok(result) => {
+                        if output.overwrite {
+                            self.invalidate_schema_cache();
+                        }
+                        Ok(result)
+                    }
+                    Err(e) => {
+                        if let Err(abort_err) = self.abort_multipart_write(&upload_id).await {
+                            log::warn!(
+                                "Failed to abort multipart write {}: {}",
+                                upload_id,
+                                abort_err
+                            );
+                        }
+                        Err(e)
+                    }
+                }
+            }
+            Err(e) => {
+                if let Err(abort_err) = self.abort_multipart_write(&upload_id).await {
+                    log::warn!(
+                        "Failed to abort multipart write {}: {}",
+                        upload_id,
+                        abort_err
+                    );
+                }
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_multipart_inserts(
+        &self,
+        upload_id: &str,
+        output: &PreprocessingOutput,
+        num_partitions: usize,
+    ) -> Result<()> {
+        let plan = Arc::new(
+            datafusion_physical_plan::repartition::RepartitionExec::try_new(
+                output.plan.clone(),
+                datafusion_physical_plan::Partitioning::RoundRobinBatch(num_partitions),
+            )?,
+        ) as Arc<dyn ExecutionPlan>;
+
+        let insert = Arc::new(RemoteInsertExec::new_multipart(
+            self.name.clone(),
+            self.identifier.clone(),
+            self.client.clone(),
+            plan,
+            output.overwrite,
+            upload_id.to_string(),
+        ));
+
+        let task_ctx = Arc::new(datafusion_execution::TaskContext::default());
+        let mut handles = futures::stream::FuturesUnordered::new();
+        for partition in 0..num_partitions {
+            let exec = insert.clone();
+            let ctx = task_ctx.clone();
+            handles.push(tokio::spawn(async move {
+                let mut stream = exec
+                    .execute(partition, ctx)
+                    .map_err(|e| -> Error { e.into() })?;
+                while let Some(batch) = stream.next().await {
+                    batch.map_err(|e| -> Error { e.into() })?;
+                }
+                Ok::<_, Error>(())
+            }));
+        }
+
+        while let Some(result) = handles.next().await {
+            result.map_err(|e| Error::Runtime {
+                message: format!("Insert task panicked: {}", e),
+            })??;
+        }
+
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -986,74 +1207,37 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             status_code: None,
         })
     }
-    async fn add(&self, add: AddDataBuilder) -> Result<AddResult> {
-        use crate::remote::retry::RetryCounter;
-
+    async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
 
         let table_schema = self.schema().await?;
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
+
+        // Peek at the first batch to estimate write partitions, same as NativeTable.
+        let mut peeked = PeekedScannable::new(add.data);
+        let num_partitions = if self.server_version.support_multipart_write() {
+            if let Some(first_batch) = peeked.peek().await {
+                let max_partitions = lance_core::utils::tokio::get_num_compute_intensive_cpus();
+                estimate_write_partitions(
+                    first_batch.get_array_memory_size(),
+                    first_batch.num_rows(),
+                    peeked.num_rows(),
+                    max_partitions,
+                )
+            } else {
+                1
+            }
+        } else {
+            1
+        };
+        add.data = Box::new(peeked);
+
         let output = add.into_plan(&table_schema, &table_def)?;
 
-        let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
-            self.name.clone(),
-            self.identifier.clone(),
-            self.client.clone(),
-            output.plan,
-            output.overwrite,
-        ));
-
-        let mut retry_counter =
-            RetryCounter::new(&self.client.retry_config, uuid::Uuid::new_v4().to_string());
-
-        loop {
-            let stream = execute_plan(insert.clone(), Default::default())?;
-            let result: Result<Vec<_>> = stream.try_collect().await.map_err(Error::from);
-
-            match result {
-                Ok(_) => {
-                    let add_result = insert
-                        .as_any()
-                        .downcast_ref::<RemoteInsertExec<S>>()
-                        .and_then(|i| i.add_result())
-                        .unwrap_or(AddResult { version: 0 });
-
-                    if output.overwrite {
-                        self.invalidate_schema_cache();
-                    }
-
-                    return Ok(add_result);
-                }
-                Err(err) if output.rescannable => {
-                    let retryable = match &err {
-                        Error::Http {
-                            source,
-                            status_code,
-                            ..
-                        } => {
-                            // Don't retry read errors (is_body/is_decode): the
-                            // server may have committed the write already, and
-                            // without an idempotency key we'd duplicate data.
-                            source
-                                .downcast_ref::<reqwest::Error>()
-                                .is_some_and(|e| e.is_connect())
-                                || status_code
-                                    .is_some_and(|s| self.client.retry_config.statuses.contains(&s))
-                        }
-                        _ => false,
-                    };
-
-                    if retryable {
-                        retry_counter.increment_from_error(err)?;
-                        tokio::time::sleep(retry_counter.next_sleep_time()).await;
-                        insert = insert.reset_state()?;
-                        continue;
-                    }
-
-                    return Err(err);
-                }
-                Err(err) => return Err(err),
-            }
+        if num_partitions > 1 {
+            self.add_multipart(output, num_partitions).await
+        } else {
+            self.add_single_partition(output).await
         }
     }
 
@@ -4830,5 +5014,338 @@ mod tests {
 
         assert_eq!(data.len(), 1);
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
+    }
+
+    fn schema_json() -> &'static str {
+        r#"{"fields": [{"name": "id", "type": {"type": "int32"}, "nullable": true}]}"#
+    }
+
+    fn simple_describe_response() -> http::Response<String> {
+        http::Response::builder()
+            .status(200)
+            .body(format!(r#"{{"version": 1, "schema": {}}}"#, schema_json()))
+            .unwrap()
+    }
+
+    fn make_large_batch() -> RecordBatch {
+        // Create a batch large enough to trigger multiple partitions.
+        // estimate_write_partitions targets 1M rows per partition.
+        let ids: Vec<i32> = (0..2_500_000).collect();
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)])),
+            vec![Arc::new(Int32Array::from(ids))],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_multipart_write_happy_path() {
+        let create_count = Arc::new(AtomicUsize::new(0));
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let complete_count = Arc::new(AtomicUsize::new(0));
+        let abort_count = Arc::new(AtomicUsize::new(0));
+
+        let create_count_c = create_count.clone();
+        let insert_count_c = insert_count.clone();
+        let complete_count_c = complete_count.clone();
+        let abort_count_c = abort_count.clone();
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 4, 0),
+            move |request| {
+                let path = request.url().path();
+
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/create" {
+                    create_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"upload_id": "test-upload-123"}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/insert/" {
+                    let query = request.url().query().unwrap_or("");
+                    assert!(
+                        query.contains("upload_id=test-upload-123"),
+                        "Expected upload_id in query: {}",
+                        query
+                    );
+                    insert_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 1}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/complete" {
+                    let query = request.url().query().unwrap_or("");
+                    assert!(
+                        query.contains("upload_id=test-upload-123"),
+                        "Expected upload_id in query: {}",
+                        query
+                    );
+                    complete_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 5}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/abort" {
+                    abort_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(String::new())
+                        .unwrap();
+                }
+
+                panic!("Unexpected request path: {}", path);
+            },
+        );
+
+        let batch = make_large_batch();
+        let result = table.add(vec![batch]).execute().await.unwrap();
+
+        assert_eq!(result.version, 5);
+        assert_eq!(create_count.load(Ordering::SeqCst), 1);
+        assert!(
+            insert_count.load(Ordering::SeqCst) > 1,
+            "Expected multiple insert calls, got {}",
+            insert_count.load(Ordering::SeqCst)
+        );
+        assert_eq!(complete_count.load(Ordering::SeqCst), 1);
+        assert_eq!(abort_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_write_fallback_old_server() {
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let create_count = Arc::new(AtomicUsize::new(0));
+
+        let insert_count_c = insert_count.clone();
+        let create_count_c = create_count.clone();
+
+        // Server version 0.3.0 does not support multipart writes
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 3, 0),
+            move |request| {
+                let path = request.url().path();
+
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+
+                if path.contains("multipart_write") {
+                    create_count_c.fetch_add(1, Ordering::SeqCst);
+                    panic!("Should not call multipart write endpoints on old server");
+                }
+
+                if path == "/v1/table/my_table/insert/" {
+                    let query = request.url().query().unwrap_or("");
+                    assert!(
+                        !query.contains("upload_id"),
+                        "Should not have upload_id for old server"
+                    );
+                    insert_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 2}"#.to_string())
+                        .unwrap();
+                }
+
+                panic!("Unexpected request path: {}", path);
+            },
+        );
+
+        let batch = make_large_batch();
+        let result = table.add(vec![batch]).execute().await.unwrap();
+
+        assert_eq!(result.version, 2);
+        assert_eq!(create_count.load(Ordering::SeqCst), 0);
+        assert_eq!(insert_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_write_small_data_single_partition() {
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let create_count = Arc::new(AtomicUsize::new(0));
+
+        let insert_count_c = insert_count.clone();
+        let create_count_c = create_count.clone();
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 4, 0),
+            move |request| {
+                let path = request.url().path();
+
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+
+                if path.contains("multipart_write") {
+                    create_count_c.fetch_add(1, Ordering::SeqCst);
+                    panic!("Should not call multipart write endpoints for small data");
+                }
+
+                if path == "/v1/table/my_table/insert/" {
+                    let query = request.url().query().unwrap_or("");
+                    assert!(
+                        !query.contains("upload_id"),
+                        "Should not have upload_id for small data"
+                    );
+                    insert_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 2}"#.to_string())
+                        .unwrap();
+                }
+
+                panic!("Unexpected request path: {}", path);
+            },
+        );
+
+        // Small data: only 3 rows
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let result = table.add(vec![batch]).execute().await.unwrap();
+
+        assert_eq!(result.version, 2);
+        assert_eq!(create_count.load(Ordering::SeqCst), 0);
+        assert_eq!(insert_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_write_abort_on_insert_failure() {
+        let create_count = Arc::new(AtomicUsize::new(0));
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let complete_count = Arc::new(AtomicUsize::new(0));
+        let abort_count = Arc::new(AtomicUsize::new(0));
+
+        let create_count_c = create_count.clone();
+        let insert_count_c = insert_count.clone();
+        let complete_count_c = complete_count.clone();
+        let abort_count_c = abort_count.clone();
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 4, 0),
+            move |request| {
+                let path = request.url().path();
+
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/create" {
+                    create_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"upload_id": "test-upload-456"}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/insert/" {
+                    let count = insert_count_c.fetch_add(1, Ordering::SeqCst);
+                    // Fail on the first insert
+                    if count == 0 {
+                        return http::Response::builder()
+                            .status(500)
+                            .body("Internal Server Error".to_string())
+                            .unwrap();
+                    }
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 1}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/complete" {
+                    complete_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 5}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/abort" {
+                    abort_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(String::new())
+                        .unwrap();
+                }
+
+                panic!("Unexpected request path: {}", path);
+            },
+        );
+
+        let batch = make_large_batch();
+        let result = table.add(vec![batch]).execute().await;
+
+        assert!(result.is_err());
+        assert_eq!(create_count.load(Ordering::SeqCst), 1);
+        assert_eq!(complete_count.load(Ordering::SeqCst), 0);
+        assert_eq!(abort_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_multipart_write_abort_on_complete_failure() {
+        let abort_count = Arc::new(AtomicUsize::new(0));
+        let abort_count_c = abort_count.clone();
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 4, 0),
+            move |request| {
+                let path = request.url().path();
+
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/create" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"upload_id": "test-upload-789"}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/insert/" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 1}"#.to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/complete" {
+                    return http::Response::builder()
+                        .status(500)
+                        .body("Internal Server Error".to_string())
+                        .unwrap();
+                }
+
+                if path == "/v1/table/my_table/multipart_write/abort" {
+                    abort_count_c.fetch_add(1, Ordering::SeqCst);
+                    return http::Response::builder()
+                        .status(200)
+                        .body(String::new())
+                        .unwrap();
+                }
+
+                panic!("Unexpected request path: {}", path);
+            },
+        );
+
+        let batch = make_large_batch();
+        let result = table.add(vec![batch]).execute().await;
+
+        assert!(result.is_err());
+        assert_eq!(abort_count.load(Ordering::SeqCst), 1);
     }
 }
