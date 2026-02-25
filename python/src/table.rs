@@ -309,22 +309,37 @@ impl Table {
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
         }
-        if let Some(bar) = progress {
-            let last_rows = std::sync::atomic::AtomicUsize::new(0);
-            op = op.progress(move |p| {
-                let current = p.output_rows();
-                let prev = last_rows.swap(current, std::sync::atomic::Ordering::Relaxed);
-                Python::attach(|py| {
-                    // Set total if known and not yet set on the bar.
-                    if let Some(total) = p.total_rows() {
-                        let _ = bar.setattr(py, "total", total);
-                    }
-                    let delta = current.saturating_sub(prev);
-                    if delta > 0 {
-                        let _ = bar.call_method1(py, "update", (delta,));
-                    }
+        if let Some(progress_obj) = progress {
+            let is_callable = Python::attach(|py| progress_obj.bind(py).is_callable());
+            if is_callable {
+                // Callback: call with a dict of progress info.
+                op = op.progress(move |p| {
+                    Python::attach(|py| {
+                        let dict = PyDict::new(py);
+                        let _ = dict.set_item("output_rows", p.output_rows());
+                        let _ = dict.set_item("output_bytes", p.output_bytes());
+                        let _ = dict.set_item("total_rows", p.total_rows());
+                        let _ = dict.set_item("elapsed_seconds", p.elapsed().as_secs_f64());
+                        let _ = progress_obj.call1(py, (dict,));
+                    });
                 });
-            });
+            } else {
+                // tqdm-like: has update() method.
+                let last_rows = std::sync::atomic::AtomicUsize::new(0);
+                op = op.progress(move |p| {
+                    let current = p.output_rows();
+                    let prev = last_rows.swap(current, std::sync::atomic::Ordering::Relaxed);
+                    Python::attach(|py| {
+                        if let Some(total) = p.total_rows() {
+                            let _ = progress_obj.setattr(py, "total", total);
+                        }
+                        let delta = current.saturating_sub(prev);
+                        if delta > 0 {
+                            let _ = progress_obj.call_method1(py, "update", (delta,));
+                        }
+                    });
+                });
+            }
         }
 
         future_into_py(self_.py(), async move {

@@ -338,8 +338,9 @@ class RemoteTable(Table):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
-        progress: optional, default None
-            A tqdm-compatible progress bar to update during the add operation.
+        progress: callable or tqdm-like, optional
+            A callback or tqdm-compatible progress bar. See
+            :meth:`Table.add` for details.
 
         Returns
         -------
