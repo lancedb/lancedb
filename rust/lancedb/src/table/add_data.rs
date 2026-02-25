@@ -52,6 +52,7 @@ pub struct AddDataBuilder {
     pub(crate) write_options: WriteOptions,
     pub(crate) on_nan_vectors: NaNVectorBehavior,
     pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    pub(crate) write_parallelism: Option<usize>,
 }
 
 impl std::fmt::Debug for AddDataBuilder {
@@ -77,6 +78,7 @@ impl AddDataBuilder {
             write_options: WriteOptions::default(),
             on_nan_vectors: NaNVectorBehavior::default(),
             embedding_registry,
+            write_parallelism: None,
         }
     }
 
@@ -98,6 +100,15 @@ impl AddDataBuilder {
     /// indexed and will not be searchable.
     pub fn on_nan_vectors(mut self, behavior: NaNVectorBehavior) -> Self {
         self.on_nan_vectors = behavior;
+        self
+    }
+
+    /// Set the number of parallel write streams.
+    ///
+    /// By default, the number of streams is estimated from the data size.
+    /// Setting this to `1` disables parallel writes.
+    pub fn write_parallelism(mut self, parallelism: usize) -> Self {
+        self.write_parallelism = Some(parallelism);
         self
     }
 

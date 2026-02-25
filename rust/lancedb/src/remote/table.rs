@@ -1062,11 +1062,11 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         ));
 
         let task_ctx = Arc::new(datafusion_execution::TaskContext::default());
-        let mut handles = futures::stream::FuturesUnordered::new();
+        let mut join_set = tokio::task::JoinSet::new();
         for partition in 0..num_partitions {
             let exec = insert.clone();
             let ctx = task_ctx.clone();
-            handles.push(tokio::spawn(async move {
+            join_set.spawn(async move {
                 let mut stream = exec
                     .execute(partition, ctx)
                     .map_err(|e| -> Error { e.into() })?;
@@ -1074,10 +1074,12 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
                     batch.map_err(|e| -> Error { e.into() })?;
                 }
                 Ok::<_, Error>(())
-            }));
+            });
         }
 
-        while let Some(result) = handles.next().await {
+        // JoinSet aborts all remaining tasks when dropped, so if we return
+        // early on error the orphaned tasks are automatically cancelled.
+        while let Some(result) = join_set.join_next().await {
             result.map_err(|e| Error::Runtime {
                 message: format!("Insert task panicked: {}", e),
             })??;
@@ -1243,10 +1245,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let table_schema = self.schema().await?;
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
 
-        // Peek at the first batch to estimate write partitions, same as NativeTable.
-        let mut peeked = PeekedScannable::new(add.data);
-        let num_partitions = if self.server_version.support_multipart_write() {
-            if let Some(first_batch) = peeked.peek().await {
+        let num_partitions = if let Some(parallelism) = add.write_parallelism {
+            if parallelism > 1 && self.server_version.support_multipart_write() {
+                parallelism
+            } else {
+                1
+            }
+        } else if self.server_version.support_multipart_write() {
+            // Peek at the first batch to estimate write partitions, same as NativeTable.
+            let mut peeked = PeekedScannable::new(add.data);
+            let n = if let Some(first_batch) = peeked.peek().await {
                 let max_partitions = lance_core::utils::tokio::get_num_compute_intensive_cpus();
                 estimate_write_partitions(
                     first_batch.get_array_memory_size(),
@@ -1256,11 +1264,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 )
             } else {
                 1
-            }
+            };
+            add.data = Box::new(peeked);
+            n
         } else {
             1
         };
-        add.data = Box::new(peeked);
 
         let output = add.into_plan(&table_schema, &table_def)?;
 
@@ -5058,17 +5067,6 @@ mod tests {
             .unwrap()
     }
 
-    fn make_large_batch() -> RecordBatch {
-        // Create a batch large enough to trigger multiple partitions.
-        // estimate_write_partitions targets 1M rows per partition.
-        let ids: Vec<i32> = (0..2_500_000).collect();
-        RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)])),
-            vec![Arc::new(Int32Array::from(ids))],
-        )
-        .unwrap()
-    }
-
     #[tokio::test]
     async fn test_multipart_write_happy_path() {
         let create_count = Arc::new(AtomicUsize::new(0));
@@ -5139,8 +5137,13 @@ mod tests {
             },
         );
 
-        let batch = make_large_batch();
-        let result = table.add(vec![batch]).execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let result = table
+            .add(vec![batch])
+            .write_parallelism(2)
+            .execute()
+            .await
+            .unwrap();
 
         assert_eq!(result.version, 5);
         assert_eq!(create_count.load(Ordering::SeqCst), 1);
@@ -5194,8 +5197,13 @@ mod tests {
             },
         );
 
-        let batch = make_large_batch();
-        let result = table.add(vec![batch]).execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let result = table
+            .add(vec![batch])
+            .write_parallelism(2)
+            .execute()
+            .await
+            .unwrap();
 
         assert_eq!(result.version, 2);
         assert_eq!(create_count.load(Ordering::SeqCst), 0);
@@ -5316,8 +5324,8 @@ mod tests {
             },
         );
 
-        let batch = make_large_batch();
-        let result = table.add(vec![batch]).execute().await;
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let result = table.add(vec![batch]).write_parallelism(2).execute().await;
 
         assert!(result.is_err());
         assert_eq!(create_count.load(Ordering::SeqCst), 1);
@@ -5373,8 +5381,8 @@ mod tests {
             },
         );
 
-        let batch = make_large_batch();
-        let result = table.add(vec![batch]).execute().await;
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let result = table.add(vec![batch]).write_parallelism(2).execute().await;
 
         assert!(result.is_err());
         assert_eq!(abort_count.load(Ordering::SeqCst), 1);
@@ -5459,8 +5467,13 @@ mod tests {
             retry_config_no_backoff(),
         );
 
-        let batch = make_large_batch();
-        let result = table.add(vec![batch]).execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let result = table
+            .add(vec![batch])
+            .write_parallelism(2)
+            .execute()
+            .await
+            .unwrap();
 
         assert_eq!(result.version, 7);
         assert_eq!(create_count.load(Ordering::SeqCst), 2);
@@ -5528,8 +5541,13 @@ mod tests {
             retry_config_no_backoff(),
         );
 
-        let batch = make_large_batch();
-        let result = table.add(vec![batch]).execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let result = table
+            .add(vec![batch])
+            .write_parallelism(2)
+            .execute()
+            .await
+            .unwrap();
 
         assert_eq!(result.version, 9);
         assert_eq!(create_count.load(Ordering::SeqCst), 2);

@@ -2227,21 +2227,26 @@ impl BaseTable for NativeTable {
 
         let table_schema = Schema::from(&ds.schema().clone());
 
-        // Peek at the first batch to estimate a good partition count for
-        // write parallelism.
-        let mut peeked = PeekedScannable::new(add.data);
-        let num_partitions = if let Some(first_batch) = peeked.peek().await {
-            let max_partitions = lance_core::utils::tokio::get_num_compute_intensive_cpus();
-            estimate_write_partitions(
-                first_batch.get_array_memory_size(),
-                first_batch.num_rows(),
-                peeked.num_rows(),
-                max_partitions,
-            )
+        let num_partitions = if let Some(parallelism) = add.write_parallelism {
+            parallelism
         } else {
-            1
+            // Peek at the first batch to estimate a good partition count for
+            // write parallelism.
+            let mut peeked = PeekedScannable::new(add.data);
+            let n = if let Some(first_batch) = peeked.peek().await {
+                let max_partitions = lance_core::utils::tokio::get_num_compute_intensive_cpus();
+                estimate_write_partitions(
+                    first_batch.get_array_memory_size(),
+                    first_batch.num_rows(),
+                    peeked.num_rows(),
+                    max_partitions,
+                )
+            } else {
+                1
+            };
+            add.data = Box::new(peeked);
+            n
         };
-        add.data = Box::new(peeked);
 
         let output = add.into_plan(&table_schema, &table_def)?;
 
