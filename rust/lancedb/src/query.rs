@@ -1651,13 +1651,10 @@ mod tests {
             .unwrap();
 
         use crate::expr::{col, lit};
-        let query = table
-            .query()
-            .limit(10)
-            .select(Select::expr_projection(&[
-                ("id2", col("id") * lit(2i32)),
-                ("id", col("id")),
-            ]));
+        let query = table.query().limit(10).select(Select::expr_projection(&[
+            ("id2", col("id") * lit(2i32)),
+            ("id", col("id")),
+        ]));
 
         let schema = query.output_schema().await.unwrap();
         assert_eq!(

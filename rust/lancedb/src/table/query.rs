@@ -187,9 +187,7 @@ pub async fn create_plan(
         Select::Expr(ref expr_pairs) => {
             let sql_pairs: crate::Result<Vec<(String, String)>> = expr_pairs
                 .iter()
-                .map(|(name, expr)| {
-                    expr_to_sql_string(expr).map(|sql| (name.clone(), sql))
-                })
+                .map(|(name, expr)| expr_to_sql_string(expr).map(|sql| (name.clone(), sql)))
                 .collect();
             scanner.project_with_transform(sql_pairs?.as_slice())?;
         }
@@ -350,16 +348,12 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 Select::Expr(pairs) => {
                     let sql_pairs: crate::Result<Vec<(String, String)>> = pairs
                         .iter()
-                        .map(|(name, expr)| {
-                            expr_to_sql_string(expr).map(|sql| (name.clone(), sql))
-                        })
+                        .map(|(name, expr)| expr_to_sql_string(expr).map(|sql| (name.clone(), sql)))
                         .collect();
                     let sql_pairs = sql_pairs?;
                     Some(Box::new(QueryTableRequestColumns {
                         column_names: None,
-                        column_aliases: Some(
-                            sql_pairs.into_iter().collect(),
-                        ),
+                        column_aliases: Some(sql_pairs.into_iter().collect()),
                     }))
                 }
             };
@@ -436,16 +430,12 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 Select::Expr(pairs) => {
                     let sql_pairs: crate::Result<Vec<(String, String)>> = pairs
                         .iter()
-                        .map(|(name, expr)| {
-                            expr_to_sql_string(expr).map(|sql| (name.clone(), sql))
-                        })
+                        .map(|(name, expr)| expr_to_sql_string(expr).map(|sql| (name.clone(), sql)))
                         .collect();
                     let sql_pairs = sql_pairs?;
                     Some(Box::new(QueryTableRequestColumns {
                         column_names: None,
-                        column_aliases: Some(
-                            sql_pairs.into_iter().collect(),
-                        ),
+                        column_aliases: Some(sql_pairs.into_iter().collect()),
                     }))
                 }
             };
