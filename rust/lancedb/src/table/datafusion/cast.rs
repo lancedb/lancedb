@@ -7,7 +7,7 @@ use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
 use datafusion::functions::core::{get_field, named_struct};
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::ScalarValue;
-use datafusion_physical_expr::expressions::{cast, Literal};
+use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_expr::ScalarFunctionExpr;
 use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
@@ -124,18 +124,26 @@ fn build_field_exprs(
             }
             // Types match: pass through.
             (inp, tbl) if inp == tbl => input_expr,
-            // Types differ: cast.
-            _ => cast(input_expr, input_schema, table_field.data_type().clone()).map_err(|e| {
-                Error::InvalidInput {
+            // Same type family (e.g. numeric↔numeric): attempt the cast.
+            // safe: false (the default) means overflow/truncation errors surface at execution time.
+            (_, _) if is_safe_cast(input_field.data_type(), table_field.data_type()) => {
+                Arc::new(CastExpr::new(
+                    input_expr,
+                    table_field.data_type().clone(),
+                    None,
+                )) as Arc<dyn PhysicalExpr>
+            }
+            // Cross-family casts (e.g. numeric→string) are rejected at plan time.
+            (inp, tbl) => {
+                return Err(Error::InvalidInput {
                     message: format!(
-                        "cannot cast field '{}' from {} to {}: {}",
+                        "cannot cast field '{}' from {} to {}: automatic casting between these types is not supported",
                         table_field.name(),
-                        input_field.data_type(),
-                        table_field.data_type(),
-                        e
+                        inp,
+                        tbl,
                     ),
-                }
-            })?,
+                })
+            }
         };
 
         let output_field = Arc::new(Field::new(
@@ -149,12 +157,52 @@ fn build_field_exprs(
     Ok(result)
 }
 
+/// Returns true if `from_type` and `to_type` are in the same type family and can be
+/// implicitly cast. Cross-family casts (e.g. numeric → string) are rejected.
+fn is_safe_cast(from_type: &DataType, to_type: &DataType) -> bool {
+    fn is_numeric(dt: &DataType) -> bool {
+        matches!(
+            dt,
+            DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::UInt8
+                | DataType::UInt16
+                | DataType::UInt32
+                | DataType::UInt64
+                | DataType::Float16
+                | DataType::Float32
+                | DataType::Float64
+        )
+    }
+    fn is_list_like(dt: &DataType) -> bool {
+        matches!(
+            dt,
+            DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(_, _)
+        )
+    }
+    // Allow numeric ↔ numeric (may fail at runtime with overflow, but is semantically intended).
+    // Allow string variant ↔ string variant (Utf8/LargeUtf8/Utf8View are interchangeable).
+    // Allow list-like ↔ list-like (e.g. List → FixedSizeList for embedding vectors).
+    (is_numeric(from_type) && is_numeric(to_type))
+        || matches!(
+            (from_type, to_type),
+            (
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View,
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View,
+            )
+        )
+        || (is_list_like(from_type) && is_list_like(to_type))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use arrow_array::{
         Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray,
+        UInt32Array, UInt64Array,
     };
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::prelude::SessionContext;
@@ -494,5 +542,65 @@ mod tests {
         let b: &StringArray = result.column(1).as_any().downcast_ref().unwrap();
         assert_eq!(b.value(0), "hello");
         assert_eq!(b.value(1), "world");
+    }
+
+    #[tokio::test]
+    async fn test_numeric_to_string_rejected() {
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, false)])),
+            vec![Arc::new(UInt32Array::from(vec![1u32]))],
+        )
+        .unwrap();
+
+        let table_schema = Schema::new(vec![Field::new("a", DataType::Utf8, false)]);
+
+        let plan = plan_from_batch(input_batch).await;
+        let result = cast_to_table_schema(plan, &table_schema);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("cannot cast field 'a'"),
+            "unexpected error: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_narrowing_numeric_cast_success() {
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::UInt64, false)])),
+            vec![Arc::new(UInt64Array::from(vec![1u64, 2, 3]))],
+        )
+        .unwrap();
+
+        let table_schema = Schema::new(vec![Field::new("a", DataType::UInt32, false)]);
+
+        let plan = plan_from_batch(input_batch).await;
+        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
+        let result = collect(casted).await;
+
+        assert_eq!(result.schema().field(0).data_type(), &DataType::UInt32);
+        let a: &UInt32Array = result.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(a.values(), &[1u32, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_narrowing_numeric_cast_overflow_errors() {
+        let overflow_val = u32::MAX as u64 + 1;
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::UInt64, false)])),
+            vec![Arc::new(UInt64Array::from(vec![overflow_val]))],
+        )
+        .unwrap();
+
+        let table_schema = Schema::new(vec![Field::new("a", DataType::UInt32, false)]);
+
+        let plan = plan_from_batch(input_batch).await;
+        // Planning succeeds — the overflow is only detected at execution time.
+        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
+
+        let ctx = SessionContext::new();
+        let stream = casted.execute(0, ctx.task_ctx()).unwrap();
+        let result: Result<Vec<RecordBatch>, _> = stream.try_collect().await;
+        assert!(result.is_err(), "expected overflow error at execution time");
     }
 }
