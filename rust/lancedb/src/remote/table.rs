@@ -5069,21 +5069,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_multipart_write_happy_path() {
+        use std::sync::Mutex;
+
         let create_count = Arc::new(AtomicUsize::new(0));
         let insert_count = Arc::new(AtomicUsize::new(0));
         let complete_count = Arc::new(AtomicUsize::new(0));
         let abort_count = Arc::new(AtomicUsize::new(0));
+        let upload_ids = Arc::new(Mutex::new(Vec::<String>::new()));
 
         let create_count_c = create_count.clone();
         let insert_count_c = insert_count.clone();
         let complete_count_c = complete_count.clone();
         let abort_count_c = abort_count.clone();
+        let upload_ids_c = upload_ids.clone();
 
         let table = Table::new_with_handler_version(
             "my_table",
             semver::Version::new(0, 4, 0),
             move |request| {
                 let path = request.url().path();
+                let query = request.url().query().unwrap_or("");
 
                 if path == "/v1/table/my_table/describe/" {
                     return simple_describe_response();
@@ -5098,13 +5103,14 @@ mod tests {
                 }
 
                 if path == "/v1/table/my_table/insert/" {
-                    let query = request.url().query().unwrap_or("");
-                    assert!(
-                        query.contains("upload_id=test-upload-123"),
-                        "Expected upload_id in query: {}",
-                        query
-                    );
                     insert_count_c.fetch_add(1, Ordering::SeqCst);
+                    let uid = url::form_urlencoded::parse(query.as_bytes())
+                        .find(|(k, _)| k == "upload_id")
+                        .map(|(_, v)| v.to_string());
+                    upload_ids_c
+                        .lock()
+                        .unwrap()
+                        .push(uid.expect("missing upload_id on insert"));
                     return http::Response::builder()
                         .status(200)
                         .body(r#"{"version": 1}"#.to_string())
@@ -5112,13 +5118,14 @@ mod tests {
                 }
 
                 if path == "/v1/table/my_table/multipart_write/complete" {
-                    let query = request.url().query().unwrap_or("");
-                    assert!(
-                        query.contains("upload_id=test-upload-123"),
-                        "Expected upload_id in query: {}",
-                        query
-                    );
                     complete_count_c.fetch_add(1, Ordering::SeqCst);
+                    let uid = url::form_urlencoded::parse(query.as_bytes())
+                        .find(|(k, _)| k == "upload_id")
+                        .map(|(_, v)| v.to_string());
+                    upload_ids_c
+                        .lock()
+                        .unwrap()
+                        .push(uid.expect("missing upload_id on complete"));
                     return http::Response::builder()
                         .status(200)
                         .body(r#"{"version": 5}"#.to_string())
@@ -5154,6 +5161,13 @@ mod tests {
         );
         assert_eq!(complete_count.load(Ordering::SeqCst), 1);
         assert_eq!(abort_count.load(Ordering::SeqCst), 0);
+
+        let ids = upload_ids.lock().unwrap();
+        assert!(
+            ids.iter().all(|id| id == "test-upload-123"),
+            "All requests should use the same upload_id, got: {:?}",
+            *ids
+        );
     }
 
     #[tokio::test]
