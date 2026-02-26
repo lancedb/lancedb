@@ -11,7 +11,7 @@ use crate::data::scannable::scannable_with_embeddings;
 use crate::data::scannable::Scannable;
 use crate::embeddings::EmbeddingRegistry;
 use crate::table::datafusion::cast::cast_to_table_schema;
-use crate::table::datafusion::progress::ProgressCallback;
+use crate::table::datafusion::progress::{ProgressCallback, WriteProgressTracker};
 use crate::table::datafusion::reject_nan::reject_nan_vectors;
 use crate::table::datafusion::scannable_exec::ScannableExec;
 use crate::{Error, Result};
@@ -106,8 +106,8 @@ impl AddDataBuilder {
 
     /// Set a callback to receive progress updates during the add operation.
     ///
-    /// The callback is invoked at regular intervals with a [`PlanProgress`]
-    /// snapshot containing rows processed, bytes written, and elapsed time.
+    /// The callback is invoked once per batch written, and once more with
+    /// [`WriteProgress::done`] set to `true` when the write completes.
     ///
     /// ```
     /// # use lancedb::Table;
@@ -122,7 +122,7 @@ impl AddDataBuilder {
     /// ```
     pub fn progress(
         mut self,
-        callback: impl Fn(super::datafusion::progress::PlanProgress) + Send + Sync + 'static,
+        callback: impl Fn(&super::datafusion::progress::WriteProgress) + Send + Sync + 'static,
     ) -> Self {
         self.progress_callback = Some(Arc::new(callback));
         self
@@ -157,8 +157,11 @@ impl AddDataBuilder {
             scannable_with_embeddings(self.data, table_def, self.embedding_registry.as_ref())?;
 
         let rescannable = self.data.rescannable();
+        let tracker = self
+            .progress_callback
+            .map(|cb| Arc::new(WriteProgressTracker::new(cb, self.data.num_rows())));
         let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> =
-            Arc::new(ScannableExec::new(self.data));
+            Arc::new(ScannableExec::new_with_tracker(self.data, tracker.clone()));
         // Skip casting when overwriting — the input schema replaces the table schema.
         let plan = if overwrite {
             plan
@@ -176,7 +179,7 @@ impl AddDataBuilder {
             rescannable,
             write_options: self.write_options,
             mode: self.mode,
-            progress_callback: self.progress_callback,
+            tracker,
         })
     }
 }
@@ -187,7 +190,7 @@ pub struct PreprocessingOutput {
     pub rescannable: bool,
     pub write_options: WriteOptions,
     pub mode: AddDataMode,
-    pub progress_callback: Option<ProgressCallback>,
+    pub tracker: Option<Arc<WriteProgressTracker>>,
 }
 
 /// Check that the input schema is valid for insert.

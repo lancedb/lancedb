@@ -321,6 +321,7 @@ impl Table {
                         dict.set_item("total_rows", p.total_rows()).ok();
                         dict.set_item("elapsed_seconds", p.elapsed().as_secs_f64())
                             .ok();
+                        dict.set_item("done", p.done()).ok();
                         if let Err(e) = progress_obj.call1(py, (dict,)) {
                             eprintln!("progress callback error: {e}");
                         }
@@ -347,6 +348,10 @@ impl Table {
                             if let Err(e) = progress_obj.call_method1(py, "update", (delta,)) {
                                 eprintln!("progress update error: {e}");
                             }
+                        }
+                        if p.done() {
+                            // Force a final refresh so the bar shows completion.
+                            progress_obj.call_method0(py, "refresh").ok();
                         }
                     });
                 });

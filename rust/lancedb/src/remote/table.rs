@@ -980,7 +980,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;
         let output = add.into_plan(&table_schema, &table_def)?;
 
-        let progress_callback = output.progress_callback;
+        // The tracker is called per batch inside ScannableExec; finish() is
+        // called once execution completes (or fails) so callers always see done=true.
+        struct FinishOnDrop(Option<Arc<crate::table::datafusion::progress::WriteProgressTracker>>);
+        impl Drop for FinishOnDrop {
+            fn drop(&mut self) {
+                if let Some(t) = self.0.take() {
+                    t.finish();
+                }
+            }
+        }
+        let _finish = FinishOnDrop(output.tracker);
+
         let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
             self.name.clone(),
             self.identifier.clone(),
@@ -993,14 +1004,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             RetryCounter::new(&self.client.retry_config, uuid::Uuid::new_v4().to_string());
 
         loop {
-            let _monitor = progress_callback.as_ref().map(|cb| {
-                crate::table::datafusion::progress::PlanProgressMonitor::start(
-                    insert.clone(),
-                    cb.clone(),
-                    std::time::Duration::from_millis(30),
-                )
-            });
-
             let stream = execute_plan(insert.clone(), Default::default())?;
             let result: Result<Vec<_>> = stream.try_collect().await.map_err(Error::from);
 

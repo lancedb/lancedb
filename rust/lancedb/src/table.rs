@@ -53,7 +53,6 @@ use crate::index::{vector::suggested_num_sub_vectors, Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
-use crate::table::datafusion::progress::PlanProgressMonitor;
 use crate::utils::{
     supported_bitmap_data_type, supported_btree_data_type, supported_fts_data_type,
     supported_label_list_data_type, supported_vector_data_type, PatchReadParam, PatchWriteParam,
@@ -74,7 +73,7 @@ pub mod update;
 use crate::index::waiter::wait_for_index;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
-pub use datafusion::progress::PlanProgress;
+pub use datafusion::progress::WriteProgress;
 pub use delete::DeleteResult;
 use futures::future::join_all;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
@@ -2167,14 +2166,17 @@ impl BaseTable for NativeTable {
 
         let insert_exec = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
 
-        // Start progress monitor before execution so it can observe the full run.
-        let _monitor = output.progress_callback.map(|callback| {
-            PlanProgressMonitor::start(
-                insert_exec.clone(),
-                callback,
-                std::time::Duration::from_millis(30),
-            )
-        });
+        // The tracker is called per batch inside ScannableExec; finish() is
+        // called once execution completes (or fails) so callers always see done=true.
+        struct FinishOnDrop(Option<Arc<crate::table::datafusion::progress::WriteProgressTracker>>);
+        impl Drop for FinishOnDrop {
+            fn drop(&mut self) {
+                if let Some(t) = self.0.take() {
+                    t.finish();
+                }
+            }
+        }
+        let _finish = FinishOnDrop(output.tracker);
 
         // Execute all partitions in parallel.
         let task_ctx = Arc::new(TaskContext::default());
@@ -2192,7 +2194,6 @@ impl BaseTable for NativeTable {
                 Ok::<_, Error>(())
             }));
         }
-
         for handle in handles {
             handle.await.map_err(|e| Error::Runtime {
                 message: format!("Insert task panicked: {}", e),
