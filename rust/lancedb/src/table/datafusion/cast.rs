@@ -25,12 +25,9 @@ pub fn cast_to_table_schema(
         return Ok(input);
     }
 
-    let exprs = build_field_exprs(
-        input_schema.fields(),
-        table_schema.fields(),
-        &|idx| Arc::new(Column::new(input_schema.field(idx).name(), idx)) as Arc<dyn PhysicalExpr>,
-        &input_schema,
-    )?;
+    let exprs = build_field_exprs(input_schema.fields(), table_schema.fields(), &|idx| {
+        Arc::new(Column::new(input_schema.field(idx).name(), idx)) as Arc<dyn PhysicalExpr>
+    })?;
 
     let exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = exprs
         .into_iter()
@@ -51,7 +48,6 @@ fn build_field_exprs(
     input_fields: &Fields,
     table_fields: &Fields,
     get_input_expr: &dyn Fn(usize) -> Arc<dyn PhysicalExpr>,
-    input_schema: &Schema,
 ) -> Result<Vec<(Arc<dyn PhysicalExpr>, FieldRef)>> {
     let config = Arc::new(ConfigOptions::default());
     let mut result = Vec::new();
@@ -88,7 +84,6 @@ fn build_field_exprs(
                             config.clone(),
                         )) as Arc<dyn PhysicalExpr>
                     },
-                    input_schema,
                 )?;
 
                 let output_struct_fields: Fields = sub_exprs
