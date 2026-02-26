@@ -160,7 +160,7 @@ fn build_field_exprs(
 /// Returns true if `from_type` and `to_type` are in the same type family and can be
 /// implicitly cast. Cross-family casts (e.g. numeric → string) are rejected.
 fn is_safe_cast(from_type: &DataType, to_type: &DataType) -> bool {
-    fn is_numeric(dt: &DataType) -> bool {
+    fn is_integer(dt: &DataType) -> bool {
         matches!(
             dt,
             DataType::Int8
@@ -171,9 +171,12 @@ fn is_safe_cast(from_type: &DataType, to_type: &DataType) -> bool {
                 | DataType::UInt16
                 | DataType::UInt32
                 | DataType::UInt64
-                | DataType::Float16
-                | DataType::Float32
-                | DataType::Float64
+        )
+    }
+    fn is_float(dt: &DataType) -> bool {
+        matches!(
+            dt,
+            DataType::Float16 | DataType::Float32 | DataType::Float64
         )
     }
     fn is_list_like(dt: &DataType) -> bool {
@@ -182,10 +185,23 @@ fn is_safe_cast(from_type: &DataType, to_type: &DataType) -> bool {
             DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(_, _)
         )
     }
-    // Allow numeric ↔ numeric (may fail at runtime with overflow, but is semantically intended).
-    // Allow string variant ↔ string variant (Utf8/LargeUtf8/Utf8View are interchangeable).
-    // Allow list-like ↔ list-like (e.g. List → FixedSizeList for embedding vectors).
-    (is_numeric(from_type) && is_numeric(to_type))
+    // int↔int: may overflow at runtime, but semantically intended.
+    // float↔float: same.
+    // int→float: always produces a value (may lose precision for large i64→f32).
+    // float→int: REJECTED. Arrow's safe:false does not error on truncation (1.5→1 silently),
+    //   so this would silently corrupt data for non-integer float values.
+    (is_integer(from_type) && is_integer(to_type))
+        || (is_float(from_type) && is_float(to_type))
+        || (is_integer(from_type) && is_float(to_type))
+        // Decimal: same precision and scale, different storage width (128 vs 256).
+        || match (from_type, to_type) {
+            (DataType::Decimal128(p1, s1), DataType::Decimal256(p2, s2))
+            | (DataType::Decimal256(p1, s1), DataType::Decimal128(p2, s2)) => {
+                p1 == p2 && s1 == s2
+            }
+            _ => false,
+        }
+        // String variants are interchangeable encodings.
         || matches!(
             (from_type, to_type),
             (
@@ -193,6 +209,15 @@ fn is_safe_cast(from_type: &DataType, to_type: &DataType) -> bool {
                 DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View,
             )
         )
+        // Binary variants are interchangeable encodings.
+        || matches!(
+            (from_type, to_type),
+            (
+                DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
+                DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
+            )
+        )
+        // List-like variants for embedding vectors.
         || (is_list_like(from_type) && is_list_like(to_type))
 }
 
@@ -201,8 +226,8 @@ mod tests {
     use std::sync::Arc;
 
     use arrow_array::{
-        Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, StructArray,
-        UInt32Array, UInt64Array,
+        BinaryArray, Decimal128Array, Float32Array, Float64Array, Int32Array, Int64Array,
+        LargeBinaryArray, RecordBatch, StringArray, StructArray, UInt32Array, UInt64Array,
     };
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::prelude::SessionContext;
@@ -602,5 +627,106 @@ mod tests {
         let stream = casted.execute(0, ctx.task_ctx()).unwrap();
         let result: Result<Vec<RecordBatch>, _> = stream.try_collect().await;
         assert!(result.is_err(), "expected overflow error at execution time");
+    }
+
+    #[tokio::test]
+    async fn test_float_to_int_rejected() {
+        // Arrow's safe:false does not error on truncation (1.5 → 1 silently), so
+        // float→int must be rejected at plan time rather than relying on runtime errors.
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Float64, false)])),
+            vec![Arc::new(Float64Array::from(vec![1.5f64]))],
+        )
+        .unwrap();
+
+        let table_schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
+
+        let plan = plan_from_batch(input_batch).await;
+        let result = cast_to_table_schema(plan, &table_schema);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("cannot cast field 'a'"),
+            "unexpected error: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_binary_variants_cast() {
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Binary, false)])),
+            vec![Arc::new(BinaryArray::from_vec(vec![b"hello", b"world"]))],
+        )
+        .unwrap();
+
+        let table_schema = Schema::new(vec![Field::new("a", DataType::LargeBinary, false)]);
+
+        let plan = plan_from_batch(input_batch).await;
+        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
+        let result = collect(casted).await;
+
+        assert_eq!(result.schema().field(0).data_type(), &DataType::LargeBinary);
+        let a: &LargeBinaryArray = result.column(0).as_any().downcast_ref().unwrap();
+        assert_eq!(a.value(0), b"hello");
+        assert_eq!(a.value(1), b"world");
+    }
+
+    #[tokio::test]
+    async fn test_decimal_same_ps_different_width() {
+        // Decimal128 → Decimal256 with identical precision and scale is a pure
+        // storage-width change and must succeed.
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "a",
+                DataType::Decimal128(10, 2),
+                false,
+            )])),
+            vec![Arc::new(
+                Decimal128Array::from(vec![12345i128])
+                    .with_precision_and_scale(10, 2)
+                    .unwrap(),
+            )],
+        )
+        .unwrap();
+
+        let table_schema = Schema::new(vec![Field::new("a", DataType::Decimal256(10, 2), false)]);
+
+        let plan = plan_from_batch(input_batch).await;
+        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
+        let result = collect(casted).await;
+
+        assert_eq!(
+            result.schema().field(0).data_type(),
+            &DataType::Decimal256(10, 2)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_decimal_different_ps_rejected() {
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "a",
+                DataType::Decimal128(10, 2),
+                false,
+            )])),
+            vec![Arc::new(
+                Decimal128Array::from(vec![12345i128])
+                    .with_precision_and_scale(10, 2)
+                    .unwrap(),
+            )],
+        )
+        .unwrap();
+
+        // Different scale — rejected even though it's Decimal128→Decimal256.
+        let table_schema = Schema::new(vec![Field::new("a", DataType::Decimal256(10, 4), false)]);
+
+        let plan = plan_from_batch(input_batch).await;
+        let result = cast_to_table_schema(plan, &table_schema);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("cannot cast field 'a'"),
+            "unexpected error: {err_msg}"
+        );
     }
 }
