@@ -773,11 +773,21 @@ impl RemoteOptions {
     pub fn new(options: HashMap<String, String>) -> Self {
         Self(options)
     }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.0.get(key)
+    }
 }
 
 impl From<StorageOptions> for RemoteOptions {
     fn from(options: StorageOptions) -> Self {
-        let supported_opts = vec!["account_name", "azure_storage_account_name"];
+        let supported_opts = vec![
+            "account_name",
+            "azure_storage_account_name",
+            "azure_tenant_id",
+            "azure_client_id",
+            "azure_federated_token_file",
+        ];
         let mut filtered = HashMap::new();
         for opt in supported_opts {
             if let Some(v) = options.0.get(opt) {
