@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 pub mod rrf;
 
 /// column name for reranker relevance score
-const RELEVANCE_SCORE: &str = "_relevance_score";
+pub(crate) const RELEVANCE_SCORE: &str = "_relevance_score";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NormalizeMethod {

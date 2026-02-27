@@ -99,6 +99,27 @@ pub fn empty_vec_schema() -> Schema {
     ])
 }
 
+/// Build an empty schema that includes table columns plus score column and _rowid.
+/// Used when sub-queries return no batches, to preserve table schema in empty results.
+pub fn build_empty_schema_with_table_columns(
+    table_schema: &arrow_schema::SchemaRef,
+    score_col: &str,
+) -> Schema {
+    let mut fields: Vec<Arc<Field>> = table_schema
+        .fields()
+        .iter()
+        .cloned()
+        .collect();
+
+    // Add score column (_score or _distance)
+    fields.push(Arc::new(Field::new(score_col, DataType::Float32, true)));
+
+    // Add _rowid
+    fields.push(Arc::new(Field::new(ROW_ID, DataType::UInt64, false)));
+
+    Schema::new(fields)
+}
+
 pub fn with_field_name_replaced(schema: &Schema, target: &str, replacement: &str) -> Schema {
     let field_idx = schema.fields().iter().enumerate().find_map(|(i, field)| {
         if field.name() == target {
