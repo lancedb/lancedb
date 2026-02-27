@@ -882,3 +882,105 @@ def test_fts_query_to_json():
         '"must_not":[]}}'
     )
     assert json_str == expected
+
+
+def test_fts_fast_search(table):
+    table.create_fts_index("text", use_tantivy=False)
+
+    # Insert some unindexed data
+    table.add(
+        [
+            {
+                "text": "xyz",
+                "vector": [0 for _ in range(128)],
+                "id": 101,
+                "text2": "xyz",
+                "nested": {"text": "xyz"},
+                "count": 10,
+            }
+        ]
+    )
+
+    # Without fast_search, the query object should not have fast_search set
+    builder = table.search("xyz", query_type="fts").limit(10)
+    query = builder.to_query_object()
+    assert query.fast_search is None
+
+    # With fast_search, the query object should have fast_search=True
+    builder = table.search("xyz", query_type="fts").fast_search().limit(10)
+    query = builder.to_query_object()
+    assert query.fast_search is True
+
+    # fast_search should be chainable with other methods
+    builder = (
+        table.search("xyz", query_type="fts").fast_search().select(["text"]).limit(5)
+    )
+    query = builder.to_query_object()
+    assert query.fast_search is True
+    assert query.limit == 5
+    assert query.columns == ["text"]
+
+    # Verify it executes without error and skips unindexed data
+    results = table.search("xyz", query_type="fts").fast_search().limit(5).to_list()
+    assert len(results) == 0
+
+    # Update index and verify it returns results
+    table.optimize()
+    results = table.search("xyz", query_type="fts").fast_search().limit(5).to_list()
+    assert len(results) > 0
+
+
+@pytest.mark.asyncio
+async def test_fts_fast_search_async(async_table):
+    await async_table.create_index("text", config=FTS())
+
+    # Insert some unindexed data
+    await async_table.add(
+        [
+            {
+                "text": "xyz",
+                "vector": [0 for _ in range(128)],
+                "id": 101,
+                "text2": "xyz",
+                "nested": {"text": "xyz"},
+                "count": 10,
+            }
+        ]
+    )
+
+    # Without fast_search, should return results
+    results = await async_table.query().nearest_to_text("xyz").limit(5).to_list()
+    assert len(results) > 0
+
+    # With fast_search, should return no results data unindexed
+    fast_results = (
+        await async_table.query()
+        .nearest_to_text("xyz")
+        .fast_search()
+        .limit(5)
+        .to_list()
+    )
+    assert len(fast_results) == 0
+
+    # Update index and verify it returns results
+    await async_table.optimize()
+
+    fast_results = (
+        await async_table.query()
+        .nearest_to_text("xyz")
+        .fast_search()
+        .limit(5)
+        .to_list()
+    )
+    assert len(fast_results) > 0
+
+    # fast_search should be chainable with other methods
+    results = (
+        await async_table.query()
+        .nearest_to_text("xyz")
+        .fast_search()
+        .select(["text"])
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) > 0

@@ -1462,6 +1462,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
         self._reranker = None
+        self._fast_search = None
         if isinstance(fts_columns, str):
             fts_columns = [fts_columns]
         self._fts_columns = fts_columns
@@ -1483,6 +1484,19 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         self._phrase_query = phrase_query
         return self
 
+    def fast_search(self) -> LanceFtsQueryBuilder:
+        """
+        Skip a flat search of unindexed data. This will improve
+        search performance but search results will not include unindexed data.
+
+        Returns
+        -------
+        LanceFtsQueryBuilder
+            The LanceFtsQueryBuilder object.
+        """
+        self._fast_search = True
+        return self
+
     def to_query_object(self) -> Query:
         return Query(
             columns=self._columns,
@@ -1494,6 +1508,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 query=self._query, columns=self._fts_columns
             ),
             offset=self._offset,
+            fast_search=self._fast_search,
         )
 
     def output_schema(self) -> pa.Schema:
