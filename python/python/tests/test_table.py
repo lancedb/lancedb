@@ -326,6 +326,24 @@ def test_add_struct(mem_db: DBConnection):
     table = mem_db.create_table("test2", schema=schema)
     table.add(data)
 
+    struct_type = pa.struct(
+        [
+            ("b", pa.int64()),
+            ("a", pa.int64()),
+        ]
+    )
+    expected = pa.table(
+        {
+            "s_list": [
+                [
+                    pa.scalar({"b": 1, "a": 2}, type=struct_type),
+                    pa.scalar({"b": 4, "a": None}, type=struct_type),
+                ]
+            ],
+        }
+    )
+    assert table.to_arrow() == expected
+
 
 def test_add_subschema(mem_db: DBConnection):
     schema = pa.schema(

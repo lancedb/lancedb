@@ -116,7 +116,7 @@ fn build_field_exprs(
 
                 result.push((ns_expr, output_field));
                 continue;
-            }
+            },
             // Types match: pass through.
             (inp, tbl) if inp == tbl => input_expr,
             // Same type family (e.g. numeric↔numeric): attempt the cast.
@@ -187,6 +187,18 @@ fn is_safe_cast(from_type: &DataType, to_type: &DataType) -> bool {
         (DataType::List(from_field), DataType::List(to_field)) => {
             is_safe_cast(from_field.data_type(), to_field.data_type())
         }
+        // Struct: safe if every input field exists in the target with a compatible type.
+        // Arrow's cast kernel matches struct fields by name, filling missing target fields
+        // with null. Extra input fields (absent from the target) are rejected here because
+        // silently dropping data would be surprising.
+        (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
+            from_fields.iter().all(|f| {
+                to_fields
+                    .find(f.name())
+                    .map(|(_, tf)| is_safe_cast(f.data_type(), tf.data_type()))
+                    .unwrap_or(false)
+            })
+        }
         (DataType::Int64, DataType::Float64) => true, // Allow int→float upcast.
         (from, to) if from == to => true,             // Same type (after normalization).
         _ => false,
@@ -198,10 +210,12 @@ mod tests {
     use std::sync::Arc;
 
     use arrow_array::{
-        BinaryArray, Decimal128Array, Float32Array, Float64Array, Int32Array, Int64Array,
-        LargeBinaryArray, RecordBatch, StringArray, StructArray, UInt32Array, UInt64Array,
+        Array, BinaryArray, Decimal128Array, Float32Array, Float64Array, Int32Array, Int64Array,
+        LargeBinaryArray, ListArray, RecordBatch, StringArray, StructArray, UInt32Array,
+        UInt64Array,
     };
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow::buffer::OffsetBuffer;
+    use arrow_schema::{DataType, Field, Fields, Schema};
     use datafusion::prelude::SessionContext;
     use datafusion_catalog::MemTable;
     use futures::TryStreamExt;
@@ -700,6 +714,164 @@ mod tests {
             err_msg.contains("cannot cast field 'a'"),
             "unexpected error: {err_msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_list_struct_field_reorder() {
+        // list<struct<a: Int32, b: Int32>> → list<struct<b: Int64, a: Int64>>
+        // Tests both reordering (a,b → b,a) and element-type widening (Int32 → Int64).
+        let inner_fields: Fields = vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Int32, true),
+        ]
+        .into();
+        let struct_array = StructArray::from(vec![
+            (
+                Arc::new(inner_fields[0].as_ref().clone()),
+                Arc::new(Int32Array::from(vec![1, 3])) as _,
+            ),
+            (
+                Arc::new(inner_fields[1].as_ref().clone()),
+                Arc::new(Int32Array::from(vec![2, 4])) as _,
+            ),
+        ]);
+        // Offsets: one list element containing two struct rows (0..2).
+        let offsets = OffsetBuffer::from_lengths(vec![2]);
+        let list_array = ListArray::try_new(
+            Arc::new(Field::new("item", DataType::Struct(inner_fields), true)),
+            offsets,
+            Arc::new(struct_array),
+            None,
+        )
+        .unwrap();
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "s_list",
+                list_array.data_type().clone(),
+                false,
+            )])),
+            vec![Arc::new(list_array)],
+        )
+        .unwrap();
+
+        let table_inner: Fields = vec![
+            Field::new("b", DataType::Int64, true),
+            Field::new("a", DataType::Int64, true),
+        ]
+        .into();
+        let table_schema = Schema::new(vec![Field::new(
+            "s_list",
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Struct(table_inner),
+                true,
+            ))),
+            false,
+        )]);
+
+        let plan = plan_from_batch(input_batch).await;
+        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
+        let result = collect(casted).await;
+
+        let list_col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        let struct_col = list_col
+            .values()
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        assert_eq!(struct_col.num_columns(), 2);
+
+        let b: &Int64Array = struct_col
+            .column_by_name("b")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        assert_eq!(b.values(), &[2, 4]);
+        let a: &Int64Array = struct_col
+            .column_by_name("a")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        assert_eq!(a.values(), &[1, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_list_struct_missing_field_filled_with_null() {
+        // list<struct<b: Int64>> → list<struct<b: Int64, a: Int64>>
+        // "a" is absent from the input; it should be filled with null.
+        let inner_fields: Fields = vec![Field::new("b", DataType::Int64, true)].into();
+        let struct_array = StructArray::from(vec![(
+            Arc::new(inner_fields[0].as_ref().clone()),
+            Arc::new(Int64Array::from(vec![7i64])) as _,
+        )]);
+        let offsets = OffsetBuffer::from_lengths(vec![1]);
+        let list_array = ListArray::try_new(
+            Arc::new(Field::new("item", DataType::Struct(inner_fields), true)),
+            offsets,
+            Arc::new(struct_array),
+            None,
+        )
+        .unwrap();
+        let input_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "s_list",
+                list_array.data_type().clone(),
+                false,
+            )])),
+            vec![Arc::new(list_array)],
+        )
+        .unwrap();
+
+        let table_inner: Fields = vec![
+            Field::new("b", DataType::Int64, true),
+            Field::new("a", DataType::Int64, true),
+        ]
+        .into();
+        let table_schema = Schema::new(vec![Field::new(
+            "s_list",
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Struct(table_inner),
+                true,
+            ))),
+            false,
+        )]);
+
+        let plan = plan_from_batch(input_batch).await;
+        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
+        let result = collect(casted).await;
+
+        let list_col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        let struct_col = list_col
+            .values()
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+
+        let b: &Int64Array = struct_col
+            .column_by_name("b")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        assert_eq!(b.value(0), 7);
+        let a: &Int64Array = struct_col
+            .column_by_name("a")
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
+        assert!(a.is_null(0));
     }
 
     #[test]
