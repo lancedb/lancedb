@@ -168,7 +168,8 @@ fn get_value_type(data_type: &DataType) -> DataType {
         | DataType::UInt32
         | DataType::UInt64 => DataType::Int64,
         DataType::Float16 | DataType::Float32 => DataType::Float64,
-        DataType::ListView(field)
+        DataType::LargeList(field)
+        | DataType::ListView(field)
         | DataType::LargeListView(field)
         | DataType::FixedSizeList(field, _) => DataType::List(field.clone()),
         other => other.clone(),
@@ -205,7 +206,7 @@ mod tests {
     use datafusion_catalog::MemTable;
     use futures::TryStreamExt;
 
-    use super::cast_to_table_schema;
+    use super::{cast_to_table_schema, is_safe_cast};
 
     async fn plan_from_batch(
         batch: RecordBatch,
@@ -699,5 +700,21 @@ mod tests {
             err_msg.contains("cannot cast field 'a'"),
             "unexpected error: {err_msg}"
         );
+    }
+
+    #[test]
+    fn test_safe_casts() {
+        // Allowed casts:
+        assert!(is_safe_cast(&DataType::Int32, &DataType::Int64));
+        assert!(is_safe_cast(&DataType::UInt32, &DataType::Int64));
+        assert!(is_safe_cast(&DataType::Int64, &DataType::Float64));
+        assert!(is_safe_cast(
+            &DataType::LargeList(Arc::new(Field::new("item", DataType::Float64, false))),
+            &DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float16, false)), 32)
+        ));
+
+        // Disallowed casts:
+        assert!(!is_safe_cast(&DataType::Int32, &DataType::Utf8));
+        assert!(!is_safe_cast(&DataType::Float64, &DataType::Int32));
     }
 }
