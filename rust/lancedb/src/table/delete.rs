@@ -7,6 +7,9 @@ use crate::Result;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct DeleteResult {
+    /// The number of rows that were deleted.
+    #[serde(default)]
+    pub num_deleted_rows: u64,
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
@@ -20,10 +23,14 @@ pub struct DeleteResult {
 pub(crate) async fn execute_delete(table: &NativeTable, predicate: &str) -> Result<DeleteResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
-    dataset.delete(predicate).await?;
+    let delete_result = dataset.delete(predicate).await?;
+    let num_deleted_rows = delete_result.num_deleted_rows;
     let version = dataset.version().version;
     table.dataset.update(dataset);
-    Ok(DeleteResult { version })
+    Ok(DeleteResult {
+        num_deleted_rows,
+        version,
+    })
 }
 
 #[cfg(test)]

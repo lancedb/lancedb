@@ -1227,7 +1227,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = response.text().await.err_to_http(request_id.clone())?;
         if body.trim().is_empty() {
             // Backward compatible with old servers
-            return Ok(DeleteResult { version: 0 });
+            return Ok(DeleteResult {
+                num_deleted_rows: 0,
+                version: 0,
+            });
         }
         let delete_response: DeleteResult =
             serde_json::from_str(&body).map_err(|e| Error::Http {
