@@ -209,12 +209,12 @@ fn is_safe_cast(from_type: &DataType, to_type: &DataType) -> bool {
 mod tests {
     use std::sync::Arc;
 
+    use arrow::buffer::OffsetBuffer;
     use arrow_array::{
         Array, BinaryArray, Decimal128Array, Float32Array, Float64Array, Int32Array, Int64Array,
         LargeBinaryArray, ListArray, RecordBatch, StringArray, StructArray, UInt32Array,
         UInt64Array,
     };
-    use arrow::buffer::OffsetBuffer;
     use arrow_schema::{DataType, Field, Fields, Schema};
     use datafusion::prelude::SessionContext;
     use datafusion_catalog::MemTable;
