@@ -185,6 +185,7 @@ fn is_safe_cast(from_type: &DataType, to_type: &DataType) -> bool {
     // int→float: always produces a value (may lose precision for large i64→f32).
     // float→int: REJECTED. Arrow's safe:false does not error on truncation (1.5→1 silently),
     //   so this would silently corrupt data for non-integer float values.
+    matches!(from_type, DataType::Null) ||
     (is_integer(from_type) && is_integer(to_type))
         || (is_float(from_type) && is_float(to_type))
         || (is_integer(from_type) && is_float(to_type))
