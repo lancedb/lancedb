@@ -152,69 +152,44 @@ fn build_field_exprs(
     Ok(result)
 }
 
+/// Normalize a data type by removing encodings and converting to canonical forms.
+fn get_value_type(data_type: &DataType) -> DataType {
+    match data_type {
+        DataType::Dictionary(_, value_type) => get_value_type(value_type.as_ref()),
+        DataType::RunEndEncoded(_, value_field) => get_value_type(value_field.data_type()),
+        DataType::LargeUtf8 | DataType::Utf8View => DataType::Utf8,
+        DataType::LargeBinary | DataType::BinaryView => DataType::Binary,
+        DataType::Decimal32(p, s) | DataType::Decimal64(p, s) | DataType::Decimal128(p, s) => {
+            DataType::Decimal256(*p, *s)
+        }
+        DataType::Int16
+        | DataType::Int32
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64 => DataType::Int64,
+        DataType::Float16 | DataType::Float32 => DataType::Float64,
+        DataType::ListView(field)
+        | DataType::LargeListView(field)
+        | DataType::FixedSizeList(field, _) => DataType::List(field.clone()),
+        other => other.clone(),
+    }
+}
+
 /// Returns true if `from_type` and `to_type` are in the same type family and can be
 /// implicitly cast. Cross-family casts (e.g. numeric → string) are rejected.
 fn is_safe_cast(from_type: &DataType, to_type: &DataType) -> bool {
-    fn is_integer(dt: &DataType) -> bool {
-        matches!(
-            dt,
-            DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::UInt8
-                | DataType::UInt16
-                | DataType::UInt32
-                | DataType::UInt64
-        )
-    }
-    fn is_float(dt: &DataType) -> bool {
-        matches!(
-            dt,
-            DataType::Float16 | DataType::Float32 | DataType::Float64
-        )
-    }
-    fn is_list_like(dt: &DataType) -> bool {
-        matches!(
-            dt,
-            DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(_, _)
-        )
-    }
-    // int↔int: may overflow at runtime, but semantically intended.
-    // float↔float: same.
-    // int→float: always produces a value (may lose precision for large i64→f32).
-    // float→int: REJECTED. Arrow's safe:false does not error on truncation (1.5→1 silently),
-    //   so this would silently corrupt data for non-integer float values.
-    matches!(from_type, DataType::Null) ||
-    (is_integer(from_type) && is_integer(to_type))
-        || (is_float(from_type) && is_float(to_type))
-        || (is_integer(from_type) && is_float(to_type))
-        // Decimal: same precision and scale, different storage width (128 vs 256).
-        || match (from_type, to_type) {
-            (DataType::Decimal128(p1, s1), DataType::Decimal256(p2, s2))
-            | (DataType::Decimal256(p1, s1), DataType::Decimal128(p2, s2)) => {
-                p1 == p2 && s1 == s2
-            }
-            _ => false,
+    let from_type = get_value_type(from_type);
+    let to_type = get_value_type(to_type);
+
+    match (from_type, to_type) {
+        (DataType::Null, _) => true, // Can cast null to any type.
+        (DataType::List(from_field), DataType::List(to_field)) => {
+            is_safe_cast(from_field.data_type(), to_field.data_type())
         }
-        // String variants are interchangeable encodings.
-        || matches!(
-            (from_type, to_type),
-            (
-                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View,
-                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View,
-            )
-        )
-        // Binary variants are interchangeable encodings.
-        || matches!(
-            (from_type, to_type),
-            (
-                DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
-                DataType::Binary | DataType::LargeBinary | DataType::BinaryView,
-            )
-        )
-        // List-like variants for embedding vectors.
-        || (is_list_like(from_type) && is_list_like(to_type))
+        (DataType::Int64, DataType::Float64) => true, // Allow int→float upcast.
+        (from, to) if from == to => true,             // Same type (after normalization).
+        _ => false,
+    }
 }
 
 #[cfg(test)]
