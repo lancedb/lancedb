@@ -450,6 +450,31 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
   },
 );
 
+describe("delete", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const conn = await connect(tmpDir.name);
+    table = await conn.createTable("delete_test", [
+      { id: 1, value: "a" },
+      { id: 2, value: "b" },
+      { id: 3, value: "c" },
+      { id: 4, value: "d" },
+      { id: 5, value: "e" },
+    ]);
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  test("returns num_deleted_rows", async () => {
+    const result = await table.delete("id > 3");
+    expect(result.numDeletedRows).toBe(2);
+    expect(result.version).toBe(2);
+    expect(await table.countRows()).toBe(3);
+  });
+});
+
 describe("merge insert", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;
