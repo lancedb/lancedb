@@ -27,7 +27,7 @@
 ///
 /// The btree index does not currently have any parameters though parameters such as the
 /// block size may be added in the future.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, serde::Serialize)]
 pub struct BTreeIndexBuilder {}
 
 impl BTreeIndexBuilder {}
@@ -39,7 +39,7 @@ impl BTreeIndexBuilder {}
 /// This index works best for low-cardinality (i.e., less than 1000 unique values) columns,
 /// where the number of unique values is small.
 /// The bitmap stores a list of row ids where the value is present.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct BitmapIndexBuilder {}
 
 /// Builder for LabelList index.
@@ -48,7 +48,7 @@ pub struct BitmapIndexBuilder {}
 /// support queries with `array_contains_all` and `array_contains_any`
 /// using an underlying bitmap index.
 ///
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LabelListIndexBuilder {}
 
 pub use lance_index::scalar::inverted::query::*;
