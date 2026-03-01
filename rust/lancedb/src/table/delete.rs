@@ -116,6 +116,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_delete_returns_num_deleted_rows() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2, 3, 4, 5])).unwrap();
+        let table = conn
+            .create_table("test_num_deleted", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        // Delete 2 rows (id > 3 means id=4 and id=5)
+        let result = table.delete("id > 3").await.unwrap();
+        assert_eq!(result.num_deleted_rows, 2);
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        // Delete 0 rows (no rows match)
+        let result = table.delete("id > 100").await.unwrap();
+        assert_eq!(result.num_deleted_rows, 0);
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        // Delete remaining rows
+        let result = table.delete("true").await.unwrap();
+        assert_eq!(result.num_deleted_rows, 3);
+        assert_eq!(table.count_rows(None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
     async fn test_delete_false_increments_version() {
         let conn = connect("memory://").execute().await.unwrap();
 
