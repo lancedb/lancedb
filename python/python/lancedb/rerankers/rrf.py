@@ -42,9 +42,9 @@ class RRFReranker(Reranker):
     --------
     >>> reranker = RRFReranker(K=60)
     >>> # Vector search with reranking
-    >>> results = table.search(query_vector).rerank(reranker).to_arrow()
+    >>> results = table.search(query_vector).rerank(reranker).to_arrow()  # doctest: +SKIP
     >>> # Hybrid search with reranking
-    >>> results = table.search(query, query_type="hybrid").rerank(reranker).to_arrow()
+    >>> results = table.search(query, query_type="hybrid").rerank(reranker).to_arrow()  # doctest: +SKIP
 
     References
     ----------
