@@ -1299,9 +1299,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         message: format!("Column {} not found in schema", column),
                     })?;
                 if supported_vector_data_type(field.data_type()) {
-                    body[METRIC_TYPE_KEY] = serde_json::Value::String(
-                        DistanceType::L2.to_string().to_lowercase(),
-                    );
+                    body[METRIC_TYPE_KEY] =
+                        serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());
                     ("IVF_PQ", None)
                 } else if supported_btree_data_type(field.data_type()) {
                     ("BTREE", None)

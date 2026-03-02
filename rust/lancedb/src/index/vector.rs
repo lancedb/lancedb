@@ -182,8 +182,7 @@ macro_rules! impl_hnsw_params_setter {
 /// The partitioning process is called IVF and the `num_partitions` parameter controls how many groups to create.
 ///
 /// Note that training an IVF Flat index on a large dataset is a slow operation and currently is also a memory intensive operation.
-#[derive(Debug, Clone)]
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfFlatIndexBuilder {
     #[serde(rename = "metric_type")]
     pub(crate) distance_type: DistanceType,
@@ -218,8 +217,7 @@ impl IvfFlatIndexBuilder {
 ///
 /// This index compresses vectors using scalar quantization and groups them into IVF partitions.
 /// It offers a balance between search performance and storage footprint.
-#[derive(Debug, Clone)]
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfSqIndexBuilder {
     #[serde(rename = "metric_type")]
     pub(crate) distance_type: DistanceType,
@@ -270,8 +268,7 @@ impl IvfSqIndexBuilder {
 ///
 /// Note that training an IVF PQ index on a large dataset is a slow operation and
 /// currently is also a memory intensive operation.
-#[derive(Debug, Clone)]
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfPqIndexBuilder {
     #[serde(rename = "metric_type")]
     pub(crate) distance_type: DistanceType,
@@ -338,8 +335,7 @@ pub(crate) fn suggested_num_sub_vectors(dim: u32) -> u32 {
 ///
 /// Note that training an IVF RQ index on a large dataset is a slow operation and
 /// currently is also a memory intensive operation.
-#[derive(Debug, Clone)]
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfRqIndexBuilder {
     // IVF
     #[serde(rename = "metric_type")]
@@ -385,8 +381,7 @@ impl IvfRqIndexBuilder {
 /// quickly find the closest vectors to a query vector.
 ///
 /// The PQ (product quantizer) is used to compress the vectors as the same as IVF PQ.
-#[derive(Debug, Clone)]
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfHnswPqIndexBuilder {
     // IVF
     #[serde(rename = "metric_type")]
@@ -441,8 +436,7 @@ impl IvfHnswPqIndexBuilder {
 ///
 /// The SQ (scalar quantizer) is used to compress the vectors,
 /// each vector is mapped to a 8-bit integer vector, 4x compression ratio for float32 vector.
-#[derive(Debug, Clone)]
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfHnswSqIndexBuilder {
     // IVF
     #[serde(rename = "metric_type")]
