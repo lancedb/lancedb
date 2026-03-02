@@ -112,11 +112,7 @@ pub trait Reranker: std::fmt::Debug + Sync + Send {
     ///
     /// Returns [`Error::NotSupported`] by default. Override to provide
     /// FTS-only reranking.
-    async fn rerank_fts(
-        &self,
-        _query: &str,
-        _fts_results: RecordBatch,
-    ) -> Result<RecordBatch> {
+    async fn rerank_fts(&self, _query: &str, _fts_results: RecordBatch) -> Result<RecordBatch> {
         Err(Error::NotSupported {
             message: format!(
                 "{:?} does not implement FTS-only reranking. Only hybrid reranking is supported.",

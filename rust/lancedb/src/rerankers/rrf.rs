@@ -119,11 +119,7 @@ impl Reranker for RRFReranker {
         Ok(result)
     }
 
-    async fn rerank_fts(
-        &self,
-        _query: &str,
-        fts_results: RecordBatch,
-    ) -> Result<RecordBatch> {
+    async fn rerank_fts(&self, _query: &str, fts_results: RecordBatch) -> Result<RecordBatch> {
         // Extract row IDs
         let row_ids = fts_results
             .column_by_name(ROW_ID)

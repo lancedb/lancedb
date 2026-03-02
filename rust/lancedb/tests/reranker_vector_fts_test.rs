@@ -100,26 +100,22 @@ async fn test_rrf_reranker_vector_only_with_default_k() {
     let vec_results = RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(StringArray::from(vec!["first", "second", "third", "fourth"])),
+            Arc::new(StringArray::from(vec![
+                "first", "second", "third", "fourth",
+            ])),
             Arc::new(UInt64Array::from(vec![100, 200, 300, 400])),
         ],
     )
     .unwrap();
 
     let reranker = RRFReranker::default(); // Uses k=60
-    let result = reranker
-        .rerank_vector("test", vec_results)
-        .await
-        .unwrap();
+    let result = reranker.rerank_vector("test", vec_results).await.unwrap();
 
     // Verify all results are present
     assert_eq!(4, result.num_rows());
 
     // Verify schema includes relevance score
-    assert!(result
-        .schema()
-        .column_with_name(RELEVANCE_SCORE)
-        .is_some());
+    assert!(result.schema().column_with_name(RELEVANCE_SCORE).is_some());
 
     // Verify scores are in descending order
     let scores = result
