@@ -112,19 +112,24 @@ impl From<lancedb::table::AddResult> for AddResult {
 #[pyclass(get_all)]
 #[derive(Clone, Debug)]
 pub struct DeleteResult {
+    pub num_deleted_rows: u64,
     pub version: u64,
 }
 
 #[pymethods]
 impl DeleteResult {
     pub fn __repr__(&self) -> String {
-        format!("DeleteResult(version={})", self.version)
+        format!(
+            "DeleteResult(num_deleted_rows={}, version={})",
+            self.num_deleted_rows, self.version
+        )
     }
 }
 
 impl From<lancedb::table::DeleteResult> for DeleteResult {
     fn from(result: lancedb::table::DeleteResult) -> Self {
         Self {
+            num_deleted_rows: result.num_deleted_rows,
             version: result.version,
         }
     }
