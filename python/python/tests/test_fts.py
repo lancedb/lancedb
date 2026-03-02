@@ -27,6 +27,7 @@ from lancedb.query import (
     PhraseQuery,
     BooleanQuery,
     Occur,
+    LanceFtsQueryBuilder,
 )
 import numpy as np
 import pyarrow as pa
@@ -919,6 +920,10 @@ def test_fts_fast_search(table):
     assert query.fast_search is True
     assert query.limit == 5
     assert query.columns == ["text"]
+
+    # fast_search should be enabled by keyword argument too
+    query = LanceFtsQueryBuilder(table, "xyz", fast_search=True).to_query_object()
+    assert query.fast_search is True
 
     # Verify it executes without error and skips unindexed data
     results = table.search("xyz", query_type="fts").fast_search().limit(5).to_list()
