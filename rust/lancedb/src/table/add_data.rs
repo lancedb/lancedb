@@ -54,6 +54,7 @@ pub struct AddDataBuilder {
     pub(crate) on_nan_vectors: NaNVectorBehavior,
     pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     pub(crate) progress_callback: Option<ProgressCallback>,
+    pub(crate) write_parallelism: Option<usize>,
 }
 
 impl std::fmt::Debug for AddDataBuilder {
@@ -80,6 +81,7 @@ impl AddDataBuilder {
             on_nan_vectors: NaNVectorBehavior::default(),
             embedding_registry,
             progress_callback: None,
+            write_parallelism: None,
         }
     }
 
@@ -125,6 +127,15 @@ impl AddDataBuilder {
         callback: impl Fn(&super::datafusion::progress::WriteProgress) + Send + Sync + 'static,
     ) -> Self {
         self.progress_callback = Some(Arc::new(callback));
+        self
+    }
+
+    /// Set the number of parallel write streams.
+    ///
+    /// By default, the number of streams is estimated from the data size.
+    /// Setting this to `1` disables parallel writes.
+    pub fn write_parallelism(mut self, parallelism: usize) -> Self {
+        self.write_parallelism = Some(parallelism.max(1));
         self
     }
 

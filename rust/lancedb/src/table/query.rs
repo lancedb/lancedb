@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use super::NativeTable;
 use crate::error::{Error, Result};
+use crate::expr::expr_to_sql_string;
 use crate::query::{
     QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest, DEFAULT_TOP_K,
 };
@@ -452,14 +453,12 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
 
 fn filter_to_sql(filter: &QueryFilter) -> Result<String> {
     match filter {
-            QueryFilter::Sql(sql) => Ok(sql.clone()),
-            QueryFilter::Substrait(_) => Err(Error::NotSupported {
-                message: "Substrait filters are not supported for server-side queries".to_string(),
-            }),
-            QueryFilter::Datafusion(_) => Err(Error::NotSupported {
-                message: "Datafusion expression filters are not supported for server-side queries. Use SQL filter instead.".to_string(),
-            }),
-        }
+        QueryFilter::Sql(sql) => Ok(sql.clone()),
+        QueryFilter::Substrait(_) => Err(Error::NotSupported {
+            message: "Substrait filters are not supported for server-side queries".to_string(),
+        }),
+        QueryFilter::Datafusion(expr) => expr_to_sql_string(expr),
+    }
 }
 
 /// Extract query vector(s) from Arrow arrays into the namespace format.
