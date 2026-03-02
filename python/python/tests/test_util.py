@@ -121,6 +121,34 @@ def test_value_to_sql_string(tmp_path):
         assert table.to_pandas().query("search == @value")["replace"].item() == value
 
 
+def test_value_to_sql_dict():
+    # Simple flat struct
+    assert value_to_sql({"a": 1, "b": "hello"}) == "named_struct('a', 1, 'b', 'hello')"
+
+    # Nested struct
+    assert (
+        value_to_sql({"outer": {"inner": 1}})
+        == "named_struct('outer', named_struct('inner', 1))"
+    )
+
+    # List inside struct
+    assert (
+        value_to_sql({"a": [1, 2]}) == "named_struct('a', [1, 2])"
+    )
+
+    # Mixed types
+    assert (
+        value_to_sql({"name": "test", "count": 42, "rate": 3.14, "active": True})
+        == "named_struct('name', 'test', 'count', 42, 'rate', 3.14, 'active', TRUE)"
+    )
+
+    # Null value inside struct
+    assert value_to_sql({"a": None}) == "named_struct('a', NULL)"
+
+    # Empty dict
+    assert value_to_sql({}) == "named_struct()"
+
+
 def test_append_vector_columns():
     registry = EmbeddingFunctionRegistry.get_instance()
     registry.register("test")(MockTextEmbeddingFunction)
