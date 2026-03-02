@@ -218,8 +218,6 @@ class RemoteTable(Table):
         train: bool = True,
     ):
         """Create an index on the table.
-        Currently, the only parameters that matter are
-        the metric and the vector column name.
 
         Parameters
         ----------
@@ -250,11 +248,6 @@ class RemoteTable(Table):
         >>> table.create_index("l2", "vector") # doctest: +SKIP
         """
 
-        if num_sub_vectors is not None:
-            logging.warning(
-                "num_sub_vectors is not supported on LanceDB cloud."
-                "This parameter will be tuned automatically."
-            )
         if accelerator is not None:
             logging.warning(
                 "GPU accelerator is not yet supported on LanceDB cloud."
