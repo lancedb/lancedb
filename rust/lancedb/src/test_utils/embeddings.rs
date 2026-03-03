@@ -6,8 +6,8 @@ use std::{borrow::Cow, sync::Arc};
 use arrow_array::{Array, FixedSizeListArray, Float32Array};
 use arrow_schema::{DataType, Field};
 
-use crate::embeddings::EmbeddingFunction;
 use crate::Result;
+use crate::embeddings::EmbeddingFunction;
 
 #[derive(Debug, Clone)]
 pub struct MockEmbed {

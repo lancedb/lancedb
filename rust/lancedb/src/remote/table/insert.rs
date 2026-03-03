@@ -16,12 +16,12 @@ use datafusion_physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Plan
 use futures::StreamExt;
 use http::header::CONTENT_TYPE;
 
+use crate::Error;
+use crate::remote::ARROW_STREAM_CONTENT_TYPE;
 use crate::remote::client::{HttpSend, RestfulLanceDbClient, Sender};
 use crate::remote::table::RemoteTable;
-use crate::remote::ARROW_STREAM_CONTENT_TYPE;
-use crate::table::datafusion::insert::COUNT_SCHEMA;
 use crate::table::AddResult;
-use crate::Error;
+use crate::table::datafusion::insert::COUNT_SCHEMA;
 
 /// ExecutionPlan for inserting data into a remote LanceDB table.
 ///
@@ -309,12 +309,12 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema as ArrowSchema};
     use datafusion::prelude::SessionContext;
     use datafusion_catalog::MemTable;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use crate::Table;
     use crate::remote::ARROW_STREAM_CONTENT_TYPE;
     use crate::table::datafusion::BaseTableAdapter;
-    use crate::Table;
 
     fn schema_json() -> &'static str {
         r#"{"fields": [{"name": "id", "type": {"type": "int32"}, "nullable": true}]}"#

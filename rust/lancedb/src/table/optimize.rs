@@ -9,9 +9,9 @@
 use std::sync::Arc;
 
 use lance::dataset::cleanup::RemovalStats;
-use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
-use lance_index::optimize::OptimizeOptions;
+use lance::dataset::optimize::{CompactionMetrics, IndexRemapperOptions, compact_files};
 use lance_index::DatasetIndexExt;
+use lance_index::optimize::OptimizeOptions;
 use log::info;
 
 pub use chrono::Duration;
@@ -213,7 +213,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::connect;
-    use crate::index::{scalar::BTreeIndexBuilder, Index};
+    use crate::index::{Index, scalar::BTreeIndexBuilder};
     use crate::query::ExecutableQuery;
     use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
     use futures::TryStreamExt;

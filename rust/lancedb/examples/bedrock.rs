@@ -9,10 +9,9 @@ use aws_config::Region;
 use aws_sdk_bedrockruntime::Client;
 use futures::StreamExt;
 use lancedb::{
-    connect,
-    embeddings::{bedrock::BedrockEmbeddingFunction, EmbeddingDefinition, EmbeddingFunction},
+    Result, connect,
+    embeddings::{EmbeddingDefinition, EmbeddingFunction, bedrock::BedrockEmbeddingFunction},
     query::{ExecutableQuery, QueryBase},
-    Result,
 };
 
 #[tokio::main]

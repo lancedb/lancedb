@@ -2,10 +2,10 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use pyo3::{
+    PyErr, PyResult, Python,
     exceptions::{PyIOError, PyNotImplementedError, PyOSError, PyRuntimeError, PyValueError},
     intern,
     types::{PyAnyMethods, PyNone},
-    PyErr, PyResult, Python,
 };
 
 use lancedb::error::Error as LanceError;

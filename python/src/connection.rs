@@ -9,10 +9,10 @@ use lancedb::{
     database::{CreateTableMode, Database, ReadConsistency},
 };
 use pyo3::{
+    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
     types::{PyDict, PyDictMethods},
-    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 

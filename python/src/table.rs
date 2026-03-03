@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
-    index::{extract_index_params, IndexConfig},
+    index::{IndexConfig, extract_index_params},
     query::{Query, TakeQuery},
     table::scannable::PyScannable,
 };
@@ -19,10 +19,10 @@ use lancedb::table::{
     Table as LanceDbTable,
 };
 use pyo3::{
+    Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
     exceptions::{PyKeyError, PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
-    Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -542,7 +542,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let versions = inner.list_versions().await.infer_error()?;
-            let versions_as_dict = Python::attach(|py| {
+            Python::attach(|py| {
                 versions
                     .iter()
                     .map(|v| {
@@ -559,9 +559,7 @@ impl Table {
                         Ok(dict.unbind())
                     })
                     .collect::<PyResult<Vec<_>>>()
-            });
-
-            versions_as_dict
+            })
         })
     }
 

@@ -8,9 +8,9 @@ use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float32Array};
 use arrow_data::ArrayData;
 use arrow_schema::DataType;
 use async_openai::{
+    Client,
     config::OpenAIConfig,
     types::{CreateEmbeddingRequest, Embedding, EmbeddingInput, EncodingFormat},
-    Client,
 };
 use tokio::{runtime::Handle, task};
 

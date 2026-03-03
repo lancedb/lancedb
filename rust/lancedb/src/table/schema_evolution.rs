@@ -92,7 +92,7 @@ pub(crate) async fn execute_drop_columns(
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{record_batch, Int32Array, StringArray};
+    use arrow_array::{Int32Array, StringArray, record_batch};
     use arrow_schema::DataType;
     use futures::TryStreamExt;
     use lance::dataset::ColumnAlteration;

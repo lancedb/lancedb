@@ -16,6 +16,7 @@ use lance_namespace::models::{
     ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
 };
 
+use crate::Error;
 use crate::database::{
     CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
     OpenTableRequest, ReadConsistency, TableNamesRequest,
@@ -23,12 +24,11 @@ use crate::database::{
 use crate::error::Result;
 use crate::remote::util::stream_as_body;
 use crate::table::BaseTable;
-use crate::Error;
 
+use super::ARROW_STREAM_CONTENT_TYPE;
 use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender};
 use super::table::RemoteTable;
 use super::util::parse_server_version;
-use super::ARROW_STREAM_CONTENT_TYPE;
 
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
@@ -249,9 +249,9 @@ impl RemoteDatabase {
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
+    use crate::remote::ClientConfig;
     use crate::remote::client::test_utils::MockSender;
     use crate::remote::client::test_utils::{client_with_handler, client_with_handler_and_config};
-    use crate::remote::ClientConfig;
 
     impl RemoteDatabase<MockSender> {
         pub fn new_mock<F, T>(handler: F) -> Self
@@ -799,9 +799,9 @@ mod tests {
 
     use crate::connection::ConnectBuilder;
     use crate::{
-        database::CreateTableMode,
-        remote::{ClientConfig, HeaderProvider, ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
         Connection, Error,
+        database::CreateTableMode,
+        remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
     };
 
     #[test]

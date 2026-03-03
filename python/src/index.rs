@@ -3,17 +3,17 @@
 
 use lancedb::index::vector::{IvfFlatIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder};
 use lancedb::index::{
+    Index as LanceDbIndex,
     scalar::{BTreeIndexBuilder, FtsIndexBuilder},
     vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
-    Index as LanceDbIndex,
 };
-use pyo3::types::PyStringMethods;
 use pyo3::IntoPyObject;
+use pyo3::types::PyStringMethods;
 use pyo3::{
+    Bound, FromPyObject, PyAny, PyResult, Python,
     exceptions::{PyKeyError, PyValueError},
     intern, pyclass, pymethods,
     types::PyAnyMethods,
-    Bound, FromPyObject, PyAny, PyResult, Python,
 };
 
 use crate::util::parse_distance_type;
@@ -41,7 +41,12 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 let inner_opts = FtsIndexBuilder::default()
                     .base_tokenizer(params.base_tokenizer)
                     .language(&params.language)
-                    .map_err(|_| PyValueError::new_err(format!("LanceDB does not support the requested language: '{}'", params.language)))?
+                    .map_err(|_| {
+                        PyValueError::new_err(format!(
+                            "LanceDB does not support the requested language: '{}'",
+                            params.language
+                        ))
+                    })?
                     .with_position(params.with_position)
                     .lower_case(params.lower_case)
                     .max_token_length(params.max_token_length)
@@ -52,7 +57,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .ngram_max_length(params.ngram_max_length)
                     .ngram_prefix_only(params.prefix_only);
                 Ok(LanceDbIndex::FTS(inner_opts))
-            },
+            }
             "IvfFlat" => {
                 let params = source.extract::<IvfFlatParams>()?;
                 let distance_type = parse_distance_type(params.distance_type)?;
@@ -64,10 +69,11 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     ivf_flat_builder = ivf_flat_builder.num_partitions(num_partitions);
                 }
                 if let Some(target_partition_size) = params.target_partition_size {
-                    ivf_flat_builder = ivf_flat_builder.target_partition_size(target_partition_size);
+                    ivf_flat_builder =
+                        ivf_flat_builder.target_partition_size(target_partition_size);
                 }
                 Ok(LanceDbIndex::IvfFlat(ivf_flat_builder))
-            },
+            }
             "IvfPq" => {
                 let params = source.extract::<IvfPqParams>()?;
                 let distance_type = parse_distance_type(params.distance_type)?;
@@ -86,7 +92,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     ivf_pq_builder = ivf_pq_builder.num_sub_vectors(num_sub_vectors);
                 }
                 Ok(LanceDbIndex::IvfPq(ivf_pq_builder))
-            },
+            }
             "IvfSq" => {
                 let params = source.extract::<IvfSqParams>()?;
                 let distance_type = parse_distance_type(params.distance_type)?;
@@ -101,7 +107,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     ivf_sq_builder = ivf_sq_builder.target_partition_size(target_partition_size);
                 }
                 Ok(LanceDbIndex::IvfSq(ivf_sq_builder))
-            },
+            }
             "IvfRq" => {
                 let params = source.extract::<IvfRqParams>()?;
                 let distance_type = parse_distance_type(params.distance_type)?;
@@ -117,7 +123,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     ivf_rq_builder = ivf_rq_builder.target_partition_size(target_partition_size);
                 }
                 Ok(LanceDbIndex::IvfRq(ivf_rq_builder))
-            },
+            }
             "HnswPq" => {
                 let params = source.extract::<IvfHnswPqParams>()?;
                 let distance_type = parse_distance_type(params.distance_type)?;
@@ -138,7 +144,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     hnsw_pq_builder = hnsw_pq_builder.num_sub_vectors(num_sub_vectors);
                 }
                 Ok(LanceDbIndex::IvfHnswPq(hnsw_pq_builder))
-            },
+            }
             "HnswSq" => {
                 let params = source.extract::<IvfHnswSqParams>()?;
                 let distance_type = parse_distance_type(params.distance_type)?;
@@ -155,7 +161,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     hnsw_sq_builder = hnsw_sq_builder.target_partition_size(target_partition_size);
                 }
                 Ok(LanceDbIndex::IvfHnswSq(hnsw_sq_builder))
-            },
+            }
             not_supported => Err(PyValueError::new_err(format!(
                 "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, FTS, IvfPq, IvfSq, IvfHnswPq, or IvfHnswSq",
                 not_supported

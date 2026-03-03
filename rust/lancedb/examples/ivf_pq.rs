@@ -14,10 +14,10 @@ use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lancedb::connection::Connection;
 
-use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::index::Index;
+use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::query::{ExecutableQuery, QueryBase};
-use lancedb::{connect, DistanceType, Result, Table};
+use lancedb::{DistanceType, Result, Table, connect};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -51,19 +51,21 @@ fn create_some_records() -> Result<Box<dyn arrow_array::RecordBatchReader + Send
 
     // Create a RecordBatch stream.
     let batches = RecordBatchIterator::new(
-        vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
-                Arc::new(
-                    FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                        (0..TOTAL).map(|_| Some(vec![Some(1.0); DIM])),
-                        DIM as i32,
+        vec![
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
+                    Arc::new(
+                        FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                            (0..TOTAL).map(|_| Some(vec![Some(1.0); DIM])),
+                            DIM as i32,
+                        ),
                     ),
-                ),
-            ],
-        )
-        .unwrap()]
+                ],
+            )
+            .unwrap(),
+        ]
         .into_iter()
         .map(Ok),
         schema.clone(),

@@ -10,10 +10,10 @@ use futures::TryStreamExt;
 use lance_index::scalar::FullTextSearchQuery;
 use lancedb::connection::Connection;
 
-use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::index::Index;
+use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::query::{ExecutableQuery, QueryBase};
-use lancedb::{connect, Result, Table};
+use lancedb::{Result, Table, connect};
 use rand::random;
 
 #[tokio::main]
@@ -46,19 +46,21 @@ fn create_some_records() -> Result<Box<dyn arrow_array::RecordBatchReader + Send
         .collect::<Vec<_>>();
     let n_terms = 3;
     let batches = RecordBatchIterator::new(
-        vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
-                Arc::new(StringArray::from_iter_values((0..TOTAL).map(|_| {
-                    (0..n_terms)
-                        .map(|_| words[random::<u32>() as usize % words.len()])
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                }))),
-            ],
-        )
-        .unwrap()]
+        vec![
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
+                    Arc::new(StringArray::from_iter_values((0..TOTAL).map(|_| {
+                        (0..n_terms)
+                            .map(|_| words[random::<u32>() as usize % words.len()])
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    }))),
+                ],
+            )
+            .unwrap(),
+        ]
         .into_iter()
         .map(Ok),
         schema.clone(),

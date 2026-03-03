@@ -18,12 +18,12 @@ use lance_io::{
     scheduler::{ScanScheduler, SchedulerConfig},
     utils::CachedFileSize,
 };
-use rand::{seq::SliceRandom, Rng, RngCore};
+use rand::{Rng, RngCore, seq::SliceRandom};
 
 use crate::{
-    arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
-    dataloader::permutation::util::{non_crypto_rng, TemporaryDirectory},
     Error, Result,
+    arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
+    dataloader::permutation::util::{TemporaryDirectory, non_crypto_rng},
 };
 
 #[derive(Debug, Clone)]
@@ -281,7 +281,7 @@ mod tests {
     use datafusion_expr::col;
     use futures::TryStreamExt;
     use lance_datagen::{BatchCount, BatchGeneratorBuilder, ByteCount, RowCount, Seed};
-    use rand::{rngs::SmallRng, SeedableRng};
+    use rand::{SeedableRng, rngs::SmallRng};
 
     fn test_gen() -> BatchGeneratorBuilder {
         lance_datagen::gen_batch()

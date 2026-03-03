@@ -14,7 +14,7 @@ use futures::TryStreamExt;
 use lancedb::connection::Connection;
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase};
-use lancedb::{connect, Result, Table as LanceDbTable};
+use lancedb::{Result, Table as LanceDbTable, connect};
 
 #[tokio::main]
 async fn main() -> Result<()> {

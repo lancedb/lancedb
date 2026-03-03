@@ -12,7 +12,7 @@ use lance_datagen::{BatchCount, BatchGeneratorBuilder, RowCount};
 #[cfg(feature = "polars")]
 use {crate::polars_arrow_convertors, polars::frame::ArrowChunk, polars::prelude::DataFrame};
 
-use crate::{error::Result, Error};
+use crate::{Error, error::Result};
 
 /// An iterator of batches that also has a schema
 pub trait RecordBatchReader: Iterator<Item = Result<arrow_array::RecordBatch>> {

@@ -6,15 +6,14 @@ pub mod insert;
 use self::insert::RemoteInsertExec;
 use crate::expr::expr_to_sql_string;
 
+use super::ARROW_STREAM_CONTENT_TYPE;
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
-use super::ARROW_STREAM_CONTENT_TYPE;
-use crate::index::waiter::wait_for_index;
 use crate::index::Index;
 use crate::index::IndexStatistics;
+use crate::index::waiter::wait_for_index;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
-use crate::table::query::create_multi_vector_plan;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::AlterColumnsResult;
@@ -23,19 +22,20 @@ use crate::table::DropColumnsResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
+use crate::table::query::create_multi_vector_plan;
 use crate::table::{AnyQuery, Filter, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
+use crate::{DistanceType, Error};
 use crate::{
     error::Result,
     index::{IndexBuilder, IndexConfig},
     query::QueryExecutionOptions,
     table::{
-        merge::MergeInsertBuilder, AddDataBuilder, BaseTable, OptimizeAction, OptimizeStats,
-        TableDefinition, UpdateBuilder,
+        AddDataBuilder, BaseTable, OptimizeAction, OptimizeStats, TableDefinition, UpdateBuilder,
+        merge::MergeInsertBuilder,
     },
 };
-use crate::{DistanceType, Error};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
@@ -50,7 +50,7 @@ use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
-use lance_datafusion::exec::{execute_plan, OneShotExec};
+use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
@@ -612,8 +612,8 @@ impl<S: HttpSend> RemoteTable<S> {
                 message: format!(
                     "Cannot mutate table reference fixed at version {}. Call checkout_latest() to get a mutable table reference.",
                     version
-                )
-            })
+                ),
+            }),
         }
     }
 
@@ -697,10 +697,10 @@ impl<S: HttpSend> RemoteTable<S> {
             Error::Retry { status_code, .. } => *status_code,
             _ => None,
         };
-        if let Some(status_code) = status_code {
-            if Self::should_invalidate_cache_for_status(status_code) {
-                self.invalidate_schema_cache();
-            }
+        if let Some(status_code) = status_code
+            && Self::should_invalidate_cache_for_status(status_code)
+        {
+            self.invalidate_schema_cache();
         }
     }
 }
@@ -783,9 +783,9 @@ impl<S: HttpSend> std::fmt::Display for RemoteTable<S> {
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
-    use crate::remote::client::test_utils::client_with_handler;
-    use crate::remote::client::test_utils::{client_with_handler_and_config, MockSender};
     use crate::remote::ClientConfig;
+    use crate::remote::client::test_utils::client_with_handler;
+    use crate::remote::client::test_utils::{MockSender, client_with_handler_and_config};
 
     impl RemoteTable<MockSender> {
         pub fn new_mock<F, T>(name: String, handler: F, version: Option<semver::Version>) -> Self
@@ -1251,13 +1251,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             0 => {
                 return Err(Error::InvalidInput {
                     message: "No columns specified".into(),
-                })
+                });
             }
             1 => index.columns.pop().unwrap(),
             _ => {
                 return Err(Error::NotSupported {
                     message: "Indices over multiple columns not yet supported".into(),
-                })
+                });
             }
         };
         let mut body = serde_json::json!({
@@ -1320,7 +1320,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             _ => {
                 return Err(Error::NotSupported {
                     message: "Index type not supported".into(),
-                })
+                });
             }
         };
 
@@ -1771,8 +1771,8 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use std::{collections::HashMap, pin::Pin};
 
@@ -1781,10 +1781,10 @@ mod tests {
     use crate::table::AddDataMode;
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
-    use arrow_array::{record_batch, Int32Array, RecordBatch, RecordBatchIterator};
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, record_batch};
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
-    use futures::{future::BoxFuture, StreamExt, TryFutureExt};
+    use futures::{StreamExt, TryFutureExt, future::BoxFuture};
     use lance_index::scalar::inverted::query::MatchQuery;
     use lance_index::scalar::{FullTextSearchQuery, InvertedIndexParams};
     use reqwest::Body;
@@ -1794,14 +1794,14 @@ mod tests {
     use crate::index::vector::{
         IvfFlatIndexBuilder, IvfHnswSqIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder,
     };
-    use crate::remote::db::DEFAULT_SERVER_VERSION;
     use crate::remote::JSON_CONTENT_TYPE;
+    use crate::remote::db::DEFAULT_SERVER_VERSION;
     use crate::utils::background_cache::clock;
     use crate::{
-        index::{vector::IvfPqIndexBuilder, Index, IndexStatistics, IndexType},
+        DistanceType, Error, Table,
+        index::{Index, IndexStatistics, IndexType, vector::IvfPqIndexBuilder},
         query::{ExecutableQuery, QueryBase},
         remote::ARROW_FILE_CONTENT_TYPE,
-        DistanceType, Error, Table,
     };
 
     #[tokio::test]
@@ -2030,11 +2030,13 @@ mod tests {
                     .unwrap(),
                 "/v1/table/my_table/insert/" => {
                     assert_eq!(request.method(), "POST");
-                    assert!(request
-                        .url()
-                        .query_pairs()
-                        .filter(|(k, _)| k == "mode")
-                        .all(|(_, v)| v == "append"));
+                    assert!(
+                        request
+                            .url()
+                            .query_pairs()
+                            .filter(|(k, _)| k == "mode")
+                            .all(|(_, v)| v == "append")
+                    );
                     assert_eq!(
                         request.headers().get("Content-Type").unwrap(),
                         ARROW_STREAM_CONTENT_TYPE
@@ -3592,7 +3594,7 @@ mod tests {
     }
 
     fn _make_table_with_indices(unindexed_rows: usize) -> Table {
-        let table = Table::new_with_handler("my_table", move |request| {
+        Table::new_with_handler("my_table", move |request| {
             assert_eq!(request.method(), "POST");
 
             let response_body = match request.url().path() {
@@ -3636,8 +3638,7 @@ mod tests {
             let body = serde_json::to_string(&response_body).unwrap();
             let status = if body == "null" { 404 } else { 200 };
             http::Response::builder().status(status).body(body).unwrap()
-        });
-        table
+        })
     }
 
     #[tokio::test]
@@ -3848,8 +3849,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_uri_caching() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();

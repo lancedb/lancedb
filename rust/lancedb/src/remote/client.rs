@@ -4,8 +4,8 @@
 use http::HeaderName;
 use log::debug;
 use reqwest::{
-    header::{HeaderMap, HeaderValue},
     Body, Request, RequestBuilder, Response,
+    header::{HeaderMap, HeaderValue},
 };
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
 
@@ -650,14 +650,13 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub fn extract_request_id(&self, request: &mut Request) -> String {
         // Set a request id.
         // TODO: allow the user to supply this, through middleware?
-        let request_id = if let Some(request_id) = request.headers().get(REQUEST_ID_HEADER) {
+        if let Some(request_id) = request.headers().get(REQUEST_ID_HEADER) {
             request_id.to_str().unwrap().to_string()
         } else {
             let request_id = uuid::Uuid::new_v4().to_string();
             self.set_request_id(request, &request_id);
             request_id
-        };
-        request_id
+        }
     }
 
     /// Set the request ID header

@@ -8,29 +8,29 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_execution::TaskContext;
 use datafusion_expr::Expr;
-use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::ExecutionPlan;
-use futures::stream::FuturesUnordered;
+use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use futures::StreamExt;
-use lance::dataset::builder::DatasetBuilder;
+use futures::stream::FuturesUnordered;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::WriteMode;
+use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::{InsertBuilder, WriteParams};
-use lance::index::vector::utils::infer_vector_dim;
 use lance::index::vector::VectorIndexParams;
+use lance::index::vector::utils::infer_vector_dim;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
+use lance_index::DatasetIndexExt;
+use lance_index::IndexType;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::vector::bq::RQBuildParams;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
-use lance_index::DatasetIndexExt;
-use lance_index::IndexType;
 use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
 pub use query::AnyQuery;
 
@@ -43,19 +43,19 @@ use std::format;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::data::scannable::{estimate_write_partitions, PeekedScannable, Scannable};
+use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
-use crate::index::vector::VectorIndex;
 use crate::index::IndexStatistics;
-use crate::index::{vector::suggested_num_sub_vectors, Index, IndexBuilder};
+use crate::index::vector::VectorIndex;
+use crate::index::{Index, IndexBuilder, vector::suggested_num_sub_vectors};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
 use crate::utils::{
-    supported_bitmap_data_type, supported_btree_data_type, supported_fts_data_type,
-    supported_label_list_data_type, supported_vector_data_type, PatchReadParam, PatchWriteParam,
+    PatchReadParam, PatchWriteParam, supported_bitmap_data_type, supported_btree_data_type,
+    supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
 };
 
 use self::dataset::DatasetConsistencyWrapper;
@@ -2555,22 +2555,21 @@ pub struct FragmentSummaryStats {
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use arrow_array::{
-        builder::{ListBuilder, StringBuilder},
         Array, BooleanArray, FixedSizeListArray, Int32Array, LargeStringArray, RecordBatch,
         RecordBatchIterator, RecordBatchReader, StringArray,
+        builder::{ListBuilder, StringBuilder},
     };
     use arrow_array::{BinaryArray, LargeBinaryArray};
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
-    use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance::Dataset;
-    use rand::Rng;
+    use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use tempfile::tempdir;
 
     use super::*;
@@ -2777,9 +2776,8 @@ mod tests {
             false,
         )]));
 
-        let mut rng = rand::thread_rng();
         let float_arr = Float32Array::from(
-            repeat_with(|| rng.gen::<f32>())
+            repeat_with(rand::random::<f32>)
                 .take(512 * dimension as usize)
                 .collect::<Vec<f32>>(),
         );
@@ -2884,8 +2882,8 @@ mod tests {
             .await
             .unwrap();
 
-        use lance::index::vector::ivf::v2::IvfPq as LanceIvfPq;
         use lance::index::DatasetIndexInternalExt;
+        use lance::index::vector::ivf::v2::IvfPq as LanceIvfPq;
         use lance_index::metrics::NoOpMetricsCollector;
         use lance_index::vector::VectorIndex as LanceVectorIndex;
 
@@ -2933,9 +2931,8 @@ mod tests {
             false,
         )]));
 
-        let mut rng = rand::thread_rng();
         let float_arr = Float32Array::from(
-            repeat_with(|| rng.gen::<f32>())
+            repeat_with(rand::random::<f32>)
                 .take(512 * dimension as usize)
                 .collect::<Vec<f32>>(),
         );
@@ -2993,9 +2990,8 @@ mod tests {
             false,
         )]));
 
-        let mut rng = rand::thread_rng();
         let float_arr = Float32Array::from(
-            repeat_with(|| rng.gen::<f32>())
+            repeat_with(rand::random::<f32>)
                 .take(512 * dimension as usize)
                 .collect::<Vec<f32>>(),
         );
@@ -3256,16 +3252,20 @@ mod tests {
             .unwrap();
 
         // Can not create btree or bitmap index on list column
-        assert!(table
-            .create_index(&["tags"], Index::BTree(Default::default()))
-            .execute()
-            .await
-            .is_err());
-        assert!(table
-            .create_index(&["tags"], Index::Bitmap(Default::default()))
-            .execute()
-            .await
-            .is_err());
+        assert!(
+            table
+                .create_index(&["tags"], Index::BTree(Default::default()))
+                .execute()
+                .await
+                .is_err()
+        );
+        assert!(
+            table
+                .create_index(&["tags"], Index::Bitmap(Default::default()))
+                .execute()
+                .await
+                .is_err()
+        );
 
         // Create bitmap index on the "category" column
         table

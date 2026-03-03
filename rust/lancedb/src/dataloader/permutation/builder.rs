@@ -11,16 +11,16 @@ use lance_core::ROW_ID;
 use lance_datafusion::exec::SessionContextExt;
 
 use crate::{
+    Error, Result, Table,
     arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream},
     connect,
     database::{CreateTableRequest, Database},
     dataloader::permutation::{
         shuffle::{Shuffler, ShufflerConfig},
-        split::{SplitStrategy, Splitter, SPLIT_ID_COLUMN},
-        util::{rename_column, TemporaryDirectory},
+        split::{SPLIT_ID_COLUMN, SplitStrategy, Splitter},
+        util::{TemporaryDirectory, rename_column},
     },
     query::{ExecutableQuery, QueryBase, Select},
-    Error, Result, Table,
 };
 
 pub const SRC_ROW_ID_COL: &str = "row_id";

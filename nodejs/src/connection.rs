@@ -8,10 +8,10 @@ use lancedb::database::{CreateTableMode, Database};
 use napi::bindgen_prelude::*;
 use napi_derive::*;
 
+use crate::ConnectionOptions;
 use crate::error::NapiErrorExt;
 use crate::header::JsHeaderProvider;
 use crate::table::Table;
-use crate::ConnectionOptions;
 use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection};
 
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};

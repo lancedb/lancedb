@@ -7,7 +7,7 @@ use super::EmbeddingFunction;
 use arrow::{
     array::{AsArray, PrimitiveBuilder},
     datatypes::{
-        ArrowPrimitiveType, Float16Type, Float32Type, Float64Type, Int64Type, UInt32Type, UInt8Type,
+        ArrowPrimitiveType, Float16Type, Float32Type, Float64Type, Int64Type, UInt8Type, UInt32Type,
     },
 };
 use arrow_array::{Array, FixedSizeListArray, PrimitiveArray};
@@ -16,8 +16,8 @@ use arrow_schema::DataType;
 use candle_core::{CpuStorage, Device, Layout, Storage, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, DTYPE};
-use hf_hub::{api::sync::Api, Repo, RepoType};
-use tokenizers::{tokenizer::Tokenizer, PaddingParams};
+use hf_hub::{Repo, RepoType, api::sync::Api};
+use tokenizers::{PaddingParams, tokenizer::Tokenizer};
 
 /// Compute embeddings using huggingface sentence-transformers.
 pub struct SentenceTransformersEmbeddingsBuilder {
@@ -230,7 +230,7 @@ impl SentenceTransformersEmbeddings {
             Storage::Cpu(CpuStorage::BF16(_)) => {
                 return Err(crate::Error::Runtime {
                     message: "unsupported data type".to_string(),
-                })
+                });
             }
             _ => unreachable!("we already moved the tensor to the CPU device"),
         };
@@ -298,12 +298,12 @@ impl SentenceTransformersEmbeddings {
             DataType::Utf8View => {
                 return Err(crate::Error::Runtime {
                     message: "Utf8View not yet implemented".to_string(),
-                })
+                });
             }
             _ => {
                 return Err(crate::Error::Runtime {
                     message: "invalid type".to_string(),
-                })
+                });
             }
         };
 
