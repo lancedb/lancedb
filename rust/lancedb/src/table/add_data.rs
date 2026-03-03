@@ -108,11 +108,17 @@ impl AddDataBuilder {
     /// By default, the number of streams is estimated from the data size.
     /// Setting this to `1` disables parallel writes.
     pub fn write_parallelism(mut self, parallelism: usize) -> Self {
-        self.write_parallelism = Some(parallelism.max(1));
+        self.write_parallelism = Some(parallelism);
         self
     }
 
     pub async fn execute(self) -> Result<AddResult> {
+        if self.write_parallelism.map(|p| p == 0).unwrap_or(false) {
+            return Err(Error::InvalidInput {
+                message: "write_parallelism must be greater than 0".to_string(),
+            });
+        }
+
         self.parent.clone().add(self).await
     }
 

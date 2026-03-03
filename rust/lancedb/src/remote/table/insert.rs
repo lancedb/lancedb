@@ -344,15 +344,6 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
                     DataFusionError::Execution("Failed to acquire lock for add_result".to_string())
                 })?;
                 *res_lock = Some(parsed_result);
-            } else {
-                // We don't use the body in this case, but we should still consume it.
-                let _ = response.bytes().await.map_err(|e| {
-                    DataFusionError::External(Box::new(Error::Http {
-                        source: Box::new(e),
-                        request_id: request_id.clone(),
-                        status_code: None,
-                    }))
-                })?;
             }
 
             // Return a single batch with count 0 (actual count is tracked in add_result)
