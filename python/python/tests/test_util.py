@@ -132,9 +132,7 @@ def test_value_to_sql_dict():
     )
 
     # List inside struct
-    assert (
-        value_to_sql({"a": [1, 2]}) == "named_struct('a', [1, 2])"
-    )
+    assert value_to_sql({"a": [1, 2]}) == "named_struct('a', [1, 2])"
 
     # Mixed types
     assert (
