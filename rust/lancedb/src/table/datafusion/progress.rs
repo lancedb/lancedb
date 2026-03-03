@@ -7,53 +7,50 @@
 //! and called synchronously as each batch passes through the scan node, giving
 //! callers per-batch progress updates during [`crate::table::Table::add`].
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Progress snapshot for a write operation.
 #[derive(Debug, Clone)]
 pub struct WriteProgress {
-    /// Wall-clock time since monitoring started.
+    // These are private and only accessible via getters, to make it easy to add
+    // new fields without breaking existing callbacks.
     elapsed: Duration,
+    output_rows: usize,
+    output_bytes: usize,
+    total_rows: Option<usize>,
+    done: bool,
+}
+
+impl WriteProgress {
+    /// Wall-clock time since monitoring started.
+    pub fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
 
     /// Number of rows written so far.
-    output_rows: usize,
+    pub fn output_rows(&self) -> usize {
+        self.output_rows
+    }
 
     /// Number of bytes written so far.
-    output_bytes: usize,
+    pub fn output_bytes(&self) -> usize {
+        self.output_bytes
+    }
 
     /// Total rows expected.
     ///
     /// Populated when the input source reports a row count (e.g. a
     /// [`arrow_array::RecordBatch`]).  Always `Some` when [`WriteProgress::done`]
     /// is `true` — falling back to the actual number of rows written.
-    total_rows: Option<usize>,
+    pub fn total_rows(&self) -> Option<usize> {
+        self.total_rows
+    }
 
     /// Whether the write operation has completed.
     ///
     /// The final callback always has `done = true`.  Callers can use this to
     /// finalize progress bars or perform cleanup.
-    done: bool,
-}
-
-impl WriteProgress {
-    pub fn elapsed(&self) -> Duration {
-        self.elapsed
-    }
-
-    pub fn output_rows(&self) -> usize {
-        self.output_rows
-    }
-
-    pub fn output_bytes(&self) -> usize {
-        self.output_bytes
-    }
-
-    pub fn total_rows(&self) -> Option<usize> {
-        self.total_rows
-    }
-
     pub fn done(&self) -> bool {
         self.done
     }
@@ -67,8 +64,7 @@ pub type ProgressCallback = Arc<dyn Fn(&WriteProgress) + Send + Sync>;
 /// Call [`WriteProgressTracker::record_batch`] for each batch written.
 /// Call [`WriteProgressTracker::finish`] once after all data is written.
 pub struct WriteProgressTracker {
-    output_rows: AtomicUsize,
-    output_bytes: AtomicUsize,
+    rows_any_bytes: std::sync::Mutex<(usize, usize)>,
     start: Instant,
     /// Known total rows from the input source, if available.
     total_rows: Option<usize>,
@@ -78,8 +74,7 @@ pub struct WriteProgressTracker {
 impl WriteProgressTracker {
     pub fn new(callback: ProgressCallback, total_rows: Option<usize>) -> Self {
         Self {
-            output_rows: AtomicUsize::new(0),
-            output_bytes: AtomicUsize::new(0),
+            rows_any_bytes: std::sync::Mutex::new((0, 0)),
             start: Instant::now(),
             total_rows,
             callback,
@@ -88,14 +83,19 @@ impl WriteProgressTracker {
 
     /// Record a batch of rows passing through the scan node.
     pub fn record_batch(&self, rows: usize, bytes: usize) {
-        let output_rows = self.output_rows.fetch_add(rows, Ordering::Relaxed) + rows;
-        let output_bytes = self.output_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        let progress = WriteProgress {
-            elapsed: self.start.elapsed(),
-            output_rows,
-            output_bytes,
-            total_rows: self.total_rows,
-            done: false,
+        let progress = {
+            // We hold a lock here to update the rows/bytes counts atomically,
+            // since multiple batches may be processed concurrently.
+            let mut guard = self.rows_any_bytes.lock().unwrap();
+            guard.0 += rows;
+            guard.1 += bytes;
+            WriteProgress {
+                elapsed: self.start.elapsed(),
+                output_rows: guard.0,
+                output_bytes: guard.1,
+                total_rows: self.total_rows,
+                done: false,
+            }
         };
         (self.callback)(&progress);
     }
@@ -105,14 +105,15 @@ impl WriteProgressTracker {
     /// `total_rows` is always `Some` on the final callback: it uses the known
     /// total if available, or falls back to the number of rows actually written.
     pub fn finish(&self) {
-        let output_rows = self.output_rows.load(Ordering::Relaxed);
-        let output_bytes = self.output_bytes.load(Ordering::Relaxed);
-        let progress = WriteProgress {
-            elapsed: self.start.elapsed(),
-            output_rows,
-            output_bytes,
-            total_rows: Some(self.total_rows.unwrap_or(output_rows)),
-            done: true,
+        let progress = {
+            let guard = self.rows_any_bytes.lock().unwrap();
+            WriteProgress {
+                elapsed: self.start.elapsed(),
+                output_rows: guard.0,
+                output_bytes: guard.1,
+                total_rows: Some(self.total_rows.unwrap_or(guard.0)),
+                done: true,
+            }
         };
         (self.callback)(&progress);
     }
