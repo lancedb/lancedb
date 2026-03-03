@@ -305,7 +305,7 @@ jobs:
         run: npm test
   publish:
     name: Publish
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -347,10 +347,16 @@ jobs:
       - name: List packages
         run: find npm
       - name: Publish
+        env:
+          DRY_RUN: ${{ github.event_name == 'pull_request' }}
         run: |
           npm config set provenance true
           ARGS="--access public"
-          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
+          if [[ $DRY_RUN == "true" ]]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ $VERSION == *-* ]]; then
             ARGS="$ARGS --tag preview"
           fi
           npm publish $ARGS
