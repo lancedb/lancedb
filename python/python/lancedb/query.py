@@ -2203,8 +2203,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.select(self._columns)
             self._fts_query.select(self._columns)
         if self._where:
-            self._vector_query.where(self._where, self._postfilter)
-            self._fts_query.where(self._where, self._postfilter)
+            self._vector_query.where(self._where, not self._postfilter)
+            self._fts_query.where(self._where, not self._postfilter)
         if self._with_row_id:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
