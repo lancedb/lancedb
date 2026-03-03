@@ -3,9 +3,8 @@
 
 //! Progress monitoring for write operations.
 //!
-//! [`WriteProgressTracker`] is injected into [`super::scannable_exec::ScannableExec`]
-//! and called synchronously as each batch passes through the scan node, giving
-//! callers per-batch progress updates during [`crate::table::Table::add`].
+//! You can add a callback to process progress in [`crate::table::AddDataBuilder::progress`].
+//! [`WriteProgress`] is the struct passed to the callback.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -63,7 +62,7 @@ pub type ProgressCallback = Arc<dyn Fn(&WriteProgress) + Send + Sync>;
 ///
 /// Call [`WriteProgressTracker::record_batch`] for each batch written.
 /// Call [`WriteProgressTracker::finish`] once after all data is written.
-pub struct WriteProgressTracker {
+pub(crate) struct WriteProgressTracker {
     rows_any_bytes: std::sync::Mutex<(usize, usize)>,
     start: Instant,
     /// Known total rows from the input source, if available.

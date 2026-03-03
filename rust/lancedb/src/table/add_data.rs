@@ -11,9 +11,11 @@ use crate::data::scannable::scannable_with_embeddings;
 use crate::data::scannable::Scannable;
 use crate::embeddings::EmbeddingRegistry;
 use crate::table::datafusion::cast::cast_to_table_schema;
-use crate::table::datafusion::progress::{ProgressCallback, WriteProgressTracker};
 use crate::table::datafusion::reject_nan::reject_nan_vectors;
 use crate::table::datafusion::scannable_exec::ScannableExec;
+use crate::table::write_progress::ProgressCallback;
+use crate::table::write_progress::WriteProgress;
+use crate::table::write_progress::WriteProgressTracker;
 use crate::{Error, Result};
 
 use super::{BaseTable, TableDefinition, WriteOptions};
@@ -124,7 +126,7 @@ impl AddDataBuilder {
     /// ```
     pub fn progress(
         mut self,
-        callback: impl Fn(&super::datafusion::progress::WriteProgress) + Send + Sync + 'static,
+        callback: impl Fn(&WriteProgress) + Send + Sync + 'static,
     ) -> Self {
         self.progress_callback = Some(Arc::new(callback));
         self
@@ -172,7 +174,7 @@ impl AddDataBuilder {
             .progress_callback
             .map(|cb| Arc::new(WriteProgressTracker::new(cb, self.data.num_rows())));
         let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> =
-            Arc::new(ScannableExec::new_with_tracker(self.data, tracker.clone()));
+            Arc::new(ScannableExec::new(self.data, tracker.clone()));
         // Skip casting when overwriting — the input schema replaces the table schema.
         let plan = if overwrite {
             plan

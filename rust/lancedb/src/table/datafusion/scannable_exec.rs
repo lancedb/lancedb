@@ -13,12 +13,12 @@ use datafusion_physical_plan::{
 };
 use futures::TryStreamExt;
 
+use crate::table::write_progress::WriteProgressTracker;
 use crate::{
     arrow::SendableRecordBatchStreamExt, data::scannable::Scannable,
-    table::datafusion::progress::WriteProgressTracker,
 };
 
-pub struct ScannableExec {
+pub(crate) struct ScannableExec {
     // We don't require Scannable to be Sync, so we wrap it in a Mutex to allow safe concurrent access.
     source: Mutex<Box<dyn Scannable>>,
     num_rows: Option<usize>,
@@ -36,11 +36,7 @@ impl std::fmt::Debug for ScannableExec {
 }
 
 impl ScannableExec {
-    pub fn new(source: Box<dyn Scannable>) -> Self {
-        Self::new_with_tracker(source, None)
-    }
-
-    pub fn new_with_tracker(
+    pub fn new(
         source: Box<dyn Scannable>,
         tracker: Option<Arc<WriteProgressTracker>>,
     ) -> Self {

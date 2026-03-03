@@ -53,6 +53,7 @@ use crate::index::{vector::suggested_num_sub_vectors, Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
+use crate::table::write_progress::WriteProgressTracker;
 use crate::utils::{
     supported_bitmap_data_type, supported_btree_data_type, supported_fts_data_type,
     supported_label_list_data_type, supported_vector_data_type, PatchReadParam, PatchWriteParam,
@@ -70,11 +71,11 @@ pub mod optimize;
 pub mod query;
 pub mod schema_evolution;
 pub mod update;
+pub mod write_progress;
 use crate::index::waiter::wait_for_index;
 pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
-pub use datafusion::progress::WriteProgress;
 pub use delete::DeleteResult;
 use futures::future::join_all;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
@@ -2202,7 +2203,7 @@ impl BaseTable for NativeTable {
 
         // The tracker is called per batch inside ScannableExec; finish() is
         // called once execution completes (or fails) so callers always see done=true.
-        struct FinishOnDrop(Option<Arc<crate::table::datafusion::progress::WriteProgressTracker>>);
+        struct FinishOnDrop(Option<Arc<WriteProgressTracker>>);
         impl Drop for FinishOnDrop {
             fn drop(&mut self) {
                 if let Some(t) = self.0.take() {
