@@ -4,7 +4,7 @@
 from datetime import timedelta
 import logging
 from functools import cached_property
-from typing import Dict, Iterable, List, Optional, Union, Literal
+from typing import Any, Dict, Iterable, List, Optional, Union, Literal
 import warnings
 
 from lancedb._lancedb import (
@@ -308,6 +308,7 @@ class RemoteTable(Table):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        progress: Optional[Any] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table). It has the same API signature as
         the OSS version.
@@ -330,6 +331,9 @@ class RemoteTable(Table):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: callable or tqdm-like, optional
+            A callback or tqdm-compatible progress bar. See
+            :meth:`Table.add` for details.
 
         Returns
         -------
@@ -338,7 +342,11 @@ class RemoteTable(Table):
         """
         return LOOP.run(
             self._table.add(
-                data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+                data,
+                mode=mode,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                progress=progress,
             )
         )
 

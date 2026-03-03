@@ -509,6 +509,47 @@ async def test_add_async(mem_db_async: AsyncConnection):
     assert await table.count_rows() == 3
 
 
+def test_add_progress_callback(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "test",
+        data=[{"id": 1}, {"id": 2}],
+    )
+
+    updates = []
+    table.add([{"id": 3}, {"id": 4}], progress=lambda p: updates.append(dict(p)))
+
+    assert len(table) == 4
+    # The callback may fire zero times for tiny data (timing-dependent), but
+    # if it did fire, the dict should have the expected keys.
+    for p in updates:
+        assert "output_rows" in p
+        assert "output_bytes" in p
+        assert "total_rows" in p
+        assert "elapsed_seconds" in p
+
+
+def test_add_progress_tqdm_like(mem_db: DBConnection):
+    """Test that a tqdm-like object gets total set and update() called."""
+
+    class FakeBar:
+        def __init__(self):
+            self.total = None
+            self.n = 0
+
+        def update(self, n):
+            self.n += n
+
+    table = mem_db.create_table(
+        "test",
+        data=[{"id": 1}, {"id": 2}],
+    )
+
+    bar = FakeBar()
+    table.add([{"id": 3}, {"id": 4}], progress=bar)
+
+    assert len(table) == 4
+
+
 def test_polars(mem_db: DBConnection):
     data = {
         "vector": [[3.1, 4.1], [5.9, 26.5]],

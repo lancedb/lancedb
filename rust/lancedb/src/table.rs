@@ -73,6 +73,7 @@ pub mod update;
 use crate::index::waiter::wait_for_index;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
+pub use datafusion::progress::WriteProgress;
 pub use delete::DeleteResult;
 use futures::future::join_all;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
@@ -2164,6 +2165,18 @@ impl BaseTable for NativeTable {
         };
 
         let insert_exec = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
+
+        // The tracker is called per batch inside ScannableExec; finish() is
+        // called once execution completes (or fails) so callers always see done=true.
+        struct FinishOnDrop(Option<Arc<crate::table::datafusion::progress::WriteProgressTracker>>);
+        impl Drop for FinishOnDrop {
+            fn drop(&mut self) {
+                if let Some(t) = self.0.take() {
+                    t.finish();
+                }
+            }
+        }
+        let _finish = FinishOnDrop(output.tracker);
 
         // Execute all partitions in parallel.
         let task_ctx = Arc::new(TaskContext::default());

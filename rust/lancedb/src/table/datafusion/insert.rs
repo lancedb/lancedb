@@ -12,10 +12,14 @@ use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion_physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion_physical_plan::metrics::{
+    BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
+};
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
 };
+use futures::TryStreamExt;
 use lance::dataset::transaction::{Operation, Transaction};
 use lance::dataset::{CommitBuilder, InsertBuilder, WriteParams};
 use lance::Dataset;
@@ -80,6 +84,7 @@ pub struct InsertExec {
     write_params: WriteParams,
     properties: PlanProperties,
     partial_transactions: Arc<Mutex<Vec<Transaction>>>,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl InsertExec {
@@ -105,6 +110,7 @@ impl InsertExec {
             write_params,
             properties,
             partial_transactions: Arc::new(Mutex::new(Vec::with_capacity(num_partitions))),
+            metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 }
@@ -176,6 +182,19 @@ impl ExecutionPlan for InsertExec {
         let total_partitions = self.input.output_partitioning().partition_count();
         let ds_wrapper = self.ds_wrapper.clone();
 
+        let baseline = BaselineMetrics::new(&self.metrics, partition);
+        let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(partition);
+        let input_schema = input_stream.schema();
+        let input_stream: SendableRecordBatchStream = Box::pin(RecordBatchStreamAdapter::new(
+            input_schema,
+            input_stream.map_ok(move |batch| {
+                let _timer = baseline.elapsed_compute().timer();
+                baseline.record_output(batch.num_rows());
+                output_bytes.add(batch.get_array_memory_size());
+                batch
+            }),
+        ));
+
         let stream = futures::stream::once(async move {
             let transaction = InsertBuilder::new(dataset.clone())
                 .with_params(&write_params)
@@ -214,6 +233,10 @@ impl ExecutionPlan for InsertExec {
             COUNT_SCHEMA.clone(),
             stream,
         )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
 

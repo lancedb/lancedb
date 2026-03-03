@@ -11,6 +11,7 @@ use crate::data::scannable::scannable_with_embeddings;
 use crate::data::scannable::Scannable;
 use crate::embeddings::EmbeddingRegistry;
 use crate::table::datafusion::cast::cast_to_table_schema;
+use crate::table::datafusion::progress::{ProgressCallback, WriteProgressTracker};
 use crate::table::datafusion::reject_nan::reject_nan_vectors;
 use crate::table::datafusion::scannable_exec::ScannableExec;
 use crate::{Error, Result};
@@ -52,6 +53,7 @@ pub struct AddDataBuilder {
     pub(crate) write_options: WriteOptions,
     pub(crate) on_nan_vectors: NaNVectorBehavior,
     pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    pub(crate) progress_callback: Option<ProgressCallback>,
 }
 
 impl std::fmt::Debug for AddDataBuilder {
@@ -77,6 +79,7 @@ impl AddDataBuilder {
             write_options: WriteOptions::default(),
             on_nan_vectors: NaNVectorBehavior::default(),
             embedding_registry,
+            progress_callback: None,
         }
     }
 
@@ -98,6 +101,30 @@ impl AddDataBuilder {
     /// indexed and will not be searchable.
     pub fn on_nan_vectors(mut self, behavior: NaNVectorBehavior) -> Self {
         self.on_nan_vectors = behavior;
+        self
+    }
+
+    /// Set a callback to receive progress updates during the add operation.
+    ///
+    /// The callback is invoked once per batch written, and once more with
+    /// [`WriteProgress::done`] set to `true` when the write completes.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let batch = arrow_array::record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+    /// table.add(batch)
+    ///     .progress(|p| println!("{}/{:?} rows", p.output_rows(), p.total_rows()))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn progress(
+        mut self,
+        callback: impl Fn(&super::datafusion::progress::WriteProgress) + Send + Sync + 'static,
+    ) -> Self {
+        self.progress_callback = Some(Arc::new(callback));
         self
     }
 
@@ -130,8 +157,11 @@ impl AddDataBuilder {
             scannable_with_embeddings(self.data, table_def, self.embedding_registry.as_ref())?;
 
         let rescannable = self.data.rescannable();
+        let tracker = self
+            .progress_callback
+            .map(|cb| Arc::new(WriteProgressTracker::new(cb, self.data.num_rows())));
         let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> =
-            Arc::new(ScannableExec::new(self.data));
+            Arc::new(ScannableExec::new_with_tracker(self.data, tracker.clone()));
         // Skip casting when overwriting — the input schema replaces the table schema.
         let plan = if overwrite {
             plan
@@ -149,6 +179,7 @@ impl AddDataBuilder {
             rescannable,
             write_options: self.write_options,
             mode: self.mode,
+            tracker,
         })
     }
 }
@@ -161,6 +192,7 @@ pub struct PreprocessingOutput {
     pub rescannable: bool,
     pub write_options: WriteOptions,
     pub mode: AddDataMode,
+    pub tracker: Option<Arc<WriteProgressTracker>>,
 }
 
 /// Check that the input schema is valid for insert.

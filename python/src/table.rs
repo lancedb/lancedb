@@ -22,7 +22,7 @@ use pyo3::{
     exceptions::{PyKeyError, PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
-    Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
+    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -299,10 +299,12 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (data, mode, progress=None))]
     pub fn add<'a>(
         self_: PyRef<'a, Self>,
         data: PyScannable,
         mode: String,
+        progress: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_.inner_ref()?.add(data);
         if mode == "append" {
@@ -311,6 +313,54 @@ impl Table {
             op = op.mode(AddDataMode::Overwrite);
         } else {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
+        }
+        if let Some(progress_obj) = progress {
+            let is_callable = Python::attach(|py| progress_obj.bind(py).is_callable());
+            if is_callable {
+                // Callback: call with a dict of progress info.
+                op = op.progress(move |p| {
+                    Python::attach(|py| {
+                        let dict = PyDict::new(py);
+                        dict.set_item("output_rows", p.output_rows()).ok();
+                        dict.set_item("output_bytes", p.output_bytes()).ok();
+                        dict.set_item("total_rows", p.total_rows()).ok();
+                        dict.set_item("elapsed_seconds", p.elapsed().as_secs_f64())
+                            .ok();
+                        dict.set_item("done", p.done()).ok();
+                        if let Err(e) = progress_obj.call1(py, (dict,)) {
+                            eprintln!("progress callback error: {e}");
+                        }
+                    });
+                });
+            } else {
+                // tqdm-like: has update() method.
+                let last_rows = std::sync::atomic::AtomicUsize::new(0);
+                let total_set = std::sync::atomic::AtomicBool::new(false);
+                op = op.progress(move |p| {
+                    let current = p.output_rows();
+                    let prev = last_rows.swap(current, std::sync::atomic::Ordering::Relaxed);
+                    Python::attach(|py| {
+                        if let Some(total) = p.total_rows() {
+                            if !total_set.load(std::sync::atomic::Ordering::Relaxed) {
+                                if let Err(e) = progress_obj.setattr(py, "total", total) {
+                                    eprintln!("progress setattr error: {e}");
+                                }
+                                total_set.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        let delta = current.saturating_sub(prev);
+                        if delta > 0 {
+                            if let Err(e) = progress_obj.call_method1(py, "update", (delta,)) {
+                                eprintln!("progress update error: {e}");
+                            }
+                        }
+                        if p.done() {
+                            // Force a final refresh so the bar shows completion.
+                            progress_obj.call_method0(py, "refresh").ok();
+                        }
+                    });
+                });
+            }
         }
 
         future_into_py(self_.py(), async move {

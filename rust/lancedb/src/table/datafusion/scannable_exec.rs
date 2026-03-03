@@ -7,17 +7,23 @@ use std::sync::{Arc, Mutex};
 use datafusion_common::{stats::Precision, DataFusionError, Result as DFResult, Statistics};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{
     execution_plan::EmissionType, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
 };
+use futures::TryStreamExt;
 
-use crate::{arrow::SendableRecordBatchStreamExt, data::scannable::Scannable};
+use crate::{
+    arrow::SendableRecordBatchStreamExt, data::scannable::Scannable,
+    table::datafusion::progress::WriteProgressTracker,
+};
 
 pub struct ScannableExec {
-    // We don't require Scannable to by Sync, so we wrap it in a Mutex to allow safe concurrent access.
+    // We don't require Scannable to be Sync, so we wrap it in a Mutex to allow safe concurrent access.
     source: Mutex<Box<dyn Scannable>>,
     num_rows: Option<usize>,
     properties: PlanProperties,
+    tracker: Option<Arc<WriteProgressTracker>>,
 }
 
 impl std::fmt::Debug for ScannableExec {
@@ -31,6 +37,13 @@ impl std::fmt::Debug for ScannableExec {
 
 impl ScannableExec {
     pub fn new(source: Box<dyn Scannable>) -> Self {
+        Self::new_with_tracker(source, None)
+    }
+
+    pub fn new_with_tracker(
+        source: Box<dyn Scannable>,
+        tracker: Option<Arc<WriteProgressTracker>>,
+    ) -> Self {
         let schema = source.schema();
         let eq_properties = EquivalenceProperties::new(schema);
         let properties = PlanProperties::new(
@@ -46,6 +59,7 @@ impl ScannableExec {
             source,
             num_rows,
             properties,
+            tracker,
         }
     }
 }
@@ -102,7 +116,18 @@ impl ExecutionPlan for ScannableExec {
             Err(poison) => poison.into_inner().scan_as_stream(),
         };
 
-        Ok(stream.into_df_stream())
+        let tracker = self.tracker.clone();
+        let stream = stream.into_df_stream().map_ok(move |batch| {
+            if let Some(ref t) = tracker {
+                t.record_batch(batch.num_rows(), batch.get_array_memory_size());
+            }
+            batch
+        });
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.schema(),
+            stream,
+        )))
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> DFResult<Statistics> {

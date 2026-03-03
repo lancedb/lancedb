@@ -11,9 +11,10 @@ use arrow_ipc::CompressionType;
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr::EquivalenceProperties;
+use datafusion_physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use http::header::CONTENT_TYPE;
 
 use crate::remote::client::{HttpSend, RestfulLanceDbClient, Sender};
@@ -38,6 +39,7 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     overwrite: bool,
     properties: PlanProperties,
     add_result: Arc<Mutex<Option<AddResult>>>,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl<S: HttpSend + 'static> RemoteInsertExec<S> {
@@ -65,6 +67,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             overwrite,
             properties,
             add_result: Arc::new(Mutex::new(None)),
+            metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 
@@ -212,6 +215,15 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
         }
 
         let input_stream = self.input.execute(0, context)?;
+        let baseline = BaselineMetrics::new(&self.metrics, partition);
+        let input_schema = input_stream.schema();
+        let input_stream: SendableRecordBatchStream = Box::pin(RecordBatchStreamAdapter::new(
+            input_schema,
+            input_stream.map_ok(move |batch| {
+                baseline.record_output(batch.num_rows());
+                batch
+            }),
+        ));
         let client = self.client.clone();
         let identifier = self.identifier.clone();
         let overwrite = self.overwrite;
@@ -300,6 +312,10 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
             COUNT_SCHEMA.clone(),
             stream,
         )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
 
