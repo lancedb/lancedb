@@ -324,6 +324,16 @@ def _(value: list):
     return "[" + ", ".join(map(value_to_sql, value)) + "]"
 
 
+@value_to_sql.register(dict)
+def _(value: dict):
+    # https://datafusion.apache.org/user-guide/sql/scalar_functions.html#named-struct
+    return (
+        "named_struct("
+        + ", ".join(f"'{k}', {value_to_sql(v)}" for k, v in value.items())
+        + ")"
+    )
+
+
 @value_to_sql.register(np.ndarray)
 def _(value: np.ndarray):
     return value_to_sql(value.tolist())
