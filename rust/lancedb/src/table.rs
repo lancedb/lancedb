@@ -71,6 +71,7 @@ pub mod query;
 pub mod schema_evolution;
 pub mod update;
 use crate::index::waiter::wait_for_index;
+pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
@@ -421,6 +422,34 @@ mod test_utils {
                 handler.clone(),
                 config.clone(),
             ));
+            let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock_with_config(
+                handler, config,
+            ));
+            Self {
+                inner,
+                database: Some(database),
+                // Registry is unused.
+                embedding_registry: Arc::new(MemoryRegistry::new()),
+            }
+        }
+
+        pub fn new_with_handler_version_and_config<T>(
+            name: impl Into<String>,
+            version: semver::Version,
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+            config: crate::remote::ClientConfig,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let inner = Arc::new(
+                crate::remote::table::RemoteTable::new_mock_with_version_and_config(
+                    name.into(),
+                    handler.clone(),
+                    Some(version),
+                    config.clone(),
+                ),
+            );
             let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock_with_config(
                 handler, config,
             ));
@@ -2122,21 +2151,26 @@ impl BaseTable for NativeTable {
 
         let table_schema = Schema::from(&ds.schema().clone());
 
-        // Peek at the first batch to estimate a good partition count for
-        // write parallelism.
-        let mut peeked = PeekedScannable::new(add.data);
-        let num_partitions = if let Some(first_batch) = peeked.peek().await {
-            let max_partitions = lance_core::utils::tokio::get_num_compute_intensive_cpus();
-            estimate_write_partitions(
-                first_batch.get_array_memory_size(),
-                first_batch.num_rows(),
-                peeked.num_rows(),
-                max_partitions,
-            )
+        let num_partitions = if let Some(parallelism) = add.write_parallelism {
+            parallelism
         } else {
-            1
+            // Peek at the first batch to estimate a good partition count for
+            // write parallelism.
+            let mut peeked = PeekedScannable::new(add.data);
+            let n = if let Some(first_batch) = peeked.peek().await {
+                let max_partitions = lance_core::utils::tokio::get_num_compute_intensive_cpus();
+                estimate_write_partitions(
+                    first_batch.get_array_memory_size(),
+                    first_batch.num_rows(),
+                    peeked.num_rows(),
+                    max_partitions,
+                )
+            } else {
+                1
+            };
+            add.data = Box::new(peeked);
+            n
         };
-        add.data = Box::new(peeked);
 
         let output = add.into_plan(&table_schema, &table_def)?;
 
