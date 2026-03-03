@@ -606,6 +606,7 @@ class LanceQueryBuilder(ABC):
                 query,
                 ordering_field_name=ordering_field_name,
                 fts_columns=fts_columns,
+                fast_search=fast_search,
             )
 
         if isinstance(query, list):
@@ -1456,13 +1457,14 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         query: str | FullTextQuery,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = None,
     ):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
         self._reranker = None
-        self._fast_search = None
+        self._fast_search = fast_search
         if isinstance(fts_columns, str):
             fts_columns = [fts_columns]
         self._fts_columns = fts_columns
