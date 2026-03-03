@@ -1697,6 +1697,65 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results2[0].text).toBe(data[1].text);
     });
 
+    test("full text search fast search", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [{ text: "hello world", vector: [0.1, 0.2, 0.3], id: 1 }];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts(),
+      });
+
+      // Insert unindexed data after creating the index.
+      await table.add([{ text: "xyz", vector: [0.4, 0.5, 0.6], id: 2 }]);
+
+      const withFlatSearch = await table
+        .search("xyz", "fts")
+        .limit(10)
+        .toArray();
+      expect(withFlatSearch.length).toBeGreaterThan(0);
+
+      const fastSearchResults = await table
+        .search("xyz", "fts")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(fastSearchResults.length).toBe(0);
+
+      const nearestToTextFastSearch = await table
+        .query()
+        .nearestToText("xyz")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(nearestToTextFastSearch.length).toBe(0);
+
+      // fastSearch should be chainable with other methods.
+      const chainedFastSearch = await table
+        .search("xyz", "fts")
+        .fastSearch()
+        .select(["text"])
+        .limit(5)
+        .toArray();
+      expect(chainedFastSearch.length).toBe(0);
+
+      await table.optimize();
+
+      const indexedFastSearch = await table
+        .search("xyz", "fts")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(indexedFastSearch.length).toBeGreaterThan(0);
+
+      const indexedNearestToTextFastSearch = await table
+        .query()
+        .nearestToText("xyz")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(indexedNearestToTextFastSearch.length).toBeGreaterThan(0);
+    });
+
     test("prewarm full text search index", async () => {
       const db = await connect(tmpDir.name);
       const data = [
