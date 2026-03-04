@@ -7,13 +7,12 @@ use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use futures::StreamExt;
 use lancedb::{
-    connect,
+    Result, connect,
     embeddings::{
-        sentence_transformers::SentenceTransformersEmbeddings, EmbeddingDefinition,
-        EmbeddingFunction,
+        EmbeddingDefinition, EmbeddingFunction,
+        sentence_transformers::SentenceTransformersEmbeddings,
     },
     query::{ExecutableQuery, QueryBase},
-    Result,
 };
 
 #[tokio::main]

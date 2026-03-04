@@ -10,9 +10,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStdout, Command};
 use tokio::sync::mpsc;
 
-use crate::{connect, Connection};
-use anyhow::{anyhow, bail, Result};
-use tempfile::{tempdir, TempDir};
+use crate::{Connection, connect};
+use anyhow::{Result, anyhow, bail};
+use tempfile::{TempDir, tempdir};
 
 pub struct TestConnection {
     pub uri: String,
@@ -113,8 +113,13 @@ async fn new_remote_connection(script_path: &str) -> Result<TestConnection> {
     let (port_sender, mut port_receiver) = mpsc::channel(5);
     let _reader = spawn_stdout_reader(stdout, port_sender).await;
     let port = match port_receiver.recv().await {
-        None => bail!("Unable to determine the port number used by the phalanx process we spawned, because the reader thread was closed too soon."),
-        Some(Err(err)) => bail!("Unable to determine the port number used by the phalanx process we spawned, because of an error, {}", err),
+        None => bail!(
+            "Unable to determine the port number used by the phalanx process we spawned, because the reader thread was closed too soon."
+        ),
+        Some(Err(err)) => bail!(
+            "Unable to determine the port number used by the phalanx process we spawned, because of an error, {}",
+            err
+        ),
         Some(Ok(port)) => port,
     };
     let uri = "db://test";

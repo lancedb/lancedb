@@ -8,7 +8,7 @@ use std::path::Path;
 use std::{collections::HashMap, sync::Arc};
 
 use lance::dataset::refs::Ref;
-use lance::dataset::{builder::DatasetBuilder, ReadParams, WriteMode};
+use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
@@ -1097,11 +1097,11 @@ impl Database for ListingDatabase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Table;
     use crate::connection::ConnectRequest;
     use crate::data::scannable::Scannable;
     use crate::database::{CreateTableMode, CreateTableRequest};
     use crate::table::WriteOptions;
-    use crate::Table;
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use std::path::PathBuf;

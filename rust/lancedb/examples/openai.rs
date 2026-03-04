@@ -8,10 +8,9 @@ use std::{iter::once, sync::Arc};
 use arrow_array::{RecordBatch, StringArray};
 use futures::StreamExt;
 use lancedb::{
-    connect,
-    embeddings::{openai::OpenAIEmbeddingFunction, EmbeddingDefinition, EmbeddingFunction},
+    Result, connect,
+    embeddings::{EmbeddingDefinition, EmbeddingFunction, openai::OpenAIEmbeddingFunction},
     query::{ExecutableQuery, QueryBase},
-    Result,
 };
 
 // --8<-- [end:imports]

@@ -5,7 +5,7 @@ use arrow_ipc::CompressionType;
 use futures::{Stream, StreamExt};
 use reqwest::Response;
 
-use crate::{arrow::SendableRecordBatchStream, Result};
+use crate::{Result, arrow::SendableRecordBatchStream};
 
 use super::db::ServerVersion;
 

@@ -7,26 +7,26 @@ use super::NativeTable;
 use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
 use crate::query::{
-    QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest, DEFAULT_TOP_K,
+    DEFAULT_TOP_K, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest,
 };
-use crate::utils::{default_vector_column, TimeoutStream};
+use crate::utils::{TimeoutStream, default_vector_column};
 use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::Array;
 use arrow_schema::{DataType, Schema};
+use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
-use datafusion_physical_plan::ExecutionPlan;
 use futures::future::try_join_all;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
+use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
     QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
     QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery,
 };
-use lance_namespace::LanceNamespace;
 
 #[derive(Debug, Clone)]
 pub enum AnyQuery {

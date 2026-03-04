@@ -5,16 +5,15 @@ use arrow_array::{RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lance_index::scalar::FullTextSearchQuery;
-use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::index::Index;
+use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::{
-    connect,
+    Result, Table, connect,
     embeddings::{
-        sentence_transformers::SentenceTransformersEmbeddings, EmbeddingDefinition,
-        EmbeddingFunction,
+        EmbeddingDefinition, EmbeddingFunction,
+        sentence_transformers::SentenceTransformersEmbeddings,
     },
     query::{QueryBase, QueryExecutionOptions},
-    Result, Table,
 };
 use std::{iter::once, sync::Arc};
 

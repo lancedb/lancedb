@@ -23,9 +23,9 @@ use arrow_schema::{DataType, Field, SchemaBuilder, SchemaRef};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    Error,
     error::Result,
     table::{ColumnDefinition, ColumnKind, TableDefinition},
-    Error,
 };
 
 /// Trait for embedding functions

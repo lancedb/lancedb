@@ -36,7 +36,7 @@ pub(crate) async fn execute_delete(table: &NativeTable, predicate: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use crate::connect;
-    use arrow_array::{record_batch, Int32Array, RecordBatch};
+    use arrow_array::{Int32Array, RecordBatch, record_batch};
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 

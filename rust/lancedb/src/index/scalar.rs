@@ -51,7 +51,7 @@ pub struct BitmapIndexBuilder {}
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LabelListIndexBuilder {}
 
-pub use lance_index::scalar::inverted::query::*;
 pub use lance_index::scalar::FullTextSearchQuery;
 pub use lance_index::scalar::InvertedIndexParams as FtsIndexBuilder;
 pub use lance_index::scalar::InvertedIndexParams;
+pub use lance_index::scalar::inverted::query::*;

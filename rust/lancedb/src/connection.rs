@@ -17,6 +17,7 @@ use lance_namespace::models::{
 #[cfg(feature = "aws")]
 use object_store::aws::AwsCredential;
 
+use crate::Table;
 use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
@@ -31,7 +32,6 @@ use crate::remote::{
     client::ClientConfig,
     db::{OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION},
 };
-use crate::Table;
 use lance::io::ObjectStoreParams;
 pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
@@ -758,10 +758,10 @@ impl ConnectBuilder {
         options: &mut HashMap<String, String>,
     ) {
         for (env_key, opt_key) in env_var_to_remote_storage_option {
-            if let Ok(env_value) = std::env::var(env_key) {
-                if !options.contains_key(*opt_key) {
-                    options.insert((*opt_key).to_string(), env_value);
-                }
+            if let Ok(env_value) = std::env::var(env_key)
+                && !options.contains_key(*opt_key)
+            {
+                options.insert((*opt_key).to_string(), env_value);
             }
         }
     }
@@ -1011,14 +1011,13 @@ mod tests {
     #[cfg(feature = "remote")]
     #[test]
     fn test_apply_env_defaults() {
-        let env_key = "TEST_APPLY_ENV_DEFAULTS_ENVIRONMENT_VARIABLE_ENV_KEY";
-        let env_val = "TEST_APPLY_ENV_DEFAULTS_ENVIRONMENT_VARIABLE_ENV_VAL";
+        let env_key = "PATH";
+        let env_val = std::env::var(env_key).expect("PATH should be set in test environment");
         let opts_key = "test_apply_env_defaults_environment_variable_opts_key";
-        std::env::set_var(env_key, env_val);
 
         let mut options = HashMap::new();
         ConnectBuilder::apply_env_defaults(&[(env_key, opts_key)], &mut options);
-        assert_eq!(Some(&env_val.to_string()), options.get(opts_key));
+        assert_eq!(Some(&env_val), options.get(opts_key));
 
         options.insert(opts_key.to_string(), "EXPLICIT-VALUE".to_string());
         ConnectBuilder::apply_env_defaults(&[(env_key, opts_key)], &mut options);

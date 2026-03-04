@@ -17,17 +17,17 @@ use async_trait::async_trait;
 use datafusion_catalog::{Session, TableProvider};
 use datafusion_common::{DataFusionError, Result as DataFusionResult, Statistics};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
-use datafusion_expr::{dml::InsertOp, Expr, TableProviderFilterPushDown, TableType};
+use datafusion_expr::{Expr, TableProviderFilterPushDown, TableType, dml::InsertOp};
 use datafusion_physical_plan::{
-    stream::RecordBatchStreamAdapter, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, stream::RecordBatchStreamAdapter,
 };
 use futures::{TryFutureExt, TryStreamExt};
 use lance::dataset::{WriteMode, WriteParams};
 
 use super::{AnyQuery, BaseTable};
 use crate::{
-    query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
     Result,
+    query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
 };
 use arrow_schema::{DataType, Field};
 use lance_index::scalar::FullTextSearchQuery;
@@ -268,7 +268,7 @@ impl TableProvider for BaseTableAdapter {
             InsertOp::Replace => {
                 return Err(DataFusionError::NotImplemented(
                     "Replace mode is not supported for LanceDB tables".to_string(),
-                ))
+                ));
             }
         };
 
@@ -300,13 +300,13 @@ pub mod tests {
     use datafusion_catalog::TableProvider;
     use datafusion_common::stats::Precision;
     use datafusion_execution::SendableRecordBatchStream;
-    use datafusion_expr::{col, lit, LogicalPlan, LogicalPlanBuilder};
+    use datafusion_expr::{LogicalPlan, LogicalPlanBuilder, col, lit};
     use futures::{StreamExt, TryStreamExt};
     use tempfile::tempdir;
 
     use crate::{
         connect,
-        index::{scalar::BTreeIndexBuilder, Index},
+        index::{Index, scalar::BTreeIndexBuilder},
         table::datafusion::BaseTableAdapter,
     };
 

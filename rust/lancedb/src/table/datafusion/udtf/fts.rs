@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use datafusion::catalog::TableFunctionImpl;
 use datafusion_catalog::TableProvider;
-use datafusion_common::{plan_err, DataFusionError, Result as DataFusionResult, ScalarValue};
+use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue, plan_err};
 use datafusion_expr::Expr;
 use lance_index::scalar::FullTextSearchQuery;
 
@@ -93,9 +93,9 @@ pub fn from_json(json: &str) -> crate::Result<lance_index::scalar::inverted::que
 mod tests {
     use super::*;
     use crate::{
-        index::{scalar::FtsIndexBuilder, Index},
-        table::datafusion::BaseTableAdapter,
         Connection, Table,
+        index::{Index, scalar::FtsIndexBuilder},
+        table::datafusion::BaseTableAdapter,
     };
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema as ArrowSchema};
@@ -212,10 +212,10 @@ mod tests {
         let explain_results = explain_df.collect().await.unwrap();
         for batch in &explain_results {
             for row_idx in 0..batch.num_rows() {
-                if let Some(col) = batch.column_by_name("plan") {
-                    if let Some(plan_str) = col.as_any().downcast_ref::<StringArray>() {
-                        println!("{}", plan_str.value(row_idx));
-                    }
+                if let Some(col) = batch.column_by_name("plan")
+                    && let Some(plan_str) = col.as_any().downcast_ref::<StringArray>()
+                {
+                    println!("{}", plan_str.value(row_idx));
                 }
             }
         }
@@ -229,10 +229,10 @@ mod tests {
         let explain_analyze_results = explain_analyze_df.collect().await.unwrap();
         for batch in &explain_analyze_results {
             for row_idx in 0..batch.num_rows() {
-                if let Some(col) = batch.column_by_name("plan") {
-                    if let Some(plan_str) = col.as_any().downcast_ref::<StringArray>() {
-                        println!("{}", plan_str.value(row_idx));
-                    }
+                if let Some(col) = batch.column_by_name("plan")
+                    && let Some(plan_str) = col.as_any().downcast_ref::<StringArray>()
+                {
+                    println!("{}", plan_str.value(row_idx));
                 }
             }
         }

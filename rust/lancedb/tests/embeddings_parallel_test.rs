@@ -4,8 +4,8 @@
 use std::{
     borrow::Cow,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -16,8 +16,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use lancedb::{
-    embeddings::{EmbeddingDefinition, EmbeddingFunction, MaybeEmbedded, WithEmbeddings},
     Error, Result,
+    embeddings::{EmbeddingDefinition, EmbeddingFunction, MaybeEmbedded, WithEmbeddings},
 };
 
 #[derive(Debug)]
