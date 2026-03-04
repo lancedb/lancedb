@@ -66,13 +66,10 @@ impl StorageOptionsProvider for PyStorageOptionsProviderWrapper {
                     .inner
                     .bind(py)
                     .call_method0("fetch_storage_options")
-                    .map_err(|e| lance_core::Error::IO {
-                        source: Box::new(std::io::Error::other(format!(
-                            "Failed to call fetch_storage_options: {}",
-                            e
-                        ))),
-                        location: snafu::location!(),
-                    })?;
+                    .map_err(|e| lance_core::Error::io_source(Box::new(std::io::Error::other(format!(
+                        "Failed to call fetch_storage_options: {}",
+                        e
+                    )))))?;
 
                 // If result is None, return None
                 if result.is_none() {
@@ -81,26 +78,19 @@ impl StorageOptionsProvider for PyStorageOptionsProviderWrapper {
 
                 // Extract the result dict - should be a flat Map<String, String>
                 let result_dict = result.downcast::<PyDict>().map_err(|_| {
-                    lance_core::Error::InvalidInput {
-                        source: "fetch_storage_options() must return None or a dict of string key-value pairs".into(),
-                        location: snafu::location!(),
-                    }
+                    lance_core::Error::invalid_input(
+                        "fetch_storage_options() must return a dict of string key-value pairs or None",
+                    )
                 })?;
 
                 // Convert all entries to HashMap<String, String>
                 let mut storage_options = HashMap::new();
                 for (key, value) in result_dict.iter() {
                     let key_str: String = key.extract().map_err(|e| {
-                        lance_core::Error::InvalidInput {
-                            source: format!("Storage option key must be a string: {}", e).into(),
-                            location: snafu::location!(),
-                        }
+                        lance_core::Error::invalid_input(format!("Storage option key must be a string: {}", e))
                     })?;
                     let value_str: String = value.extract().map_err(|e| {
-                        lance_core::Error::InvalidInput {
-                            source: format!("Storage option value must be a string: {}", e).into(),
-                            location: snafu::location!(),
-                        }
+                        lance_core::Error::invalid_input(format!("Storage option value must be a string: {}", e))
                     })?;
                     storage_options.insert(key_str, value_str);
                 }
@@ -109,13 +99,10 @@ impl StorageOptionsProvider for PyStorageOptionsProviderWrapper {
             })
         })
         .await
-        .map_err(|e| lance_core::Error::IO {
-            source: Box::new(std::io::Error::other(format!(
-                "Task join error: {}",
-                e
-            ))),
-            location: snafu::location!(),
-        })?
+        .map_err(|e| lance_core::Error::io_source(Box::new(std::io::Error::other(format!(
+            "Task join error: {}",
+            e
+        )))))?
     }
 
     fn provider_id(&self) -> String {
