@@ -3166,6 +3166,7 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 5);
 
+        // list_indices returns indices in alphabetical order by name
         let mut configs_iter = index_configs.into_iter();
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
@@ -3173,19 +3174,19 @@ mod tests {
 
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
-        assert_eq!(index.columns, vec!["is_active".to_string()]);
-
-        let index = configs_iter.next().unwrap();
-        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
         assert_eq!(index.columns, vec!["data".to_string()]);
 
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
-        assert_eq!(index.columns, vec!["large_data".to_string()]);
+        assert_eq!(index.columns, vec!["is_active".to_string()]);
 
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
         assert_eq!(index.columns, vec!["large_category".to_string()]);
+
+        let index = configs_iter.next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
+        assert_eq!(index.columns, vec!["large_data".to_string()]);
     }
 
     #[tokio::test]
