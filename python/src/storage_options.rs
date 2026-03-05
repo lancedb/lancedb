@@ -71,7 +71,7 @@ impl StorageOptionsProvider for PyStorageOptionsProviderWrapper {
                             "Failed to call fetch_storage_options: {}",
                             e
                         ))),
-                        location: snafu::location!(),
+                        location: std::panic::Location::caller(),
                     })?;
 
                 // If result is None, return None
@@ -83,7 +83,7 @@ impl StorageOptionsProvider for PyStorageOptionsProviderWrapper {
                 let result_dict = result.downcast::<PyDict>().map_err(|_| {
                     lance_core::Error::InvalidInput {
                         source: "fetch_storage_options() must return None or a dict of string key-value pairs".into(),
-                        location: snafu::location!(),
+                        location: std::panic::Location::caller(),
                     }
                 })?;
 
@@ -93,13 +93,13 @@ impl StorageOptionsProvider for PyStorageOptionsProviderWrapper {
                     let key_str: String = key.extract().map_err(|e| {
                         lance_core::Error::InvalidInput {
                             source: format!("Storage option key must be a string: {}", e).into(),
-                            location: snafu::location!(),
+                            location: std::panic::Location::caller(),
                         }
                     })?;
                     let value_str: String = value.extract().map_err(|e| {
                         lance_core::Error::InvalidInput {
                             source: format!("Storage option value must be a string: {}", e).into(),
-                            location: snafu::location!(),
+                            location: std::panic::Location::caller(),
                         }
                     })?;
                     storage_options.insert(key_str, value_str);
@@ -114,7 +114,7 @@ impl StorageOptionsProvider for PyStorageOptionsProviderWrapper {
                 "Task join error: {}",
                 e
             ))),
-            location: snafu::location!(),
+            location: std::panic::Location::caller(),
         })?
     }
 
