@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use arrow_cast::can_cast_types;
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
 use datafusion::functions::core::{get_field, named_struct};
 use datafusion_common::config::ConfigOptions;
@@ -68,23 +69,19 @@ fn build_field_exprs(
             (DataType::Struct(in_children), DataType::Struct(tbl_children))
                 if in_children != tbl_children =>
             {
-                let sub_exprs = build_field_exprs(
-                    in_children,
-                    tbl_children,
-                    &|child_idx| {
-                        let child_name = in_children[child_idx].name();
-                        Arc::new(ScalarFunctionExpr::new(
-                            &format!("get_field({child_name})"),
-                            get_field(),
-                            vec![
-                                input_expr.clone(),
-                                Arc::new(Literal::new(ScalarValue::from(child_name.as_str()))),
-                            ],
-                            Arc::new(in_children[child_idx].as_ref().clone()),
-                            config.clone(),
-                        )) as Arc<dyn PhysicalExpr>
-                    },
-                )?;
+                let sub_exprs = build_field_exprs(in_children, tbl_children, &|child_idx| {
+                    let child_name = in_children[child_idx].name();
+                    Arc::new(ScalarFunctionExpr::new(
+                        &format!("get_field({child_name})"),
+                        get_field(),
+                        vec![
+                            input_expr.clone(),
+                            Arc::new(Literal::new(ScalarValue::from(child_name.as_str()))),
+                        ],
+                        Arc::new(in_children[child_idx].as_ref().clone()),
+                        config.clone(),
+                    )) as Arc<dyn PhysicalExpr>
+                })?;
 
                 let output_struct_fields: Fields = sub_exprs
                     .iter()
@@ -116,23 +113,19 @@ fn build_field_exprs(
 
                 result.push((ns_expr, output_field));
                 continue;
-            },
+            }
             // Types match: pass through.
             (inp, tbl) if inp == tbl => input_expr,
-            // Same type family (e.g. numeric↔numeric): attempt the cast.
+            // Types differ: cast.
             // safe: false (the default) means overflow/truncation errors surface at execution time.
-            (_, _) if is_safe_cast(input_field.data_type(), table_field.data_type()) => {
-                Arc::new(CastExpr::new(
-                    input_expr,
-                    table_field.data_type().clone(),
-                    None,
-                )) as Arc<dyn PhysicalExpr>
-            }
-            // Cross-family casts (e.g. numeric→string) are rejected at plan time.
+            (_, _) if can_cast_types(input_field.data_type(), table_field.data_type()) => Arc::new(
+                CastExpr::new(input_expr, table_field.data_type().clone(), None),
+            )
+                as Arc<dyn PhysicalExpr>,
             (inp, tbl) => {
                 return Err(Error::InvalidInput {
                     message: format!(
-                        "cannot cast field '{}' from {} to {}: automatic casting between these types is not supported",
+                        "cannot cast field '{}' from {} to {}",
                         table_field.name(),
                         inp,
                         tbl,
@@ -152,75 +145,21 @@ fn build_field_exprs(
     Ok(result)
 }
 
-/// Normalize a data type by removing encodings and converting to canonical forms.
-fn get_value_type(data_type: &DataType) -> DataType {
-    match data_type {
-        DataType::Dictionary(_, value_type) => get_value_type(value_type.as_ref()),
-        DataType::RunEndEncoded(_, value_field) => get_value_type(value_field.data_type()),
-        DataType::LargeUtf8 | DataType::Utf8View => DataType::Utf8,
-        DataType::LargeBinary | DataType::BinaryView => DataType::Binary,
-        DataType::Decimal32(p, s) | DataType::Decimal64(p, s) | DataType::Decimal128(p, s) => {
-            DataType::Decimal256(*p, *s)
-        }
-        DataType::Int16
-        | DataType::Int32
-        | DataType::UInt16
-        | DataType::UInt32
-        | DataType::UInt64 => DataType::Int64,
-        DataType::Float16 | DataType::Float32 => DataType::Float64,
-        DataType::LargeList(field)
-        | DataType::ListView(field)
-        | DataType::LargeListView(field)
-        | DataType::FixedSizeList(field, _) => DataType::List(field.clone()),
-        other => other.clone(),
-    }
-}
-
-/// Returns true if `from_type` and `to_type` are in the same type family and can be
-/// implicitly cast. Cross-family casts (e.g. numeric → string) are rejected.
-fn is_safe_cast(from_type: &DataType, to_type: &DataType) -> bool {
-    let from_type = get_value_type(from_type);
-    let to_type = get_value_type(to_type);
-
-    match (from_type, to_type) {
-        (DataType::Null, _) => true, // Can cast null to any type.
-        (DataType::List(from_field), DataType::List(to_field)) => {
-            is_safe_cast(from_field.data_type(), to_field.data_type())
-        }
-        // Struct: safe if every input field exists in the target with a compatible type.
-        // Arrow's cast kernel matches struct fields by name, filling missing target fields
-        // with null. Extra input fields (absent from the target) are rejected here because
-        // silently dropping data would be surprising.
-        (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-            from_fields.iter().all(|f| {
-                to_fields
-                    .find(f.name())
-                    .map(|(_, tf)| is_safe_cast(f.data_type(), tf.data_type()))
-                    .unwrap_or(false)
-            })
-        }
-        (DataType::Int64, DataType::Float64) => true, // Allow int→float upcast.
-        (from, to) if from == to => true,             // Same type (after normalization).
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use arrow::buffer::OffsetBuffer;
     use arrow_array::{
-        Array, BinaryArray, Decimal128Array, Float32Array, Float64Array, Int32Array, Int64Array,
-        LargeBinaryArray, ListArray, RecordBatch, StringArray, StructArray, UInt32Array,
-        UInt64Array,
+        Array, Float32Array, Float64Array, Int32Array, Int64Array, ListArray, RecordBatch,
+        StringArray, StructArray, UInt32Array, UInt64Array,
     };
     use arrow_schema::{DataType, Field, Fields, Schema};
     use datafusion::prelude::SessionContext;
     use datafusion_catalog::MemTable;
     use futures::TryStreamExt;
 
-    use super::{cast_to_table_schema, is_safe_cast};
+    use super::cast_to_table_schema;
 
     async fn plan_from_batch(
         batch: RecordBatch,
@@ -556,26 +495,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_numeric_to_string_rejected() {
-        let input_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, false)])),
-            vec![Arc::new(UInt32Array::from(vec![1u32]))],
-        )
-        .unwrap();
-
-        let table_schema = Schema::new(vec![Field::new("a", DataType::Utf8, false)]);
-
-        let plan = plan_from_batch(input_batch).await;
-        let result = cast_to_table_schema(plan, &table_schema);
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("cannot cast field 'a'"),
-            "unexpected error: {err_msg}"
-        );
-    }
-
-    #[tokio::test]
     async fn test_narrowing_numeric_cast_success() {
         let input_batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::UInt64, false)])),
@@ -613,107 +532,6 @@ mod tests {
         let stream = casted.execute(0, ctx.task_ctx()).unwrap();
         let result: Result<Vec<RecordBatch>, _> = stream.try_collect().await;
         assert!(result.is_err(), "expected overflow error at execution time");
-    }
-
-    #[tokio::test]
-    async fn test_float_to_int_rejected() {
-        // Arrow's safe:false does not error on truncation (1.5 → 1 silently), so
-        // float→int must be rejected at plan time rather than relying on runtime errors.
-        let input_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Float64, false)])),
-            vec![Arc::new(Float64Array::from(vec![1.5f64]))],
-        )
-        .unwrap();
-
-        let table_schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
-
-        let plan = plan_from_batch(input_batch).await;
-        let result = cast_to_table_schema(plan, &table_schema);
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("cannot cast field 'a'"),
-            "unexpected error: {err_msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_binary_variants_cast() {
-        let input_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("a", DataType::Binary, false)])),
-            vec![Arc::new(BinaryArray::from_vec(vec![b"hello", b"world"]))],
-        )
-        .unwrap();
-
-        let table_schema = Schema::new(vec![Field::new("a", DataType::LargeBinary, false)]);
-
-        let plan = plan_from_batch(input_batch).await;
-        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
-        let result = collect(casted).await;
-
-        assert_eq!(result.schema().field(0).data_type(), &DataType::LargeBinary);
-        let a: &LargeBinaryArray = result.column(0).as_any().downcast_ref().unwrap();
-        assert_eq!(a.value(0), b"hello");
-        assert_eq!(a.value(1), b"world");
-    }
-
-    #[tokio::test]
-    async fn test_decimal_same_ps_different_width() {
-        // Decimal128 → Decimal256 with identical precision and scale is a pure
-        // storage-width change and must succeed.
-        let input_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "a",
-                DataType::Decimal128(10, 2),
-                false,
-            )])),
-            vec![Arc::new(
-                Decimal128Array::from(vec![12345i128])
-                    .with_precision_and_scale(10, 2)
-                    .unwrap(),
-            )],
-        )
-        .unwrap();
-
-        let table_schema = Schema::new(vec![Field::new("a", DataType::Decimal256(10, 2), false)]);
-
-        let plan = plan_from_batch(input_batch).await;
-        let casted = cast_to_table_schema(plan, &table_schema).unwrap();
-        let result = collect(casted).await;
-
-        assert_eq!(
-            result.schema().field(0).data_type(),
-            &DataType::Decimal256(10, 2)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_decimal_different_ps_rejected() {
-        let input_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "a",
-                DataType::Decimal128(10, 2),
-                false,
-            )])),
-            vec![Arc::new(
-                Decimal128Array::from(vec![12345i128])
-                    .with_precision_and_scale(10, 2)
-                    .unwrap(),
-            )],
-        )
-        .unwrap();
-
-        // Different scale — rejected even though it's Decimal128→Decimal256.
-        let table_schema = Schema::new(vec![Field::new("a", DataType::Decimal256(10, 4), false)]);
-
-        let plan = plan_from_batch(input_batch).await;
-        let result = cast_to_table_schema(plan, &table_schema);
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("cannot cast field 'a'"),
-            "unexpected error: {err_msg}"
-        );
     }
 
     #[tokio::test]
@@ -799,21 +617,5 @@ mod tests {
             .downcast_ref()
             .unwrap();
         assert_eq!(a.values(), &[1, 3]);
-    }
-
-    #[test]
-    fn test_safe_casts() {
-        // Allowed casts:
-        assert!(is_safe_cast(&DataType::Int32, &DataType::Int64));
-        assert!(is_safe_cast(&DataType::UInt32, &DataType::Int64));
-        assert!(is_safe_cast(&DataType::Int64, &DataType::Float64));
-        assert!(is_safe_cast(
-            &DataType::LargeList(Arc::new(Field::new("item", DataType::Float64, false))),
-            &DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float16, false)), 32)
-        ));
-
-        // Disallowed casts:
-        assert!(!is_safe_cast(&DataType::Int32, &DataType::Utf8));
-        assert!(!is_safe_cast(&DataType::Float64, &DataType::Int32));
     }
 }
