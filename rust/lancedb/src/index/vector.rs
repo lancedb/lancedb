@@ -7,6 +7,7 @@
 //! Vector indices are only supported on fixed-size-list (tensor) columns of floating point
 //! values
 use lance::table::format::{IndexMetadata, Manifest};
+use serde::Serialize;
 
 use crate::DistanceType;
 
@@ -181,14 +182,17 @@ macro_rules! impl_hnsw_params_setter {
 /// The partitioning process is called IVF and the `num_partitions` parameter controls how many groups to create.
 ///
 /// Note that training an IVF Flat index on a large dataset is a slow operation and currently is also a memory intensive operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfFlatIndexBuilder {
+    #[serde(rename = "metric_type")]
     pub(crate) distance_type: DistanceType,
 
     // IVF
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) target_partition_size: Option<u32>,
 }
 
@@ -213,14 +217,17 @@ impl IvfFlatIndexBuilder {
 ///
 /// This index compresses vectors using scalar quantization and groups them into IVF partitions.
 /// It offers a balance between search performance and storage footprint.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfSqIndexBuilder {
+    #[serde(rename = "metric_type")]
     pub(crate) distance_type: DistanceType,
 
     // IVF
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) target_partition_size: Option<u32>,
 }
 
@@ -261,18 +268,23 @@ impl IvfSqIndexBuilder {
 ///
 /// Note that training an IVF PQ index on a large dataset is a slow operation and
 /// currently is also a memory intensive operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfPqIndexBuilder {
+    #[serde(rename = "metric_type")]
     pub(crate) distance_type: DistanceType,
 
     // IVF
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) target_partition_size: Option<u32>,
 
     // PQ
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_sub_vectors: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_bits: Option<u32>,
 }
 
@@ -323,14 +335,18 @@ pub(crate) fn suggested_num_sub_vectors(dim: u32) -> u32 {
 ///
 /// Note that training an IVF RQ index on a large dataset is a slow operation and
 /// currently is also a memory intensive operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfRqIndexBuilder {
     // IVF
+    #[serde(rename = "metric_type")]
     pub(crate) distance_type: DistanceType,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_partitions: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_bits: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) target_partition_size: Option<u32>,
 }
 
@@ -365,13 +381,16 @@ impl IvfRqIndexBuilder {
 /// quickly find the closest vectors to a query vector.
 ///
 /// The PQ (product quantizer) is used to compress the vectors as the same as IVF PQ.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfHnswPqIndexBuilder {
     // IVF
+    #[serde(rename = "metric_type")]
     pub(crate) distance_type: DistanceType,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) target_partition_size: Option<u32>,
 
     // HNSW
@@ -379,7 +398,9 @@ pub struct IvfHnswPqIndexBuilder {
     pub(crate) ef_construction: u32,
 
     // PQ
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_sub_vectors: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_bits: Option<u32>,
 }
 
@@ -415,13 +436,16 @@ impl IvfHnswPqIndexBuilder {
 ///
 /// The SQ (scalar quantizer) is used to compress the vectors,
 /// each vector is mapped to a 8-bit integer vector, 4x compression ratio for float32 vector.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IvfHnswSqIndexBuilder {
     // IVF
+    #[serde(rename = "metric_type")]
     pub(crate) distance_type: DistanceType,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_partitions: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) target_partition_size: Option<u32>,
 
     // HNSW

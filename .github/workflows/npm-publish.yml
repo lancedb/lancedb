@@ -356,7 +356,8 @@ jobs:
           if [[ $DRY_RUN == "true" ]]; then
             ARGS="$ARGS --dry-run"
           fi
-          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ $VERSION == *-* ]]; then
             ARGS="$ARGS --tag preview"
           fi
           npm publish $ARGS

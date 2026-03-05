@@ -4,9 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow::array::make_array;
 use arrow::array::Array;
 use arrow::array::ArrayData;
+use arrow::array::make_array;
 use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
 use arrow::pyarrow::ToPyArrow;
@@ -22,23 +22,23 @@ use lancedb::query::{
     VectorQuery as LanceDbVectorQuery,
 };
 use lancedb::table::AnyQuery;
-use pyo3::prelude::{PyAnyMethods, PyDictMethods};
-use pyo3::pyfunction;
-use pyo3::pymethods;
-use pyo3::types::PyList;
-use pyo3::types::{PyDict, PyString};
 use pyo3::Bound;
 use pyo3::IntoPyObject;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
 use pyo3::Python;
-use pyo3::{exceptions::PyRuntimeError, FromPyObject};
+use pyo3::prelude::{PyAnyMethods, PyDictMethods};
+use pyo3::pyfunction;
+use pyo3::pymethods;
+use pyo3::types::PyList;
+use pyo3::types::{PyDict, PyString};
+use pyo3::{FromPyObject, exceptions::PyRuntimeError};
+use pyo3::{PyErr, pyclass};
 use pyo3::{
     exceptions::{PyNotImplementedError, PyValueError},
     intern,
 };
-use pyo3::{pyclass, PyErr};
 use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::util::parse_distance_type;

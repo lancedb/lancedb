@@ -6,12 +6,12 @@ use std::sync::Arc;
 use lance_io::object_store::StorageOptionsProvider;
 
 use crate::{
+    Error, Result, Table,
     connection::{merge_storage_options, set_storage_options_provider},
     data::scannable::{Scannable, WithEmbeddingsScannable},
     database::{CreateTableMode, CreateTableRequest, Database},
     embeddings::{EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry},
     table::WriteOptions,
-    Error, Result, Table,
 };
 
 pub struct CreateTableBuilder {
@@ -167,7 +167,7 @@ impl CreateTableBuilder {
 #[cfg(test)]
 mod tests {
     use arrow_array::{
-        record_batch, Array, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator,
+        Array, FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator, record_batch,
     };
     use arrow_schema::{ArrowError, DataType, Field, Schema};
     use futures::TryStreamExt;
@@ -380,11 +380,12 @@ mod tests {
             .await
             .unwrap();
         let other_schema = Arc::new(Schema::new(vec![Field::new("y", DataType::Int32, false)]));
-        assert!(db
-            .create_empty_table("test", other_schema.clone())
-            .execute()
-            .await
-            .is_err()); // TODO: assert what this error is
+        assert!(
+            db.create_empty_table("test", other_schema.clone())
+                .execute()
+                .await
+                .is_err()
+        ); // TODO: assert what this error is
         let overwritten = db
             .create_empty_table("test", other_schema.clone())
             .mode(CreateTableMode::Overwrite)

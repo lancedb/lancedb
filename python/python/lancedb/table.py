@@ -1331,7 +1331,7 @@ class Table(ABC):
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
         >>> table.delete("x = 2")
-        DeleteResult(version=2)
+        DeleteResult(num_deleted_rows=1, version=2)
         >>> table.to_pandas()
            x      vector
         0  1  [1.0, 2.0]
@@ -1345,7 +1345,7 @@ class Table(ABC):
         >>> to_remove
         '1, 5'
         >>> table.delete(f"x IN ({to_remove})")
-        DeleteResult(version=3)
+        DeleteResult(num_deleted_rows=1, version=3)
         >>> table.to_pandas()
            x      vector
         0  3  [5.0, 6.0]
@@ -4215,7 +4215,7 @@ class AsyncTable:
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
         >>> table.delete("x = 2")
-        DeleteResult(version=2)
+        DeleteResult(num_deleted_rows=1, version=2)
         >>> table.to_pandas()
            x      vector
         0  1  [1.0, 2.0]
@@ -4229,7 +4229,7 @@ class AsyncTable:
         >>> to_remove
         '1, 5'
         >>> table.delete(f"x IN ({to_remove})")
-        DeleteResult(version=3)
+        DeleteResult(num_deleted_rows=1, version=3)
         >>> table.to_pandas()
            x      vector
         0  3  [5.0, 6.0]

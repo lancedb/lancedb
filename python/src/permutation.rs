@@ -16,10 +16,10 @@ use lancedb::{
     query::Select,
 };
 use pyo3::{
+    Bound, PyAny, PyRef, PyRefMut, PyResult, Python,
     exceptions::PyRuntimeError,
     pyclass, pymethods,
     types::{PyAnyMethods, PyDict, PyDictMethods, PyType},
-    Bound, PyAny, PyRef, PyRefMut, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 

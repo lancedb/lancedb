@@ -10,7 +10,7 @@ use arrow::{
 use futures::stream::StreamExt;
 use lancedb::arrow::SendableRecordBatchStream;
 use pyo3::{
-    exceptions::PyStopAsyncIteration, pyclass, pymethods, Bound, Py, PyAny, PyRef, PyResult, Python,
+    Bound, Py, PyAny, PyRef, PyResult, Python, exceptions::PyStopAsyncIteration, pyclass, pymethods,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 

@@ -9,8 +9,8 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
+use futures::future::{BoxFuture, Shared};
 
 type SharedFut<V, E> = Shared<BoxFuture<'static, Result<V, Arc<E>>>>;
 

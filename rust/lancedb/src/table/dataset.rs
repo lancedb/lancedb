@@ -6,9 +6,9 @@ use std::{
     time::Duration,
 };
 
-use lance::{dataset::refs, Dataset};
+use lance::{Dataset, dataset::refs};
 
-use crate::{error::Result, utils::background_cache::BackgroundCache, Error};
+use crate::{Error, error::Result, utils::background_cache::BackgroundCache};
 
 /// A wrapper around a [Dataset] that provides consistency checks.
 ///

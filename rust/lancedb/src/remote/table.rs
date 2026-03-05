@@ -6,15 +6,14 @@ pub mod insert;
 use self::insert::RemoteInsertExec;
 use crate::expr::expr_to_sql_string;
 
+use super::ARROW_STREAM_CONTENT_TYPE;
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
-use super::ARROW_STREAM_CONTENT_TYPE;
-use crate::index::waiter::wait_for_index;
 use crate::index::Index;
 use crate::index::IndexStatistics;
+use crate::index::waiter::wait_for_index;
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
-use crate::table::query::create_multi_vector_plan;
 use crate::table::AddColumnsResult;
 use crate::table::AddResult;
 use crate::table::AlterColumnsResult;
@@ -23,19 +22,20 @@ use crate::table::DropColumnsResult;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
+use crate::table::query::create_multi_vector_plan;
 use crate::table::{AnyQuery, Filter, TableStatistics};
 use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
+use crate::{DistanceType, Error};
 use crate::{
     error::Result,
     index::{IndexBuilder, IndexConfig},
     query::QueryExecutionOptions,
     table::{
-        merge::MergeInsertBuilder, AddDataBuilder, BaseTable, OptimizeAction, OptimizeStats,
-        TableDefinition, UpdateBuilder,
+        AddDataBuilder, BaseTable, OptimizeAction, OptimizeStats, TableDefinition, UpdateBuilder,
+        merge::MergeInsertBuilder,
     },
 };
-use crate::{DistanceType, Error};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
@@ -50,7 +50,7 @@ use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
-use lance_datafusion::exec::{execute_plan, OneShotExec};
+use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
@@ -612,8 +612,8 @@ impl<S: HttpSend> RemoteTable<S> {
                 message: format!(
                     "Cannot mutate table reference fixed at version {}. Call checkout_latest() to get a mutable table reference.",
                     version
-                )
-            })
+                ),
+            }),
         }
     }
 
@@ -697,10 +697,10 @@ impl<S: HttpSend> RemoteTable<S> {
             Error::Retry { status_code, .. } => *status_code,
             _ => None,
         };
-        if let Some(status_code) = status_code {
-            if Self::should_invalidate_cache_for_status(status_code) {
-                self.invalidate_schema_cache();
-            }
+        if let Some(status_code) = status_code
+            && Self::should_invalidate_cache_for_status(status_code)
+        {
+            self.invalidate_schema_cache();
         }
     }
 }
@@ -783,9 +783,9 @@ impl<S: HttpSend> std::fmt::Display for RemoteTable<S> {
 #[cfg(all(test, feature = "remote"))]
 mod test_utils {
     use super::*;
-    use crate::remote::client::test_utils::client_with_handler;
-    use crate::remote::client::test_utils::{client_with_handler_and_config, MockSender};
     use crate::remote::ClientConfig;
+    use crate::remote::client::test_utils::client_with_handler;
+    use crate::remote::client::test_utils::{MockSender, client_with_handler_and_config};
 
     impl RemoteTable<MockSender> {
         pub fn new_mock<F, T>(name: String, handler: F, version: Option<semver::Version>) -> Self
@@ -1227,7 +1227,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let body = response.text().await.err_to_http(request_id.clone())?;
         if body.trim().is_empty() {
             // Backward compatible with old servers
-            return Ok(DeleteResult { version: 0 });
+            return Ok(DeleteResult {
+                num_deleted_rows: 0,
+                version: 0,
+            });
         }
         let delete_response: DeleteResult =
             serde_json::from_str(&body).map_err(|e| Error::Http {
@@ -1248,13 +1251,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             0 => {
                 return Err(Error::InvalidInput {
                     message: "No columns specified".into(),
-                })
+                });
             }
             1 => index.columns.pop().unwrap(),
             _ => {
                 return Err(Error::NotSupported {
                     message: "Indices over multiple columns not yet supported".into(),
-                })
+                });
             }
         };
         let mut body = serde_json::json!({
@@ -1273,73 +1276,24 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             );
         }
 
-        match index.index {
-            // TODO: Should we pass the actual index parameters? SaaS does not
-            // yet support them.
-            Index::IvfFlat(index) => {
-                body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_FLAT".to_string());
-                body[METRIC_TYPE_KEY] =
-                    serde_json::Value::String(index.distance_type.to_string().to_lowercase());
-                if let Some(num_partitions) = index.num_partitions {
-                    body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
-                }
-            }
-            Index::IvfPq(index) => {
-                body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_PQ".to_string());
-                body[METRIC_TYPE_KEY] =
-                    serde_json::Value::String(index.distance_type.to_string().to_lowercase());
-                if let Some(num_partitions) = index.num_partitions {
-                    body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
-                }
-                if let Some(num_bits) = index.num_bits {
-                    body["num_bits"] = serde_json::Value::Number(num_bits.into());
-                }
-            }
-            Index::IvfSq(index) => {
-                body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_SQ".to_string());
-                body[METRIC_TYPE_KEY] =
-                    serde_json::Value::String(index.distance_type.to_string().to_lowercase());
-                if let Some(num_partitions) = index.num_partitions {
-                    body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
-                }
-            }
-            Index::IvfHnswSq(index) => {
-                body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_HNSW_SQ".to_string());
-                body[METRIC_TYPE_KEY] =
-                    serde_json::Value::String(index.distance_type.to_string().to_lowercase());
-                if let Some(num_partitions) = index.num_partitions {
-                    body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
-                }
-            }
-            Index::IvfRq(index) => {
-                body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_RQ".to_string());
-                body[METRIC_TYPE_KEY] =
-                    serde_json::Value::String(index.distance_type.to_string().to_lowercase());
-                if let Some(num_partitions) = index.num_partitions {
-                    body["num_partitions"] = serde_json::Value::Number(num_partitions.into());
-                }
-                if let Some(num_bits) = index.num_bits {
-                    body["num_bits"] = serde_json::Value::Number(num_bits.into());
-                }
-            }
-            Index::BTree(_) => {
-                body[INDEX_TYPE_KEY] = serde_json::Value::String("BTREE".to_string());
-            }
-            Index::Bitmap(_) => {
-                body[INDEX_TYPE_KEY] = serde_json::Value::String("BITMAP".to_string());
-            }
-            Index::LabelList(_) => {
-                body[INDEX_TYPE_KEY] = serde_json::Value::String("LABEL_LIST".to_string());
-            }
-            Index::FTS(fts) => {
-                body[INDEX_TYPE_KEY] = serde_json::Value::String("FTS".to_string());
-                let params = serde_json::to_value(&fts).map_err(|e| Error::InvalidInput {
-                    message: format!("failed to serialize FTS index params {:?}", e),
-                })?;
-                for (key, value) in params.as_object().unwrap() {
-                    body[key] = value.clone();
-                }
-            }
+        fn to_json(params: &impl serde::Serialize) -> crate::Result<serde_json::Value> {
+            serde_json::to_value(params).map_err(|e| Error::InvalidInput {
+                message: format!("failed to serialize index params {:?}", e),
+            })
+        }
+
+        // Map each Index variant to its wire type name and serializable params.
+        // Auto is special-cased since it needs schema inspection.
+        let (index_type_str, params) = match &index.index {
+            Index::IvfFlat(p) => ("IVF_FLAT", Some(to_json(p)?)),
+            Index::IvfPq(p) => ("IVF_PQ", Some(to_json(p)?)),
+            Index::IvfSq(p) => ("IVF_SQ", Some(to_json(p)?)),
+            Index::IvfHnswSq(p) => ("IVF_HNSW_SQ", Some(to_json(p)?)),
+            Index::IvfRq(p) => ("IVF_RQ", Some(to_json(p)?)),
+            Index::BTree(p) => ("BTREE", Some(to_json(p)?)),
+            Index::Bitmap(p) => ("BITMAP", Some(to_json(p)?)),
+            Index::LabelList(p) => ("LABEL_LIST", Some(to_json(p)?)),
+            Index::FTS(p) => ("FTS", Some(to_json(p)?)),
             Index::Auto => {
                 let schema = self.schema().await?;
                 let field = schema
@@ -1348,11 +1302,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                         message: format!("Column {} not found in schema", column),
                     })?;
                 if supported_vector_data_type(field.data_type()) {
-                    body[INDEX_TYPE_KEY] = serde_json::Value::String("IVF_PQ".to_string());
                     body[METRIC_TYPE_KEY] =
                         serde_json::Value::String(DistanceType::L2.to_string().to_lowercase());
+                    ("IVF_PQ", None)
                 } else if supported_btree_data_type(field.data_type()) {
-                    body[INDEX_TYPE_KEY] = serde_json::Value::String("BTREE".to_string());
+                    ("BTREE", None)
                 } else {
                     return Err(Error::NotSupported {
                         message: format!(
@@ -1366,9 +1320,16 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             _ => {
                 return Err(Error::NotSupported {
                     message: "Index type not supported".into(),
-                })
+                });
             }
         };
+
+        body[INDEX_TYPE_KEY] = index_type_str.into();
+        if let Some(params) = params {
+            for (key, value) in params.as_object().expect("params should be a JSON object") {
+                body[key] = value.clone();
+            }
+        }
 
         let request = request.json(&body);
 
@@ -1810,8 +1771,8 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use std::{collections::HashMap, pin::Pin};
 
@@ -1820,25 +1781,27 @@ mod tests {
     use crate::table::AddDataMode;
 
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
-    use arrow_array::{record_batch, Int32Array, RecordBatch, RecordBatchIterator};
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, record_batch};
     use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Utc};
-    use futures::{future::BoxFuture, StreamExt, TryFutureExt};
+    use futures::{StreamExt, TryFutureExt, future::BoxFuture};
     use lance_index::scalar::inverted::query::MatchQuery;
     use lance_index::scalar::{FullTextSearchQuery, InvertedIndexParams};
     use reqwest::Body;
     use rstest::rstest;
     use serde_json::json;
 
-    use crate::index::vector::{IvfFlatIndexBuilder, IvfHnswSqIndexBuilder};
-    use crate::remote::db::DEFAULT_SERVER_VERSION;
+    use crate::index::vector::{
+        IvfFlatIndexBuilder, IvfHnswSqIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder,
+    };
     use crate::remote::JSON_CONTENT_TYPE;
+    use crate::remote::db::DEFAULT_SERVER_VERSION;
     use crate::utils::background_cache::clock;
     use crate::{
-        index::{vector::IvfPqIndexBuilder, Index, IndexStatistics, IndexType},
+        DistanceType, Error, Table,
+        index::{Index, IndexStatistics, IndexType, vector::IvfPqIndexBuilder},
         query::{ExecutableQuery, QueryBase},
         remote::ARROW_FILE_CONTENT_TYPE,
-        DistanceType, Error, Table,
     };
 
     #[tokio::test]
@@ -2067,11 +2030,13 @@ mod tests {
                     .unwrap(),
                 "/v1/table/my_table/insert/" => {
                     assert_eq!(request.method(), "POST");
-                    assert!(request
-                        .url()
-                        .query_pairs()
-                        .filter(|(k, _)| k == "mode")
-                        .all(|(_, v)| v == "append"));
+                    assert!(
+                        request
+                            .url()
+                            .query_pairs()
+                            .filter(|(k, _)| k == "mode")
+                            .all(|(_, v)| v == "append")
+                    );
                     assert_eq!(
                         request.headers().get("Content-Type").unwrap(),
                         ARROW_STREAM_CONTENT_TYPE
@@ -2992,6 +2957,8 @@ mod tests {
                 "IVF_FLAT",
                 json!({
                     "metric_type": "hamming",
+                    "sample_rate": 256,
+                    "max_iterations": 50,
                 }),
                 Index::IvfFlat(IvfFlatIndexBuilder::default().distance_type(DistanceType::Hamming)),
             ),
@@ -3000,6 +2967,8 @@ mod tests {
                 json!({
                     "metric_type": "hamming",
                     "num_partitions": 128,
+                    "sample_rate": 256,
+                    "max_iterations": 50,
                 }),
                 Index::IvfFlat(
                     IvfFlatIndexBuilder::default()
@@ -3011,6 +2980,8 @@ mod tests {
                 "IVF_PQ",
                 json!({
                     "metric_type": "l2",
+                    "sample_rate": 256,
+                    "max_iterations": 50,
                 }),
                 Index::IvfPq(Default::default()),
             ),
@@ -3020,6 +2991,8 @@ mod tests {
                     "metric_type": "cosine",
                     "num_partitions": 128,
                     "num_bits": 4,
+                    "sample_rate": 256,
+                    "max_iterations": 50,
                 }),
                 Index::IvfPq(
                     IvfPqIndexBuilder::default()
@@ -3029,9 +3002,28 @@ mod tests {
                 ),
             ),
             (
+                "IVF_PQ",
+                json!({
+                    "metric_type": "l2",
+                    "num_sub_vectors": 16,
+                    "sample_rate": 512,
+                    "max_iterations": 100,
+                }),
+                Index::IvfPq(
+                    IvfPqIndexBuilder::default()
+                        .num_sub_vectors(16)
+                        .sample_rate(512)
+                        .max_iterations(100),
+                ),
+            ),
+            (
                 "IVF_HNSW_SQ",
                 json!({
                     "metric_type": "l2",
+                    "sample_rate": 256,
+                    "max_iterations": 50,
+                    "m": 20,
+                    "ef_construction": 300,
                 }),
                 Index::IvfHnswSq(Default::default()),
             ),
@@ -3040,11 +3032,65 @@ mod tests {
                 json!({
                     "metric_type": "l2",
                     "num_partitions": 128,
+                    "sample_rate": 256,
+                    "max_iterations": 50,
+                    "m": 40,
+                    "ef_construction": 500,
                 }),
                 Index::IvfHnswSq(
                     IvfHnswSqIndexBuilder::default()
                         .distance_type(DistanceType::L2)
-                        .num_partitions(128),
+                        .num_partitions(128)
+                        .num_edges(40)
+                        .ef_construction(500),
+                ),
+            ),
+            (
+                "IVF_SQ",
+                json!({
+                    "metric_type": "l2",
+                    "sample_rate": 256,
+                    "max_iterations": 50,
+                }),
+                Index::IvfSq(Default::default()),
+            ),
+            (
+                "IVF_SQ",
+                json!({
+                    "metric_type": "cosine",
+                    "num_partitions": 64,
+                    "sample_rate": 256,
+                    "max_iterations": 50,
+                }),
+                Index::IvfSq(
+                    IvfSqIndexBuilder::default()
+                        .distance_type(DistanceType::Cosine)
+                        .num_partitions(64),
+                ),
+            ),
+            (
+                "IVF_RQ",
+                json!({
+                    "metric_type": "l2",
+                    "sample_rate": 256,
+                    "max_iterations": 50,
+                }),
+                Index::IvfRq(Default::default()),
+            ),
+            (
+                "IVF_RQ",
+                json!({
+                    "metric_type": "cosine",
+                    "num_partitions": 64,
+                    "num_bits": 8,
+                    "sample_rate": 256,
+                    "max_iterations": 50,
+                }),
+                Index::IvfRq(
+                    IvfRqIndexBuilder::default()
+                        .distance_type(DistanceType::Cosine)
+                        .num_partitions(64)
+                        .num_bits(8),
                 ),
             ),
             // HNSW_PQ isn't yet supported on SaaS
@@ -3548,7 +3594,7 @@ mod tests {
     }
 
     fn _make_table_with_indices(unindexed_rows: usize) -> Table {
-        let table = Table::new_with_handler("my_table", move |request| {
+        Table::new_with_handler("my_table", move |request| {
             assert_eq!(request.method(), "POST");
 
             let response_body = match request.url().path() {
@@ -3592,8 +3638,7 @@ mod tests {
             let body = serde_json::to_string(&response_body).unwrap();
             let status = if body == "null" { 404 } else { 200 };
             http::Response::builder().status(status).body(body).unwrap()
-        });
-        table
+        })
     }
 
     #[tokio::test]
@@ -3804,8 +3849,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_uri_caching() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();

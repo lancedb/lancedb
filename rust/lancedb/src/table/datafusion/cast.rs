@@ -6,10 +6,10 @@ use std::sync::Arc;
 use arrow_cast::can_cast_types;
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
 use datafusion::functions::core::{get_field, named_struct};
-use datafusion_common::config::ConfigOptions;
 use datafusion_common::ScalarValue;
-use datafusion_physical_expr::expressions::{CastExpr, Literal};
+use datafusion_common::config::ConfigOptions;
 use datafusion_physical_expr::ScalarFunctionExpr;
+use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
@@ -130,7 +130,7 @@ fn build_field_exprs(
                         inp,
                         tbl,
                     ),
-                })
+                });
             }
         };
 

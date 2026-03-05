@@ -9,13 +9,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lance_io::object_store::{ObjectStoreParams, StorageOptionsAccessor};
 use lance_namespace::{
+    LanceNamespace,
     models::{
         CreateEmptyTableRequest, CreateNamespaceRequest, CreateNamespaceResponse,
         DeclareTableRequest, DescribeNamespaceRequest, DescribeNamespaceResponse,
         DescribeTableRequest, DropNamespaceRequest, DropNamespaceResponse, DropTableRequest,
         ListNamespacesRequest, ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
     },
-    LanceNamespace,
 };
 use lance_namespace_impls::ConnectBuilder;
 use log::warn;

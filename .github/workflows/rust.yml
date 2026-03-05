@@ -100,7 +100,9 @@ jobs:
           lfs: true
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
-        run: sudo apt install -y protobuf-compiler libssl-dev
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
       - uses: rui314/setup-mold@v1
       - name: Make Swap
         run: |

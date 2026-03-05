@@ -6,8 +6,9 @@ use futures::TryStreamExt;
 use lance_datagen::{BatchCount, BatchGeneratorBuilder, RowCount};
 
 use crate::{
+    Error, Table,
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
-    connect, Error, Table,
+    connect,
 };
 
 #[async_trait::async_trait]

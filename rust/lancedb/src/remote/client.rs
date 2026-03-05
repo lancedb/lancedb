@@ -4,8 +4,8 @@
 use http::HeaderName;
 use log::debug;
 use reqwest::{
-    header::{HeaderMap, HeaderValue},
     Body, Request, RequestBuilder, Response,
+    header::{HeaderMap, HeaderValue},
 };
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
 
@@ -446,13 +446,23 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 })?,
             );
         }
-        if let Some(v) = options.0.get("azure_storage_account_name") {
-            headers.insert(
-                HeaderName::from_static("x-azure-storage-account-name"),
-                HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
-                    message: format!("non-ascii storage account name '{}' provided", db_name),
-                })?,
-            );
+        // Map azure storage options to x-azure-* headers.
+        // The option key uses underscores (e.g. "azure_client_id") while the
+        // header uses hyphens (e.g. "x-azure-client-id").
+        let azure_opts: [(&str, &str); 3] = [
+            ("azure_storage_account_name", "x-azure-storage-account-name"),
+            ("azure_client_id", "x-azure-client-id"),
+            ("azure_tenant_id", "x-azure-tenant-id"),
+        ];
+        for (opt_key, header_name) in azure_opts {
+            if let Some(v) = options.0.get(opt_key) {
+                headers.insert(
+                    HeaderName::from_static(header_name),
+                    HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
+                        message: format!("non-ascii value '{}' for option '{}'", v, opt_key),
+                    })?,
+                );
+            }
         }
 
         for (key, value) in &config.extra_headers {
@@ -650,14 +660,13 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub fn extract_request_id(&self, request: &mut Request) -> String {
         // Set a request id.
         // TODO: allow the user to supply this, through middleware?
-        let request_id = if let Some(request_id) = request.headers().get(REQUEST_ID_HEADER) {
+        if let Some(request_id) = request.headers().get(REQUEST_ID_HEADER) {
             request_id.to_str().unwrap().to_string()
         } else {
             let request_id = uuid::Uuid::new_v4().to_string();
             self.set_request_id(request, &request_id);
             request_id
-        };
-        request_id
+        }
     }
 
     /// Set the request ID header
@@ -1075,5 +1084,35 @@ mod tests {
             }
             _ => panic!("Expected Runtime error"),
         }
+    }
+
+    #[test]
+    fn test_default_headers_azure_opts() {
+        let mut opts = HashMap::new();
+        opts.insert(
+            "azure_storage_account_name".to_string(),
+            "myaccount".to_string(),
+        );
+        opts.insert("azure_client_id".to_string(), "my-client-id".to_string());
+        opts.insert("azure_tenant_id".to_string(), "my-tenant-id".to_string());
+        let remote_opts = RemoteOptions::new(opts);
+
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "test-key",
+            "us-east-1",
+            "testdb",
+            false,
+            &remote_opts,
+            None,
+            &ClientConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            headers.get("x-azure-storage-account-name").unwrap(),
+            "myaccount"
+        );
+        assert_eq!(headers.get("x-azure-client-id").unwrap(), "my-client-id");
+        assert_eq!(headers.get("x-azure-tenant-id").unwrap(), "my-tenant-id");
     }
 }

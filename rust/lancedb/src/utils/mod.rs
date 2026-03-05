@@ -53,7 +53,7 @@ impl PatchStoreParam for Option<ObjectStoreParams> {
 
 pub trait PatchWriteParam {
     fn patch_with_store_wrapper(self, wrapper: Arc<dyn WrappingObjectStore>)
-        -> Result<WriteParams>;
+    -> Result<WriteParams>;
 }
 
 impl PatchWriteParam for WriteParams {
@@ -340,7 +340,7 @@ mod tests {
     use arrow_array::Int32Array;
     use arrow_schema::Field;
     use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
-    use futures::{stream, StreamExt};
+    use futures::{StreamExt, stream};
     use tokio::time::sleep;
 
     use super::*;
@@ -351,10 +351,12 @@ mod tests {
             Field::new("id", DataType::Int16, true),
             Field::new("tag", DataType::Utf8, false),
         ]);
-        assert!(default_vector_column(&schema_no_vector, None)
-            .unwrap_err()
-            .to_string()
-            .contains("No vector column"));
+        assert!(
+            default_vector_column(&schema_no_vector, None)
+                .unwrap_err()
+                .to_string()
+                .contains("No vector column")
+        );
 
         let schema_with_vec_col = Schema::new(vec![
             Field::new("id", DataType::Int16, true),
@@ -382,10 +384,12 @@ mod tests {
                 false,
             ),
         ]);
-        assert!(default_vector_column(&multi_vec_col, None)
-            .unwrap_err()
-            .to_string()
-            .contains("More than one"));
+        assert!(
+            default_vector_column(&multi_vec_col, None)
+                .unwrap_err()
+                .to_string()
+                .contains("More than one")
+        );
     }
 
     #[test]
@@ -501,10 +505,12 @@ mod tests {
         // Poll the stream again and ensure it returns a timeout error
         let second_result = timeout_stream.next().await.unwrap();
         assert!(second_result.is_err());
-        assert!(second_result
-            .unwrap_err()
-            .to_string()
-            .contains("Query timeout"));
+        assert!(
+            second_result
+                .unwrap_err()
+                .to_string()
+                .contains("Query timeout")
+        );
     }
 
     #[tokio::test]

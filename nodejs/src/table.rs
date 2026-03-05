@@ -753,12 +753,14 @@ impl From<lancedb::table::AddResult> for AddResult {
 
 #[napi(object)]
 pub struct DeleteResult {
+    pub num_deleted_rows: i64,
     pub version: i64,
 }
 
 impl From<lancedb::table::DeleteResult> for DeleteResult {
     fn from(value: lancedb::table::DeleteResult) -> Self {
         Self {
+            num_deleted_rows: value.num_deleted_rows as i64,
             version: value.version as i64,
         }
     }

@@ -115,9 +115,9 @@ mod tests {
     use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, Select};
     use arrow_array::{
-        record_batch, Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array,
-        Float64Array, Int32Array, Int64Array, LargeStringArray, RecordBatch, StringArray,
-        TimestampMillisecondArray, TimestampNanosecondArray, UInt32Array,
+        Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
+        Int32Array, Int64Array, LargeStringArray, RecordBatch, StringArray,
+        TimestampMillisecondArray, TimestampNanosecondArray, UInt32Array, record_batch,
     };
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};

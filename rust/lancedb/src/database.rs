@@ -19,12 +19,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lance::dataset::ReadParams;
+use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
     DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
     ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
 };
-use lance_namespace::LanceNamespace;
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
