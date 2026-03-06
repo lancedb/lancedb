@@ -3088,8 +3088,8 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow-array",
  "rand 0.9.2",
@@ -4260,8 +4260,8 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4315,7 +4315,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "snafu",
+ "snafu 0.9.0",
  "tantivy",
  "tokio",
  "tokio-stream",
@@ -4327,8 +4327,8 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4338,6 +4338,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "bytes",
+ "futures",
  "getrandom 0.2.16",
  "half",
  "jsonb",
@@ -4347,8 +4348,8 @@ dependencies = [
 
 [[package]]
 name = "lance-bitpacking"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrayref",
  "paste",
@@ -4357,8 +4358,8 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4384,7 +4385,7 @@ dependencies = [
  "rand 0.9.2",
  "roaring",
  "serde_json",
- "snafu",
+ "snafu 0.9.0",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -4395,8 +4396,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4419,15 +4420,15 @@ dependencies = [
  "pin-project",
  "prost",
  "prost-build",
- "snafu",
+ "snafu 0.9.0",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "lance-datagen"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4445,8 +4446,8 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4473,7 +4474,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "rand 0.9.2",
- "snafu",
+ "snafu 0.9.0",
  "strum",
  "tokio",
  "tracing",
@@ -4483,8 +4484,8 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4509,15 +4510,15 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
- "snafu",
+ "snafu 0.9.0",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "lance-index"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4569,7 +4570,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
- "snafu",
+ "snafu 0.9.0",
  "tantivy",
  "tempfile",
  "tokio",
@@ -4580,8 +4581,8 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4613,7 +4614,7 @@ dependencies = [
  "prost",
  "rand 0.9.2",
  "serde",
- "snafu",
+ "snafu 0.9.0",
  "tempfile",
  "tokio",
  "tracing",
@@ -4622,8 +4623,8 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4639,21 +4640,21 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
  "lance-core",
  "lance-namespace-reqwest-client",
- "snafu",
+ "snafu 0.9.0",
 ]
 
 [[package]]
 name = "lance-namespace-impls"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -4675,7 +4676,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "snafu",
+ "snafu 0.9.0",
  "tokio",
  "tower",
  "tower-http 0.5.2",
@@ -4697,8 +4698,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4728,7 +4729,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "snafu",
+ "snafu 0.9.0",
  "tokio",
  "tracing",
  "url",
@@ -4737,8 +4738,8 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "3.0.0-rc.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.2#3fb3e705b8a25ab1bb0fc9e1e0158e8a13356181"
+version = "3.0.0-rc.3"
+source = "git+https://github.com/lance-format/lance.git?tag=v3.0.0-rc.3#de393a26a068dd297929ca7d798e43dc31c57337"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4819,7 +4820,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "snafu",
+ "snafu 0.8.9",
  "tempfile",
  "test-log",
  "tokenizers",
@@ -4865,7 +4866,7 @@ dependencies = [
  "pyo3",
  "pyo3-async-runtimes",
  "pyo3-build-config",
- "snafu",
+ "snafu 0.8.9",
  "tokio",
 ]
 
@@ -7777,7 +7778,16 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e84b3f4eacbf3a1ce05eac6763b4d629d60cbc94d632e4092c54ade71f1e1a2"
 dependencies = [
- "snafu-derive",
+ "snafu-derive 0.8.9",
+]
+
+[[package]]
+name = "snafu"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1d4bced6a69f90b2056c03dcff2c4737f98d6fb9e0853493996e1d253ca29c6"
+dependencies = [
+ "snafu-derive 0.9.0",
 ]
 
 [[package]]
@@ -7787,6 +7797,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
  "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
+]
+
+[[package]]
+name = "snafu-derive"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54254b8531cafa275c5e096f62d48c81435d1015405a91198ddb11e967301d40"
+dependencies = [
+ "heck 0.4.1",
  "proc-macro2",
  "quote",
  "syn 2.0.114",

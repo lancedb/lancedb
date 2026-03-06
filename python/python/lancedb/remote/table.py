@@ -640,6 +640,32 @@ class RemoteTable(Table):
     def drop_index(self, index_name: str):
         return LOOP.run(self._table.drop_index(index_name))
 
+    def prewarm_index(self, name: str) -> None:
+        """Prewarm an index in the table.
+
+        This loads the index into memory on the server, reducing cold-start
+        latency for subsequent queries.
+
+        Parameters
+        ----------
+        name: str
+            The name of the index to prewarm
+        """
+        return LOOP.run(self._table.prewarm_index(name))
+
+    def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+        """Prewarm data (page cache) for the table.
+
+        This loads column data pages into the server's disk cache, reducing
+        cold-start latency for subsequent queries.
+
+        Parameters
+        ----------
+        columns: list of str, optional
+            The columns to prewarm. If None, all columns are prewarmed.
+        """
+        return LOOP.run(self._table.prewarm_data(columns))
+
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
     ):
