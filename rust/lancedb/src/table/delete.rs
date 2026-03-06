@@ -1,3 +1,4 @@
+use futures::FutureExt;
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,7 @@ pub struct DeleteResult {
 pub(crate) async fn execute_delete(table: &NativeTable, predicate: &str) -> Result<DeleteResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
-    let delete_result = dataset.delete(predicate).await?;
+    let delete_result = dataset.delete(predicate).boxed().await?;
     let num_deleted_rows = delete_result.num_deleted_rows;
     let version = dataset.version().version;
     table.dataset.update(dataset);
