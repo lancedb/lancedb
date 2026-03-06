@@ -2214,6 +2214,20 @@ class LanceTable(Table):
         """
         return LOOP.run(self._table.prewarm_index(name))
 
+    def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+        """
+        Prewarm data (page cache) for the table.
+
+        This is a hint to load column data pages into the disk cache.
+        It can reduce cold-start latency for subsequent queries.
+
+        Parameters
+        ----------
+        columns: list of str, optional
+            The columns to prewarm. If None, all columns are prewarmed.
+        """
+        return LOOP.run(self._table.prewarm_data(columns))
+
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
     ) -> None:
@@ -3625,6 +3639,24 @@ class AsyncTable:
         wasteful.
         """
         await self._inner.prewarm_index(name)
+
+    async def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+        """
+        Prewarm data (page cache) for the table.
+
+        This is a hint to load column data pages into the disk cache.
+        It can reduce cold-start latency for subsequent queries.
+
+        Parameters
+        ----------
+        columns: list of str, optional
+            The columns to prewarm. If None, all columns are prewarmed.
+
+        Notes
+        -----
+        This is only supported on remote tables backed by a page cache.
+        """
+        await self._inner.prewarm_data(columns)
 
     async def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
