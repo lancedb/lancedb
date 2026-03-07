@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use lancedb::ipc::ipc_file_to_batches;
+use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
     OptimizeAction, OptimizeOptions, Table as LanceDbTable,
@@ -271,6 +271,23 @@ impl Table {
             .map(|sql| (sql.name, sql.value_sql))
             .collect::<Vec<_>>();
         let transforms = NewColumnTransform::SqlExpressions(transforms);
+        let res = self
+            .inner_ref()?
+            .add_columns(transforms, None)
+            .await
+            .default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn add_columns_with_schema(
+        &self,
+        schema_buf: Buffer,
+    ) -> napi::Result<AddColumnsResult> {
+        let schema = ipc_file_to_schema(schema_buf.to_vec())
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC schema: {}", e)))?;
+
+        let transforms = NewColumnTransform::AllNulls(schema);
         let res = self
             .inner_ref()?
             .add_columns(transforms, None)

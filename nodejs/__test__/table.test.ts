@@ -1259,6 +1259,98 @@ describe("schema evolution", function () {
     expect(await table.schema()).toEqual(expectedSchema);
   });
 
+  it("can add columns with schema for explicit data types", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+
+    // Define schema for new columns with explicit data types
+    // Note: All columns must be nullable when using addColumns with Schema
+    // because they are initially populated with null values
+    const newColumnsSchema = new Schema([
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
+      new Field("rating", new Int32(), true),
+    ]);
+
+    const result = await table.addColumns(newColumnsSchema);
+    expect(result).toHaveProperty("version");
+    expect(result.version).toBe(2);
+
+    const expectedSchema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
+      new Field("rating", new Int32(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema);
+
+    // Verify that new columns are populated with null values
+    const results = await table.query().toArray();
+    expect(results).toHaveLength(1);
+    expect(results[0].price).toBeNull();
+    expect(results[0].category).toBeNull();
+    expect(results[0].rating).toBeNull();
+  });
+
+  it("can add a single column using Field", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+
+    // Add a single field
+    const priceField = new Field("price", new Float64(), true);
+    const result = await table.addColumns(priceField);
+    expect(result).toHaveProperty("version");
+    expect(result.version).toBe(2);
+
+    const expectedSchema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema);
+  });
+
+  it("can add multiple columns using array of Fields", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+
+    // Add multiple fields as array
+    const fields = [
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
+    ];
+    const result = await table.addColumns(fields);
+    expect(result).toHaveProperty("version");
+    expect(result.version).toBe(2);
+
+    const expectedSchema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema);
+  });
+
   it("can alter the columns in the schema", async function () {
     const con = await connect(tmpDir.name);
     const schema = new Schema([
