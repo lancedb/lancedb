@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from typing import Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -406,6 +406,9 @@ class LanceNamespaceDBConnection(DBConnection):
                 table_id=table_id,
             )
 
+        # Pass namespace client when managed_versioning is enabled
+        namespace_client = self._ns if response.managed_versioning else None
+
         return self._lance_table_from_uri(
             name,
             response.location,
@@ -413,6 +416,7 @@ class LanceNamespaceDBConnection(DBConnection):
             storage_options=merged_storage_options,
             storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
+            namespace_client=namespace_client,
         )
 
     @override
@@ -630,6 +634,7 @@ class LanceNamespaceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
+        namespace_client: Optional[Any] = None,
     ) -> LanceTable:
         # Open a table directly from a URI using the location parameter
         # Note: storage_options should already be merged by the caller
@@ -643,6 +648,7 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
         # Open the table using the temporary connection with the location parameter
+        # Pass namespace_client to enable managed versioning support
         return LanceTable.open(
             temp_conn,
             name,
@@ -651,6 +657,7 @@ class LanceNamespaceDBConnection(DBConnection):
             storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
             location=table_uri,
+            namespace_client=namespace_client,
         )
 
 

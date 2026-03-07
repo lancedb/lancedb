@@ -946,7 +946,7 @@ impl Database for ListingDatabase {
             self.store_wrapper.clone(),
             None,
             self.read_consistency_interval,
-            None,
+            request.namespace_client,
         )
         .await?;
 

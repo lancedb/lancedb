@@ -1746,6 +1746,7 @@ class LanceTable(Table):
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
         _async: AsyncTable = None,
     ):
         if namespace is None:
@@ -1764,6 +1765,7 @@ class LanceTable(Table):
                     storage_options_provider=storage_options_provider,
                     index_cache_size=index_cache_size,
                     location=location,
+                    namespace_client=namespace_client,
                 )
             )
 
@@ -1806,6 +1808,7 @@ class LanceTable(Table):
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
     ):
         if namespace is None:
             namespace = []
@@ -1817,6 +1820,7 @@ class LanceTable(Table):
             storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
             location=location,
+            namespace_client=namespace_client,
         )
 
         # check the dataset exists

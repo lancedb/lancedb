@@ -4860,6 +4860,7 @@ dependencies = [
  "lance-core",
  "lance-io",
  "lance-namespace",
+ "lance-namespace-impls",
  "lancedb",
  "pin-project",
  "pyo3",
