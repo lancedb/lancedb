@@ -70,14 +70,14 @@ dev = [
     'typing-extensions>=4.0.0; python_version < "3.11"',
 ]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings-python"]
-clip = ["torch", "pillow", "open-clip-torch"]
-siglip = ["torch", "pillow", "transformers>=4.41.0","sentencepiece"]
+clip = ["torch", "pillow>=12.1.1", "open-clip-torch"]
+siglip = ["torch", "pillow>=12.1.1", "transformers>=4.41.0","sentencepiece"]
 embeddings = [
     "requests>=2.31.0",
     "openai>=1.6.1",
     "sentence-transformers",
     "torch",
-    "pillow",
+    "pillow>=12.1.1",
     "open-clip-torch",
     "cohere",
     "colpali-engine>=0.3.10",
@@ -85,7 +85,7 @@ embeddings = [
     "InstructorEmbedding",
     "google.generativeai",
     "boto3>=1.28.57",
-    "awscli>=1.29.57",
+    "awscli>=1.44.38",
     "botocore>=1.31.57",
     'ibm-watsonx-ai>=1.1.2; python_version >= "3.10"',
     "ollama>=0.3.0",
