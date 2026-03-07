@@ -1,4 +1,4 @@
-# LanceDB Java SDK
+# LanceDB Java Enterprise Client
 
 ## Configuration and Initialization
 
