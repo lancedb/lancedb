@@ -339,6 +339,12 @@ impl PermutationReader {
                 }
                 Ok(false)
             }
+            Select::Expr(columns) => {
+                // For Expr projections, we check if any alias is _rowid.
+                // We can't validate the expression itself (it may differ from _rowid)
+                // but we allow it through; the column will be included.
+                Ok(columns.iter().any(|(alias, _)| alias == ROW_ID))
+            }
         }
     }
 

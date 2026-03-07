@@ -47,6 +47,25 @@ pub enum Select {
     ///
     /// See [`Query::select`] for more details and examples
     Dynamic(Vec<(String, String)>),
+    /// Advanced selection using type-safe DataFusion expressions
+    ///
+    /// Similar to [`Select::Dynamic`] but uses [`datafusion_expr::Expr`] instead of
+    /// raw SQL strings. Use [`crate::expr`] helpers to build expressions:
+    ///
+    /// ```
+    /// use lancedb::expr::{col, lit};
+    /// use lancedb::query::Select;
+    ///
+    /// // SELECT id, id * 2 AS id2 FROM ...
+    /// let selection = Select::expr_projection(&[
+    ///     ("id", col("id")),
+    ///     ("id2", col("id") * lit(2)),
+    /// ]);
+    /// ```
+    ///
+    /// Note: For remote/server-side queries the expressions are serialized to SQL strings
+    /// automatically (same as [`Select::Dynamic`]).
+    Expr(Vec<(String, datafusion_expr::Expr)>),
 }
 
 impl Select {
@@ -66,6 +85,29 @@ impl Select {
             columns
                 .iter()
                 .map(|(name, value)| (name.as_ref().to_string(), value.as_ref().to_string()))
+                .collect(),
+        )
+    }
+    /// Create a typed-expression projection.
+    ///
+    /// This is a convenience method for creating a [`Select::Expr`] variant from
+    /// a slice of `(name, expr)` pairs where each `expr` is a [`datafusion_expr::Expr`].
+    ///
+    /// # Example
+    /// ```
+    /// use lancedb::expr::{col, lit};
+    /// use lancedb::query::Select;
+    ///
+    /// let selection = Select::expr_projection(&[
+    ///     ("id", col("id")),
+    ///     ("id2", col("id") * lit(2)),
+    /// ]);
+    /// ```
+    pub fn expr_projection(columns: &[(impl AsRef<str>, datafusion_expr::Expr)]) -> Self {
+        Self::Expr(
+            columns
+                .iter()
+                .map(|(name, expr)| (name.as_ref().to_string(), expr.clone()))
                 .collect(),
         )
     }
@@ -1579,6 +1621,58 @@ mod tests {
         let batch = batches.pop().unwrap();
 
         // id, and id2
+        assert_eq!(batch.num_columns(), 2);
+
+        let id: &Int32Array = batch.column_by_name("id").unwrap().as_primitive();
+        let id2: &Int32Array = batch.column_by_name("id2").unwrap().as_primitive();
+
+        id.iter().zip(id2.iter()).for_each(|(id, id2)| {
+            let id = id.unwrap();
+            let id2 = id2.unwrap();
+            assert_eq!(id * 2, id2);
+        });
+    }
+
+    #[tokio::test]
+    async fn test_select_with_expr_projection() {
+        // Mirrors test_select_with_transform but uses Select::Expr instead of Select::Dynamic
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test_expr.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let batches = make_non_empty_batches();
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", batches)
+            .execute()
+            .await
+            .unwrap();
+
+        use crate::expr::{col, lit};
+        let query = table.query().limit(10).select(Select::expr_projection(&[
+            ("id2", col("id") * lit(2i32)),
+            ("id", col("id")),
+        ]));
+
+        let schema = query.output_schema().await.unwrap();
+        assert_eq!(
+            schema,
+            Arc::new(ArrowSchema::new(vec![
+                ArrowField::new("id2", DataType::Int32, true),
+                ArrowField::new("id", DataType::Int32, true),
+            ]))
+        );
+
+        let result = query.execute().await;
+        let mut batches = result
+            .expect("should have result")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        let batch = batches.pop().unwrap();
+
+        // id and id2
         assert_eq!(batch.num_columns(), 2);
 
         let id: &Int32Array = batch.column_by_name("id").unwrap().as_primitive();
