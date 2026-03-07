@@ -4,11 +4,11 @@
 
 import os
 from functools import cached_property
-from typing import Union
+from typing import List, Union
 
 import pyarrow as pa
 
-from .base import Reranker
+from .base import Reranker, RerankableResult
 
 API_URL = "https://api.jina.ai/v1/rerank"
 
@@ -64,12 +64,24 @@ class JinaReranker(Reranker):
         )
         return self._session
 
-    def _rerank(self, result_set: pa.Table, query: str):
-        result_set = self._handle_empty_results(result_set)
-        if len(result_set) == 0:
-            return result_set
-        docs = result_set[self.column].to_pylist()
-        response = self._client.post(  # type: ignore
+    def needs_columns(self):
+        return [self.column]
+
+    def compute_scores(
+        self,
+        query: str,
+        results: List[RerankableResult],
+    ) -> List[pa.Array]:
+        tables = [r.data for r in results]
+        merged = pa.concat_tables(tables, **self._concat_tables_args)
+        if "_rowid" in merged.column_names:
+            merged = self._deduplicate(merged)
+
+        if len(merged) == 0:
+            return [pa.array([], type=pa.float32()) for _ in results]
+
+        docs = merged[self.column].to_pylist()
+        response = self._client.post(
             API_URL,
             json={
                 "query": query,
@@ -81,43 +93,19 @@ class JinaReranker(Reranker):
         if "results" not in response:
             raise RuntimeError(response["detail"])
 
-        results = response["results"]
+        # Build scores aligned to merged order (API may return fewer via top_n)
+        merged_scores = [0.0] * len(docs)
+        for r in response["results"]:
+            merged_scores[r["index"]] = r["relevance_score"]
 
-        indices, scores = list(
-            zip(*[(result["index"], result["relevance_score"]) for result in results])
-        )  # tuples
-        result_set = result_set.take(list(indices))
-        # add the scores
-        result_set = result_set.append_column(
-            "_relevance_score", pa.array(scores, type=pa.float32())
-        )
+        text_to_score = {
+            doc: score for doc, score in zip(docs, merged_scores)
+        }
 
-        return result_set
+        score_arrays = []
+        for result in results:
+            texts = result.data[self.column].to_pylist()
+            scores = [text_to_score.get(t, 0.0) for t in texts]
+            score_arrays.append(pa.array(scores, type=pa.float32()))
 
-    def rerank_hybrid(
-        self,
-        query: str,
-        vector_results: pa.Table,
-        fts_results: pa.Table,
-    ):
-        if self.score == "all":
-            combined_results = self._merge_and_keep_scores(vector_results, fts_results)
-        else:
-            combined_results = self.merge_results(vector_results, fts_results)
-        combined_results = self._rerank(combined_results, query)
-        if self.score == "relevance":
-            combined_results = self._keep_relevance_score(combined_results)
-
-        return combined_results
-
-    def rerank_vector(self, query: str, vector_results: pa.Table):
-        vector_results = self._rerank(vector_results, query)
-        if self.score == "relevance":
-            vector_results = vector_results.drop_columns(["_distance"])
-        return vector_results
-
-    def rerank_fts(self, query: str, fts_results: pa.Table):
-        fts_results = self._rerank(fts_results, query)
-        if self.score == "relevance":
-            fts_results = fts_results.drop_columns(["_score"])
-        return fts_results
+        return score_arrays
