@@ -25,7 +25,7 @@ napi = { version = "3.8.3", default-features = false, features = [
 ] }
 napi-derive = "3.5.2"
 # Prevent dynamic linking of lzma, which comes from datafusion
-lzma-sys = { version = "*", features = ["static"] }
+lzma-sys = { version = "0.1", features = ["static"] }
 log.workspace = true
 
 # Pin to resolve build failures; update periodically for security patches.
