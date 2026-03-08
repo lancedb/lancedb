@@ -161,6 +161,9 @@ pub struct CloneTableRequest {
     /// Whether to perform a shallow clone (true) or deep clone (false). Defaults to true.
     /// Currently only shallow clone is supported.
     pub is_shallow: bool,
+    /// Optional namespace client for managed versioning support.
+    /// When set, enables the commit handler to track table versions through the namespace.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
 }
 
 impl CloneTableRequest {
@@ -172,6 +175,7 @@ impl CloneTableRequest {
             source_version: None,
             source_tag: None,
             is_shallow: true,
+            namespace_client: None,
         }
     }
 }

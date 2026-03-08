@@ -235,6 +235,16 @@ impl OpenTableBuilder {
         self
     }
 
+    /// Set a namespace client for managed versioning support.
+    ///
+    /// When a namespace client is provided and the table has `managed_versioning` enabled,
+    /// the table will use the namespace's commit handler to notify the namespace of
+    /// version changes. This enables features like event emission for table modifications.
+    pub fn namespace_client(mut self, client: Arc<dyn lance_namespace::LanceNamespace>) -> Self {
+        self.request.namespace_client = Some(client);
+        self
+    }
+
     /// Open the table
     pub async fn execute(self) -> Result<Table> {
         let table = self.parent.open_table(self.request).await?;
@@ -291,6 +301,12 @@ impl CloneTableBuilder {
     /// When false, performs a deep clone (not yet implemented).
     pub fn is_shallow(mut self, is_shallow: bool) -> Self {
         self.request.is_shallow = is_shallow;
+        self
+    }
+
+    /// Set a namespace client for managed versioning support.
+    pub fn namespace_client(mut self, client: Arc<dyn lance_namespace::LanceNamespace>) -> Self {
+        self.request.namespace_client = Some(client);
         self
     }
 

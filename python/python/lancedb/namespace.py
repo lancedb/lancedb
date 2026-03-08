@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from typing import Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -240,7 +240,7 @@ class LanceNamespaceDBConnection(DBConnection):
         session : Optional[Session]
             A session to use for this connection
         """
-        self._ns = namespace
+        self._namespace_client = namespace
         self.read_consistency_interval = read_consistency_interval
         self.storage_options = storage_options or {}
         self.session = session
@@ -269,7 +269,7 @@ class LanceNamespaceDBConnection(DBConnection):
         if namespace is None:
             namespace = []
         request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
-        response = self._ns.list_tables(request)
+        response = self._namespace_client.list_tables(request)
         return response.tables if response.tables else []
 
     @override
@@ -309,7 +309,9 @@ class LanceNamespaceDBConnection(DBConnection):
             # Try to describe the table first to see if it exists
             try:
                 describe_request = DescribeTableRequest(id=table_id)
-                describe_response = self._ns.describe_table(describe_request)
+                describe_response = self._namespace_client.describe_table(
+                    describe_request
+                )
                 location = describe_response.location
                 namespace_storage_options = describe_response.storage_options
             except Exception:
@@ -323,7 +325,7 @@ class LanceNamespaceDBConnection(DBConnection):
                 location=None,
                 properties=self.storage_options if self.storage_options else None,
             )
-            declare_response = self._ns.declare_table(declare_request)
+            declare_response = self._namespace_client.declare_table(declare_request)
 
             if not declare_response.location:
                 raise ValueError(
@@ -353,7 +355,7 @@ class LanceNamespaceDBConnection(DBConnection):
         # Only create if namespace returned storage_options (not None)
         if storage_options_provider is None and namespace_storage_options is not None:
             storage_options_provider = LanceNamespaceStorageOptionsProvider(
-                namespace=self._ns,
+                namespace=self._namespace_client,
                 table_id=table_id,
             )
 
@@ -371,6 +373,7 @@ class LanceNamespaceDBConnection(DBConnection):
             storage_options=merged_storage_options,
             storage_options_provider=storage_options_provider,
             location=location,
+            namespace_client=self._namespace_client,
         )
 
         return tbl
@@ -389,7 +392,7 @@ class LanceNamespaceDBConnection(DBConnection):
             namespace = []
         table_id = namespace + [name]
         request = DescribeTableRequest(id=table_id)
-        response = self._ns.describe_table(request)
+        response = self._namespace_client.describe_table(request)
 
         # Merge storage options: self.storage_options < user options < namespace options
         merged_storage_options = dict(self.storage_options)
@@ -402,7 +405,7 @@ class LanceNamespaceDBConnection(DBConnection):
         # Only create if namespace returned storage_options (not None)
         if storage_options_provider is None and response.storage_options is not None:
             storage_options_provider = LanceNamespaceStorageOptionsProvider(
-                namespace=self._ns,
+                namespace=self._namespace_client,
                 table_id=table_id,
             )
 
@@ -413,6 +416,7 @@ class LanceNamespaceDBConnection(DBConnection):
             storage_options=merged_storage_options,
             storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
+            namespace_client=self._namespace_client,
         )
 
     @override
@@ -422,7 +426,7 @@ class LanceNamespaceDBConnection(DBConnection):
             namespace = []
         table_id = namespace + [name]
         request = DropTableRequest(id=table_id)
-        self._ns.drop_table(request)
+        self._namespace_client.drop_table(request)
 
     @override
     def rename_table(
@@ -484,7 +488,7 @@ class LanceNamespaceDBConnection(DBConnection):
         request = ListNamespacesRequest(
             id=namespace, page_token=page_token, limit=limit
         )
-        response = self._ns.list_namespaces(request)
+        response = self._namespace_client.list_namespaces(request)
         return ListNamespacesResponse(
             namespaces=response.namespaces if response.namespaces else [],
             page_token=response.page_token,
@@ -520,7 +524,7 @@ class LanceNamespaceDBConnection(DBConnection):
             mode=_normalize_create_namespace_mode(mode),
             properties=properties,
         )
-        response = self._ns.create_namespace(request)
+        response = self._namespace_client.create_namespace(request)
         return CreateNamespaceResponse(
             properties=response.properties if hasattr(response, "properties") else None
         )
@@ -555,7 +559,7 @@ class LanceNamespaceDBConnection(DBConnection):
             mode=_normalize_drop_namespace_mode(mode),
             behavior=_normalize_drop_namespace_behavior(behavior),
         )
-        response = self._ns.drop_namespace(request)
+        response = self._namespace_client.drop_namespace(request)
         return DropNamespaceResponse(
             properties=(
                 response.properties if hasattr(response, "properties") else None
@@ -581,7 +585,7 @@ class LanceNamespaceDBConnection(DBConnection):
             Response containing the namespace properties.
         """
         request = DescribeNamespaceRequest(id=namespace)
-        response = self._ns.describe_namespace(request)
+        response = self._namespace_client.describe_namespace(request)
         return DescribeNamespaceResponse(
             properties=response.properties if hasattr(response, "properties") else None
         )
@@ -615,7 +619,7 @@ class LanceNamespaceDBConnection(DBConnection):
         if namespace is None:
             namespace = []
         request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
-        response = self._ns.list_tables(request)
+        response = self._namespace_client.list_tables(request)
         return ListTablesResponse(
             tables=response.tables if response.tables else [],
             page_token=response.page_token,
@@ -630,6 +634,7 @@ class LanceNamespaceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
+        namespace_client: Optional[Any] = None,
     ) -> LanceTable:
         # Open a table directly from a URI using the location parameter
         # Note: storage_options should already be merged by the caller
@@ -643,6 +648,7 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
         # Open the table using the temporary connection with the location parameter
+        # Pass namespace_client to enable managed versioning support
         return LanceTable.open(
             temp_conn,
             name,
@@ -651,6 +657,7 @@ class LanceNamespaceDBConnection(DBConnection):
             storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
             location=table_uri,
+            namespace_client=namespace_client,
         )
 
 
@@ -685,7 +692,7 @@ class AsyncLanceNamespaceDBConnection:
         session : Optional[Session]
             A session to use for this connection
         """
-        self._ns = namespace
+        self._namespace_client = namespace
         self.read_consistency_interval = read_consistency_interval
         self.storage_options = storage_options or {}
         self.session = session
@@ -713,7 +720,7 @@ class AsyncLanceNamespaceDBConnection:
         if namespace is None:
             namespace = []
         request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
-        response = self._ns.list_tables(request)
+        response = self._namespace_client.list_tables(request)
         return response.tables if response.tables else []
 
     async def create_table(
@@ -750,7 +757,9 @@ class AsyncLanceNamespaceDBConnection:
             # Try to describe the table first to see if it exists
             try:
                 describe_request = DescribeTableRequest(id=table_id)
-                describe_response = self._ns.describe_table(describe_request)
+                describe_response = self._namespace_client.describe_table(
+                    describe_request
+                )
                 location = describe_response.location
                 namespace_storage_options = describe_response.storage_options
             except Exception:
@@ -764,7 +773,7 @@ class AsyncLanceNamespaceDBConnection:
                 location=None,
                 properties=self.storage_options if self.storage_options else None,
             )
-            declare_response = self._ns.declare_table(declare_request)
+            declare_response = self._namespace_client.declare_table(declare_request)
 
             if not declare_response.location:
                 raise ValueError(
@@ -797,7 +806,7 @@ class AsyncLanceNamespaceDBConnection:
                 and namespace_storage_options is not None
             ):
                 provider = LanceNamespaceStorageOptionsProvider(
-                    namespace=self._ns,
+                    namespace=self._namespace_client,
                     table_id=table_id,
                 )
             else:
@@ -817,6 +826,7 @@ class AsyncLanceNamespaceDBConnection:
                 storage_options=merged_storage_options,
                 storage_options_provider=provider,
                 location=location,
+                namespace_client=self._namespace_client,
             )
 
         lance_table = await asyncio.to_thread(_create_table)
@@ -837,7 +847,7 @@ class AsyncLanceNamespaceDBConnection:
             namespace = []
         table_id = namespace + [name]
         request = DescribeTableRequest(id=table_id)
-        response = self._ns.describe_table(request)
+        response = self._namespace_client.describe_table(request)
 
         # Merge storage options: self.storage_options < user options < namespace options
         merged_storage_options = dict(self.storage_options)
@@ -849,7 +859,7 @@ class AsyncLanceNamespaceDBConnection:
         # Create a storage options provider if not provided by user
         if storage_options_provider is None and response.storage_options is not None:
             storage_options_provider = LanceNamespaceStorageOptionsProvider(
-                namespace=self._ns,
+                namespace=self._namespace_client,
                 table_id=table_id,
             )
 
@@ -870,6 +880,7 @@ class AsyncLanceNamespaceDBConnection:
                 storage_options_provider=storage_options_provider,
                 index_cache_size=index_cache_size,
                 location=response.location,
+                namespace_client=self._namespace_client,
             )
 
         lance_table = await asyncio.to_thread(_open_table)
@@ -881,7 +892,7 @@ class AsyncLanceNamespaceDBConnection:
             namespace = []
         table_id = namespace + [name]
         request = DropTableRequest(id=table_id)
-        self._ns.drop_table(request)
+        self._namespace_client.drop_table(request)
 
     async def rename_table(
         self,
@@ -943,7 +954,7 @@ class AsyncLanceNamespaceDBConnection:
         request = ListNamespacesRequest(
             id=namespace, page_token=page_token, limit=limit
         )
-        response = self._ns.list_namespaces(request)
+        response = self._namespace_client.list_namespaces(request)
         return ListNamespacesResponse(
             namespaces=response.namespaces if response.namespaces else [],
             page_token=response.page_token,
@@ -978,7 +989,7 @@ class AsyncLanceNamespaceDBConnection:
             mode=_normalize_create_namespace_mode(mode),
             properties=properties,
         )
-        response = self._ns.create_namespace(request)
+        response = self._namespace_client.create_namespace(request)
         return CreateNamespaceResponse(
             properties=response.properties if hasattr(response, "properties") else None
         )
@@ -1012,7 +1023,7 @@ class AsyncLanceNamespaceDBConnection:
             mode=_normalize_drop_namespace_mode(mode),
             behavior=_normalize_drop_namespace_behavior(behavior),
         )
-        response = self._ns.drop_namespace(request)
+        response = self._namespace_client.drop_namespace(request)
         return DropNamespaceResponse(
             properties=(
                 response.properties if hasattr(response, "properties") else None
@@ -1039,7 +1050,7 @@ class AsyncLanceNamespaceDBConnection:
             Response containing the namespace properties.
         """
         request = DescribeNamespaceRequest(id=namespace)
-        response = self._ns.describe_namespace(request)
+        response = self._namespace_client.describe_namespace(request)
         return DescribeNamespaceResponse(
             properties=response.properties if hasattr(response, "properties") else None
         )
@@ -1072,7 +1083,7 @@ class AsyncLanceNamespaceDBConnection:
         if namespace is None:
             namespace = []
         request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
-        response = self._ns.list_tables(request)
+        response = self._namespace_client.list_tables(request)
         return ListTablesResponse(
             tables=response.tables if response.tables else [],
             page_token=response.page_token,

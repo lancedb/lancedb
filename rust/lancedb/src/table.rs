@@ -34,9 +34,13 @@ use lance_index::vector::sq::builder::SQBuildParams;
 use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
 pub use query::AnyQuery;
 
+use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
 use lance_namespace::LanceNamespace;
+use lance_namespace::models::DescribeTableRequest;
 use lance_table::format::Manifest;
+use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::ManifestNamingScheme;
+use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::format;
@@ -1295,17 +1299,43 @@ impl NativeTable {
             None => params,
         };
 
-        let dataset = DatasetBuilder::from_uri(uri)
-            .with_read_params(params)
-            .load()
-            .await
-            .map_err(|e| match e {
-                lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
-                    name: name.to_string(),
-                    source: Box::new(e),
-                },
-                e => e.into(),
-            })?;
+        // Build table_id from namespace + name
+        let mut table_id = namespace.clone();
+        table_id.push(name.to_string());
+
+        // Check if managed_versioning is enabled and set up commit handler if so
+        let managed_versioning = if let Some(ref ns_client) = namespace_client {
+            let describe_request = DescribeTableRequest {
+                id: Some(table_id.clone()),
+                ..Default::default()
+            };
+            match ns_client.describe_table(describe_request).await {
+                Ok(response) => response.managed_versioning == Some(true),
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+
+        let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
+
+        // Set up commit handler when managed_versioning is enabled
+        if managed_versioning && let Some(ref ns_client) = namespace_client {
+            let external_store =
+                LanceNamespaceExternalManifestStore::new(ns_client.clone(), table_id.clone());
+            let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
+                external_manifest_store: Arc::new(external_store),
+            });
+            builder = builder.with_commit_handler(commit_handler);
+        }
+
+        let dataset = builder.load().await.map_err(|e| match e {
+            lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
+                name: name.to_string(),
+                source: Box::new(e),
+            },
+            e => e.into(),
+        })?;
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
         let id = Self::build_id(&namespace, name);

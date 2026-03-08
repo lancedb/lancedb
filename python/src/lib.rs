@@ -23,6 +23,7 @@ pub mod connection;
 pub mod error;
 pub mod header;
 pub mod index;
+pub mod namespace;
 pub mod permutation;
 pub mod query;
 pub mod session;
