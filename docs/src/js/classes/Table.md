@@ -71,11 +71,12 @@ Add new columns with defined values.
 
 #### Parameters
 
-* **newColumnTransforms**: [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
-    pairs of column names and
-    the SQL expression to use to calculate the value of the new column. These
-    expressions will be evaluated for each row in the table, and can
-    reference existing columns in the table.
+* **newColumnTransforms**: `Field`&lt;`any`&gt; \| `Field`&lt;`any`&gt;[] \| `Schema`&lt;`any`&gt; \| [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
+    Either:
+    - An array of objects with column names and SQL expressions to calculate values
+    - A single Arrow Field defining one column with its data type (column will be initialized with null values)
+    - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
+    - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
 
 #### Returns
 
