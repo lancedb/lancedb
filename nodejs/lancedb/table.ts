@@ -818,9 +818,11 @@ export class LocalTable extends Table {
     }
 
     // Handle array of Fields -> convert to Schema
-    if (Array.isArray(newColumnTransforms) &&
-        newColumnTransforms.length > 0 &&
-        newColumnTransforms[0] instanceof Field) {
+    if (
+      Array.isArray(newColumnTransforms) &&
+      newColumnTransforms.length > 0 &&
+      newColumnTransforms[0] instanceof Field
+    ) {
       const fields = newColumnTransforms as Field[];
       newColumnTransforms = new Schema(fields);
     }
@@ -836,7 +838,9 @@ export class LocalTable extends Table {
 
     // Handle SQL expressions (existing functionality)
     if (Array.isArray(newColumnTransforms)) {
-      return await this.inner.addColumns(newColumnTransforms as AddColumnsSql[]);
+      return await this.inner.addColumns(
+        newColumnTransforms as AddColumnsSql[],
+      );
     }
 
     throw new Error("Invalid input type for addColumns");
