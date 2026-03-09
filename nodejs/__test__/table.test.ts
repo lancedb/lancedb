@@ -2204,3 +2204,36 @@ describe("when creating an empty table", () => {
     expect((actualSchema.fields[1].type as Float64).precision).toBe(2);
   });
 });
+
+// Ensure we can create float32 arrays without using Arrow
+// by utilizing native JS TypedArray support
+//
+// https://github.com/lancedb/lancedb/issues/3115
+describe("when creating a table with Float32Array vectors", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("should persist Float32Array as FixedSizeList<Float32> in the LanceDB schema", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("test", [
+      { id: "a", vector: new Float32Array([0.1, 0.2, 0.3]) },
+      { id: "b", vector: new Float32Array([0.4, 0.5, 0.6]) },
+    ]);
+
+    const schema = await table.schema();
+    const vectorField = schema.fields.find((f) => f.name === "vector");
+    expect(vectorField).toBeDefined();
+    expect(vectorField!.type).toBeInstanceOf(FixedSizeList);
+
+    const fsl = vectorField!.type as FixedSizeList;
+    expect(fsl.listSize).toBe(3);
+    expect(fsl.children[0].type.typeId).toBe(Type.Float);
+    // precision: HALF=0, SINGLE=1, DOUBLE=2
+    expect((fsl.children[0].type as Float32).precision).toBe(1);
+  });
+});
