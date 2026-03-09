@@ -1746,6 +1746,8 @@ class LanceTable(Table):
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        managed_versioning: Optional[bool] = None,
         _async: AsyncTable = None,
     ):
         if namespace is None:
@@ -1753,6 +1755,7 @@ class LanceTable(Table):
         self._conn = connection
         self._namespace = namespace
         self._location = location  # Store location for use in _dataset_path
+        self._namespace_client = namespace_client
         if _async is not None:
             self._table = _async
         else:
@@ -1764,6 +1767,8 @@ class LanceTable(Table):
                     storage_options_provider=storage_options_provider,
                     index_cache_size=index_cache_size,
                     location=location,
+                    namespace_client=namespace_client,
+                    managed_versioning=managed_versioning,
                 )
             )
 
@@ -1806,6 +1811,8 @@ class LanceTable(Table):
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        managed_versioning: Optional[bool] = None,
     ):
         if namespace is None:
             namespace = []
@@ -1817,6 +1824,8 @@ class LanceTable(Table):
             storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
             location=location,
+            namespace_client=namespace_client,
+            managed_versioning=managed_versioning,
         )
 
         # check the dataset exists
@@ -1846,6 +1855,16 @@ class LanceTable(Table):
             raise ImportError(
                 "The lance library is required to use this function. "
                 "Please install with `pip install pylance`."
+            )
+
+        if self._namespace_client is not None:
+            table_id = self._namespace + [self.name]
+            return lance.dataset(
+                version=self.version,
+                storage_options=self._conn.storage_options,
+                namespace=self._namespace_client,
+                table_id=table_id,
+                **kwargs,
             )
 
         return lance.dataset(
@@ -2713,6 +2732,7 @@ class LanceTable(Table):
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
     ):
         """
         Create a new table.
@@ -2773,6 +2793,7 @@ class LanceTable(Table):
         self._conn = db
         self._namespace = namespace
         self._location = location
+        self._namespace_client = namespace_client
 
         if data_storage_version is not None:
             warnings.warn(

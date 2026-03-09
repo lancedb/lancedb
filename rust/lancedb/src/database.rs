@@ -66,6 +66,10 @@ pub struct OpenTableRequest {
     /// Optional namespace client for server-side query execution.
     /// When set, queries will be executed on the namespace server instead of locally.
     pub namespace_client: Option<Arc<dyn LanceNamespace>>,
+    /// Whether managed versioning is enabled for this table.
+    /// When Some(true), the table will use namespace-managed commits instead of local commits.
+    /// When None and namespace_client is provided, the value will be fetched from the namespace.
+    pub managed_versioning: Option<bool>,
 }
 
 impl std::fmt::Debug for OpenTableRequest {
@@ -77,6 +81,7 @@ impl std::fmt::Debug for OpenTableRequest {
             .field("lance_read_params", &self.lance_read_params)
             .field("location", &self.location)
             .field("namespace_client", &self.namespace_client)
+            .field("managed_versioning", &self.managed_versioning)
             .finish()
     }
 }
@@ -161,6 +166,9 @@ pub struct CloneTableRequest {
     /// Whether to perform a shallow clone (true) or deep clone (false). Defaults to true.
     /// Currently only shallow clone is supported.
     pub is_shallow: bool,
+    /// Optional namespace client for managed versioning support.
+    /// When set, enables the commit handler to track table versions through the namespace.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
 }
 
 impl CloneTableRequest {
@@ -172,6 +180,7 @@ impl CloneTableRequest {
             source_version: None,
             source_tag: None,
             is_shallow: true,
+            namespace_client: None,
         }
     }
 }

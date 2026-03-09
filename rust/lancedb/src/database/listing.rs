@@ -669,6 +669,7 @@ impl ListingDatabase {
                     lance_read_params: None,
                     location: None,
                     namespace_client: None,
+                    managed_versioning: None,
                 };
                 let req = (callback)(req);
                 let table = self.open_table(req).await?;
@@ -869,6 +870,7 @@ impl Database for ListingDatabase {
             Some(write_params),
             self.read_consistency_interval,
             request.namespace_client,
+            false, // server_side_query_enabled - listing database doesn't support server-side queries
         )
         .await
         {
@@ -946,7 +948,9 @@ impl Database for ListingDatabase {
             self.store_wrapper.clone(),
             None,
             self.read_consistency_interval,
-            None,
+            request.namespace_client,
+            false, // server_side_query_enabled - listing database doesn't support server-side queries
+            None,  // managed_versioning - will be queried if namespace_client is provided
         )
         .await?;
 
@@ -1022,6 +1026,8 @@ impl Database for ListingDatabase {
                 Some(read_params),
                 self.read_consistency_interval,
                 request.namespace_client,
+                false, // server_side_query_enabled - listing database doesn't support server-side queries
+                request.managed_versioning, // Pass through managed_versioning from request
             )
             .await?,
         );
@@ -1162,6 +1168,7 @@ mod tests {
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1222,6 +1229,7 @@ mod tests {
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1281,6 +1289,7 @@ mod tests {
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await;
 
@@ -1317,6 +1326,7 @@ mod tests {
                 source_version: None,
                 source_tag: None,
                 is_shallow: false, // Request deep clone
+                namespace_client: None,
             })
             .await;
 
@@ -1357,6 +1367,7 @@ mod tests {
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await;
 
@@ -1397,6 +1408,7 @@ mod tests {
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await;
 
@@ -1416,6 +1428,7 @@ mod tests {
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await;
 
@@ -1452,6 +1465,7 @@ mod tests {
                 source_version: Some(1),
                 source_tag: Some("v1.0".to_string()),
                 is_shallow: true,
+                namespace_client: None,
             })
             .await;
 
@@ -1525,6 +1539,7 @@ mod tests {
                 source_version: Some(initial_version),
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1603,6 +1618,7 @@ mod tests {
                 source_version: None,
                 source_tag: Some("v1.0".to_string()),
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1654,6 +1670,7 @@ mod tests {
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
@@ -1746,6 +1763,7 @@ mod tests {
                 source_version: None,
                 source_tag: None,
                 is_shallow: true,
+                namespace_client: None,
             })
             .await
             .unwrap();
