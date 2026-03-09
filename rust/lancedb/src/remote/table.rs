@@ -1645,10 +1645,33 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(())
     }
 
-    async fn prewarm_index(&self, _index_name: &str) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "prewarm_index is not yet supported on LanceDB cloud.".into(),
-        })
+    async fn prewarm_index(&self, index_name: &str) -> Result<()> {
+        let request = self.client.post(&format!(
+            "/v1/table/{}/index/{}/prewarm/",
+            self.identifier, index_name
+        ));
+        let (request_id, response) = self.send(request, true).await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Error::IndexNotFound {
+                name: index_name.to_string(),
+            });
+        }
+        self.check_table_response(&request_id, response).await?;
+        Ok(())
+    }
+
+    async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()> {
+        let mut request = self.client.post(&format!(
+            "/v1/table/{}/page_cache/prewarm/",
+            self.identifier
+        ));
+        let body = serde_json::json!({
+            "columns": columns.unwrap_or_default(),
+        });
+        request = request.json(&body);
+        let (request_id, response) = self.send(request, true).await?;
+        self.check_table_response(&request_id, response).await?;
+        Ok(())
     }
 
     async fn table_definition(&self) -> Result<TableDefinition> {
@@ -3527,6 +3550,64 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.version, if old_server { 0 } else { 43 });
+    }
+
+    #[tokio::test]
+    async fn test_prewarm_index() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/index/my_index/prewarm/"
+            );
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        table.prewarm_index("my_index").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_prewarm_index_not_found() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/index/my_index/prewarm/"
+            );
+            http::Response::builder().status(404).body("{}").unwrap()
+        });
+        let e = table.prewarm_index("my_index").await.unwrap_err();
+        assert!(matches!(e, Error::IndexNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_prewarm_data() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/page_cache/prewarm/"
+            );
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        table.prewarm_data(None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_prewarm_data_with_columns() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/page_cache/prewarm/"
+            );
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["columns"], serde_json::json!(["col_a", "col_b"]));
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        table
+            .prewarm_data(Some(vec!["col_a".into(), "col_b".into()]))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

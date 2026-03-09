@@ -279,6 +279,11 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn drop_index(&self, name: &str) -> Result<()>;
     /// Prewarm an index in the table
     async fn prewarm_index(&self, name: &str) -> Result<()>;
+    /// Prewarm data (page cache) for the table.
+    ///
+    /// This is only supported on remote tables backed by a page cache.
+    /// If `columns` is `None`, all columns are prewarmed.
+    async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()>;
     /// Get statistics about the index.
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
     /// Merge insert new records into the table.
@@ -1137,6 +1142,18 @@ impl Table {
     /// Use [`Self::list_indices()`] to find the names of the indices.
     pub async fn prewarm_index(&self, name: &str) -> Result<()> {
         self.inner.prewarm_index(name).await
+    }
+
+    /// Prewarm data (page cache) for the table
+    ///
+    /// This is a hint to load column data pages into the disk cache.
+    /// It can be used to avoid cold starts for subsequent queries.
+    ///
+    /// If `columns` is `None`, all columns are prewarmed.
+    ///
+    /// Note: This is only supported on remote tables backed by a page cache.
+    pub async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()> {
+        self.inner.prewarm_data(columns).await
     }
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
@@ -2288,6 +2305,12 @@ impl BaseTable for NativeTable {
     async fn prewarm_index(&self, index_name: &str) -> Result<()> {
         let dataset = self.dataset.get().await?;
         Ok(dataset.prewarm_index(index_name).await?)
+    }
+
+    async fn prewarm_data(&self, _columns: Option<Vec<String>>) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "prewarm_data is only supported on remote tables with a page cache.".into(),
+        })
     }
 
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult> {
