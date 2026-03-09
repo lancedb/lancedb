@@ -34,9 +34,13 @@ use lance_index::vector::sq::builder::SQBuildParams;
 use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
 pub use query::AnyQuery;
 
+use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
 use lance_namespace::LanceNamespace;
+use lance_namespace::models::DescribeTableRequest;
 use lance_table::format::Manifest;
+use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::ManifestNamingScheme;
+use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::format;
@@ -1212,10 +1216,13 @@ pub struct NativeTable {
     // This comes from the connection options. We store here so we can pass down
     // to the dataset when we recreate it (for example, in checkout_latest).
     read_consistency_interval: Option<std::time::Duration>,
-    // Optional namespace client for server-side query execution.
-    // When set, queries will be executed on the namespace server instead of locally.
-    // pub (crate) namespace_client so query.rs can access the fields
+    // Optional namespace client for namespace operations (e.g., managed versioning).
+    // pub(crate) so query.rs can access the field for server-side query execution.
     pub(crate) namespace_client: Option<Arc<dyn LanceNamespace>>,
+    // Whether to enable server-side query execution via the namespace client.
+    // When true and namespace_client is set, queries will be executed on the
+    // namespace server instead of locally.
+    pub(crate) server_side_query_enabled: bool,
 }
 
 impl std::fmt::Debug for NativeTable {
@@ -1227,6 +1234,7 @@ impl std::fmt::Debug for NativeTable {
             .field("uri", &self.uri)
             .field("read_consistency_interval", &self.read_consistency_interval)
             .field("namespace_client", &self.namespace_client)
+            .field("server_side_query_enabled", &self.server_side_query_enabled)
             .finish()
     }
 }
@@ -1263,7 +1271,7 @@ impl NativeTable {
     /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, vec![], None, None, None, None).await
+        Self::open_with_params(uri, &name, vec![], None, None, None, None, false, None).await
     }
 
     /// Opens an existing Table
@@ -1273,7 +1281,10 @@ impl NativeTable {
     /// * `base_path` - The base path where the table is located
     /// * `name` The Table name
     /// * `params` The [ReadParams] to use when opening the table
-    /// * `namespace_client` - Optional namespace client for server-side query execution
+    /// * `namespace_client` - Optional namespace client for namespace operations
+    /// * `server_side_query_enabled` - Whether to enable server-side query execution
+    /// * `managed_versioning` - Whether managed versioning is enabled. If None and namespace_client
+    ///   is provided, the value will be fetched via describe_table.
     ///
     /// # Returns
     ///
@@ -1287,6 +1298,8 @@ impl NativeTable {
         params: Option<ReadParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
+        server_side_query_enabled: bool,
+        managed_versioning: Option<bool>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -1295,17 +1308,54 @@ impl NativeTable {
             None => params,
         };
 
-        let dataset = DatasetBuilder::from_uri(uri)
-            .with_read_params(params)
-            .load()
-            .await
-            .map_err(|e| match e {
-                lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
-                    name: name.to_string(),
-                    source: Box::new(e),
-                },
-                e => e.into(),
-            })?;
+        // Build table_id from namespace + name
+        let mut table_id = namespace.clone();
+        table_id.push(name.to_string());
+
+        // Determine if managed_versioning is enabled
+        // Use the provided value if available, otherwise query the namespace
+        let managed_versioning = match managed_versioning {
+            Some(value) => value,
+            None if namespace_client.is_some() => {
+                let ns_client = namespace_client.as_ref().unwrap();
+                let describe_request = DescribeTableRequest {
+                    id: Some(table_id.clone()),
+                    ..Default::default()
+                };
+                let response = ns_client
+                    .describe_table(describe_request)
+                    .await
+                    .map_err(|e| Error::Runtime {
+                        message: format!(
+                            "Failed to describe table via namespace client: {}. \
+                             If you don't need managed versioning, don't pass namespace_client.",
+                            e
+                        ),
+                    })?;
+                response.managed_versioning == Some(true)
+            }
+            None => false,
+        };
+
+        let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
+
+        // Set up commit handler when managed_versioning is enabled
+        if managed_versioning && let Some(ref ns_client) = namespace_client {
+            let external_store =
+                LanceNamespaceExternalManifestStore::new(ns_client.clone(), table_id.clone());
+            let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
+                external_manifest_store: Arc::new(external_store),
+            });
+            builder = builder.with_commit_handler(commit_handler);
+        }
+
+        let dataset = builder.load().await.map_err(|e| match e {
+            lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
+                name: name.to_string(),
+                source: Box::new(e),
+            },
+            e => e.into(),
+        })?;
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
         let id = Self::build_id(&namespace, name);
@@ -1318,6 +1368,7 @@ impl NativeTable {
             dataset,
             read_consistency_interval,
             namespace_client,
+            server_side_query_enabled,
         })
     }
 
@@ -1421,6 +1472,7 @@ impl NativeTable {
             dataset,
             read_consistency_interval,
             namespace_client: stored_namespace_client,
+            server_side_query_enabled,
         })
     }
 
@@ -1460,7 +1512,8 @@ impl NativeTable {
     /// * `namespace` - The namespace path. When non-empty, an explicit URI must be provided.
     /// * `batches` RecordBatch to be saved in the database.
     /// * `params` - Write parameters.
-    /// * `namespace_client` - Optional namespace client for server-side query execution
+    /// * `namespace_client` - Optional namespace client for namespace operations
+    /// * `server_side_query_enabled` - Whether to enable server-side query execution
     ///
     /// # Returns
     ///
@@ -1475,6 +1528,7 @@ impl NativeTable {
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
+        server_side_query_enabled: bool,
     ) -> Result<Self> {
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
@@ -1507,6 +1561,7 @@ impl NativeTable {
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             read_consistency_interval,
             namespace_client,
+            server_side_query_enabled,
         })
     }
 
@@ -1520,6 +1575,7 @@ impl NativeTable {
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
+        server_side_query_enabled: bool,
     ) -> Result<Self> {
         let data: Box<dyn Scannable> = Box::new(RecordBatch::new_empty(schema));
         Self::create(
@@ -1531,6 +1587,7 @@ impl NativeTable {
             params,
             read_consistency_interval,
             namespace_client,
+            server_side_query_enabled,
         )
         .await
     }
@@ -1634,6 +1691,7 @@ impl NativeTable {
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             read_consistency_interval,
             namespace_client: stored_namespace_client,
+            server_side_query_enabled,
         })
     }
 
@@ -2625,7 +2683,7 @@ mod tests {
             vec![Ok(batch.clone())],
             batch.schema(),
         ));
-        let table = NativeTable::create(uri, "test", vec![], reader, None, None, None, None)
+        let table = NativeTable::create(uri, "test", vec![], reader, None, None, None, None, false)
             .await
             .unwrap();
 

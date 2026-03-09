@@ -136,6 +136,7 @@ impl OpenTableBuilder {
                 lance_read_params: None,
                 location: None,
                 namespace_client: None,
+                managed_versioning: None,
             },
             embedding_registry,
         }
@@ -235,6 +236,29 @@ impl OpenTableBuilder {
         self
     }
 
+    /// Set a namespace client for managed versioning support.
+    ///
+    /// When a namespace client is provided and the table has `managed_versioning` enabled,
+    /// the table will use the namespace's commit handler to notify the namespace of
+    /// version changes. This enables features like event emission for table modifications.
+    pub fn namespace_client(mut self, client: Arc<dyn lance_namespace::LanceNamespace>) -> Self {
+        self.request.namespace_client = Some(client);
+        self
+    }
+
+    /// Set whether managed versioning is enabled for this table.
+    ///
+    /// When set to `Some(true)`, the table will use namespace-managed commits.
+    /// When set to `Some(false)`, the table will use local commits even if namespace_client is set.
+    /// When set to `None` (default), the value will be fetched from the namespace if namespace_client is set.
+    ///
+    /// This is typically set when the caller has already queried the namespace and knows the
+    /// managed_versioning status, avoiding a redundant describe_table call.
+    pub fn managed_versioning(mut self, enabled: bool) -> Self {
+        self.request.managed_versioning = Some(enabled);
+        self
+    }
+
     /// Open the table
     pub async fn execute(self) -> Result<Table> {
         let table = self.parent.open_table(self.request).await?;
@@ -291,6 +315,12 @@ impl CloneTableBuilder {
     /// When false, performs a deep clone (not yet implemented).
     pub fn is_shallow(mut self, is_shallow: bool) -> Self {
         self.request.is_shallow = is_shallow;
+        self
+    }
+
+    /// Set a namespace client for managed versioning support.
+    pub fn namespace_client(mut self, client: Arc<dyn lance_namespace::LanceNamespace>) -> Self {
+        self.request.namespace_client = Some(client);
         self
     }
 

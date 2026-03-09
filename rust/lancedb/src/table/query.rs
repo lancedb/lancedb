@@ -40,8 +40,10 @@ pub async fn execute_query(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<DatasetRecordBatchStream> {
-    // If namespace client is configured, use server-side query execution
-    if let Some(ref namespace_client) = table.namespace_client {
+    // If server-side query is enabled and namespace client is configured, use server-side query execution
+    if table.server_side_query_enabled
+        && let Some(ref namespace_client) = table.namespace_client
+    {
         return execute_namespace_query(table, namespace_client.clone(), query, options).await;
     }
     execute_generic_query(table, query, options).await

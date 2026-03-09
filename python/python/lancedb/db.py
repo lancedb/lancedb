@@ -8,7 +8,7 @@ from abc import abstractmethod
 from datetime import timedelta
 from pathlib import Path
 import sys
-from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Literal, Optional, Union
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -1541,6 +1541,8 @@ class AsyncConnection(object):
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        managed_versioning: Optional[bool] = None,
     ) -> AsyncTable:
         """Open a Lance Table in the database.
 
@@ -1573,6 +1575,9 @@ class AsyncConnection(object):
             The explicit location (URI) of the table. If provided, the table will be
             opened from this location instead of deriving it from the database URI
             and table name.
+        managed_versioning: bool, optional
+            Whether managed versioning is enabled for this table. If provided,
+            avoids a redundant describe_table call when namespace_client is set.
 
         Returns
         -------
@@ -1587,6 +1592,8 @@ class AsyncConnection(object):
             storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
             location=location,
+            namespace_client=namespace_client,
+            managed_versioning=managed_versioning,
         )
         return AsyncTable(table)
 
