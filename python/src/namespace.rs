@@ -96,10 +96,10 @@ where
     Resp: serde::de::DeserializeOwned + Send + 'static,
 {
     let request_json = serde_json::to_string(&request).map_err(|e| {
-        lance_core::Error::io(
-            format!("Failed to serialize request for {}: {}", method_name, e),
-            Default::default(),
-        )
+        lance_core::Error::io(format!(
+            "Failed to serialize request for {}: {}",
+            method_name, e
+        ))
     })?;
 
     let response_json = tokio::task::spawn_blocking(move || {
@@ -128,24 +128,14 @@ where
         })
     })
     .await
-    .map_err(|e| {
-        lance_core::Error::io(
-            format!("Task join error for {}: {}", method_name, e),
-            Default::default(),
-        )
-    })?
-    .map_err(|e: PyErr| {
-        lance_core::Error::io(
-            format!("Python error in {}: {}", method_name, e),
-            Default::default(),
-        )
-    })?;
+    .map_err(|e| lance_core::Error::io(format!("Task join error for {}: {}", method_name, e)))?
+    .map_err(|e: PyErr| lance_core::Error::io(format!("Python error in {}: {}", method_name, e)))?;
 
     serde_json::from_str(&response_json).map_err(|e| {
-        lance_core::Error::io(
-            format!("Failed to deserialize response from {}: {}", method_name, e),
-            Default::default(),
-        )
+        lance_core::Error::io(format!(
+            "Failed to deserialize response from {}: {}",
+            method_name, e
+        ))
     })
 }
 
@@ -159,10 +149,10 @@ where
     Req: serde::Serialize + Send + 'static,
 {
     let request_json = serde_json::to_string(&request).map_err(|e| {
-        lance_core::Error::io(
-            format!("Failed to serialize request for {}: {}", method_name, e),
-            Default::default(),
-        )
+        lance_core::Error::io(format!(
+            "Failed to serialize request for {}: {}",
+            method_name, e
+        ))
     })?;
 
     tokio::task::spawn_blocking(move || {
@@ -180,18 +170,8 @@ where
         })
     })
     .await
-    .map_err(|e| {
-        lance_core::Error::io(
-            format!("Task join error for {}: {}", method_name, e),
-            Default::default(),
-        )
-    })?
-    .map_err(|e: PyErr| {
-        lance_core::Error::io(
-            format!("Python error in {}: {}", method_name, e),
-            Default::default(),
-        )
-    })
+    .map_err(|e| lance_core::Error::io(format!("Task join error for {}: {}", method_name, e)))?
+    .map_err(|e: PyErr| lance_core::Error::io(format!("Python error in {}: {}", method_name, e)))
 }
 
 /// Helper for methods that return a primitive type
@@ -205,10 +185,10 @@ where
     Resp: for<'py> pyo3::FromPyObject<'py> + Send + 'static,
 {
     let request_json = serde_json::to_string(&request).map_err(|e| {
-        lance_core::Error::io(
-            format!("Failed to serialize request for {}: {}", method_name, e),
-            Default::default(),
-        )
+        lance_core::Error::io(format!(
+            "Failed to serialize request for {}: {}",
+            method_name, e
+        ))
     })?;
 
     tokio::task::spawn_blocking(move || {
@@ -227,18 +207,8 @@ where
         })
     })
     .await
-    .map_err(|e| {
-        lance_core::Error::io(
-            format!("Task join error for {}: {}", method_name, e),
-            Default::default(),
-        )
-    })?
-    .map_err(|e: PyErr| {
-        lance_core::Error::io(
-            format!("Python error in {}: {}", method_name, e),
-            Default::default(),
-        )
-    })
+    .map_err(|e| lance_core::Error::io(format!("Task join error for {}: {}", method_name, e)))?
+    .map_err(|e: PyErr| lance_core::Error::io(format!("Python error in {}: {}", method_name, e)))
 }
 
 /// Helper for methods that return Bytes
@@ -251,10 +221,10 @@ where
     Req: serde::Serialize + Send + 'static,
 {
     let request_json = serde_json::to_string(&request).map_err(|e| {
-        lance_core::Error::io(
-            format!("Failed to serialize request for {}: {}", method_name, e),
-            Default::default(),
-        )
+        lance_core::Error::io(format!(
+            "Failed to serialize request for {}: {}",
+            method_name, e
+        ))
     })?;
 
     tokio::task::spawn_blocking(move || {
@@ -273,18 +243,8 @@ where
         })
     })
     .await
-    .map_err(|e| {
-        lance_core::Error::io(
-            format!("Task join error for {}: {}", method_name, e),
-            Default::default(),
-        )
-    })?
-    .map_err(|e: PyErr| {
-        lance_core::Error::io(
-            format!("Python error in {}: {}", method_name, e),
-            Default::default(),
-        )
-    })
+    .map_err(|e| lance_core::Error::io(format!("Task join error for {}: {}", method_name, e)))?
+    .map_err(|e: PyErr| lance_core::Error::io(format!("Python error in {}: {}", method_name, e)))
 }
 
 /// Helper for methods that take request + data and return a response
@@ -299,10 +259,10 @@ where
     Resp: serde::de::DeserializeOwned + Send + 'static,
 {
     let request_json = serde_json::to_string(&request).map_err(|e| {
-        lance_core::Error::io(
-            format!("Failed to serialize request for {}: {}", method_name, e),
-            Default::default(),
-        )
+        lance_core::Error::io(format!(
+            "Failed to serialize request for {}: {}",
+            method_name, e
+        ))
     })?;
 
     let response_json = tokio::task::spawn_blocking(move || {
@@ -324,24 +284,14 @@ where
         })
     })
     .await
-    .map_err(|e| {
-        lance_core::Error::io(
-            format!("Task join error for {}: {}", method_name, e),
-            Default::default(),
-        )
-    })?
-    .map_err(|e: PyErr| {
-        lance_core::Error::io(
-            format!("Python error in {}: {}", method_name, e),
-            Default::default(),
-        )
-    })?;
+    .map_err(|e| lance_core::Error::io(format!("Task join error for {}: {}", method_name, e)))?
+    .map_err(|e: PyErr| lance_core::Error::io(format!("Python error in {}: {}", method_name, e)))?;
 
     serde_json::from_str(&response_json).map_err(|e| {
-        lance_core::Error::io(
-            format!("Failed to deserialize response from {}: {}", method_name, e),
-            Default::default(),
-        )
+        lance_core::Error::io(format!(
+            "Failed to deserialize response from {}: {}",
+            method_name, e
+        ))
     })
 }
 
