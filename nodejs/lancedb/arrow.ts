@@ -593,10 +593,7 @@ function inferType(
     return new Bool();
   } else if (value instanceof Buffer) {
     return new Binary();
-  } else if (
-    ArrayBuffer.isView(value) &&
-    !(value instanceof DataView)
-  ) {
+  } else if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
     const info = typedArrayToArrowType(value);
     if (info !== undefined) {
       const child = new Field("item", info.elementType, true);

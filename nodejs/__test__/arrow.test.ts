@@ -369,9 +369,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           { id: "b", vector: new Float32Array([0.4, 0.5, 0.6]) },
         ]);
 
-        expect(
-          DataType.isFixedSizeList(table.getChild("vector")?.type),
-        ).toBe(true);
+        expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
+          true,
+        );
         const vectorType = table.getChild("vector")?.type;
         expect(vectorType.listSize).toBe(3);
         expect(vectorType.children[0].type.toString()).toEqual(
@@ -385,9 +385,9 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           { id: "b", vector: new Uint8Array([4, 5, 6]) },
         ]);
 
-        expect(
-          DataType.isFixedSizeList(table.getChild("vector")?.type),
-        ).toBe(true);
+        expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(
+          true,
+        );
         const vectorType = table.getChild("vector")?.type;
         expect(vectorType.listSize).toBe(3);
         expect(vectorType.children[0].type.toString()).toEqual(
