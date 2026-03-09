@@ -20,6 +20,8 @@ import {
   Float32,
   Float64,
   Int,
+  Int8,
+  Int16,
   Int32,
   Int64,
   LargeBinary,
@@ -35,6 +37,8 @@ import {
   Timestamp,
   Type,
   Uint8,
+  Uint16,
+  Uint32,
   Utf8,
   Vector,
   makeVector as arrowMakeVector,
@@ -529,7 +533,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
     !(value instanceof Date) &&
     !(value instanceof Set) &&
     !(value instanceof Map) &&
-    !(value instanceof Buffer)
+    !(value instanceof Buffer) &&
+    !ArrayBuffer.isView(value)
   );
 }
 
@@ -588,6 +593,16 @@ function inferType(
     return new Bool();
   } else if (value instanceof Buffer) {
     return new Binary();
+  } else if (
+    ArrayBuffer.isView(value) &&
+    !(value instanceof DataView)
+  ) {
+    const info = typedArrayToArrowType(value);
+    if (info !== undefined) {
+      const child = new Field("item", info.elementType, true);
+      return new FixedSizeList(info.length, child);
+    }
+    return undefined;
   } else if (Array.isArray(value)) {
     if (value.length === 0) {
       return undefined; // Without any values we can't infer the type
@@ -746,6 +761,32 @@ function makeListVector(lists: unknown[][]): Vector<unknown> {
   return listBuilder.finish().toVector();
 }
 
+/**
+ * Map a JS TypedArray instance to the corresponding Arrow element DataType
+ * and its length. Returns undefined if the value is not a recognized TypedArray.
+ */
+function typedArrayToArrowType(
+  value: ArrayBufferView,
+): { elementType: DataType; length: number } | undefined {
+  if (value instanceof Float32Array)
+    return { elementType: new Float32(), length: value.length };
+  if (value instanceof Float64Array)
+    return { elementType: new Float64(), length: value.length };
+  if (value instanceof Uint8Array)
+    return { elementType: new Uint8(), length: value.length };
+  if (value instanceof Uint16Array)
+    return { elementType: new Uint16(), length: value.length };
+  if (value instanceof Uint32Array)
+    return { elementType: new Uint32(), length: value.length };
+  if (value instanceof Int8Array)
+    return { elementType: new Int8(), length: value.length };
+  if (value instanceof Int16Array)
+    return { elementType: new Int16(), length: value.length };
+  if (value instanceof Int32Array)
+    return { elementType: new Int32(), length: value.length };
+  return undefined;
+}
+
 /** Helper function to convert an Array of JS values to an Arrow Vector */
 function makeVector(
   values: unknown[],
@@ -813,6 +854,16 @@ function makeVector(
     throw Error(
       "makeVector cannot infer the type if all values are null or undefined",
     );
+  }
+  if (ArrayBuffer.isView(sampleValue) && !(sampleValue instanceof DataView)) {
+    const info = typedArrayToArrowType(sampleValue);
+    if (info !== undefined) {
+      const fslType = new FixedSizeList(
+        info.length,
+        new Field("item", info.elementType, true),
+      );
+      return vectorFromArray(values, fslType);
+    }
   }
   if (Array.isArray(sampleValue)) {
     // Default Arrow inference doesn't handle list types
