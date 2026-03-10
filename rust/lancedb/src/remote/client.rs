@@ -426,14 +426,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 })?,
             );
         }
-        if db_prefix.is_some() {
+        if let Some(prefix) = db_prefix {
             headers.insert(
                 HeaderName::from_static("x-lancedb-database-prefix"),
-                HeaderValue::from_str(db_prefix.unwrap()).map_err(|_| Error::InvalidInput {
-                    message: format!(
-                        "non-ascii database prefix '{}' provided",
-                        db_prefix.unwrap()
-                    ),
+                HeaderValue::from_str(prefix).map_err(|_| Error::InvalidInput {
+                    message: format!("non-ascii database prefix '{}' provided", prefix),
                 })?,
             );
         }
