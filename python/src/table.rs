@@ -655,6 +655,12 @@ impl Table {
                 .infer_error()?
                 .compaction
                 .unwrap();
+            inner
+                .optimize(lancedb::table::OptimizeAction::Index(
+                    OptimizeOptions::default(),
+                ))
+                .await
+                .infer_error()?;
             let prune_stats = inner
                 .optimize(OptimizeAction::Prune {
                     older_than,
@@ -665,12 +671,6 @@ impl Table {
                 .infer_error()?
                 .prune
                 .unwrap();
-            inner
-                .optimize(lancedb::table::OptimizeAction::Index(
-                    OptimizeOptions::default(),
-                ))
-                .await
-                .infer_error()?;
             Ok(OptimizeStats {
                 compaction: CompactionStats {
                     files_added: compaction_stats.files_added as u64,
