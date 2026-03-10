@@ -2219,12 +2219,18 @@ class LanceTable(Table):
 
     def prewarm_index(self, name: str) -> None:
         """
-        Prewarms an index in the table
+        Prewarm an index in the table.
 
-        This loads the entire index into memory
+        This is a hint to the database that the index will be accessed in the
+        future and should be loaded into memory if possible.  This can reduce
+        cold-start latency for subsequent queries.
 
-        If the index does not fit into the available cache this call
-        may be wasteful
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        It is generally wasteful to call this if the index does not fit into the
+        available cache.  Not all index types support prewarming; unsupported
+        indices will silently ignore the request.
 
         Parameters
         ----------
@@ -2235,10 +2241,19 @@ class LanceTable(Table):
 
     def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
         """
-        Prewarm data (page cache) for the table.
+        Prewarm data for the table.
 
-        This is a hint to load column data pages into the disk cache.
-        It can reduce cold-start latency for subsequent queries.
+        This is a hint to the database that the given columns will be accessed
+        in the future and the database should prefetch the data if possible.
+        Currently only supported on remote tables.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        This operation has a large upfront cost but can speed up future queries
+        that need to fetch the given columns.  Large columns such as embeddings
+        or binary data may not be practical to prewarm.  This feature is intended
+        for workloads that issue many queries against the same columns.
 
         Parameters
         ----------
@@ -3648,34 +3663,44 @@ class AsyncTable:
         """
         Prewarm an index in the table.
 
+        This is a hint to the database that the index will be accessed in the
+        future and should be loaded into memory if possible.  This can reduce
+        cold-start latency for subsequent queries.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        It is generally wasteful to call this if the index does not fit into the
+        available cache.  Not all index types support prewarming; unsupported
+        indices will silently ignore the request.
+
         Parameters
         ----------
         name: str
             The name of the index to prewarm
-
-        Notes
-        -----
-        This will load the index into memory.  This may reduce the cold-start time for
-        future queries.  If the index does not fit in the cache then this call may be
-        wasteful.
         """
         await self._inner.prewarm_index(name)
 
     async def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
         """
-        Prewarm data (page cache) for the table.
+        Prewarm data for the table.
 
-        This is a hint to load column data pages into the disk cache.
-        It can reduce cold-start latency for subsequent queries.
+        This is a hint to the database that the given columns will be accessed
+        in the future and the database should prefetch the data if possible.
+        Currently only supported on remote tables.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        This operation has a large upfront cost but can speed up future queries
+        that need to fetch the given columns.  Large columns such as embeddings
+        or binary data may not be practical to prewarm.  This feature is intended
+        for workloads that issue many queries against the same columns.
 
         Parameters
         ----------
         columns: list of str, optional
             The columns to prewarm. If None, all columns are prewarmed.
-
-        Notes
-        -----
-        This is only supported on remote tables backed by a page cache.
         """
         await self._inner.prewarm_data(columns)
 

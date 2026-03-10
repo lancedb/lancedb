@@ -277,11 +277,11 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     /// Drop an index from the table.
     async fn drop_index(&self, name: &str) -> Result<()>;
-    /// Prewarm an index in the table
+    /// Prewarm an index in the table.
     async fn prewarm_index(&self, name: &str) -> Result<()>;
-    /// Prewarm data (page cache) for the table.
+    /// Prewarm data for the table.
     ///
-    /// This is only supported on remote tables backed by a page cache.
+    /// Currently only supported on remote tables.
     /// If `columns` is `None`, all columns are prewarmed.
     async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()>;
     /// Get statistics about the index.
@@ -1128,30 +1128,41 @@ impl Table {
         self.inner.drop_index(name).await
     }
 
-    /// Prewarm an index in the table
+    /// Prewarm an index in the table.
     ///
-    /// This is a hint to fully load the index into memory.  It can be used to
-    /// avoid cold starts
+    /// This is a hint to the database that the index will be accessed in the
+    /// future and should be loaded into memory if possible.  This can reduce
+    /// cold-start latency for subsequent queries.
+    ///
+    /// This call initiates prewarming and returns once the request is accepted.
+    /// It is idempotent and safe to call from multiple clients concurrently.
     ///
     /// It is generally wasteful to call this if the index does not fit into the
-    /// available cache.
-    ///
-    /// Note: This function is not yet supported on all indices, in which case it
-    /// may do nothing.
+    /// available cache.  Not all index types support prewarming; unsupported
+    /// indices will silently ignore the request.
     ///
     /// Use [`Self::list_indices()`] to find the names of the indices.
     pub async fn prewarm_index(&self, name: &str) -> Result<()> {
         self.inner.prewarm_index(name).await
     }
 
-    /// Prewarm data (page cache) for the table
+    /// Prewarm data for the table.
     ///
-    /// This is a hint to load column data pages into the disk cache.
-    /// It can be used to avoid cold starts for subsequent queries.
+    /// This is a hint to the database that the given columns will be accessed in
+    /// the future and the database should prefetch the data if possible.  This
+    /// can reduce cold-start latency for subsequent queries.  Currently only
+    /// supported on remote tables.
+    ///
+    /// This call initiates prewarming and returns once the request is accepted.
+    /// It is idempotent and safe to call from multiple clients concurrently —
+    /// calling it on already-prewarmed columns is a no-op on the server.
+    ///
+    /// This operation has a large upfront cost but can speed up future queries
+    /// that need to fetch the given columns.  Large columns such as embeddings
+    /// or binary data may not be practical to prewarm.  This feature is intended
+    /// for workloads that issue many queries against the same columns.
     ///
     /// If `columns` is `None`, all columns are prewarmed.
-    ///
-    /// Note: This is only supported on remote tables backed by a page cache.
     pub async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()> {
         self.inner.prewarm_data(columns).await
     }
@@ -2309,7 +2320,7 @@ impl BaseTable for NativeTable {
 
     async fn prewarm_data(&self, _columns: Option<Vec<String>>) -> Result<()> {
         Err(Error::NotSupported {
-            message: "prewarm_data is only supported on remote tables with a page cache.".into(),
+            message: "prewarm_data is currently only supported on remote tables.".into(),
         })
     }
 

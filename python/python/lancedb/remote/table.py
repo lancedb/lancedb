@@ -643,8 +643,12 @@ class RemoteTable(Table):
     def prewarm_index(self, name: str) -> None:
         """Prewarm an index in the table.
 
-        This loads the index into memory on the server, reducing cold-start
-        latency for subsequent queries.
+        This is a hint to the database that the index will be accessed in the
+        future and should be loaded into memory if possible.  This can reduce
+        cold-start latency for subsequent queries.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
 
         Parameters
         ----------
@@ -654,10 +658,19 @@ class RemoteTable(Table):
         return LOOP.run(self._table.prewarm_index(name))
 
     def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
-        """Prewarm data (page cache) for the table.
+        """Prewarm data for the table.
 
-        This loads column data pages into the server's disk cache, reducing
-        cold-start latency for subsequent queries.
+        This is a hint to the database that the given columns will be accessed
+        in the future and the database should prefetch the data if possible.
+        Currently only supported on remote tables.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        This operation has a large upfront cost but can speed up future queries
+        that need to fetch the given columns.  Large columns such as embeddings
+        or binary data may not be practical to prewarm.  This feature is intended
+        for workloads that issue many queries against the same columns.
 
         Parameters
         ----------
