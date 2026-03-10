@@ -518,6 +518,21 @@ impl<S: HttpSend> RemoteTable<S> {
             }
         }
 
+        if let Some(order_by) = &params.order_by {
+            body["order_by"] = serde_json::Value::Array(
+                order_by
+                    .iter()
+                    .map(|o| {
+                        serde_json::json!({
+                            "column_name": o.column_name,
+                            "ascending": o.ascending,
+                            "nulls_first": o.nulls_first,
+                        })
+                    })
+                    .collect(),
+            );
+        }
+
         Ok(())
     }
 
