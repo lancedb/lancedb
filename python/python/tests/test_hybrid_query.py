@@ -221,13 +221,15 @@ def test_hybrid_prefilter_explain_plan(table_with_id: Table):
     # prefilter=True: filter is pushed into the LanceRead scan.
     # The FTS sub-plan exposes this as "full_filter=id = Int64(1)" inside LanceRead.
     assert "full_filter=id = Int64(1)" in plan_prefilter, (
-        f"prefilter=True should push the filter into the scan.\nPlan:\n{plan_prefilter}"
+        "prefilter=True should push the filter into the scan.\nPlan:\n"
+        f"{plan_prefilter}"
     )
 
     # prefilter=False: filter is applied as a separate FilterExec after the search.
     # The filter must NOT be embedded in the scan.
     assert "full_filter=id = Int64(1)" not in plan_postfilter, (
-        f"prefilter=False should NOT push the filter into the scan.\nPlan:\n{plan_postfilter}"
+        "prefilter=False should NOT push the filter into the scan.\nPlan:\n"
+        f"{plan_postfilter}"
     )
 
 
