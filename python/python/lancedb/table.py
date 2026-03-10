@@ -1495,7 +1495,6 @@ class Table(ABC):
          * Index: Optimizes the indices, adding new data to existing indices
          * Prune: Removes old versions of the dataset
 
-
         Parameters
         ----------
         cleanup_older_than: timedelta, optional default 7 days
@@ -3007,7 +3006,6 @@ class LanceTable(Table):
          * Compaction: Merges small files into larger ones
          * Index: Optimizes the indices, adding new data to existing indices
          * Prune: Removes old versions of the dataset
-
 
         Parameters
         ----------
@@ -4563,7 +4561,6 @@ class AsyncTable:
          * Compaction: Merges small files into larger ones
          * Index: Optimizes the indices, adding new data to existing indices
          * Prune: Removes old versions of the dataset
-
 
         Parameters
         ----------
