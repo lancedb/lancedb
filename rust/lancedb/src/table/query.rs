@@ -229,6 +229,10 @@ pub async fn create_plan(
         scanner.disable_scoring_autoprojection();
     }
 
+    if let Some(order_by) = &query.base.order_by {
+        scanner.order_by(Some(order_by.clone()))?;
+    }
+
     Ok(scanner.create_plan().await?)
 }
 

@@ -11,6 +11,8 @@ use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{FutureExt, TryFutureExt, TryStreamExt, stream, try_join};
 use half::f16;
+/// Re-export Lance ColumnOrdering type for use in query ordering
+pub use lance::dataset::scanner::ColumnOrdering;
 use lance::dataset::{ROW_ID, scanner::DatasetRecordBatchStream};
 use lance_arrow::RecordBatchExt;
 use lance_datafusion::exec::execute_plan;
@@ -466,6 +468,11 @@ pub trait QueryBase {
     /// the scores are converted to ranks and then normalized. If "Score", the
     /// scores are normalized directly.
     fn norm(self, norm: NormalizeMethod) -> Self;
+
+    /// Sort the results by the specified column(s).
+    ///
+    /// This allows ordering query results by one or more columns in either ascending or descending order.
+    fn order_by(&mut self, ordering: Option<Vec<ColumnOrdering>>) -> Result<&mut Self>;
 }
 
 pub trait HasQuery {
@@ -529,6 +536,11 @@ impl<T: HasQuery> QueryBase for T {
     fn norm(mut self, norm: NormalizeMethod) -> Self {
         self.mut_query().norm = Some(norm);
         self
+    }
+
+    fn order_by(&mut self, ordering: Option<Vec<ColumnOrdering>>) -> Result<&mut Self> {
+        self.mut_query().order_by = ordering;
+        Ok(self)
     }
 }
 
@@ -698,6 +710,11 @@ pub struct QueryRequest {
     ///
     /// By default, this is false (scoring columns are auto-projected for backward compatibility).
     pub disable_scoring_autoprojection: bool,
+
+    /// Sort the results by the specified column(s).
+    ///
+    /// This allows ordering query results by one or more columns in either ascending or descending order.
+    pub order_by: Option<Vec<ColumnOrdering>>,
 }
 
 impl Default for QueryRequest {
@@ -714,6 +731,7 @@ impl Default for QueryRequest {
             reranker: None,
             norm: None,
             disable_scoring_autoprojection: false,
+            order_by: None,
         }
     }
 }
