@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
-use lance_io::object_store::{ObjectStoreParams, StorageOptionsAccessor};
+use lance_io::object_store::{
+    LanceNamespaceStorageOptionsProvider, ObjectStoreParams, StorageOptionsAccessor,
+};
 use lance_namespace::{
     LanceNamespace,
     models::{
@@ -229,15 +231,23 @@ impl Database for LanceNamespaceDatabase {
         // Build write params with storage options and commit handler
         let mut params = request.write_options.lance_write_params.unwrap_or_default();
 
-        // Set up storage options if provided
-        if let Some(storage_opts) = initial_storage_options {
-            let store_params = params
-                .store_params
-                .get_or_insert_with(ObjectStoreParams::default);
-            store_params.storage_options_accessor = Some(Arc::new(
-                StorageOptionsAccessor::with_static_options(storage_opts),
-            ));
-        }
+        // Set up storage options with provider for credential refresh
+        // We create the provider here so create_from_namespace doesn't need to recreate it
+        let storage_options_provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
+            self.namespace.clone(),
+            table_id.clone(),
+        ));
+        let store_params = params
+            .store_params
+            .get_or_insert_with(ObjectStoreParams::default);
+        let accessor = match initial_storage_options {
+            Some(storage_opts) => StorageOptionsAccessor::with_initial_and_provider(
+                storage_opts,
+                storage_options_provider,
+            ),
+            None => StorageOptionsAccessor::with_provider(storage_options_provider),
+        };
+        store_params.storage_options_accessor = Some(Arc::new(accessor));
 
         // Set up commit handler when managed_versioning is enabled
         if managed_versioning == Some(true) {
