@@ -2,8 +2,10 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+from typing import List
+
 import pyarrow as pa
-from .base import Reranker
+from .base import Reranker, RerankableResult
 from ..util import attempt_import_or_raise
 
 
@@ -54,50 +56,33 @@ class AnswerdotaiRerankers(Reranker):
             f"model_name={self.model_name})"
         )
 
-    def _rerank(self, result_set: pa.Table, query: str):
-        result_set = self._handle_empty_results(result_set)
-        if len(result_set) == 0:
-            return result_set
-        docs = result_set[self.column].to_pylist()
-        doc_ids = list(range(len(docs)))
-        result = self.reranker.rank(query, docs, doc_ids=doc_ids)
+    def needs_columns(self):
+        return [self.column]
 
-        # get the scores of each document in the same order as the input
-        scores = [result.get_result_by_docid(i).score for i in doc_ids]
-
-        # add the scores
-        result_set = result_set.append_column(
-            "_relevance_score", pa.array(scores, type=pa.float32())
-        )
-        return result_set
-
-    def rerank_hybrid(
+    def compute_scores(
         self,
         query: str,
-        vector_results: pa.Table,
-        fts_results: pa.Table,
-    ):
-        combined_results = self.merge_results(vector_results, fts_results)
-        combined_results = self._rerank(combined_results, query)
-        if self.score == "relevance":
-            combined_results = self._keep_relevance_score(combined_results)
-        elif self.score == "all":
-            combined_results = self._merge_and_keep_scores(vector_results, fts_results)
-        combined_results = combined_results.sort_by(
-            [("_relevance_score", "descending")]
-        )
-        return combined_results
+        results: List[RerankableResult],
+    ) -> List[pa.Array]:
+        tables = [r.data for r in results]
+        merged = pa.concat_tables(tables, **self._concat_tables_args)
+        if "_rowid" in merged.column_names:
+            merged = self._deduplicate(merged)
 
-    def rerank_vector(self, query: str, vector_results: pa.Table):
-        vector_results = self._rerank(vector_results, query)
-        if self.score == "relevance":
-            vector_results = vector_results.drop_columns(["_distance"])
-        vector_results = vector_results.sort_by([("_relevance_score", "descending")])
-        return vector_results
+        if len(merged) == 0:
+            return [pa.array([], type=pa.float32()) for _ in results]
 
-    def rerank_fts(self, query: str, fts_results: pa.Table):
-        fts_results = self._rerank(fts_results, query)
-        if self.score == "relevance":
-            fts_results = fts_results.drop_columns(["_score"])
-        fts_results = fts_results.sort_by([("_relevance_score", "descending")])
-        return fts_results
+        docs = merged[self.column].to_pylist()
+        doc_ids = list(range(len(docs)))
+        ranked = self.reranker.rank(query, docs, doc_ids=doc_ids)
+        merged_scores = {
+            docs[i]: float(ranked.get_result_by_docid(i).score) for i in doc_ids
+        }
+
+        score_arrays = []
+        for result in results:
+            texts = result.data[self.column].to_pylist()
+            scores = [merged_scores.get(t, 0.0) for t in texts]
+            score_arrays.append(pa.array(scores, type=pa.float32()))
+
+        return score_arrays
