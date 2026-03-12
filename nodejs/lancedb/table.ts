@@ -504,12 +504,11 @@ export abstract class Table {
    *
    * Modeled after ``VACUUM`` in PostgreSQL.
    *
-   *  Optimization covers three operations:
+   *  Optimization covers three operations, executed in this order:
    *
    *  - Compaction: Merges small files into larger ones
-   *  - Prune: Removes old versions of the dataset
    *  - Index: Optimizes the indices, adding new data to existing indices
-   *
+   *  - Prune: Removes old versions of the dataset
    *
    *  The frequency an application should call optimize is based on the frequency of
    *  data modifications.  If data is frequently added, deleted, or updated then
