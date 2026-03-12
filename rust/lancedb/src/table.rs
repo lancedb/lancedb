@@ -951,17 +951,7 @@ impl Table {
     ///  * Prune: Removes old versions of the dataset
     ///  * Index: Optimizes the indices, adding new data to existing indices
     ///
-    /// <section class="warning">Experimental API</section>
-    ///
-    /// The optimization process is undergoing active development and may change.
-    /// Our goal with these changes is to improve the performance of optimization and
-    /// reduce the complexity.
-    ///
-    /// That being said, it is essential today to run optimize if you want the best
-    /// performance.  It should be stable and safe to use in production, but it our
-    /// hope that the API may be simplified (or not even need to be called) in the future.
-    ///
-    /// The frequency an application shoudl call optimize is based on the frequency of
+    /// The frequency an application should call optimize is based on the frequency of
     /// data modifications.  If data is frequently added, deleted, or updated then
     /// optimize should be run frequently.  A good rule of thumb is to run optimize if
     /// you have added or modified 100,000 or more records or run more than 20 data

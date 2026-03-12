@@ -64,6 +64,9 @@ pub enum OptimizeAction {
         older_than: Option<Duration>,
         /// Because they may be part of an in-progress transaction, files newer than 7 days old are not deleted by default.
         /// If you are sure that there are no in-progress transactions, then you can set this to True to delete all files older than `older_than`.
+        ///
+        /// **WARNING**: This should only be set to true if you can guarantee that no other process is
+        /// currently working on this dataset.  Otherwise the dataset could be put into a corrupted state.
         delete_unverified: Option<bool>,
         /// If true, an error will be returned if there are any old versions that are still tagged.
         error_if_tagged_old_versions: Option<bool>,
@@ -116,6 +119,10 @@ pub(crate) async fn optimize_indices(table: &NativeTable, options: &OptimizeOpti
 ///   transaction, files newer than 7 days old are not deleted by default.
 ///   If you are sure that there are no in-progress transactions, then you
 ///   can set this to True to delete all files older than `older_than`.
+///
+///   **WARNING**: This should only be set to true if you can guarantee that
+///   no other process is currently working on this dataset.  Otherwise the
+///   dataset could be put into a corrupted state.
 ///
 /// This calls into [lance::dataset::Dataset::cleanup_old_versions] and
 /// returns the result.

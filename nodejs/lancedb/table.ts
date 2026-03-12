@@ -84,6 +84,16 @@ export interface OptimizeOptions {
    * tbl.optimize({cleanupOlderThan: new Date()});
    */
   cleanupOlderThan: Date;
+  /**
+   * Because they may be part of an in-progress transaction, files newer than
+   * 7 days old are not deleted by default. If you are sure that there are no
+   * in-progress transactions, then you can set this to true to delete all
+   * files older than `cleanupOlderThan`.
+   *
+   * **WARNING**: This should only be set to true if you can guarantee that
+   * no other process is currently working on this dataset. Otherwise the
+   * dataset could be put into a corrupted state.
+   */
   deleteUnverified: boolean;
 }
 
@@ -501,19 +511,7 @@ export abstract class Table {
    *  - Index: Optimizes the indices, adding new data to existing indices
    *
    *
-   *  Experimental API
-   *  ----------------
-   *
-   *  The optimization process is undergoing active development and may change.
-   *  Our goal with these changes is to improve the performance of optimization and
-   *  reduce the complexity.
-   *
-   *  That being said, it is essential today to run optimize if you want the best
-   *  performance.  It should be stable and safe to use in production, but it our
-   *  hope that the API may be simplified (or not even need to be called) in the
-   *  future.
-   *
-   *  The frequency an application shoudl call optimize is based on the frequency of
+   *  The frequency an application should call optimize is based on the frequency of
    *  data modifications.  If data is frequently added, deleted, or updated then
    *  optimize should be run frequently.  A good rule of thumb is to run optimize if
    *  you have added or modified 100,000 or more records or run more than 20 data
