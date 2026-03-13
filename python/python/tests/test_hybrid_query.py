@@ -177,6 +177,60 @@ async def test_analyze_plan(table: AsyncTable):
     assert "metrics=" in res
 
 
+@pytest.fixture
+def table_with_id(tmpdir_factory) -> Table:
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    db = lancedb.connect(tmp_path)
+    data = pa.table(
+        {
+            "id": pa.array([1, 2, 3, 4], type=pa.int64()),
+            "text": pa.array(["a", "b", "cat", "dog"]),
+            "vector": pa.array(
+                [[0.1, 0.1], [2, 2], [-0.1, -0.1], [0.5, -0.5]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+    table = db.create_table("test_with_id", data)
+    table.create_fts_index("text", with_position=False, use_tantivy=False)
+    return table
+
+
+def test_hybrid_prefilter_explain_plan(table_with_id: Table):
+    """
+    Verify that the prefilter logic is not inverted in LanceHybridQueryBuilder.
+    """
+    plan_prefilter = (
+        table_with_id.search(query_type="hybrid")
+        .vector([0.0, 0.0])
+        .text("dog")
+        .where("id = 1", prefilter=True)
+        .limit(2)
+        .explain_plan(verbose=True)
+    )
+
+    plan_postfilter = (
+        table_with_id.search(query_type="hybrid")
+        .vector([0.0, 0.0])
+        .text("dog")
+        .where("id = 1", prefilter=False)
+        .limit(2)
+        .explain_plan(verbose=True)
+    )
+
+    # prefilter=True: filter is pushed into the LanceRead scan.
+    # The FTS sub-plan exposes this as "full_filter=id = Int64(1)" inside LanceRead.
+    assert "full_filter=id = Int64(1)" in plan_prefilter, (
+        f"Should push the filter into the scan.\nPlan:\n{plan_prefilter}"
+    )
+
+    # prefilter=False: filter is applied as a separate FilterExec after the search.
+    # The filter must NOT be embedded in the scan.
+    assert "full_filter=id = Int64(1)" not in plan_postfilter, (
+        f"Should NOT push the filter into the scan.\nPlan:\n{plan_postfilter}"
+    )
+
+
 def test_normalize_scores():
     cases = [
         (pa.array([0.1, 0.4]), pa.array([0.0, 1.0])),
