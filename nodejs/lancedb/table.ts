@@ -5,12 +5,15 @@ import {
   Table as ArrowTable,
   Data,
   DataType,
+  Field,
   IntoVector,
   MultiVector,
   Schema,
   dataTypeToJson,
   fromDataToBuffer,
+  fromTableToBuffer,
   isMultiVector,
+  makeEmptyTable,
   tableFromIPC,
 } from "./arrow";
 
@@ -391,15 +394,16 @@ export abstract class Table {
   abstract vectorSearch(vector: IntoVector | MultiVector): VectorQuery;
   /**
    * Add new columns with defined values.
-   * @param {AddColumnsSql[]} newColumnTransforms pairs of column names and
-   * the SQL expression to use to calculate the value of the new column. These
-   * expressions will be evaluated for each row in the table, and can
-   * reference existing columns in the table.
+   * @param {AddColumnsSql[] | Field | Field[] | Schema} newColumnTransforms Either:
+   *   - An array of objects with column names and SQL expressions to calculate values
+   *   - A single Arrow Field defining one column with its data type (column will be initialized with null values)
+   *   - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
+   *   - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
    * @returns {Promise<AddColumnsResult>} A promise that resolves to an object
    * containing the new version number of the table after adding the columns.
    */
   abstract addColumns(
-    newColumnTransforms: AddColumnsSql[],
+    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
   ): Promise<AddColumnsResult>;
 
   /**
@@ -804,9 +808,40 @@ export class LocalTable extends Table {
   // TODO: Support BatchUDF
 
   async addColumns(
-    newColumnTransforms: AddColumnsSql[],
+    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
   ): Promise<AddColumnsResult> {
-    return await this.inner.addColumns(newColumnTransforms);
+    // Handle single Field -> convert to array of Fields
+    if (newColumnTransforms instanceof Field) {
+      newColumnTransforms = [newColumnTransforms];
+    }
+
+    // Handle array of Fields -> convert to Schema
+    if (
+      Array.isArray(newColumnTransforms) &&
+      newColumnTransforms.length > 0 &&
+      newColumnTransforms[0] instanceof Field
+    ) {
+      const fields = newColumnTransforms as Field[];
+      newColumnTransforms = new Schema(fields);
+    }
+
+    // Handle Schema -> use schema-based approach
+    if (newColumnTransforms instanceof Schema) {
+      const schema = newColumnTransforms;
+      // Convert schema to buffer using Arrow IPC format
+      const emptyTable = makeEmptyTable(schema);
+      const schemaBuf = await fromTableToBuffer(emptyTable);
+      return await this.inner.addColumnsWithSchema(schemaBuf);
+    }
+
+    // Handle SQL expressions (existing functionality)
+    if (Array.isArray(newColumnTransforms)) {
+      return await this.inner.addColumns(
+        newColumnTransforms as AddColumnsSql[],
+      );
+    }
+
+    throw new Error("Invalid input type for addColumns");
   }
 
   async alterColumns(
