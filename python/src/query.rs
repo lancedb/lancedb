@@ -316,6 +316,19 @@ impl<'py> IntoPyObject<'py> for PySelect {
             Select::All => Ok(py.None().into_bound(py).into_any()),
             Select::Columns(columns) => Ok(columns.into_pyobject(py)?.into_any()),
             Select::Dynamic(columns) => Ok(columns.into_pyobject(py)?.into_any()),
+            Select::Expr(pairs) => {
+                // Serialize DataFusion Expr -> SQL string so Python sees the same
+                // format as Select::Dynamic: a list of (name, sql_string) tuples.
+                let sql_pairs: PyResult<Vec<(String, String)>> = pairs
+                    .into_iter()
+                    .map(|(name, expr)| {
+                        lancedb::expr::expr_to_sql_string(&expr)
+                            .map(|sql| (name, sql))
+                            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+                    })
+                    .collect();
+                Ok(sql_pairs?.into_pyobject(py)?.into_any())
+            }
         }
     }
 }
