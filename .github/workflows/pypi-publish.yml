@@ -9,6 +9,7 @@ on:
     paths:
       - .github/workflows/pypi-publish.yml
       - Cargo.toml # Change in dependency frequently breaks builds
+      - Cargo.lock
 
 env:
   PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/"
