@@ -151,6 +151,9 @@ jobs:
               apt-get update &&
               apt-get install -y protobuf-compiler pkg-config &&
               export TARGET_CC=clang TARGET_CXX=clang++ &&
+              # The manylinux2014 sysroot has glibc 2.17 headers which lack
+              # AT_HWCAP2 (added in Linux 3.17). Define it for aws-lc-sys.
+              export CFLAGS="$CFLAGS -DAT_HWCAP2=26" &&
               rustup target add aarch64-unknown-linux-gnu
           - target: aarch64-unknown-linux-musl
             host: ubuntu-2404-8x-x64
