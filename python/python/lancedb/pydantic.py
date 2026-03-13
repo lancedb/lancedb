@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import inspect
-import sys
 import types
 from abc import ABC, abstractmethod
 from datetime import date, datetime
@@ -141,14 +140,6 @@ def Vector(
                 raise TypeError("A list of numbers or numpy.ndarray is needed")
             return cls(v)
 
-        if PYDANTIC_VERSION.major < 2:
-
-            @classmethod
-            def __modify_schema__(cls, field_schema: Dict[str, Any]):
-                field_schema["items"] = {"type": "number"}
-                field_schema["maxItems"] = dim
-                field_schema["minItems"] = dim
-
     return FixedSizeList
 
 
@@ -226,26 +217,14 @@ def MultiVector(
         def __get_validators__(cls) -> Generator[Callable, None, None]:
             yield cls.validate
 
-        # For pydantic v1
         @classmethod
-        def validate(cls, v):
-            if not isinstance(v, (list, range)):
-                raise TypeError("A list of vectors is needed")
-            for vec in v:
-                if not isinstance(vec, (list, range, np.ndarray)) or len(vec) != dim:
-                    raise TypeError(f"Each vector must be a list of {dim} numbers")
-            return cls(v)
-
-        if PYDANTIC_VERSION.major < 2:
-
-            @classmethod
-            def __modify_schema__(cls, field_schema: Dict[str, Any]):
-                field_schema["items"] = {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": dim,
-                    "maxItems": dim,
-                }
+        def __modify_schema__(cls, field_schema: Dict[str, Any]):
+            field_schema["items"] = {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": dim,
+                "maxItems": dim,
+            }
 
     return MultiVectorList
 
@@ -281,20 +260,10 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     )
 
 
-if PYDANTIC_VERSION.major < 2:
-
-    def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
-        return [
-            _pydantic_to_field(name, field) for name, field in model.__fields__.items()
-        ]
-
-else:
-
-    def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
-        return [
-            _pydantic_to_field(name, field)
-            for name, field in model.model_fields.items()
-        ]
+def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
+    return [
+        _pydantic_to_field(name, field) for name, field in model.model_fields.items()
+    ]
 
 
 def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
@@ -334,7 +303,7 @@ def _unwrap_optional_annotation(annotation: Any) -> Any | None:
             non_none = [arg for arg in args if arg is not type(None)]
             if len(non_none) == 1 and len(non_none) != len(args):
                 return non_none[0]
-    elif sys.version_info >= (3, 10) and isinstance(annotation, types.UnionType):
+    elif isinstance(annotation, types.UnionType):
         args = annotation.__args__
         non_none = [arg for arg in args if arg is not type(None)]
         if len(non_none) == 1 and len(non_none) != len(args):
@@ -367,7 +336,7 @@ def is_nullable(field: FieldInfo) -> bool:
         if origin == Union:
             if any(typ is type(None) for typ in args):
                 return True
-    elif sys.version_info >= (3, 10) and isinstance(field.annotation, types.UnionType):
+    elif isinstance(field.annotation, types.UnionType):
         args = field.annotation.__args__
         for typ in args:
             if typ is type(None):
@@ -474,8 +443,6 @@ class LanceModel(pydantic.BaseModel):
 
     @classmethod
     def safe_get_fields(cls):
-        if PYDANTIC_VERSION.major < 2:
-            return cls.__fields__
         return cls.model_fields
 
     @classmethod
@@ -518,18 +485,8 @@ def get_extras(field_info: FieldInfo, key: str) -> Any:
     return (field_info.field_info.extra or {}).get("json_schema_extra", {}).get(key)
 
 
-if PYDANTIC_VERSION.major < 2:
-
-    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
-        """
-        Convert a Pydantic model to a dictionary.
-        """
-        return model.dict()
-
-else:
-
-    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
-        """
-        Convert a Pydantic model to a dictionary.
-        """
-        return model.model_dump()
+def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
+    """
+    Convert a Pydantic model to a dictionary.
+    """
+    return model.model_dump()
