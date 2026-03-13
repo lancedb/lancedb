@@ -215,41 +215,33 @@ impl Database for LanceNamespaceDatabase {
             ..Default::default()
         };
 
-        let (location, initial_storage_options, managed_versioning) = {
-            let response = self.namespace.declare_table(declare_request).await?;
-            let loc = response.location.ok_or_else(|| Error::Runtime {
-                message: "Table location is missing from declare_table response".to_string(),
-            })?;
-            // Use storage options from response, fall back to self.storage_options
-            let opts = response
-                .storage_options
-                .or_else(|| Some(self.storage_options.clone()))
-                .filter(|o| !o.is_empty());
-            (loc, opts, response.managed_versioning)
-        };
+        let response = self.namespace.declare_table(declare_request).await?;
+        let location = response.location.ok_or_else(|| Error::Runtime {
+            message: "Table location is missing from declare_table response".to_string(),
+        })?;
+        let namespace_storage_options = response.storage_options;
+        let managed_versioning = response.managed_versioning;
 
-        // Build write params with storage options and commit handler
         let mut params = request.write_options.lance_write_params.unwrap_or_default();
 
-        // Set up storage options with provider for credential refresh
-        // We create the provider here so create_from_namespace doesn't need to recreate it
-        let storage_options_provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
-            self.namespace.clone(),
-            table_id.clone(),
-        ));
         let store_params = params
             .store_params
             .get_or_insert_with(ObjectStoreParams::default);
-        let accessor = match initial_storage_options {
-            Some(storage_opts) => StorageOptionsAccessor::with_initial_and_provider(
-                storage_opts,
+
+        let accessor = if let Some(initial_opts) = namespace_storage_options {
+            let storage_options_provider = Arc::new(LanceNamespaceStorageOptionsProvider::new(
+                self.namespace.clone(),
+                table_id.clone(),
+            ));
+            StorageOptionsAccessor::with_initial_and_provider(
+                initial_opts,
                 storage_options_provider,
-            ),
-            None => StorageOptionsAccessor::with_provider(storage_options_provider),
+            )
+        } else {
+            StorageOptionsAccessor::with_static_options(self.storage_options.clone())
         };
         store_params.storage_options_accessor = Some(Arc::new(accessor));
 
-        // Set up commit handler when managed_versioning is enabled
         if managed_versioning == Some(true) {
             let external_store =
                 LanceNamespaceExternalManifestStore::new(self.namespace.clone(), table_id.clone());
