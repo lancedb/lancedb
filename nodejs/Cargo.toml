@@ -29,8 +29,8 @@ lzma-sys = { version = "0.1", features = ["static"] }
 log.workspace = true
 
 # Pin to resolve build failures; update periodically for security patches.
-aws-lc-sys = "=0.28.0"
-aws-lc-rs = "=1.13.0"
+aws-lc-sys = "=0.38.0"
+aws-lc-rs = "=1.16.1"
 
 [build-dependencies]
 napi-build = "2.3.1"
