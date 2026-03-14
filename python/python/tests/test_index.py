@@ -3,6 +3,7 @@
 
 from datetime import timedelta
 import random
+from typing import get_args, get_type_hints
 
 import pyarrow as pa
 import pytest
@@ -22,6 +23,7 @@ from lancedb.index import (
     HnswSq,
     FTS,
 )
+from lancedb.table import IndexStatistics
 
 
 @pytest_asyncio.fixture
@@ -283,3 +285,20 @@ async def test_create_index_with_binary_vectors(binary_table: AsyncTable):
     for v in range(256):
         res = await binary_table.query().nearest_to([v] * 128).to_arrow()
         assert res["id"][0].as_py() == v
+
+
+def test_index_statistics_index_type_lists_all_supported_values():
+    expected_index_types = {
+        "IVF_FLAT",
+        "IVF_SQ",
+        "IVF_PQ",
+        "IVF_RQ",
+        "IVF_HNSW_SQ",
+        "IVF_HNSW_PQ",
+        "FTS",
+        "BTREE",
+        "BITMAP",
+        "LABEL_LIST",
+    }
+
+    assert set(get_args(get_type_hints(IndexStatistics)["index_type"])) == expected_index_types

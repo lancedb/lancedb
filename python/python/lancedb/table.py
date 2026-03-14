@@ -4751,7 +4751,16 @@ class IndexStatistics:
     num_indexed_rows: int
     num_unindexed_rows: int
     index_type: Literal[
-        "IVF_PQ", "IVF_HNSW_PQ", "IVF_HNSW_SQ", "FTS", "BTREE", "BITMAP", "LABEL_LIST"
+        "IVF_FLAT",
+        "IVF_SQ",
+        "IVF_PQ",
+        "IVF_RQ",
+        "IVF_HNSW_SQ",
+        "IVF_HNSW_PQ",
+        "FTS",
+        "BTREE",
+        "BITMAP",
+        "LABEL_LIST",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None
