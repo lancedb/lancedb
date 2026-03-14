@@ -301,4 +301,7 @@ def test_index_statistics_index_type_lists_all_supported_values():
         "LABEL_LIST",
     }
 
-    assert set(get_args(get_type_hints(IndexStatistics)["index_type"])) == expected_index_types
+    assert (
+        set(get_args(get_type_hints(IndexStatistics)["index_type"]))
+        == expected_index_types
+    )
