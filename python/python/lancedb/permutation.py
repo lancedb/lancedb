@@ -639,7 +639,7 @@ class Permutation:
         This method refines the current selection, potentially removing columns.  It
         will not add back columns that were previously removed.
 
-        If any of the columns do not exist then an error will be raised
+        If any of the columns do not exist then an error will be raised.
 
         This does not introduce a post-processing step.  It simply reduces the amount
         of data we read.
@@ -652,9 +652,14 @@ class Permutation:
         for name in columns:
             value = self.selection.get(name, None)
             if value is None:
-                raise ValueError(
-                    f"Cannot select column `{name}` because it does not exist"
-                )
+                if name == "_rowid":
+                    # _rowid is a system column not in the default schema
+                    # but can be explicitly selected
+                    value = "_rowid"
+                else:
+                    raise ValueError(
+                        f"Cannot select column `{name}` because it does not exist"
+                    )
             new_selection[name] = value
         return self._with_selection(new_selection)
 
