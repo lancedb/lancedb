@@ -78,6 +78,12 @@ export interface QueryExecutionOptions {
   timeoutMs?: number;
 }
 
+export interface ColumnOrdering {
+  columnName: string;
+  ascending?: boolean;
+  nullsFirst?: boolean;
+}
+
 /**
  * Options that control the behavior of a full text search
  */
@@ -413,6 +419,21 @@ export class StandardQueryBase<
    */
   offset(offset: number): this {
     this.doCall((inner: NativeQueryType) => inner.offset(offset));
+    return this;
+  }
+
+  /**
+   * Sort the results by the specified column(s).
+   * @returns This query builder.
+   */
+  orderBy(ordering: ColumnOrdering | ColumnOrdering[]): this {
+    const orderings = Array.isArray(ordering) ? ordering : [ordering];
+    const normalized = orderings.map((o) => ({
+      columnName: o.columnName,
+      ascending: o.ascending ?? true,
+      nullsFirst: o.nullsFirst ?? false,
+    }));
+    this.doCall((inner) => inner.orderBy(normalized));
     return this;
   }
 

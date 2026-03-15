@@ -50,6 +50,7 @@
 - [AlterColumnsResult](interfaces/AlterColumnsResult.md)
 - [ClientConfig](interfaces/ClientConfig.md)
 - [ColumnAlteration](interfaces/ColumnAlteration.md)
+- [ColumnOrdering](interfaces/ColumnOrdering.md)
 - [CompactionStats](interfaces/CompactionStats.md)
 - [ConnectionOptions](interfaces/ConnectionOptions.md)
 - [CreateTableOptions](interfaces/CreateTableOptions.md)
