@@ -34,6 +34,7 @@ class LanceMergeInsertBuilder(object):
         self._when_not_matched_by_source_condition = None
         self._timeout = None
         self._use_index = True
+        self._mem_wal = False
 
     def when_matched_update_all(
         self, *, where: Optional[str] = None
@@ -94,6 +95,47 @@ class LanceMergeInsertBuilder(object):
             Whether to use indices for the merge operation. Defaults to `True`.
         """
         self._use_index = use_index
+        return self
+
+    def mem_wal(self, enabled: bool = True) -> LanceMergeInsertBuilder:
+        """
+        Enable MemWAL (Memory Write-Ahead Log) mode for this merge insert operation.
+
+        When enabled, the merge insert will route data through a memory node service
+        that buffers writes before flushing to storage. This is only supported for
+        remote (LanceDB Cloud) tables.
+
+        **Important:** MemWAL only supports the upsert pattern. You must use:
+        - `when_matched_update_all()` (without a filter condition)
+        - `when_not_matched_insert_all()`
+
+        MemWAL does NOT support:
+        - `when_matched_update_all(where=...)` with a filter condition
+        - `when_not_matched_by_source_delete()`
+
+        Parameters
+        ----------
+        enabled: bool
+            Whether to enable MemWAL mode. Defaults to `True`.
+
+        Raises
+        ------
+        NotImplementedError
+            If used on a native (local) table, as MemWAL is only supported for
+            remote tables.
+        ValueError
+            If the merge insert pattern is not supported by MemWAL.
+
+        Examples
+        --------
+        >>> # Correct usage with MemWAL
+        >>> table.merge_insert(["id"]) \\
+        ...     .when_matched_update_all() \\
+        ...     .when_not_matched_insert_all() \\
+        ...     .mem_wal() \\
+        ...     .execute(new_data)
+        """
+        self._mem_wal = enabled
         return self
 
     def execute(

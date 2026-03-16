@@ -145,6 +145,7 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
             id_delimiter: config.id_delimiter,
             tls_config: config.tls_config.map(Into::into),
             header_provider: None, // the header provider is set separately later
+            mem_wal_enabled: None, // mem_wal is set per-operation in merge_insert
         }
     }
 }

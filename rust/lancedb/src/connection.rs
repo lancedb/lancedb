@@ -784,13 +784,19 @@ impl ConnectBuilder {
             message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
         })?;
 
+        // Propagate mem_wal_enabled from options to client_config
+        let mut client_config = self.request.client_config;
+        if options.mem_wal_enabled.is_some() {
+            client_config.mem_wal_enabled = options.mem_wal_enabled;
+        }
+
         let storage_options = StorageOptions(options.storage_options.clone());
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
             &self.request.uri,
             &api_key,
             &region,
             options.host_override,
-            self.request.client_config,
+            client_config,
             storage_options.into(),
         )?);
         Ok(Connection {

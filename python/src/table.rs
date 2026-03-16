@@ -710,6 +710,9 @@ impl Table {
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
         }
+        if let Some(mem_wal) = parameters.mem_wal {
+            builder.mem_wal(mem_wal);
+        }
 
         future_into_py(self_.py(), async move {
             let res = builder.execute(Box::new(batches)).await.infer_error()?;
@@ -870,6 +873,7 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_condition: Option<String>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
+    mem_wal: Option<bool>,
 }
 
 #[pyclass]

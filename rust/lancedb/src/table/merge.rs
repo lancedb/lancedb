@@ -55,6 +55,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete_filt: Option<String>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) use_index: bool,
+    pub(crate) mem_wal: bool,
 }
 
 impl MergeInsertBuilder {
@@ -69,6 +70,7 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
             use_index: true,
+            mem_wal: false,
         }
     }
 
@@ -148,12 +150,64 @@ impl MergeInsertBuilder {
         self
     }
 
+    /// Enables MemWAL (Memory Write-Ahead Log) mode for this merge insert operation.
+    ///
+    /// When enabled, the merge insert will route data through a memory node service
+    /// that buffers writes before flushing to storage. This is only supported for
+    /// remote (LanceDB Cloud) tables.
+    ///
+    /// If not set, defaults to `false`.
+    pub fn mem_wal(&mut self, enabled: bool) -> &mut Self {
+        self.mem_wal = enabled;
+        self
+    }
+
     /// Executes the merge insert operation
     ///
     /// Returns version and statistics about the merge operation including the number of rows
     /// inserted, updated, and deleted.
     pub async fn execute(self, new_data: Box<dyn RecordBatchReader + Send>) -> Result<MergeResult> {
+        // Validate MemWAL constraints before execution
+        if self.mem_wal {
+            self.validate_mem_wal_pattern()?;
+        }
         self.table.clone().merge_insert(self, new_data).await
+    }
+
+    /// Validate that the merge insert pattern is supported by MemWAL.
+    ///
+    /// MemWAL only supports the upsert pattern:
+    /// - when_matched_update_all (without filter)
+    /// - when_not_matched_insert_all
+    /// - NO when_not_matched_by_source_delete
+    fn validate_mem_wal_pattern(&self) -> Result<()> {
+        // Must have when_matched_update_all without filter
+        if !self.when_matched_update_all {
+            return Err(Error::InvalidInput {
+                message: "MemWAL requires when_matched_update_all() to be set".to_string(),
+            });
+        }
+        if self.when_matched_update_all_filt.is_some() {
+            return Err(Error::InvalidInput {
+                message: "MemWAL does not support conditional when_matched_update_all (no filter allowed)".to_string(),
+            });
+        }
+
+        // Must have when_not_matched_insert_all
+        if !self.when_not_matched_insert_all {
+            return Err(Error::InvalidInput {
+                message: "MemWAL requires when_not_matched_insert_all() to be set".to_string(),
+            });
+        }
+
+        // Must NOT have when_not_matched_by_source_delete
+        if self.when_not_matched_by_source_delete {
+            return Err(Error::InvalidInput {
+                message: "MemWAL does not support when_not_matched_by_source_delete()".to_string(),
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -165,6 +219,14 @@ pub(crate) async fn execute_merge_insert(
     params: MergeInsertBuilder,
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
+    if params.mem_wal {
+        return Err(Error::NotSupported {
+            message: "MemWAL is not supported for native (local) tables. \
+                      MemWAL is only available for remote (LanceDB Cloud) tables."
+                .to_string(),
+        });
+    }
+
     let dataset = table.dataset.get().await?;
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
@@ -323,5 +385,140 @@ mod tests {
         merge_insert_builder.use_index(false);
         merge_insert_builder.execute(new_batches).await.unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 25);
+    }
+
+    #[tokio::test]
+    async fn test_mem_wal_validation_valid_pattern() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batches = merge_insert_test_batches(0, 0);
+        let table = conn
+            .create_table("mem_wal_test", batches)
+            .execute()
+            .await
+            .unwrap();
+
+        // Valid MemWAL pattern: when_matched_update_all + when_not_matched_insert_all
+        let new_batches = merge_insert_test_batches(5, 1);
+        let mut builder = table.merge_insert(&["i"]);
+        builder.when_matched_update_all(None);
+        builder.when_not_matched_insert_all();
+        builder.mem_wal(true);
+
+        // Should fail because native tables don't support MemWAL, but validation passes
+        let result = builder.execute(new_batches).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("MemWAL is not supported for native"),
+            "Expected native table error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mem_wal_validation_missing_when_matched() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batches = merge_insert_test_batches(0, 0);
+        let table = conn
+            .create_table("mem_wal_test2", batches)
+            .execute()
+            .await
+            .unwrap();
+
+        // Missing when_matched_update_all
+        let new_batches = merge_insert_test_batches(5, 1);
+        let mut builder = table.merge_insert(&["i"]);
+        builder.when_not_matched_insert_all();
+        builder.mem_wal(true);
+
+        let result = builder.execute(new_batches).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("requires when_matched_update_all"),
+            "Expected validation error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mem_wal_validation_missing_when_not_matched() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batches = merge_insert_test_batches(0, 0);
+        let table = conn
+            .create_table("mem_wal_test3", batches)
+            .execute()
+            .await
+            .unwrap();
+
+        // Missing when_not_matched_insert_all
+        let new_batches = merge_insert_test_batches(5, 1);
+        let mut builder = table.merge_insert(&["i"]);
+        builder.when_matched_update_all(None);
+        builder.mem_wal(true);
+
+        let result = builder.execute(new_batches).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("requires when_not_matched_insert_all"),
+            "Expected validation error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mem_wal_validation_with_filter() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batches = merge_insert_test_batches(0, 0);
+        let table = conn
+            .create_table("mem_wal_test4", batches)
+            .execute()
+            .await
+            .unwrap();
+
+        // With conditional filter - not allowed
+        let new_batches = merge_insert_test_batches(5, 1);
+        let mut builder = table.merge_insert(&["i"]);
+        builder.when_matched_update_all(Some("target.age > 0".to_string()));
+        builder.when_not_matched_insert_all();
+        builder.mem_wal(true);
+
+        let result = builder.execute(new_batches).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("does not support conditional"),
+            "Expected filter validation error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mem_wal_validation_with_delete() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batches = merge_insert_test_batches(0, 0);
+        let table = conn
+            .create_table("mem_wal_test5", batches)
+            .execute()
+            .await
+            .unwrap();
+
+        // With when_not_matched_by_source_delete - not allowed
+        let new_batches = merge_insert_test_batches(5, 1);
+        let mut builder = table.merge_insert(&["i"]);
+        builder.when_matched_update_all(None);
+        builder.when_not_matched_insert_all();
+        builder.when_not_matched_by_source_delete(None);
+        builder.mem_wal(true);
+
+        let result = builder.execute(new_batches).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("does not support when_not_matched_by_source_delete"),
+            "Expected delete validation error, got: {}",
+            err
+        );
     }
 }

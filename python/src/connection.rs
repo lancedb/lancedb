@@ -506,6 +506,7 @@ pub struct PyClientConfig {
     id_delimiter: Option<String>,
     tls_config: Option<PyClientTlsConfig>,
     header_provider: Option<Py<PyAny>>,
+    mem_wal_enabled: Option<bool>,
 }
 
 #[derive(FromPyObject)]
@@ -590,6 +591,7 @@ impl From<PyClientConfig> for lancedb::remote::ClientConfig {
             id_delimiter: value.id_delimiter,
             tls_config: value.tls_config.map(Into::into),
             header_provider,
+            mem_wal_enabled: value.mem_wal_enabled,
         }
     }
 }

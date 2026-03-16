@@ -14,6 +14,7 @@ use crate::remote::db::RemoteOptions;
 use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+const MEM_WAL_ENABLED_HEADER: HeaderName = HeaderName::from_static("x-lancedb-mem-wal-enabled");
 
 /// Configuration for TLS/mTLS settings.
 #[derive(Clone, Debug, Default)]
@@ -52,6 +53,10 @@ pub struct ClientConfig {
     pub tls_config: Option<TlsConfig>,
     /// Provider for custom headers to be added to each request
     pub header_provider: Option<Arc<dyn HeaderProvider>>,
+    /// Enable MemWAL write path for streaming writes.
+    /// When true, write operations will use the MemWAL architecture
+    /// for high-performance streaming writes.
+    pub mem_wal_enabled: Option<bool>,
 }
 
 impl std::fmt::Debug for ClientConfig {
@@ -67,6 +72,7 @@ impl std::fmt::Debug for ClientConfig {
                 "header_provider",
                 &self.header_provider.as_ref().map(|_| "Some(...)"),
             )
+            .field("mem_wal_enabled", &self.mem_wal_enabled)
             .finish()
     }
 }
@@ -81,6 +87,7 @@ impl Default for ClientConfig {
             id_delimiter: None,
             tls_config: None,
             header_provider: None,
+            mem_wal_enabled: None,
         }
     }
 }
@@ -475,6 +482,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                     message: format!("non-ascii value for header '{}' provided", key),
                 })?,
             );
+        }
+
+        // Add MemWAL header if enabled
+        if let Some(true) = config.mem_wal_enabled {
+            headers.insert(MEM_WAL_ENABLED_HEADER, HeaderValue::from_static("true"));
         }
 
         Ok(headers)

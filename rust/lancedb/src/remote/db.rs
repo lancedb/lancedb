@@ -78,6 +78,7 @@ pub const OPT_REMOTE_PREFIX: &str = "remote_database_";
 pub const OPT_REMOTE_API_KEY: &str = "remote_database_api_key";
 pub const OPT_REMOTE_REGION: &str = "remote_database_region";
 pub const OPT_REMOTE_HOST_OVERRIDE: &str = "remote_database_host_override";
+pub const OPT_REMOTE_MEM_WAL_ENABLED: &str = "remote_database_mem_wal_enabled";
 // TODO: add support for configuring client config via key/value options
 
 #[derive(Clone, Debug, Default)]
@@ -98,6 +99,12 @@ pub struct RemoteDatabaseOptions {
     /// These options are only used for LanceDB Enterprise and only a subset of options
     /// are supported.
     pub storage_options: HashMap<String, String>,
+    /// Enable MemWAL write path for high-performance streaming writes.
+    ///
+    /// When enabled, write operations (insert, merge_insert, etc.) will use
+    /// the MemWAL architecture which buffers writes in memory and Write-Ahead Log
+    /// before asynchronously merging to the base table.
+    pub mem_wal_enabled: Option<bool>,
 }
 
 impl RemoteDatabaseOptions {
@@ -109,6 +116,9 @@ impl RemoteDatabaseOptions {
         let api_key = map.get(OPT_REMOTE_API_KEY).cloned();
         let region = map.get(OPT_REMOTE_REGION).cloned();
         let host_override = map.get(OPT_REMOTE_HOST_OVERRIDE).cloned();
+        let mem_wal_enabled = map
+            .get(OPT_REMOTE_MEM_WAL_ENABLED)
+            .map(|v| v.to_lowercase() == "true");
         let storage_options = map
             .iter()
             .filter(|(key, _)| !key.starts_with(OPT_REMOTE_PREFIX))
@@ -119,6 +129,7 @@ impl RemoteDatabaseOptions {
             region,
             host_override,
             storage_options,
+            mem_wal_enabled,
         })
     }
 }
@@ -136,6 +147,12 @@ impl DatabaseOptions for RemoteDatabaseOptions {
         }
         if let Some(host_override) = &self.host_override {
             map.insert(OPT_REMOTE_HOST_OVERRIDE.to_string(), host_override.clone());
+        }
+        if let Some(mem_wal_enabled) = &self.mem_wal_enabled {
+            map.insert(
+                OPT_REMOTE_MEM_WAL_ENABLED.to_string(),
+                mem_wal_enabled.to_string(),
+            );
         }
     }
 }
@@ -179,6 +196,20 @@ impl RemoteDatabaseOptionsBuilder {
     /// * `host_override` - The LanceDB Enterprise host override
     pub fn host_override(mut self, host_override: String) -> Self {
         self.options.host_override = Some(host_override);
+        self
+    }
+
+    /// Enable MemWAL write path for high-performance streaming writes.
+    ///
+    /// When enabled, write operations will use the MemWAL architecture
+    /// which buffers writes in memory and Write-Ahead Log before
+    /// asynchronously merging to the base table.
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` - Whether to enable MemWAL writes
+    pub fn mem_wal_enabled(mut self, enabled: bool) -> Self {
+        self.options.mem_wal_enabled = Some(enabled);
         self
     }
 }

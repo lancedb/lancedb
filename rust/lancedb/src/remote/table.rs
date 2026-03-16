@@ -62,6 +62,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
+const MEM_WAL_ENABLED_HEADER: HeaderName = HeaderName::from_static("x-lancedb-mem-wal-enabled");
 const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
 const SCHEMA_CACHE_TTL: Duration = Duration::from_secs(30);
@@ -1359,6 +1360,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
 
         let timeout = params.timeout;
+        let mem_wal = params.mem_wal;
 
         let query = MergeInsertRequest::try_from(params)?;
         let mut request = self
@@ -1372,6 +1374,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             if let Ok(timeout_ms) = u64::try_from(timeout.as_millis()) {
                 request = request.header(REQUEST_TIMEOUT_HEADER, timeout_ms);
             }
+        }
+
+        if mem_wal {
+            request = request.header(MEM_WAL_ENABLED_HEADER, "true");
         }
 
         let (request_id, response) = self.send_streaming(request, new_data, true).await?;
