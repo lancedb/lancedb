@@ -233,9 +233,7 @@ class TestExprFilter:
         assert result.num_rows == 2  # (30, 3.5) and (22, 4.0)
 
     def test_string_equality_filter(self, simple_table):
-        result = (
-            simple_table.search().where(col("name") == lit("Bob")).to_arrow()
-        )
+        result = simple_table.search().where(col("name") == lit("Bob")).to_arrow()
         assert result.num_rows == 1
 
     def test_or_filter(self, simple_table):
