@@ -219,7 +219,7 @@ def col(name: str) -> Expr:
     --------
     >>> from lancedb.expr import col, lit
     >>> col("age") > lit(18)
-    Expr(age > 18)
+    Expr((age > 18))
     """
     return Expr(expr_col(name))
 
@@ -236,7 +236,7 @@ def lit(value: Union[bool, int, float, str]) -> Expr:
     --------
     >>> from lancedb.expr import col, lit
     >>> col("price") * lit(1.1)
-    Expr(price * 1.1)
+    Expr((price * 1.1))
     """
     return Expr(expr_lit(value))
 
@@ -255,7 +255,7 @@ def func(name: str, *args: ExprLike) -> Expr:
     --------
     >>> from lancedb.expr import col, func
     >>> func("lower", col("name"))
-    Expr(lower(name))
+    Expr(lower("name"))
     """
     inner_args = [_coerce(a)._inner for a in args]
     return Expr(expr_func(name, inner_args))
