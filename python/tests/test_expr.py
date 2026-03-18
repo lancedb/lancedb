@@ -373,9 +373,7 @@ class TestColNamingIntegration:
 
     def test_space_in_col_filter(self, special_col_table):
         result = (
-            special_col_table.search()
-            .where(col("first name") == lit("B"))
-            .to_arrow()
+            special_col_table.search().where(col("first name") == lit("B")).to_arrow()
         )
         assert result.num_rows == 1
 
