@@ -24,11 +24,7 @@ impl Dialect for LanceSqlDialect {
                 .chars()
                 .enumerate()
                 .all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()));
-        if needs_quote {
-            Some('`')
-        } else {
-            None
-        }
+        if needs_quote { Some('`') } else { None }
     }
 }
 
