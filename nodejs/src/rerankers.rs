@@ -102,8 +102,14 @@ pub struct RRFReranker {
 
 #[napi]
 impl RRFReranker {
+    /// Create a new RRFReranker.
+    ///
+    /// * `k` – a single-element array holding the RRF constant (default 60).
+    /// * `return_score` – `"relevance"` (default) drops the raw `_distance` /
+    ///   `_score` columns from the output; `"all"` keeps them alongside
+    ///   `_relevance_score`.
     #[napi]
-    pub async fn try_new(k: &[f32]) -> Result<Self> {
+    pub async fn try_new(k: &[f32], return_score: Option<String>) -> Result<Self> {
         let k = k
             .first()
             .copied()
@@ -112,8 +118,14 @@ impl RRFReranker {
             })
             .default_error()?;
 
+        let return_score: lancedb::rerankers::ReturnScore = return_score
+            .as_deref()
+            .unwrap_or("relevance")
+            .parse()
+            .map_err(|e: lancedb::error::Error| napi::Error::from_reason(e.to_string()))?;
+
         Ok(Self {
-            inner: lancedb::rerankers::rrf::RRFReranker::new(k),
+            inner: lancedb::rerankers::rrf::RRFReranker::new_with_score(k, return_score),
         })
     }
 

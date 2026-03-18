@@ -18,6 +18,49 @@ pub mod rrf;
 /// column name for reranker relevance score
 const RELEVANCE_SCORE: &str = "_relevance_score";
 
+/// Controls which scores are returned in the reranker output.
+///
+/// - [`ReturnScore::Relevance`]: Only the `_relevance_score` column is kept.
+///   The raw `_distance` and `_score` columns (from vector and FTS search
+///   respectively) are dropped.
+/// - [`ReturnScore::All`]: All score columns are retained alongside the
+///   `_relevance_score`, which is useful for debugging.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ReturnScore {
+    /// Return only the `_relevance_score` column (default).
+    #[default]
+    Relevance,
+    /// Return `_relevance_score` plus all original score columns (`_distance`,
+    /// `_score`).
+    All,
+}
+
+impl FromStr for ReturnScore {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "relevance" => Ok(Self::Relevance),
+            "all" => Ok(Self::All),
+            _ => Err(Error::InvalidInput {
+                message: format!(
+                    "invalid return_score value: \"{}\". Expected \"relevance\" or \"all\"",
+                    s
+                ),
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for ReturnScore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Relevance => write!(f, "relevance"),
+            Self::All => write!(f, "all"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum NormalizeMethod {
     Score,
@@ -63,6 +106,37 @@ pub trait Reranker: std::fmt::Debug + Sync + Send {
         vector_results: RecordBatch,
         fts_results: RecordBatch,
     ) -> Result<RecordBatch>;
+
+    /// Drop the raw `_distance` and `_score` columns from `batch`, keeping
+    /// only the `_relevance_score` produced by the reranker.
+    ///
+    /// Call this at the end of [`Reranker::rerank_hybrid`] when
+    /// `return_score == ReturnScore::Relevance`.
+    fn keep_relevance_score(&self, batch: RecordBatch) -> Result<RecordBatch> {
+        let schema = batch.schema();
+        let columns_to_drop = ["_distance", "_score"];
+        let keep_indices: Vec<usize> = schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| !columns_to_drop.contains(&f.name().as_str()))
+            .map(|(i, _)| i)
+            .collect();
+        let new_schema = arrow_schema::Schema::new(
+            keep_indices
+                .iter()
+                .map(|&i| schema.field(i).clone())
+                .collect::<Vec<_>>(),
+        );
+        let new_columns = keep_indices
+            .iter()
+            .map(|&i| batch.column(i).clone())
+            .collect::<Vec<_>>();
+        Ok(RecordBatch::try_new(
+            std::sync::Arc::new(new_schema),
+            new_columns,
+        )?)
+    }
 
     fn merge_results(
         &self,

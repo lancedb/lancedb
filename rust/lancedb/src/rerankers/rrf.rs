@@ -14,31 +14,59 @@ use async_trait::async_trait;
 use lance::dataset::ROW_ID;
 
 use crate::error::{Error, Result};
-use crate::rerankers::{RELEVANCE_SCORE, Reranker};
+use crate::rerankers::{RELEVANCE_SCORE, Reranker, ReturnScore};
 
 /// Reranks the results using Reciprocal Rank Fusion(RRF) algorithm based
 /// on the scores of vector and FTS search.
 ///
+/// # Parameters
+///
+/// - `k`: A constant used in the RRF formula (default `60`). Experiments
+///   indicate that `k = 60` was near-optimal, but the choice is not critical.
+///   See paper: <https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf>
+/// - `return_score`: Controls which score columns appear in the output.
+///   [`ReturnScore::Relevance`] (default) keeps only the `_relevance_score`
+///   column and drops `_distance` / `_score`. [`ReturnScore::All`] retains
+///   every score column, which is useful for debugging.
 #[derive(Debug)]
 pub struct RRFReranker {
     k: f32,
+    return_score: ReturnScore,
 }
 
 impl RRFReranker {
-    /// Create a new RRFReranker
+    /// Create a new [`RRFReranker`] with the given `k` value and
+    /// [`ReturnScore::Relevance`] (drops raw distance / FTS score columns).
     ///
-    /// The parameter k is a constant used in the RRF formula (default is 60).
-    /// Experiments indicate that k = 60 was near-optimal, but that the choice
-    /// is not critical. See paper:
-    /// https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf
+    /// The parameter `k` is a constant used in the RRF formula (default is
+    /// `60`). Experiments indicate that `k = 60` was near-optimal, but that
+    /// the choice is not critical. See paper:
+    /// <https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf>
     pub fn new(k: f32) -> Self {
-        Self { k }
+        Self {
+            k,
+            return_score: ReturnScore::Relevance,
+        }
+    }
+
+    /// Create a new [`RRFReranker`] specifying both `k` and `return_score`.
+    ///
+    /// ```
+    /// # use lancedb::rerankers::rrf::RRFReranker;
+    /// # use lancedb::rerankers::ReturnScore;
+    /// let reranker = RRFReranker::new_with_score(60.0, ReturnScore::All);
+    /// ```
+    pub fn new_with_score(k: f32, return_score: ReturnScore) -> Self {
+        Self { k, return_score }
     }
 }
 
 impl Default for RRFReranker {
     fn default() -> Self {
-        Self { k: 60.0 }
+        Self {
+            k: 60.0,
+            return_score: ReturnScore::Relevance,
+        }
     }
 }
 
@@ -145,14 +173,18 @@ impl Reranker for RRFReranker {
 
         let combined_results = RecordBatch::try_new(Arc::new(schema), columns)?;
 
-        Ok(combined_results)
+        if self.return_score == ReturnScore::Relevance {
+            self.keep_relevance_score(combined_results)
+        } else {
+            Ok(combined_results)
+        }
     }
 }
 
 #[cfg(test)]
 pub mod test {
     use super::*;
-    use arrow_array::StringArray;
+    use arrow_array::{Float32Array, StringArray};
 
     #[tokio::test]
     async fn test_rrf_reranker() {
@@ -218,6 +250,116 @@ pub mod test {
         assert_eq!(
             scores.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
             vec![1.5, 1.0, 0.75, 1.0 / 5.0 + 1.0 / 3.0, 1.0 / 3.0]
+        );
+    }
+
+    /// When `return_score = ReturnScore::Relevance` (default), `_distance` and
+    /// `_score` columns must be dropped from the output.
+    #[tokio::test]
+    async fn test_rrf_return_score_relevance_drops_raw_scores() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new(ROW_ID, DataType::UInt64, false),
+            Field::new("_score", DataType::Float32, true),
+        ]));
+
+        let vec_results = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["foo", "bar"])),
+                Arc::new(UInt64Array::from(vec![1u64, 2u64])),
+                Arc::new(Float32Array::from(vec![0.1f32, 0.2f32])),
+            ],
+        )
+        .unwrap();
+
+        let fts_results = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["bar", "baz"])),
+                Arc::new(UInt64Array::from(vec![2u64, 3u64])),
+                Arc::new(Float32Array::from(vec![0.9f32, 0.8f32])),
+            ],
+        )
+        .unwrap();
+
+        // default constructor → ReturnScore::Relevance
+        let reranker = RRFReranker::new(1.0);
+        let result = reranker
+            .rerank_hybrid("", vec_results, fts_results)
+            .await
+            .unwrap();
+
+        let schema = result.schema();
+        let field_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+
+        assert!(
+            !field_names.contains(&"_distance"),
+            "_distance should be dropped: {:?}",
+            field_names
+        );
+        assert!(
+            !field_names.contains(&"_score"),
+            "_score should be dropped: {:?}",
+            field_names
+        );
+        assert!(
+            field_names.contains(&RELEVANCE_SCORE),
+            "_relevance_score should be present: {:?}",
+            field_names
+        );
+    }
+
+    /// When `return_score = ReturnScore::All`, raw score columns
+    /// must be retained in the output alongside `_relevance_score`.
+    #[tokio::test]
+    async fn test_rrf_return_score_all_keeps_raw_scores() {
+        // Both vector and FTS results share the same schema so that merge_results
+        // preserves all columns without needing schema promotion.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new(ROW_ID, DataType::UInt64, false),
+            Field::new("_score", DataType::Float32, true),
+        ]));
+
+        let vec_results = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["foo", "bar"])),
+                Arc::new(UInt64Array::from(vec![1u64, 2u64])),
+                Arc::new(Float32Array::from(vec![0.1f32, 0.2f32])),
+            ],
+        )
+        .unwrap();
+
+        let fts_results = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["bar", "baz"])),
+                Arc::new(UInt64Array::from(vec![2u64, 3u64])),
+                Arc::new(Float32Array::from(vec![0.9f32, 0.8f32])),
+            ],
+        )
+        .unwrap();
+
+        let reranker = RRFReranker::new_with_score(1.0, ReturnScore::All);
+        let result = reranker
+            .rerank_hybrid("", vec_results, fts_results)
+            .await
+            .unwrap();
+
+        let schema = result.schema();
+        let field_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+
+        assert!(
+            field_names.contains(&"_score"),
+            "_score should be kept: {:?}",
+            field_names
+        );
+        assert!(
+            field_names.contains(&RELEVANCE_SCORE),
+            "_relevance_score should be present: {:?}",
+            field_names
         );
     }
 }
