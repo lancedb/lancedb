@@ -7,7 +7,7 @@
 //! build type-safe filter / projection expressions that map directly to
 //! DataFusion [`Expr`] nodes, bypassing SQL string parsing.
 
-use arrow::datatypes::DataType;
+use arrow::{datatypes::DataType, pyarrow::PyArrowType};
 use lancedb::expr::{DfExpr, col as ldb_col, contains, expr_cast, lit as df_lit, lower, upper};
 use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunction};
 
@@ -107,11 +107,11 @@ impl PyExpr {
 
     /// Cast the expression to `data_type`.
     ///
-    /// `data_type` must be one of the recognised type name strings, e.g.
-    /// `"int32"`, `"float64"`, `"string"`, `"date32"`.
-    fn cast(&self, data_type: &str) -> PyResult<Self> {
-        let dt = parse_data_type(data_type)?;
-        Ok(Self(expr_cast(self.0.clone(), dt)))
+    /// `data_type` must be a PyArrow `DataType` (e.g. `pa.int32()`).
+    /// On the Python side, `lancedb.expr.Expr.cast` also accepts type name
+    /// strings via `pa.lib.ensure_type` before forwarding here.
+    fn cast(&self, data_type: PyArrowType<DataType>) -> Self {
+        Self(expr_cast(self.0.clone(), data_type.0))
     }
 
     // ── utilities ────────────────────────────────────────────────────────────
@@ -131,6 +131,9 @@ impl PyExpr {
 // ── free functions ────────────────────────────────────────────────────────────
 
 /// Create a column reference expression.
+///
+/// The column name is preserved exactly as given (case-sensitive), so
+/// `col("firstName")` correctly references a field named `firstName`.
 #[pyfunction]
 pub fn expr_col(name: &str) -> PyExpr {
     PyExpr(ldb_col(name))
@@ -169,32 +172,4 @@ pub fn expr_func(name: &str, args: Vec<PyExpr>) -> PyResult<PyExpr> {
     lancedb::expr::func(name, df_args)
         .map(PyExpr)
         .map_err(|e| PyValueError::new_err(e.to_string()))
-}
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-fn parse_data_type(s: &str) -> PyResult<DataType> {
-    match s {
-        "bool" | "boolean" => Ok(DataType::Boolean),
-        "int8" => Ok(DataType::Int8),
-        "int16" => Ok(DataType::Int16),
-        "int32" => Ok(DataType::Int32),
-        "int64" => Ok(DataType::Int64),
-        "uint8" => Ok(DataType::UInt8),
-        "uint16" => Ok(DataType::UInt16),
-        "uint32" => Ok(DataType::UInt32),
-        "uint64" => Ok(DataType::UInt64),
-        "float16" => Ok(DataType::Float16),
-        "float32" | "float" => Ok(DataType::Float32),
-        "float64" | "double" => Ok(DataType::Float64),
-        "string" | "utf8" | "str" => Ok(DataType::Utf8),
-        "large_string" | "large_utf8" => Ok(DataType::LargeUtf8),
-        "date32" | "date" => Ok(DataType::Date32),
-        "date64" => Ok(DataType::Date64),
-        other => Err(PyValueError::new_err(format!(
-            "unsupported data type: '{}'. Supported: bool, int8/16/32/64, \
-             uint8/16/32/64, float32, float64, string, date32, date64",
-            other
-        ))),
-    }
 }

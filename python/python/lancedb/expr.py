@@ -21,9 +21,37 @@ from __future__ import annotations
 
 from typing import Union
 
+import pyarrow as pa
+
 from lancedb._lancedb import PyExpr, expr_col, expr_lit, expr_func
 
 __all__ = ["Expr", "col", "lit", "func"]
+
+_STR_TO_PA_TYPE: dict = {
+    "bool": pa.bool_(),
+    "boolean": pa.bool_(),
+    "int8": pa.int8(),
+    "int16": pa.int16(),
+    "int32": pa.int32(),
+    "int64": pa.int64(),
+    "uint8": pa.uint8(),
+    "uint16": pa.uint16(),
+    "uint32": pa.uint32(),
+    "uint64": pa.uint64(),
+    "float16": pa.float16(),
+    "float32": pa.float32(),
+    "float": pa.float32(),
+    "float64": pa.float64(),
+    "double": pa.float64(),
+    "string": pa.string(),
+    "utf8": pa.string(),
+    "str": pa.string(),
+    "large_string": pa.large_utf8(),
+    "large_utf8": pa.large_utf8(),
+    "date32": pa.date32(),
+    "date": pa.date32(),
+    "date64": pa.date64(),
+}
 
 
 def _coerce(value: "ExprLike") -> "Expr":
@@ -148,16 +176,25 @@ class Expr:
 
     # ── type cast ────────────────────────────────────────────────────────────
 
-    def cast(self, data_type: str) -> "Expr":
+    def cast(self, data_type: Union[str, "pa.DataType"]) -> "Expr":
         """Cast values to *data_type*.
 
         Parameters
         ----------
         data_type:
-            One of ``"bool"``, ``"int8"``, ``"int16"``, ``"int32"``,
+            A PyArrow ``DataType`` (e.g. ``pa.int32()``) or one of the type
+            name strings: ``"bool"``, ``"int8"``, ``"int16"``, ``"int32"``,
             ``"int64"``, ``"uint8"``–``"uint64"``, ``"float32"``,
             ``"float64"``, ``"string"``, ``"date32"``, ``"date64"``.
         """
+        if isinstance(data_type, str):
+            try:
+                data_type = _STR_TO_PA_TYPE[data_type]
+            except KeyError:
+                raise ValueError(
+                    f"unsupported data type: '{data_type}'. Supported: "
+                    f"{', '.join(_STR_TO_PA_TYPE)}"
+                )
         return Expr(self._inner.cast(data_type))
 
     # ── named comparison helpers (alternative to operators) ──────────────────
@@ -255,7 +292,7 @@ def func(name: str, *args: ExprLike) -> Expr:
     --------
     >>> from lancedb.expr import col, func
     >>> func("lower", col("name"))
-    Expr(lower("name"))
+    Expr(lower(name))
     """
     inner_args = [_coerce(a)._inner for a in args]
     return Expr(expr_func(name, inner_args))

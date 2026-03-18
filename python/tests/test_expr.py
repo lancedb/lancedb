@@ -40,7 +40,7 @@ class TestExprConstruction:
     def test_func(self):
         e = func("lower", col("name"))
         assert isinstance(e, Expr)
-        assert "lower" in e.to_sql().lower()
+        assert e.to_sql() == "lower(name)"
 
     def test_func_unknown_raises(self):
         with pytest.raises(Exception):
@@ -51,150 +51,185 @@ class TestExprOperators:
     def test_eq_operator(self):
         e = col("x") == lit(1)
         assert isinstance(e, Expr)
-        sql = e.to_sql()
-        assert "x" in sql and "1" in sql
+        assert e.to_sql() == "(x = 1)"
 
     def test_ne_operator(self):
         e = col("x") != lit(1)
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(x <> 1)"
 
     def test_lt_operator(self):
         e = col("age") < lit(18)
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(age < 18)"
 
     def test_le_operator(self):
         e = col("age") <= lit(18)
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(age <= 18)"
 
     def test_gt_operator(self):
         e = col("age") > lit(18)
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(age > 18)"
 
     def test_ge_operator(self):
         e = col("age") >= lit(18)
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(age >= 18)"
 
     def test_and_operator(self):
         e = (col("age") > lit(18)) & (col("status") == lit("active"))
         assert isinstance(e, Expr)
-        sql = e.to_sql()
-        assert "age" in sql and "status" in sql
+        assert e.to_sql() == "((age > 18) AND (status = 'active'))"
 
     def test_or_operator(self):
         e = (col("a") == lit(1)) | (col("b") == lit(2))
         assert isinstance(e, Expr)
+        assert e.to_sql() == "((a = 1) OR (b = 2))"
 
     def test_invert_operator(self):
         e = ~(col("active") == lit(True))
         assert isinstance(e, Expr)
+        assert e.to_sql() == "NOT (active = true)"
 
     def test_add_operator(self):
         e = col("x") + lit(1)
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(x + 1)"
 
     def test_sub_operator(self):
         e = col("x") - lit(1)
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(x - 1)"
 
     def test_mul_operator(self):
         e = col("price") * lit(1.1)
         assert isinstance(e, Expr)
-        sql = e.to_sql()
-        assert "price" in sql
+        assert e.to_sql() == "(price * 1.1)"
 
     def test_div_operator(self):
         e = col("total") / lit(2)
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(total / 2)"
 
     def test_radd(self):
         e = lit(1) + col("x")
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(1 + x)"
 
     def test_rmul(self):
         e = lit(2) * col("x")
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(2 * x)"
 
     def test_coerce_plain_int(self):
         # Operators should auto-wrap plain Python values via lit()
         e = col("age") > 18
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(age > 18)"
 
     def test_coerce_plain_str(self):
         e = col("name") == "alice"
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(name = 'alice')"
 
 
 class TestExprStringMethods:
     def test_lower(self):
         e = col("name").lower()
         assert isinstance(e, Expr)
-        assert "lower" in e.to_sql().lower()
+        assert e.to_sql() == "lower(name)"
 
     def test_upper(self):
         e = col("name").upper()
         assert isinstance(e, Expr)
-        assert "upper" in e.to_sql().lower()
+        assert e.to_sql() == "upper(name)"
 
     def test_contains(self):
         e = col("text").contains(lit("hello"))
         assert isinstance(e, Expr)
+        assert e.to_sql() == "contains(text, 'hello')"
 
     def test_contains_with_str_coerce(self):
         e = col("text").contains("hello")
         assert isinstance(e, Expr)
+        assert e.to_sql() == "contains(text, 'hello')"
 
     def test_chained_lower_eq(self):
         e = col("name").lower() == lit("alice")
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(lower(name) = 'alice')"
 
 
 class TestExprCast:
     def test_cast_string(self):
         e = col("id").cast("string")
         assert isinstance(e, Expr)
+        assert e.to_sql() == "CAST(id AS VARCHAR)"
 
     def test_cast_int32(self):
         e = col("score").cast("int32")
         assert isinstance(e, Expr)
+        assert e.to_sql() == "CAST(score AS INTEGER)"
 
     def test_cast_float64(self):
         e = col("val").cast("float64")
         assert isinstance(e, Expr)
+        assert e.to_sql() == "CAST(val AS DOUBLE)"
 
-    def test_cast_unknown_raises(self):
-        with pytest.raises(Exception):
-            col("x").cast("not_a_type")
+    def test_cast_pyarrow_type(self):
+        e = col("score").cast(pa.int32())
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "CAST(score AS INTEGER)"
+
+    def test_cast_pyarrow_float64(self):
+        e = col("val").cast(pa.float64())
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "CAST(val AS DOUBLE)"
+
+    def test_cast_pyarrow_string(self):
+        e = col("id").cast(pa.string())
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "CAST(id AS VARCHAR)"
+
+    def test_cast_pyarrow_and_string_equivalent(self):
+        # pa.int32() and "int32" should produce equivalent SQL
+        sql_str = col("x").cast("int32").to_sql()
+        sql_pa = col("x").cast(pa.int32()).to_sql()
+        assert sql_str == sql_pa
 
 
 class TestExprNamedMethods:
     def test_eq_method(self):
         e = col("x").eq(lit(1))
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(x = 1)"
 
     def test_gt_method(self):
         e = col("x").gt(lit(0))
         assert isinstance(e, Expr)
+        assert e.to_sql() == "(x > 0)"
 
     def test_and_method(self):
         e = col("x").gt(lit(0)).and_(col("y").lt(lit(10)))
         assert isinstance(e, Expr)
+        assert e.to_sql() == "((x > 0) AND (y < 10))"
 
     def test_or_method(self):
         e = col("x").eq(lit(1)).or_(col("x").eq(lit(2)))
         assert isinstance(e, Expr)
+        assert e.to_sql() == "((x = 1) OR (x = 2))"
 
 
 class TestExprRepr:
     def test_repr(self):
         e = col("age") > lit(18)
-        r = repr(e)
-        assert r.startswith("Expr(")
+        assert repr(e) == "Expr((age > 18))"
 
     def test_to_sql(self):
-        e = col("age") > lit(18)
-        sql = e.to_sql()
-        assert "age" in sql
-        assert "18" in sql
+        e = col("age") > 18
+        assert e.to_sql() == "(age > 18)"
 
     def test_unhashable(self):
         e = col("x")
@@ -277,3 +312,78 @@ class TestExprProjection:
         # Plain list of str still works
         result = simple_table.search().select(["id", "name"]).to_arrow()
         assert result.schema.names == ["id", "name"]
+
+
+# ── column name edge cases ────────────────────────────────────────────────────
+
+
+class TestColNaming:
+    """Unit tests verifying that col() preserves identifiers exactly.
+
+    Identifiers that need quoting (camelCase, spaces, leading digits, unicode)
+    are wrapped in backticks to match the lance SQL parser's dialect.
+    """
+
+    def test_camel_case_preserved_in_sql(self):
+        # camelCase is quoted with backticks so the case round-trips correctly.
+        assert col("firstName").to_sql() == "`firstName`"
+
+    def test_camel_case_in_expression(self):
+        assert (col("firstName") > lit(18)).to_sql() == "(`firstName` > 18)"
+
+    def test_space_in_name_quoted(self):
+        assert col("first name").to_sql() == "`first name`"
+
+    def test_space_in_expression(self):
+        assert (col("first name") == lit("A")).to_sql() == "(`first name` = 'A')"
+
+    def test_leading_digit_quoted(self):
+        assert col("2fast").to_sql() == "`2fast`"
+
+    def test_unicode_quoted(self):
+        assert col("名前").to_sql() == "`名前`"
+
+    def test_snake_case_unquoted(self):
+        # Plain snake_case needs no quoting.
+        assert col("first_name").to_sql() == "first_name"
+
+
+@pytest.fixture
+def special_col_table(tmp_path):
+    db = lancedb.connect(str(tmp_path))
+    data = pa.table(
+        {
+            "firstName": ["Alice", "Bob", "Charlie"],
+            "first name": ["A", "B", "C"],
+            "score": [10, 20, 30],
+        }
+    )
+    return db.create_table("special", data)
+
+
+class TestColNamingIntegration:
+    def test_camel_case_filter(self, special_col_table):
+        result = (
+            special_col_table.search()
+            .where(col("firstName") == lit("Alice"))
+            .to_arrow()
+        )
+        assert result.num_rows == 1
+        assert result["firstName"][0].as_py() == "Alice"
+
+    def test_space_in_col_filter(self, special_col_table):
+        result = (
+            special_col_table.search()
+            .where(col("first name") == lit("B"))
+            .to_arrow()
+        )
+        assert result.num_rows == 1
+
+    def test_camel_case_projection(self, special_col_table):
+        result = (
+            special_col_table.search()
+            .select({"upper_name": col("firstName").upper()})
+            .to_arrow()
+        )
+        assert "upper_name" in result.schema.names
+        assert sorted(result["upper_name"].to_pylist()) == ["ALICE", "BOB", "CHARLIE"]
