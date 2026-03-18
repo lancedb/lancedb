@@ -78,8 +78,9 @@ describe("rerankers", function () {
   });
 
   it("will query with RRFReranker returnScore='all'", async function () {
-    // When returnScore="all", the raw score columns (_distance, _score) should
-    // be retained alongside _relevance_score.
+    // When returnScore="all", both _distance (vector) and _score (FTS) are
+    // retained alongside _relevance_score. Rows that only appear in one result
+    // set will have null for the score column from the other set.
     const reranker = await RRFReranker.create(60, "all");
     const result = await table
       .query()
@@ -90,14 +91,16 @@ describe("rerankers", function () {
       .toArray();
 
     expect(result).toHaveLength(2);
-    // At least one raw score column should be present
     const keys = Object.keys(result[0] as object);
-    expect(keys.some((k) => k === "_distance" || k === "_score")).toBe(true);
+    expect(keys).toContain("_distance");
+    expect(keys).toContain("_score");
     expect(keys).toContain("_relevance_score");
   });
 
-  it("will query with RRFReranker returnScore='relevance' drops raw scores", async function () {
-    // When returnScore="relevance" (default), _distance and _score are dropped.
+  it("will query with RRFReranker returnScore='relevance' preserves original behavior", async function () {
+    // When returnScore="relevance" (default), the original merge behavior is
+    // preserved: _score (FTS) is kept, _distance is not present because the
+    // merge uses the FTS schema as its base.
     const reranker = await RRFReranker.create(60, "relevance");
     const result = await table
       .query()
@@ -110,7 +113,6 @@ describe("rerankers", function () {
     expect(result).toHaveLength(2);
     const keys = Object.keys(result[0] as object);
     expect(keys).not.toContain("_distance");
-    expect(keys).not.toContain("_score");
     expect(keys).toContain("_relevance_score");
   });
 });
