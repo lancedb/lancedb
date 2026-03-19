@@ -15,20 +15,20 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { version = "=3.0.0", default-features = false }
-lance-core = { version = "=3.0.0" }
-lance-datagen = { version = "=3.0.0" }
-lance-file = { version = "=3.0.0" }
-lance-io = { version = "=3.0.0", default-features = false }
-lance-index = { version = "=3.0.0" }
-lance-linalg = { version = "=3.0.0" }
-lance-namespace = { version = "=3.0.0" }
-lance-namespace-impls = { version = "=3.0.0", default-features = false }
-lance-table = { version = "=3.0.0" }
-lance-testing = { version = "=3.0.0" }
-lance-datafusion = { version = "=3.0.0" }
-lance-encoding = { version = "=3.0.0" }
-lance-arrow = { version = "=3.0.0" }
+lance = { "version" = "=3.0.1", default-features = false }
+lance-core = "=3.0.1"
+lance-datagen = "=3.0.1"
+lance-file = "=3.0.1"
+lance-io = { "version" = "=3.0.1", default-features = false }
+lance-index = "=3.0.1"
+lance-linalg = "=3.0.1"
+lance-namespace = "=3.0.1"
+lance-namespace-impls = { "version" = "=3.0.1", default-features = false }
+lance-table = "=3.0.1"
+lance-testing = "=3.0.1"
+lance-datafusion = "=3.0.1"
+lance-encoding = "=3.0.1"
+lance-arrow = "=3.0.1"
 ahash = "0.8"
 # Note that this one does not include pyarrow
 arrow = { version = "57.2", optional = false }
