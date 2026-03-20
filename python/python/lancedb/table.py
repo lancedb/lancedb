@@ -1001,11 +1001,11 @@ class Table(ABC):
 
             - A **callable** that receives a dict with keys ``output_rows``,
               ``output_bytes``, ``total_rows``, ``elapsed_seconds``,
-              ``active_tasks``, and ``done``::
+              ``active_tasks``, ``total_tasks``, and ``done``::
 
                 def on_progress(p):
                     print(f"{p['output_rows']}/{p['total_rows']} rows, "
-                          f"{p['active_tasks']} workers")
+                          f"{p['active_tasks']}/{p['total_tasks']} workers")
                 table.add(data, progress=on_progress)
 
             - A **tqdm-compatible** progress bar whose ``total`` and

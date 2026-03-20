@@ -20,6 +20,7 @@ pub struct WriteProgress {
     output_bytes: usize,
     total_rows: Option<usize>,
     active_tasks: usize,
+    total_tasks: usize,
     done: bool,
 }
 
@@ -53,6 +54,11 @@ impl WriteProgress {
         self.active_tasks
     }
 
+    /// Total number of parallel write tasks (i.e. the write parallelism).
+    pub fn total_tasks(&self) -> usize {
+        self.total_tasks
+    }
+
     /// Whether the write operation has completed.
     ///
     /// The final callback always has `done = true`.  Callers can use this to
@@ -69,9 +75,21 @@ pub type ProgressCallback = Arc<dyn Fn(&WriteProgress) + Send + Sync>;
 ///
 /// Call [`WriteProgressTracker::record_batch`] for each batch written.
 /// Call [`WriteProgressTracker::finish`] once after all data is written.
+impl std::fmt::Debug for WriteProgressTracker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteProgressTracker")
+            .field("total_rows", &self.total_rows)
+            .finish()
+    }
+}
+
 pub(crate) struct WriteProgressTracker {
-    rows_any_bytes: std::sync::Mutex<(usize, usize)>,
+    rows_and_bytes: std::sync::Mutex<(usize, usize)>,
+    /// Wire bytes tracked separately by the insert layer. When set (> 0),
+    /// this takes precedence over the in-memory bytes from `rows_and_bytes`.
+    wire_bytes: AtomicUsize,
     active_tasks: Arc<AtomicUsize>,
+    total_tasks: AtomicUsize,
     start: Instant,
     /// Known total rows from the input source, if available.
     total_rows: Option<usize>,
@@ -81,12 +99,19 @@ pub(crate) struct WriteProgressTracker {
 impl WriteProgressTracker {
     pub fn new(callback: ProgressCallback, total_rows: Option<usize>) -> Self {
         Self {
-            rows_any_bytes: std::sync::Mutex::new((0, 0)),
+            rows_and_bytes: std::sync::Mutex::new((0, 0)),
+            wire_bytes: AtomicUsize::new(0),
             active_tasks: Arc::new(AtomicUsize::new(0)),
+            total_tasks: AtomicUsize::new(1),
             start: Instant::now(),
             total_rows,
             callback,
         }
+    }
+
+    /// Set the total number of parallel write tasks (the write parallelism).
+    pub fn set_total_tasks(&self, n: usize) {
+        self.total_tasks.store(n, Ordering::Relaxed);
     }
 
     /// Increment the active task count. Returns a guard that decrements on drop.
@@ -100,19 +125,19 @@ impl WriteProgressTracker {
         let progress = {
             // We hold a lock here to update the rows/bytes counts atomically,
             // since multiple batches may be processed concurrently.
-            let mut guard = self.rows_any_bytes.lock().unwrap();
+            let mut guard = self.rows_and_bytes.lock().unwrap();
             guard.0 += rows;
             guard.1 += bytes;
-            WriteProgress {
-                elapsed: self.start.elapsed(),
-                output_rows: guard.0,
-                output_bytes: guard.1,
-                total_rows: self.total_rows,
-                active_tasks: self.active_tasks.load(Ordering::Relaxed),
-                done: false,
-            }
+            self.snapshot(guard.0, guard.1, false)
         };
         (self.callback)(&progress);
+    }
+
+    /// Record wire bytes from the insert layer (e.g. IPC-encoded bytes for
+    /// remote writes). When wire bytes are recorded, they take precedence over
+    /// the in-memory Arrow bytes tracked by [`record_batch`].
+    pub fn record_bytes(&self, bytes: usize) {
+        self.wire_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Emit the final progress callback indicating the write is complete.
@@ -121,17 +146,30 @@ impl WriteProgressTracker {
     /// total if available, or falls back to the number of rows actually written.
     pub fn finish(&self) {
         let progress = {
-            let guard = self.rows_any_bytes.lock().unwrap();
-            WriteProgress {
-                elapsed: self.start.elapsed(),
-                output_rows: guard.0,
-                output_bytes: guard.1,
-                total_rows: Some(self.total_rows.unwrap_or(guard.0)),
-                active_tasks: self.active_tasks.load(Ordering::Relaxed),
-                done: true,
-            }
+            let guard = self.rows_and_bytes.lock().unwrap();
+            let mut snap = self.snapshot(guard.0, guard.1, true);
+            snap.total_rows = Some(self.total_rows.unwrap_or(guard.0));
+            snap
         };
         (self.callback)(&progress);
+    }
+
+    fn snapshot(&self, rows: usize, in_memory_bytes: usize, done: bool) -> WriteProgress {
+        let wire = self.wire_bytes.load(Ordering::Relaxed);
+        // Prefer wire bytes (actual I/O size) when the insert layer is
+        // tracking them; fall back to in-memory Arrow size otherwise.
+        // TODO: for local writes, track actual bytes written by Lance
+        // instead of using in-memory Arrow size as a proxy.
+        let output_bytes = if wire > 0 { wire } else { in_memory_bytes };
+        WriteProgress {
+            elapsed: self.start.elapsed(),
+            output_rows: rows,
+            output_bytes,
+            total_rows: self.total_rows,
+            active_tasks: self.active_tasks.load(Ordering::Relaxed),
+            total_tasks: self.total_tasks.load(Ordering::Relaxed),
+            done,
+        }
     }
 }
 
@@ -167,9 +205,11 @@ mod tests {
         let callback_count = Arc::new(AtomicUsize::new(0));
         let last_rows = Arc::new(AtomicUsize::new(0));
         let max_active = Arc::new(AtomicUsize::new(0));
+        let last_total_tasks = Arc::new(AtomicUsize::new(0));
         let cb_count = callback_count.clone();
         let cb_rows = last_rows.clone();
         let cb_active = max_active.clone();
+        let cb_total_tasks = last_total_tasks.clone();
 
         let new_data = record_batch!(("id", Int32, [4, 5, 6])).unwrap();
         table
@@ -178,6 +218,7 @@ mod tests {
                 cb_count.fetch_add(1, Ordering::SeqCst);
                 cb_rows.store(p.output_rows(), Ordering::SeqCst);
                 cb_active.fetch_max(p.active_tasks(), Ordering::SeqCst);
+                cb_total_tasks.store(p.total_tasks(), Ordering::SeqCst);
             })
             .execute()
             .await
@@ -189,6 +230,8 @@ mod tests {
         assert_eq!(last_rows.load(Ordering::SeqCst), 3);
         // At least one callback should have seen an active task.
         assert!(max_active.load(Ordering::SeqCst) >= 1);
+        // total_tasks should reflect the write parallelism.
+        assert!(last_total_tasks.load(Ordering::SeqCst) >= 1);
     }
 
     #[tokio::test]

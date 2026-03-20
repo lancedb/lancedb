@@ -930,12 +930,15 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
     async fn add_single_partition(&self, output: PreprocessingOutput) -> Result<AddResult> {
         use crate::remote::retry::RetryCounter;
 
+        let _guard = output.tracker.as_ref().map(|t| t.track_task());
+
         let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
             self.name.clone(),
             self.identifier.clone(),
             self.client.clone(),
             output.plan,
             output.overwrite,
+            output.tracker.clone(),
         ));
 
         let mut retry_counter =
@@ -1036,6 +1039,11 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         output: &PreprocessingOutput,
         num_partitions: usize,
     ) -> Result<()> {
+        debug_assert!(
+            output.rescannable,
+            "multipart inserts require rescannable input for retry support"
+        );
+
         let plan = Arc::new(
             datafusion_physical_plan::repartition::RepartitionExec::try_new(
                 output.plan.clone(),
@@ -1050,6 +1058,7 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             plan,
             output.overwrite,
             upload_id.to_string(),
+            output.tracker.clone(),
         ));
 
         let task_ctx = Arc::new(datafusion_execution::TaskContext::default());
@@ -1276,6 +1285,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     t.finish();
                 }
             }
+        }
+        if let Some(ref t) = output.tracker {
+            t.set_total_tasks(num_partitions);
         }
         let _finish = FinishOnDrop(output.tracker.clone());
 
@@ -1997,6 +2009,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             self.client.clone(),
             input,
             overwrite,
+            None,
         )))
     }
 }

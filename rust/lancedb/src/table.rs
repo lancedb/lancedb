@@ -2212,6 +2212,9 @@ impl BaseTable for NativeTable {
             }
         }
         let tracker_for_tasks = output.tracker.clone();
+        if let Some(ref t) = tracker_for_tasks {
+            t.set_total_tasks(num_partitions);
+        }
         let _finish = FinishOnDrop(output.tracker);
 
         // Execute all partitions in parallel.

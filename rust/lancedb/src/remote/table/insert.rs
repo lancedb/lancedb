@@ -23,6 +23,7 @@ use crate::remote::client::{HttpSend, RestfulLanceDbClient, Sender};
 use crate::remote::table::RemoteTable;
 use crate::remote::ARROW_STREAM_CONTENT_TYPE;
 use crate::table::datafusion::insert::COUNT_SCHEMA;
+use crate::table::write_progress::WriteProgressTracker;
 use crate::table::AddResult;
 use crate::Error;
 
@@ -45,6 +46,7 @@ pub struct RemoteInsertExec<S: HttpSend = Sender> {
     add_result: Arc<Mutex<Option<AddResult>>>,
     metrics: ExecutionPlanMetricsSet,
     upload_id: Option<String>,
+    tracker: Option<Arc<WriteProgressTracker>>,
 }
 
 impl<S: HttpSend + 'static> RemoteInsertExec<S> {
@@ -55,8 +57,11 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         client: RestfulLanceDbClient<S>,
         input: Arc<dyn ExecutionPlan>,
         overwrite: bool,
+        tracker: Option<Arc<WriteProgressTracker>>,
     ) -> Self {
-        Self::new_inner(table_name, identifier, client, input, overwrite, None)
+        Self::new_inner(
+            table_name, identifier, client, input, overwrite, None, tracker,
+        )
     }
 
     /// Create a multi-partition RemoteInsertExec for use with multipart writes.
@@ -71,6 +76,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         input: Arc<dyn ExecutionPlan>,
         overwrite: bool,
         upload_id: String,
+        tracker: Option<Arc<WriteProgressTracker>>,
     ) -> Self {
         Self::new_inner(
             table_name,
@@ -79,6 +85,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             input,
             overwrite,
             Some(upload_id),
+            tracker,
         )
     }
 
@@ -89,6 +96,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
         input: Arc<dyn ExecutionPlan>,
         overwrite: bool,
         upload_id: Option<String>,
+        tracker: Option<Arc<WriteProgressTracker>>,
     ) -> Self {
         let num_partitions = if upload_id.is_some() {
             input.output_partitioning().partition_count()
@@ -113,6 +121,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
             add_result: Arc::new(Mutex::new(None)),
             metrics: ExecutionPlanMetricsSet::new(),
             upload_id,
+            tracker,
         }
     }
 
@@ -131,6 +140,7 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
     fn stream_as_http_body(
         data: SendableRecordBatchStream,
         error_tx: tokio::sync::oneshot::Sender<DataFusionError>,
+        tracker: Option<Arc<WriteProgressTracker>>,
     ) -> DataFusionResult<reqwest::Body> {
         let options = arrow_ipc::writer::IpcWriteOptions::default()
             .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
@@ -142,37 +152,46 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
 
         let stream = futures::stream::try_unfold(
             (data, writer, Some(error_tx), false),
-            move |(mut data, mut writer, error_tx, finished)| async move {
-                if finished {
-                    return Ok(None);
-                }
-                match data.next().await {
-                    Some(Ok(batch)) => {
-                        writer
-                            .write(&batch)
-                            .map_err(|e| std::io::Error::other(e.to_string()))?;
-                        let buffer = std::mem::take(writer.get_mut());
-                        Ok(Some((buffer, (data, writer, error_tx, false))))
+            move |(mut data, mut writer, error_tx, finished)| {
+                let tracker = tracker.clone();
+                async move {
+                    if finished {
+                        return Ok(None);
                     }
-                    Some(Err(e)) => {
-                        // Send the original error through the channel before
-                        // returning a generic error to reqwest.
-                        if let Some(tx) = error_tx {
-                            let _ = tx.send(e);
+                    match data.next().await {
+                        Some(Ok(batch)) => {
+                            writer
+                                .write(&batch)
+                                .map_err(|e| std::io::Error::other(e.to_string()))?;
+                            let buffer = std::mem::take(writer.get_mut());
+                            if let Some(ref t) = tracker {
+                                t.record_bytes(buffer.len());
+                            }
+                            Ok(Some((buffer, (data, writer, error_tx, false))))
                         }
-                        Err(std::io::Error::other(
-                            "input stream error (see error channel)",
-                        ))
-                    }
-                    None => {
-                        writer
-                            .finish()
-                            .map_err(|e| std::io::Error::other(e.to_string()))?;
-                        let buffer = std::mem::take(writer.get_mut());
-                        if buffer.is_empty() {
-                            Ok(None)
-                        } else {
-                            Ok(Some((buffer, (data, writer, None, true))))
+                        Some(Err(e)) => {
+                            // Send the original error through the channel before
+                            // returning a generic error to reqwest.
+                            if let Some(tx) = error_tx {
+                                let _ = tx.send(e);
+                            }
+                            Err(std::io::Error::other(
+                                "input stream error (see error channel)",
+                            ))
+                        }
+                        None => {
+                            writer
+                                .finish()
+                                .map_err(|e| std::io::Error::other(e.to_string()))?;
+                            let buffer = std::mem::take(writer.get_mut());
+                            if buffer.is_empty() {
+                                Ok(None)
+                            } else {
+                                if let Some(ref t) = tracker {
+                                    t.record_bytes(buffer.len());
+                                }
+                                Ok(Some((buffer, (data, writer, None, true))))
+                            }
                         }
                     }
                 }
@@ -249,6 +268,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
             children[0].clone(),
             self.overwrite,
             self.upload_id.clone(),
+            self.tracker.clone(),
         )))
     }
 
@@ -280,6 +300,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
         let add_result = self.add_result.clone();
         let table_name = self.table_name.clone();
         let upload_id = self.upload_id.clone();
+        let tracker = self.tracker.clone();
 
         let stream = futures::stream::once(async move {
             let mut request = client
@@ -294,7 +315,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteInsertExec<S> {
             }
 
             let (error_tx, mut error_rx) = tokio::sync::oneshot::channel();
-            let body = Self::stream_as_http_body(input_stream, error_tx)?;
+            let body = Self::stream_as_http_body(input_stream, error_tx, tracker)?;
             let request = request.body(body);
 
             let result: DataFusionResult<(String, _)> = async {

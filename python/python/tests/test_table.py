@@ -527,6 +527,8 @@ def test_add_progress_callback(mem_db: DBConnection):
         assert "total_rows" in p
         assert "elapsed_seconds" in p
         assert "active_tasks" in p
+        assert "total_tasks" in p
+        assert "done" in p
 
 
 def test_add_progress_tqdm_like(mem_db: DBConnection):
