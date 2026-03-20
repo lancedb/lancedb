@@ -5064,6 +5064,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_multipart_write_progress() {
+        let callback_count = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let last_total_tasks = Arc::new(AtomicUsize::new(0));
+        let seen_done = Arc::new(std::sync::Mutex::new(false));
+
+        let cb_count = callback_count.clone();
+        let cb_active = max_active.clone();
+        let cb_total = last_total_tasks.clone();
+        let cb_done = seen_done.clone();
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 4, 0),
+            move |request| {
+                let path = request.url().path();
+
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+                if path == "/v1/table/my_table/multipart_write/create" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"upload_id": "prog-upload"}"#.to_string())
+                        .unwrap();
+                }
+                if path == "/v1/table/my_table/insert/" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 1}"#.to_string())
+                        .unwrap();
+                }
+                if path == "/v1/table/my_table/multipart_write/complete" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 3}"#.to_string())
+                        .unwrap();
+                }
+                panic!("Unexpected request path: {}", path);
+            },
+        );
+
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        table
+            .add(vec![batch])
+            .write_parallelism(2)
+            .progress(move |p| {
+                cb_count.fetch_add(1, Ordering::SeqCst);
+                cb_active.fetch_max(p.active_tasks(), Ordering::SeqCst);
+                cb_total.store(p.total_tasks(), Ordering::SeqCst);
+                if p.done() {
+                    *cb_done.lock().unwrap() = true;
+                }
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        assert!(
+            callback_count.load(Ordering::SeqCst) >= 1,
+            "expected at least one progress callback"
+        );
+        assert!(*seen_done.lock().unwrap(), "must see done=true");
+        assert_eq!(last_total_tasks.load(Ordering::SeqCst), 2);
+        assert!(
+            max_active.load(Ordering::SeqCst) >= 1,
+            "expected at least one active task"
+        );
+    }
+
+    #[tokio::test]
     async fn test_multipart_write_fallback_old_server() {
         let insert_count = Arc::new(AtomicUsize::new(0));
         let create_count = Arc::new(AtomicUsize::new(0));

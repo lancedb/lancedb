@@ -519,8 +519,8 @@ def test_add_progress_callback(mem_db: DBConnection):
     table.add([{"id": 3}, {"id": 4}], progress=lambda p: updates.append(dict(p)))
 
     assert len(table) == 4
-    # The callback may fire zero times for tiny data (timing-dependent), but
-    # if it did fire, the dict should have the expected keys.
+    # The done callback always fires, so we should always get at least one.
+    assert len(updates) >= 1, "expected at least one progress callback"
     for p in updates:
         assert "output_rows" in p
         assert "output_bytes" in p
@@ -529,6 +529,8 @@ def test_add_progress_callback(mem_db: DBConnection):
         assert "active_tasks" in p
         assert "total_tasks" in p
         assert "done" in p
+    # The last callback should have done=True.
+    assert updates[-1]["done"] is True
 
 
 def test_add_progress_tqdm_like(mem_db: DBConnection):
@@ -577,6 +579,30 @@ def test_add_progress_bool(mem_db: DBConnection):
     # progress=False should be the same as None
     table.add([{"id": 5}], progress=False)
     assert len(table) == 5
+
+
+@pytest.mark.asyncio
+async def test_add_progress_callback_async(mem_db_async: AsyncConnection):
+    """Progress callbacks work through the async path too."""
+    table = await mem_db_async.create_table("test", data=[{"id": 1}, {"id": 2}])
+
+    updates = []
+    await table.add([{"id": 3}, {"id": 4}], progress=lambda p: updates.append(dict(p)))
+
+    assert await table.count_rows() == 4
+    assert len(updates) >= 1
+    assert updates[-1]["done"] is True
+
+
+def test_add_progress_callback_error(mem_db: DBConnection):
+    """A failing callback must not prevent the write from succeeding."""
+    table = mem_db.create_table("test", data=[{"id": 1}, {"id": 2}])
+
+    def bad_callback(p):
+        raise RuntimeError("boom")
+
+    table.add([{"id": 3}, {"id": 4}], progress=bad_callback)
+    assert len(table) == 4
 
 
 def test_polars(mem_db: DBConnection):
