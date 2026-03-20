@@ -57,6 +57,7 @@ use crate::index::{Index, IndexBuilder, vector::suggested_num_sub_vectors};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
+use crate::table::write_progress::WriteProgressTracker;
 use crate::utils::{
     PatchReadParam, PatchWriteParam, supported_bitmap_data_type, supported_btree_data_type,
     supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
@@ -74,6 +75,7 @@ pub mod optimize;
 pub mod query;
 pub mod schema_evolution;
 pub mod update;
+pub mod write_progress;
 use crate::index::waiter::wait_for_index;
 pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
@@ -2275,13 +2277,31 @@ impl BaseTable for NativeTable {
 
         let insert_exec = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
 
+        // The tracker is called per batch inside ScannableExec; finish() is
+        // called once execution completes (or fails) so callers always see done=true.
+        struct FinishOnDrop(Option<Arc<WriteProgressTracker>>);
+        impl Drop for FinishOnDrop {
+            fn drop(&mut self) {
+                if let Some(t) = self.0.take() {
+                    t.finish();
+                }
+            }
+        }
+        let tracker_for_tasks = output.tracker.clone();
+        if let Some(ref t) = tracker_for_tasks {
+            t.set_total_tasks(num_partitions);
+        }
+        let _finish = FinishOnDrop(output.tracker);
+
         // Execute all partitions in parallel.
         let task_ctx = Arc::new(TaskContext::default());
         let handles = FuturesUnordered::new();
         for partition in 0..num_partitions {
             let exec = insert_exec.clone();
             let ctx = task_ctx.clone();
+            let tracker = tracker_for_tasks.clone();
             handles.push(tokio::spawn(async move {
+                let _guard = tracker.as_ref().map(|t| t.track_task());
                 let mut stream = exec
                     .execute(partition, ctx)
                     .map_err(|e| -> Error { e.into() })?;
