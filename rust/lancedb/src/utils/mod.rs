@@ -335,6 +335,85 @@ impl Stream for TimeoutStream {
     }
 }
 
+/// A `Stream` wrapper that slices oversized batches to enforce a maximum batch length.
+pub struct MaxBatchLengthStream {
+    inner: SendableRecordBatchStream,
+    max_batch_length: Option<usize>,
+    buffered_batch: Option<RecordBatch>,
+    buffered_offset: usize,
+}
+
+impl MaxBatchLengthStream {
+    pub fn new(inner: SendableRecordBatchStream, max_batch_length: usize) -> Self {
+        Self {
+            inner,
+            max_batch_length: (max_batch_length > 0).then_some(max_batch_length),
+            buffered_batch: None,
+            buffered_offset: 0,
+        }
+    }
+
+    pub fn new_boxed(
+        inner: SendableRecordBatchStream,
+        max_batch_length: usize,
+    ) -> SendableRecordBatchStream {
+        if max_batch_length == 0 {
+            inner
+        } else {
+            Box::pin(Self::new(inner, max_batch_length))
+        }
+    }
+}
+
+impl RecordBatchStream for MaxBatchLengthStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
+impl Stream for MaxBatchLengthStream {
+    type Item = DataFusionResult<RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        loop {
+            let Some(max_batch_length) = self.max_batch_length else {
+                return Pin::new(&mut self.inner).poll_next(cx);
+            };
+
+            if let Some(batch) = self.buffered_batch.clone() {
+                if self.buffered_offset < batch.num_rows() {
+                    let remaining = batch.num_rows() - self.buffered_offset;
+                    let length = remaining.min(max_batch_length);
+                    let sliced = batch.slice(self.buffered_offset, length);
+                    self.buffered_offset += length;
+                    if self.buffered_offset >= batch.num_rows() {
+                        self.buffered_batch = None;
+                        self.buffered_offset = 0;
+                    }
+                    return std::task::Poll::Ready(Some(Ok(sliced)));
+                }
+
+                self.buffered_batch = None;
+                self.buffered_offset = 0;
+            }
+
+            match Pin::new(&mut self.inner).poll_next(cx) {
+                std::task::Poll::Ready(Some(Ok(batch))) => {
+                    if batch.num_rows() <= max_batch_length {
+                        return std::task::Poll::Ready(Some(Ok(batch)));
+                    }
+                    self.buffered_batch = Some(batch);
+                    self.buffered_offset = 0;
+                }
+                other => return other,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use arrow_array::Int32Array;
@@ -470,7 +549,7 @@ mod tests {
         assert_eq!(string_to_datatype(string), Some(expected));
     }
 
-    fn sample_batch() -> RecordBatch {
+    fn sample_batch(num_rows: i32) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "col1",
             DataType::Int32,
@@ -478,14 +557,14 @@ mod tests {
         )]));
         RecordBatch::try_new(
             schema.clone(),
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            vec![Arc::new(Int32Array::from_iter_values(0..num_rows))],
         )
         .unwrap()
     }
 
     #[tokio::test]
     async fn test_timeout_stream() {
-        let batch = sample_batch();
+        let batch = sample_batch(3);
         let schema = batch.schema();
         let mock_stream = stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]);
 
@@ -515,7 +594,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_stream_zero_duration() {
-        let batch = sample_batch();
+        let batch = sample_batch(3);
         let schema = batch.schema();
         let mock_stream = stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]);
 
@@ -534,7 +613,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_stream_completes_normally() {
-        let batch = sample_batch();
+        let batch = sample_batch(3);
         let schema = batch.schema();
         let mock_stream = stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]);
 
@@ -551,5 +630,36 @@ mod tests {
         assert!(timeout_stream.next().await.unwrap().is_ok());
         // Stream should be empty now
         assert!(timeout_stream.next().await.is_none());
+    }
+
+    async fn collect_batch_sizes(
+        stream: SendableRecordBatchStream,
+        max_batch_length: usize,
+    ) -> Vec<usize> {
+        let mut sliced_stream = MaxBatchLengthStream::new(stream, max_batch_length);
+        sliced_stream
+            .by_ref()
+            .map(|batch| batch.unwrap().num_rows())
+            .collect::<Vec<_>>()
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_max_batch_length_stream_behaviors() {
+        let schema = sample_batch(7).schema();
+        let mock_stream = stream::iter(vec![Ok(sample_batch(2)), Ok(sample_batch(7))]);
+
+        let sendable_stream: SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), mock_stream));
+        assert_eq!(
+            collect_batch_sizes(sendable_stream, 3).await,
+            vec![2, 3, 3, 1]
+        );
+
+        let sendable_stream: SendableRecordBatchStream = Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            stream::iter(vec![Ok(sample_batch(2)), Ok(sample_batch(7))]),
+        ));
+        assert_eq!(collect_batch_sizes(sendable_stream, 0).await, vec![2, 7]);
     }
 }

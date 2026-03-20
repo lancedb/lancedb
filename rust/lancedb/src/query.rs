@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::{future::Future, time::Duration};
 
 use arrow::compute::concat_batches;
-use arrow_array::{Array, Float16Array, Float32Array, Float64Array, make_array};
+use arrow_array::{Array, Float16Array, Float32Array, Float64Array, RecordBatch, make_array};
 use arrow_schema::{DataType, SchemaRef};
 use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
@@ -17,15 +17,17 @@ use lance_datafusion::exec::execute_plan;
 use lance_index::scalar::FullTextSearchQuery;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::vector::DIST_COL;
-use lance_io::stream::RecordBatchStreamAdapter;
 
 use crate::DistanceType;
 use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{NormalizeMethod, Reranker, check_reranker_result};
 use crate::table::BaseTable;
-use crate::utils::TimeoutStream;
-use crate::{arrow::SendableRecordBatchStream, table::AnyQuery};
+use crate::utils::{MaxBatchLengthStream, TimeoutStream};
+use crate::{
+    arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
+    table::AnyQuery,
+};
 
 mod hybrid;
 
@@ -601,6 +603,14 @@ impl Default for QueryExecutionOptions {
             max_batch_length: 1024,
             timeout: None,
         }
+    }
+}
+
+impl QueryExecutionOptions {
+    fn without_output_batch_length_limit(&self) -> Self {
+        let mut options = self.clone();
+        options.max_batch_length = 0;
+        options
     }
 }
 
@@ -1180,6 +1190,8 @@ impl VectorQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        let max_batch_length = options.max_batch_length as usize;
+        let internal_options = options.without_output_batch_length_limit();
         // clone query and specify we want to include row IDs, which can be needed for reranking
         let mut fts_query = Query::new(self.parent.clone());
         fts_query.request = self.request.base.clone();
@@ -1189,8 +1201,8 @@ impl VectorQuery {
 
         vector_query.request.base.full_text_search = None;
         let (fts_results, vec_results) = try_join!(
-            fts_query.execute_with_options(options.clone()),
-            vector_query.inner_execute_with_options(options)
+            fts_query.execute_with_options(internal_options.clone()),
+            vector_query.inner_execute_with_options(internal_options)
         )?;
 
         let (fts_results, vec_results) = try_join!(
@@ -1245,9 +1257,7 @@ impl VectorQuery {
             results = results.drop_column(ROW_ID)?;
         }
 
-        Ok(SendableRecordBatchStream::from(
-            RecordBatchStreamAdapter::new(results.schema(), stream::iter([Ok(results)])),
-        ))
+        Ok(single_batch_stream(results, max_batch_length))
     }
 
     async fn inner_execute_with_options(
@@ -1256,6 +1266,7 @@ impl VectorQuery {
     ) -> Result<SendableRecordBatchStream> {
         let plan = self.create_plan(options.clone()).await?;
         let inner = execute_plan(plan, Default::default())?;
+        let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
         let inner = if let Some(timeout) = options.timeout {
             TimeoutStream::new_boxed(inner, timeout)
         } else {
@@ -1263,6 +1274,25 @@ impl VectorQuery {
         };
         Ok(DatasetRecordBatchStream::new(inner).into())
     }
+}
+
+fn single_batch_stream(batch: RecordBatch, max_batch_length: usize) -> SendableRecordBatchStream {
+    let schema = batch.schema();
+    if max_batch_length == 0 || batch.num_rows() <= max_batch_length {
+        return Box::pin(SimpleRecordBatchStream::new(
+            stream::iter([Ok(batch)]),
+            schema,
+        ));
+    }
+
+    let mut batches = Vec::with_capacity(batch.num_rows().div_ceil(max_batch_length));
+    let mut offset = 0;
+    while offset < batch.num_rows() {
+        let length = (batch.num_rows() - offset).min(max_batch_length);
+        batches.push(Ok(batch.slice(offset, length)));
+        offset += length;
+    }
+    Box::pin(SimpleRecordBatchStream::new(stream::iter(batches), schema))
 }
 
 impl ExecutableQuery for VectorQuery {
@@ -1753,6 +1783,50 @@ mod tests {
             .unwrap()
     }
 
+    async fn make_large_vector_table(tmp_dir: &tempfile::TempDir, rows: usize) -> Table {
+        let dataset_path = tmp_dir.path().join("large_test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Utf8, false),
+            ArrowField::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    4,
+                ),
+                false,
+            ),
+        ]));
+
+        let ids = StringArray::from_iter_values((0..rows).map(|i| format!("row-{i}")));
+        let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            (0..rows).map(|i| Some(vec![Some(i as f32), Some(1.0), Some(2.0), Some(3.0)])),
+            4,
+        );
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(ids), Arc::new(vectors)]).unwrap();
+
+        let conn = connect(uri).execute().await.unwrap();
+        conn.create_table("my_table", vec![batch])
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    async fn assert_stream_batches_at_most(
+        mut results: SendableRecordBatchStream,
+        max_batch_length: usize,
+    ) {
+        let mut saw_batch = false;
+        while let Some(batch) = results.next().await {
+            let batch = batch.unwrap();
+            saw_batch = true;
+            assert!(batch.num_rows() <= max_batch_length);
+        }
+        assert!(saw_batch);
+    }
+
     #[tokio::test]
     async fn test_execute_with_options() {
         let tmp_dir = tempdir().unwrap();
@@ -1770,6 +1844,83 @@ mod tests {
         while let Some(batch) = results.next().await {
             assert!(batch.unwrap().num_rows() <= 10);
         }
+    }
+
+    #[tokio::test]
+    async fn test_vector_query_execute_with_options_respects_max_batch_length() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_large_vector_table(&tmp_dir, 10_000).await;
+
+        let results = table
+            .query()
+            .nearest_to(vec![0.0, 1.0, 2.0, 3.0])
+            .unwrap()
+            .limit(10_000)
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 100,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_stream_batches_at_most(results, 100).await;
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_query_execute_with_options_respects_max_batch_length() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path();
+        let conn = connect(dataset_path.to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let dims = 2;
+        let rows = 512;
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("text", DataType::Utf8, false),
+            ArrowField::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    dims,
+                ),
+                false,
+            ),
+        ]));
+
+        let text = StringArray::from_iter_values((0..rows).map(|_| "match"));
+        let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            (0..rows).map(|i| Some(vec![Some(i as f32), Some(0.0)])),
+            dims,
+        );
+        let record_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(text), Arc::new(vectors)]).unwrap();
+        let table = conn
+            .create_table("my_table", record_batch)
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(&["text"], crate::index::Index::FTS(Default::default()))
+            .replace(true)
+            .execute()
+            .await
+            .unwrap();
+
+        let results = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("match".to_string()))
+            .limit(rows)
+            .nearest_to(&[0.0, 0.0])
+            .unwrap()
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 100,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_stream_batches_at_most(results, 100).await;
     }
 
     #[tokio::test]
