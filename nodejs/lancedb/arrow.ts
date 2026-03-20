@@ -923,7 +923,7 @@ async function applyEmbeddingsFromMetadata(
     const values = sourceColumn.toArray();
 
     const vectors =
-      await functionEntry.function.computeSourceEmbeddings(values);
+      await functionEntry.function.computeSourceEmbeddingsWithRetry(values);
     if (vectors.length !== values.length) {
       throw new Error(
         "Embedding function did not return an embedding for each input element",
@@ -1056,7 +1056,7 @@ async function applyEmbeddings<T>(
       );
     }
     const values = sourceColumn.toArray();
-    const vectors = await embeddings.function.computeSourceEmbeddings(
+    const vectors = await embeddings.function.computeSourceEmbeddingsWithRetry(
       values as T[],
     );
     if (vectors.length !== values.length) {
