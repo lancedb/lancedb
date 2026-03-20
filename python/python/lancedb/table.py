@@ -3871,9 +3871,7 @@ class AsyncTable:
         data = to_scannable(data)
         progress, owns = _normalize_progress(progress)
         try:
-            return await self._inner.add(
-                data, mode or "append", progress=progress
-            )
+            return await self._inner.add(data, mode or "append", progress=progress)
         except RuntimeError as e:
             if "Cast error" in str(e):
                 raise ValueError(e)

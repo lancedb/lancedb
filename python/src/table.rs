@@ -342,13 +342,13 @@ impl Table {
                     let current = p.output_rows();
                     let prev = last_rows.swap(current, std::sync::atomic::Ordering::Relaxed);
                     Python::attach(|py| {
-                        if let Some(total) = p.total_rows() {
-                            if !total_set.load(std::sync::atomic::Ordering::Relaxed) {
-                                if let Err(e) = progress_obj.setattr(py, "total", total) {
-                                    eprintln!("progress setattr error: {e}");
-                                }
-                                total_set.store(true, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(total) = p.total_rows()
+                            && !total_set.load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            if let Err(e) = progress_obj.setattr(py, "total", total) {
+                                eprintln!("progress setattr error: {e}");
                             }
+                            total_set.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                         let delta = current.saturating_sub(prev);
                         if delta > 0 {
