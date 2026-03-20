@@ -338,7 +338,7 @@ class RemoteTable(Table):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
-        progress: callable or tqdm-like, optional
+        progress: bool, callable, or tqdm-like, optional
             A callback or tqdm-compatible progress bar. See
             :meth:`Table.add` for details.
 
@@ -347,15 +347,22 @@ class RemoteTable(Table):
         AddResult
             An object containing the new version number of the table after adding data.
         """
-        return LOOP.run(
-            self._table.add(
-                data,
-                mode=mode,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-                progress=progress,
+        from lancedb.table import _normalize_progress
+
+        progress, owns = _normalize_progress(progress)
+        try:
+            return LOOP.run(
+                self._table.add(
+                    data,
+                    mode=mode,
+                    on_bad_vectors=on_bad_vectors,
+                    fill_value=fill_value,
+                    progress=progress,
+                )
             )
-        )
+        finally:
+            if owns:
+                progress.close()
 
     def search(
         self,

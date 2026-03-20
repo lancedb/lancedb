@@ -556,6 +556,21 @@ def _table_uri(base: str, table_name: str) -> str:
     return join_uri(base, f"{table_name}.lance")
 
 
+def _normalize_progress(progress):
+    """Normalize a ``progress`` parameter for :meth:`Table.add`.
+
+    Returns ``(progress_obj, owns)`` where *owns* is True when we created a
+    tqdm bar that the caller must close.
+    """
+    if progress is True:
+        from tqdm.auto import tqdm
+
+        return tqdm(unit=" rows"), True
+    if progress is False or progress is None:
+        return None, False
+    return progress, False
+
+
 class Table(ABC):
     """
     A Table is a collection of Records in a LanceDB Database.
@@ -996,8 +1011,13 @@ class Table(ABC):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
-        progress: callable or tqdm-like, optional
-            Progress reporting during the add operation. Can be either:
+        progress: bool, callable, or tqdm-like, optional
+            Progress reporting during the add operation. Can be:
+
+            - ``True`` to automatically create and display a tqdm progress
+              bar (requires ``tqdm`` to be installed)::
+
+                table.add(data, progress=True)
 
             - A **callable** that receives a dict with keys ``output_rows``,
               ``output_bytes``, ``total_rows``, ``elapsed_seconds``,
@@ -2487,7 +2507,7 @@ class LanceTable(Table):
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
-        progress: callable or tqdm-like, optional
+        progress: bool, callable, or tqdm-like, optional
             A callback or tqdm-compatible progress bar. See
             :meth:`Table.add` for details.
 
@@ -2496,15 +2516,20 @@ class LanceTable(Table):
         int
             The number of vectors in the table.
         """
-        return LOOP.run(
-            self._table.add(
-                data,
-                mode=mode,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-                progress=progress,
+        progress, owns = _normalize_progress(progress)
+        try:
+            return LOOP.run(
+                self._table.add(
+                    data,
+                    mode=mode,
+                    on_bad_vectors=on_bad_vectors,
+                    fill_value=fill_value,
+                    progress=progress,
+                )
             )
-        )
+        finally:
+            if owns:
+                progress.close()
 
     def merge(
         self,
@@ -3776,6 +3801,7 @@ class AsyncTable:
             )
         _register_optional_converters()
         data = to_scannable(data)
+        progress, owns = _normalize_progress(progress)
         try:
             return await self._inner.add(
                 data, mode or "append", progress=progress
@@ -3787,6 +3813,9 @@ class AsyncTable:
                 raise ValueError(e)
             else:
                 raise
+        finally:
+            if owns:
+                progress.close()
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """

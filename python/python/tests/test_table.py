@@ -564,6 +564,21 @@ def test_add_progress_tqdm_like(mem_db: DBConnection):
         assert "workers" in bar.postfix
 
 
+def test_add_progress_bool(mem_db: DBConnection):
+    """Test that progress=True creates and closes a tqdm bar automatically."""
+    table = mem_db.create_table(
+        "test",
+        data=[{"id": 1}, {"id": 2}],
+    )
+
+    table.add([{"id": 3}, {"id": 4}], progress=True)
+    assert len(table) == 4
+
+    # progress=False should be the same as None
+    table.add([{"id": 5}], progress=False)
+    assert len(table) == 5
+
+
 def test_polars(mem_db: DBConnection):
     data = {
         "vector": [[3.1, 4.1], [5.9, 26.5]],
