@@ -3207,7 +3207,9 @@ def _handle_bad_vectors(
                 yield batch
                 continue
 
-            cast_batches = pa.Table.from_batches([batch]).cast(output_schema).to_batches()
+            cast_batches = (
+                pa.Table.from_batches([batch]).cast(output_schema).to_batches()
+            )
             if cast_batches:
                 yield pa.RecordBatch.from_arrays(
                     cast_batches[0].columns,
@@ -3263,9 +3265,7 @@ def _find_vector_columns(
         named_vector_col = (
             field.name in embedding_function_columns
             or field.name == VECTOR_COLUMN_NAME
-            or (
-                field.name == "embedding" and pa.types.is_fixed_size_list(field.type)
-            )
+            or (field.name == "embedding" and pa.types.is_fixed_size_list(field.type))
         )
         typed_fixed_vector_col = (
             pa.types.is_fixed_size_list(reader_field.type)
@@ -3362,12 +3362,9 @@ def _handle_bad_vector_column(
         vec_arr = pa.array(vec_arr.to_pylist(), type=pa.list_(vec_arr.type.value_type))
         data = data.set_column(position, vector_column_name, vec_arr)
 
-    if (
-        expected_value_type is not None
-        and (
-            pa.types.is_integer(vec_arr.type.value_type)
-            or pa.types.is_unsigned_integer(vec_arr.type.value_type)
-        )
+    if expected_value_type is not None and (
+        pa.types.is_integer(vec_arr.type.value_type)
+        or pa.types.is_unsigned_integer(vec_arr.type.value_type)
     ):
         vec_arr = pa.array(vec_arr.to_pylist(), type=pa.list_(expected_value_type))
         data = data.set_column(position, vector_column_name, vec_arr)
