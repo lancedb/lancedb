@@ -17,6 +17,7 @@ from .gte import GteEmbeddings
 from .transformers import TransformersEmbeddingFunction, ColbertEmbeddings
 from .imagebind import ImageBindEmbeddings
 from .jinaai import JinaEmbeddings
+from .minimax import MiniMaxEmbeddings
 from .watsonx import WatsonxEmbeddings
 from .voyageai import VoyageAIEmbeddingFunction
 from .colpali import ColPaliEmbeddings
