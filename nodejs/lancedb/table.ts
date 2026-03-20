@@ -5,12 +5,15 @@ import {
   Table as ArrowTable,
   Data,
   DataType,
+  Field,
   IntoVector,
   MultiVector,
   Schema,
   dataTypeToJson,
   fromDataToBuffer,
+  fromTableToBuffer,
   isMultiVector,
+  makeEmptyTable,
   tableFromIPC,
 } from "./arrow";
 
@@ -84,6 +87,16 @@ export interface OptimizeOptions {
    * tbl.optimize({cleanupOlderThan: new Date()});
    */
   cleanupOlderThan: Date;
+  /**
+   * Because they may be part of an in-progress transaction, files newer than
+   * 7 days old are not deleted by default. If you are sure that there are no
+   * in-progress transactions, then you can set this to true to delete all
+   * files older than `cleanupOlderThan`.
+   *
+   * **WARNING**: This should only be set to true if you can guarantee that
+   * no other process is currently working on this dataset. Otherwise the
+   * dataset could be put into a corrupted state.
+   */
   deleteUnverified: boolean;
 }
 
@@ -381,15 +394,16 @@ export abstract class Table {
   abstract vectorSearch(vector: IntoVector | MultiVector): VectorQuery;
   /**
    * Add new columns with defined values.
-   * @param {AddColumnsSql[]} newColumnTransforms pairs of column names and
-   * the SQL expression to use to calculate the value of the new column. These
-   * expressions will be evaluated for each row in the table, and can
-   * reference existing columns in the table.
+   * @param {AddColumnsSql[] | Field | Field[] | Schema} newColumnTransforms Either:
+   *   - An array of objects with column names and SQL expressions to calculate values
+   *   - A single Arrow Field defining one column with its data type (column will be initialized with null values)
+   *   - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
+   *   - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
    * @returns {Promise<AddColumnsResult>} A promise that resolves to an object
    * containing the new version number of the table after adding the columns.
    */
   abstract addColumns(
-    newColumnTransforms: AddColumnsSql[],
+    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
   ): Promise<AddColumnsResult>;
 
   /**
@@ -501,19 +515,7 @@ export abstract class Table {
    *  - Index: Optimizes the indices, adding new data to existing indices
    *
    *
-   *  Experimental API
-   *  ----------------
-   *
-   *  The optimization process is undergoing active development and may change.
-   *  Our goal with these changes is to improve the performance of optimization and
-   *  reduce the complexity.
-   *
-   *  That being said, it is essential today to run optimize if you want the best
-   *  performance.  It should be stable and safe to use in production, but it our
-   *  hope that the API may be simplified (or not even need to be called) in the
-   *  future.
-   *
-   *  The frequency an application shoudl call optimize is based on the frequency of
+   *  The frequency an application should call optimize is based on the frequency of
    *  data modifications.  If data is frequently added, deleted, or updated then
    *  optimize should be run frequently.  A good rule of thumb is to run optimize if
    *  you have added or modified 100,000 or more records or run more than 20 data
@@ -806,9 +808,40 @@ export class LocalTable extends Table {
   // TODO: Support BatchUDF
 
   async addColumns(
-    newColumnTransforms: AddColumnsSql[],
+    newColumnTransforms: AddColumnsSql[] | Field | Field[] | Schema,
   ): Promise<AddColumnsResult> {
-    return await this.inner.addColumns(newColumnTransforms);
+    // Handle single Field -> convert to array of Fields
+    if (newColumnTransforms instanceof Field) {
+      newColumnTransforms = [newColumnTransforms];
+    }
+
+    // Handle array of Fields -> convert to Schema
+    if (
+      Array.isArray(newColumnTransforms) &&
+      newColumnTransforms.length > 0 &&
+      newColumnTransforms[0] instanceof Field
+    ) {
+      const fields = newColumnTransforms as Field[];
+      newColumnTransforms = new Schema(fields);
+    }
+
+    // Handle Schema -> use schema-based approach
+    if (newColumnTransforms instanceof Schema) {
+      const schema = newColumnTransforms;
+      // Convert schema to buffer using Arrow IPC format
+      const emptyTable = makeEmptyTable(schema);
+      const schemaBuf = await fromTableToBuffer(emptyTable);
+      return await this.inner.addColumnsWithSchema(schemaBuf);
+    }
+
+    // Handle SQL expressions (existing functionality)
+    if (Array.isArray(newColumnTransforms)) {
+      return await this.inner.addColumns(
+        newColumnTransforms as AddColumnsSql[],
+      );
+    }
+
+    throw new Error("Invalid input type for addColumns");
   }
 
   async alterColumns(

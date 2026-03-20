@@ -1370,7 +1370,7 @@ class Table(ABC):
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
         >>> table.delete("x = 2")
-        DeleteResult(version=2)
+        DeleteResult(num_deleted_rows=1, version=2)
         >>> table.to_pandas()
            x      vector
         0  1  [1.0, 2.0]
@@ -1384,7 +1384,7 @@ class Table(ABC):
         >>> to_remove
         '1, 5'
         >>> table.delete(f"x IN ({to_remove})")
-        DeleteResult(version=3)
+        DeleteResult(num_deleted_rows=1, version=3)
         >>> table.to_pandas()
            x      vector
         0  3  [5.0, 6.0]
@@ -1545,22 +1545,17 @@ class Table(ABC):
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+
+            .. warning::
+
+                This should only be set to True if you can guarantee that no other
+                process is currently working on this dataset. Otherwise the dataset
+                could be put into a corrupted state.
+
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
-        Experimental API
-        ----------------
-
-        The optimization process is undergoing active development and may change.
-        Our goal with these changes is to improve the performance of optimization and
-        reduce the complexity.
-
-        That being said, it is essential today to run optimize if you want the best
-        performance.  It should be stable and safe to use in production, but it our
-        hope that the API may be simplified (or not even need to be called) in the
-        future.
-
-        The frequency an application shoudl call optimize is based on the frequency of
+        The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
         you have added or modified 100,000 or more records or run more than 20 data
@@ -1785,6 +1780,8 @@ class LanceTable(Table):
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        managed_versioning: Optional[bool] = None,
         _async: AsyncTable = None,
     ):
         if namespace is None:
@@ -1792,6 +1789,7 @@ class LanceTable(Table):
         self._conn = connection
         self._namespace = namespace
         self._location = location  # Store location for use in _dataset_path
+        self._namespace_client = namespace_client
         if _async is not None:
             self._table = _async
         else:
@@ -1803,6 +1801,8 @@ class LanceTable(Table):
                     storage_options_provider=storage_options_provider,
                     index_cache_size=index_cache_size,
                     location=location,
+                    namespace_client=namespace_client,
+                    managed_versioning=managed_versioning,
                 )
             )
 
@@ -1845,6 +1845,8 @@ class LanceTable(Table):
         storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
+        managed_versioning: Optional[bool] = None,
     ):
         if namespace is None:
             namespace = []
@@ -1856,6 +1858,8 @@ class LanceTable(Table):
             storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
             location=location,
+            namespace_client=namespace_client,
+            managed_versioning=managed_versioning,
         )
 
         # check the dataset exists
@@ -1885,6 +1889,16 @@ class LanceTable(Table):
             raise ImportError(
                 "The lance library is required to use this function. "
                 "Please install with `pip install pylance`."
+            )
+
+        if self._namespace_client is not None:
+            table_id = self._namespace + [self.name]
+            return lance.dataset(
+                version=self.version,
+                storage_options=self._conn.storage_options,
+                namespace=self._namespace_client,
+                table_id=table_id,
+                **kwargs,
             )
 
         return lance.dataset(
@@ -2239,12 +2253,18 @@ class LanceTable(Table):
 
     def prewarm_index(self, name: str) -> None:
         """
-        Prewarms an index in the table
+        Prewarm an index in the table.
 
-        This loads the entire index into memory
+        This is a hint to the database that the index will be accessed in the
+        future and should be loaded into memory if possible.  This can reduce
+        cold-start latency for subsequent queries.
 
-        If the index does not fit into the available cache this call
-        may be wasteful
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        It is generally wasteful to call this if the index does not fit into the
+        available cache.  Not all index types support prewarming; unsupported
+        indices will silently ignore the request.
 
         Parameters
         ----------
@@ -2252,6 +2272,29 @@ class LanceTable(Table):
             The name of the index to prewarm
         """
         return LOOP.run(self._table.prewarm_index(name))
+
+    def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+        """
+        Prewarm data for the table.
+
+        This is a hint to the database that the given columns will be accessed
+        in the future and the database should prefetch the data if possible.
+        Currently only supported on remote tables.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        This operation has a large upfront cost but can speed up future queries
+        that need to fetch the given columns.  Large columns such as embeddings
+        or binary data may not be practical to prewarm.  This feature is intended
+        for workloads that issue many queries against the same columns.
+
+        Parameters
+        ----------
+        columns: list of str, optional
+            The columns to prewarm. If None, all columns are prewarmed.
+        """
+        return LOOP.run(self._table.prewarm_data(columns))
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -2765,6 +2808,7 @@ class LanceTable(Table):
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
         location: Optional[str] = None,
+        namespace_client: Optional[Any] = None,
     ):
         """
         Create a new table.
@@ -2825,6 +2869,7 @@ class LanceTable(Table):
         self._conn = db
         self._namespace = namespace
         self._location = location
+        self._namespace_client = namespace_client
 
         if data_storage_version is not None:
             warnings.warn(
@@ -3049,22 +3094,17 @@ class LanceTable(Table):
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+
+            .. warning::
+
+                This should only be set to True if you can guarantee that no other
+                process is currently working on this dataset. Otherwise the dataset
+                could be put into a corrupted state.
+
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
-        Experimental API
-        ----------------
-
-        The optimization process is undergoing active development and may change.
-        Our goal with these changes is to improve the performance of optimization and
-        reduce the complexity.
-
-        That being said, it is essential today to run optimize if you want the best
-        performance.  It should be stable and safe to use in production, but it our
-        hope that the API may be simplified (or not even need to be called) in the
-        future.
-
-        The frequency an application shoudl call optimize is based on the frequency of
+        The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
         you have added or modified 100,000 or more records or run more than 20 data
@@ -3665,18 +3705,46 @@ class AsyncTable:
         """
         Prewarm an index in the table.
 
+        This is a hint to the database that the index will be accessed in the
+        future and should be loaded into memory if possible.  This can reduce
+        cold-start latency for subsequent queries.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        It is generally wasteful to call this if the index does not fit into the
+        available cache.  Not all index types support prewarming; unsupported
+        indices will silently ignore the request.
+
         Parameters
         ----------
         name: str
             The name of the index to prewarm
-
-        Notes
-        -----
-        This will load the index into memory.  This may reduce the cold-start time for
-        future queries.  If the index does not fit in the cache then this call may be
-        wasteful.
         """
         await self._inner.prewarm_index(name)
+
+    async def prewarm_data(self, columns: Optional[List[str]] = None) -> None:
+        """
+        Prewarm data for the table.
+
+        This is a hint to the database that the given columns will be accessed
+        in the future and the database should prefetch the data if possible.
+        Currently only supported on remote tables.
+
+        This call initiates prewarming and returns once the request is accepted.
+        It is idempotent and safe to call from multiple clients concurrently.
+
+        This operation has a large upfront cost but can speed up future queries
+        that need to fetch the given columns.  Large columns such as embeddings
+        or binary data may not be practical to prewarm.  This feature is intended
+        for workloads that issue many queries against the same columns.
+
+        Parameters
+        ----------
+        columns: list of str, optional
+            The columns to prewarm. If None, all columns are prewarmed.
+        """
+        await self._inner.prewarm_data(columns)
 
     async def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -4277,7 +4345,7 @@ class AsyncTable:
         1  2  [3.0, 4.0]
         2  3  [5.0, 6.0]
         >>> table.delete("x = 2")
-        DeleteResult(version=2)
+        DeleteResult(num_deleted_rows=1, version=2)
         >>> table.to_pandas()
            x      vector
         0  1  [1.0, 2.0]
@@ -4291,7 +4359,7 @@ class AsyncTable:
         >>> to_remove
         '1, 5'
         >>> table.delete(f"x IN ({to_remove})")
-        DeleteResult(version=3)
+        DeleteResult(num_deleted_rows=1, version=3)
         >>> table.to_pandas()
            x      vector
         0  3  [5.0, 6.0]
@@ -4614,22 +4682,17 @@ class AsyncTable:
             in-progress operation (e.g. appending new data) and these files will not
             be deleted unless they are at least 7 days old. If delete_unverified is True
             then these files will be deleted regardless of their age.
+
+            .. warning::
+
+                This should only be set to True if you can guarantee that no other
+                process is currently working on this dataset. Otherwise the dataset
+                could be put into a corrupted state.
+
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
 
-        Experimental API
-        ----------------
-
-        The optimization process is undergoing active development and may change.
-        Our goal with these changes is to improve the performance of optimization and
-        reduce the complexity.
-
-        That being said, it is essential today to run optimize if you want the best
-        performance.  It should be stable and safe to use in production, but it our
-        hope that the API may be simplified (or not even need to be called) in the
-        future.
-
-        The frequency an application shoudl call optimize is based on the frequency of
+        The frequency an application should call optimize is based on the frequency of
         data modifications.  If data is frequently added, deleted, or updated then
         optimize should be run frequently.  A good rule of thumb is to run optimize if
         you have added or modified 100,000 or more records or run more than 20 data
@@ -4750,7 +4813,16 @@ class IndexStatistics:
     num_indexed_rows: int
     num_unindexed_rows: int
     index_type: Literal[
-        "IVF_PQ", "IVF_HNSW_PQ", "IVF_HNSW_SQ", "FTS", "BTREE", "BITMAP", "LABEL_LIST"
+        "IVF_FLAT",
+        "IVF_SQ",
+        "IVF_PQ",
+        "IVF_RQ",
+        "IVF_HNSW_SQ",
+        "IVF_HNSW_PQ",
+        "FTS",
+        "BTREE",
+        "BITMAP",
+        "LABEL_LIST",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None

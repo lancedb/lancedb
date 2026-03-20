@@ -20,9 +20,9 @@ use datafusion_physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
 };
 use futures::TryStreamExt;
+use lance::Dataset;
 use lance::dataset::transaction::{Operation, Transaction};
 use lance::dataset::{CommitBuilder, InsertBuilder, WriteParams};
-use lance::Dataset;
 use lance_table::format::Fragment;
 
 use crate::table::dataset::DatasetConsistencyWrapper;
@@ -214,13 +214,13 @@ impl ExecutionPlan for InsertExec {
                 }
             };
 
-            if let Some(transactions) = to_commit {
-                if let Some(merged_txn) = merge_transactions(transactions) {
-                    let new_dataset = CommitBuilder::new(dataset.clone())
-                        .execute(merged_txn)
-                        .await?;
-                    ds_wrapper.update(new_dataset);
-                }
+            if let Some(transactions) = to_commit
+                && let Some(merged_txn) = merge_transactions(transactions)
+            {
+                let new_dataset = CommitBuilder::new(dataset.clone())
+                    .execute(merged_txn)
+                    .await?;
+                ds_wrapper.update(new_dataset);
             }
 
             Ok(RecordBatch::try_new(
@@ -245,7 +245,7 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use arrow_array::{record_batch, RecordBatchIterator};
+    use arrow_array::{RecordBatchIterator, record_batch};
     use datafusion::prelude::SessionContext;
     use datafusion_catalog::MemTable;
     use tempfile::tempdir;

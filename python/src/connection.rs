@@ -9,15 +9,16 @@ use lancedb::{
     database::{CreateTableMode, Database, ReadConsistency},
 };
 use pyo3::{
+    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods,
     types::{PyDict, PyDictMethods},
-    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{
-    error::PythonErrorExt, storage_options::py_object_to_storage_options_provider, table::Table,
+    error::PythonErrorExt, namespace::extract_namespace_arc,
+    storage_options::py_object_to_storage_options_provider, table::Table,
 };
 
 #[pyclass]
@@ -182,7 +183,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, namespace=vec![], storage_options = None, storage_options_provider=None, index_cache_size = None, location=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, namespace=vec![], storage_options = None, storage_options_provider=None, index_cache_size = None, location=None, namespace_client=None, managed_versioning=None))]
     pub fn open_table(
         self_: PyRef<'_, Self>,
         name: String,
@@ -191,11 +193,13 @@ impl Connection {
         storage_options_provider: Option<Py<PyAny>>,
         index_cache_size: Option<u32>,
         location: Option<String>,
+        namespace_client: Option<Py<PyAny>>,
+        managed_versioning: Option<bool>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
         let mut builder = inner.open_table(name);
-        builder = builder.namespace(namespace);
+        builder = builder.namespace(namespace.clone());
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
         }
@@ -208,6 +212,20 @@ impl Connection {
         }
         if let Some(location) = location {
             builder = builder.location(location);
+        }
+        // Extract namespace client from Python object if provided
+        let ns_client = if let Some(ns_obj) = namespace_client {
+            let py = self_.py();
+            Some(extract_namespace_arc(py, ns_obj)?)
+        } else {
+            None
+        };
+        if let Some(ns_client) = ns_client {
+            builder = builder.namespace_client(ns_client);
+        }
+        // Pass managed_versioning if provided to avoid redundant describe_table call
+        if let Some(enabled) = managed_versioning {
+            builder = builder.managed_versioning(enabled);
         }
 
         future_into_py(self_.py(), async move {

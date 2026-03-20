@@ -7,8 +7,8 @@ use arrow_schema::{DataType, Fields, Schema};
 use lance::dataset::WriteMode;
 use serde::{Deserialize, Serialize};
 
-use crate::data::scannable::scannable_with_embeddings;
 use crate::data::scannable::Scannable;
+use crate::data::scannable::scannable_with_embeddings;
 use crate::embeddings::EmbeddingRegistry;
 use crate::table::datafusion::cast::cast_to_table_schema;
 use crate::table::datafusion::reject_nan::reject_nan_vectors;
@@ -134,11 +134,17 @@ impl AddDataBuilder {
     /// By default, the number of streams is estimated from the data size.
     /// Setting this to `1` disables parallel writes.
     pub fn write_parallelism(mut self, parallelism: usize) -> Self {
-        self.write_parallelism = Some(parallelism.max(1));
+        self.write_parallelism = Some(parallelism);
         self
     }
 
     pub async fn execute(self) -> Result<AddResult> {
+        if self.write_parallelism.map(|p| p == 0).unwrap_or(false) {
+            return Err(Error::InvalidInput {
+                message: "write_parallelism must be greater than 0".to_string(),
+            });
+        }
+
         self.parent.clone().add(self).await
     }
 
@@ -196,7 +202,9 @@ impl AddDataBuilder {
 
 pub struct PreprocessingOutput {
     pub plan: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
     pub overwrite: bool,
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
     pub rescannable: bool,
     pub write_options: WriteOptions,
     pub mode: AddDataMode,
@@ -244,13 +252,14 @@ mod tests {
 
     use arrow::datatypes::Float64Type;
     use arrow_array::{
-        record_batch, FixedSizeListArray, Float32Array, Int32Array, LargeStringArray, ListArray,
-        RecordBatch, RecordBatchIterator,
+        FixedSizeListArray, Float32Array, Int32Array, LargeStringArray, ListArray, RecordBatch,
+        RecordBatchIterator, record_batch,
     };
     use arrow_schema::{ArrowError, DataType, Field, Schema};
     use futures::TryStreamExt;
     use lance::dataset::{WriteMode, WriteParams};
 
+    use crate::Error;
     use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
     use crate::connect;
     use crate::data::scannable::Scannable;
@@ -260,9 +269,8 @@ mod tests {
     use crate::query::{ExecutableQuery, QueryBase, Select};
     use crate::table::add_data::NaNVectorBehavior;
     use crate::table::{ColumnDefinition, ColumnKind, Table, TableDefinition, WriteOptions};
-    use crate::test_utils::embeddings::MockEmbed;
     use crate::test_utils::TestCustomError;
-    use crate::Error;
+    use crate::test_utils::embeddings::MockEmbed;
 
     use super::AddDataMode;
 

@@ -7,26 +7,26 @@ use super::NativeTable;
 use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
 use crate::query::{
-    QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest, DEFAULT_TOP_K,
+    DEFAULT_TOP_K, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest,
 };
-use crate::utils::{default_vector_column, TimeoutStream};
+use crate::utils::{TimeoutStream, default_vector_column};
 use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::Array;
 use arrow_schema::{DataType, Schema};
+use datafusion_physical_plan::ExecutionPlan;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::repartition::RepartitionExec;
 use datafusion_physical_plan::union::UnionExec;
-use datafusion_physical_plan::ExecutionPlan;
 use futures::future::try_join_all;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
+use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
     QueryTableRequest as NsQueryTableRequest, QueryTableRequestColumns,
     QueryTableRequestFullTextQuery, QueryTableRequestVector, StringFtsQuery,
 };
-use lance_namespace::LanceNamespace;
 
 #[derive(Debug, Clone)]
 pub enum AnyQuery {
@@ -40,8 +40,10 @@ pub async fn execute_query(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<DatasetRecordBatchStream> {
-    // If namespace client is configured, use server-side query execution
-    if let Some(ref namespace_client) = table.namespace_client {
+    // If server-side query is enabled and namespace client is configured, use server-side query execution
+    if table.server_side_query_enabled
+        && let Some(ref namespace_client) = table.namespace_client
+    {
         return execute_namespace_query(table, namespace_client.clone(), query, options).await;
     }
     execute_generic_query(table, query, options).await
@@ -183,6 +185,13 @@ pub async fn create_plan(
         }
         Select::Dynamic(ref select_with_transform) => {
             scanner.project_with_transform(select_with_transform.as_slice())?;
+        }
+        Select::Expr(ref expr_pairs) => {
+            let sql_pairs: crate::Result<Vec<(String, String)>> = expr_pairs
+                .iter()
+                .map(|(name, expr)| expr_to_sql_string(expr).map(|sql| (name.clone(), sql)))
+                .collect();
+            scanner.project_with_transform(sql_pairs?.as_slice())?;
         }
         Select::All => {}
     }
@@ -338,6 +347,17 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                                 .to_string(),
                     });
                 }
+                Select::Expr(pairs) => {
+                    let sql_pairs: crate::Result<Vec<(String, String)>> = pairs
+                        .iter()
+                        .map(|(name, expr)| expr_to_sql_string(expr).map(|sql| (name.clone(), sql)))
+                        .collect();
+                    let sql_pairs = sql_pairs?;
+                    Some(Box::new(QueryTableRequestColumns {
+                        column_names: None,
+                        column_aliases: Some(sql_pairs.into_iter().collect()),
+                    }))
+                }
             };
 
             // Check for unsupported features
@@ -408,6 +428,17 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                         message: "Dynamic columns are not supported for server-side query"
                             .to_string(),
                     });
+                }
+                Select::Expr(pairs) => {
+                    let sql_pairs: crate::Result<Vec<(String, String)>> = pairs
+                        .iter()
+                        .map(|(name, expr)| expr_to_sql_string(expr).map(|sql| (name.clone(), sql)))
+                        .collect();
+                    let sql_pairs = sql_pairs?;
+                    Some(Box::new(QueryTableRequestColumns {
+                        column_names: None,
+                        column_aliases: Some(sql_pairs.into_iter().collect()),
+                    }))
                 }
             };
 

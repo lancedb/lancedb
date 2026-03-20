@@ -52,14 +52,21 @@ plugins:
           options:
             docstring_style: numpy
             heading_level: 3
-            show_source: true
-            show_symbol_type_in_heading: true
             show_signature_annotations: true
             show_root_heading: true
+            show_docstring_examples: true
+            show_docstring_attributes: false
+            show_docstring_other_parameters: true
+            show_symbol_type_heading: true
+            show_labels: false
+            show_if_no_docstring: true
+            show_source: false
             members_order: source
             docstring_section_style: list
             signature_crossrefs: true
             separate_signature: true
+            filters:
+              - "!^_"
           import:
             # for cross references
             - https://arrow.apache.org/docs/objects.inv
@@ -113,7 +120,7 @@ markdown_extensions:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - markdown.extensions.toc:
-      toc_depth: 3
+      toc_depth: 4
       permalink: true
       permalink_title: Anchor link to this section
 

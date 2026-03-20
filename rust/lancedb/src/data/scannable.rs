@@ -13,16 +13,16 @@ use crate::arrow::{
     SendableRecordBatchStream, SendableRecordBatchStreamExt, SimpleRecordBatchStream,
 };
 use crate::embeddings::{
-    compute_embeddings_for_batch, compute_output_schema, EmbeddingDefinition, EmbeddingFunction,
-    EmbeddingRegistry,
+    EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, compute_embeddings_for_batch,
+    compute_output_schema,
 };
 use crate::table::{ColumnDefinition, ColumnKind, TableDefinition};
 use crate::{Error, Result};
 use arrow_array::{ArrayRef, RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{ArrowError, SchemaRef};
 use async_trait::async_trait;
-use futures::stream::once;
 use futures::StreamExt;
+use futures::stream::once;
 use lance_datafusion::utils::StreamingWriteSource;
 
 pub trait Scannable: Send {

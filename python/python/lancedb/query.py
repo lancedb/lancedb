@@ -606,6 +606,7 @@ class LanceQueryBuilder(ABC):
                 query,
                 ordering_field_name=ordering_field_name,
                 fts_columns=fts_columns,
+                fast_search=fast_search,
             )
 
         if isinstance(query, list):
@@ -1456,12 +1457,14 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         query: str | FullTextQuery,
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = None,
     ):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
         self._reranker = None
+        self._fast_search = fast_search
         if isinstance(fts_columns, str):
             fts_columns = [fts_columns]
         self._fts_columns = fts_columns
@@ -1483,6 +1486,19 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         self._phrase_query = phrase_query
         return self
 
+    def fast_search(self) -> LanceFtsQueryBuilder:
+        """
+        Skip a flat search of unindexed data. This will improve
+        search performance but search results will not include unindexed data.
+
+        Returns
+        -------
+        LanceFtsQueryBuilder
+            The LanceFtsQueryBuilder object.
+        """
+        self._fast_search = True
+        return self
+
     def to_query_object(self) -> Query:
         return Query(
             columns=self._columns,
@@ -1494,6 +1510,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 query=self._query, columns=self._fts_columns
             ),
             offset=self._offset,
+            fast_search=self._fast_search,
         )
 
     def output_schema(self) -> pa.Schema:
@@ -2188,8 +2205,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.select(self._columns)
             self._fts_query.select(self._columns)
         if self._where:
-            self._vector_query.where(self._where, self._postfilter)
-            self._fts_query.where(self._where, self._postfilter)
+            self._vector_query.where(self._where, not self._postfilter)
+            self._fts_query.where(self._where, not self._postfilter)
         if self._with_row_id:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)

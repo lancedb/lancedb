@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
-    index::{extract_index_params, IndexConfig},
+    index::{IndexConfig, extract_index_params},
     query::{Query, TakeQuery},
     table::scannable::PyScannable,
 };
@@ -19,10 +19,10 @@ use lancedb::table::{
     Table as LanceDbTable,
 };
 use pyo3::{
+    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
     exceptions::{PyKeyError, PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
-    Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -112,19 +112,24 @@ impl From<lancedb::table::AddResult> for AddResult {
 #[pyclass(get_all)]
 #[derive(Clone, Debug)]
 pub struct DeleteResult {
+    pub num_deleted_rows: u64,
     pub version: u64,
 }
 
 #[pymethods]
 impl DeleteResult {
     pub fn __repr__(&self) -> String {
-        format!("DeleteResult(version={})", self.version)
+        format!(
+            "DeleteResult(num_deleted_rows={}, version={})",
+            self.num_deleted_rows, self.version
+        )
     }
 }
 
 impl From<lancedb::table::DeleteResult> for DeleteResult {
     fn from(result: lancedb::table::DeleteResult) -> Self {
         Self {
+            num_deleted_rows: result.num_deleted_rows,
             version: result.version,
         }
     }
@@ -487,6 +492,17 @@ impl Table {
         })
     }
 
+    pub fn prewarm_data(
+        self_: PyRef<'_, Self>,
+        columns: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.prewarm_data(columns).await.infer_error()?;
+            Ok(())
+        })
+    }
+
     pub fn list_indices(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -603,7 +619,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let versions = inner.list_versions().await.infer_error()?;
-            let versions_as_dict = Python::attach(|py| {
+            Python::attach(|py| {
                 versions
                     .iter()
                     .map(|v| {
@@ -620,9 +636,7 @@ impl Table {
                         Ok(dict.unbind())
                     })
                     .collect::<PyResult<Vec<_>>>()
-            });
-
-            versions_as_dict
+            })
         })
     }
 

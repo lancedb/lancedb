@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use lancedb::ipc::ipc_file_to_batches;
+use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
     AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
     OptimizeAction, OptimizeOptions, Table as LanceDbTable,
@@ -271,6 +271,23 @@ impl Table {
             .map(|sql| (sql.name, sql.value_sql))
             .collect::<Vec<_>>();
         let transforms = NewColumnTransform::SqlExpressions(transforms);
+        let res = self
+            .inner_ref()?
+            .add_columns(transforms, None)
+            .await
+            .default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn add_columns_with_schema(
+        &self,
+        schema_buf: Buffer,
+    ) -> napi::Result<AddColumnsResult> {
+        let schema = ipc_file_to_schema(schema_buf.to_vec())
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC schema: {}", e)))?;
+
+        let transforms = NewColumnTransform::AllNulls(schema);
         let res = self
             .inner_ref()?
             .add_columns(transforms, None)
@@ -753,12 +770,14 @@ impl From<lancedb::table::AddResult> for AddResult {
 
 #[napi(object)]
 pub struct DeleteResult {
+    pub num_deleted_rows: i64,
     pub version: i64,
 }
 
 impl From<lancedb::table::DeleteResult> for DeleteResult {
     fn from(value: lancedb::table::DeleteResult) -> Self {
         Self {
+            num_deleted_rows: value.num_deleted_rows as i64,
             version: value.version as i64,
         }
     }

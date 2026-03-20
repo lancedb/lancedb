@@ -147,7 +147,12 @@ class TrackingNamespace(LanceNamespace):
         This simulates a credential rotation system where each call returns
         new credentials that expire after credential_expires_in_seconds.
         """
-        modified = copy.deepcopy(storage_options) if storage_options else {}
+        # Start from base storage options (endpoint, region, allow_http, etc.)
+        # because DirectoryNamespace returns None for storage_options from
+        # describe_table/declare_table when no credential vendor is configured.
+        modified = copy.deepcopy(self.base_storage_options)
+        if storage_options:
+            modified.update(storage_options)
 
         # Increment credentials to simulate rotation
         modified["aws_access_key_id"] = f"AKID_{count}"

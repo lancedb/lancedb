@@ -5,26 +5,26 @@ use std::sync::Arc;
 use std::{future::Future, time::Duration};
 
 use arrow::compute::concat_batches;
-use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
+use arrow_array::{Array, Float16Array, Float32Array, Float64Array, make_array};
 use arrow_schema::{DataType, SchemaRef};
 use datafusion_expr::Expr;
 use datafusion_physical_plan::ExecutionPlan;
-use futures::{stream, try_join, FutureExt, TryFutureExt, TryStreamExt};
+use futures::{FutureExt, TryFutureExt, TryStreamExt, stream, try_join};
 use half::f16;
-use lance::dataset::{scanner::DatasetRecordBatchStream, ROW_ID};
+use lance::dataset::{ROW_ID, scanner::DatasetRecordBatchStream};
 use lance_arrow::RecordBatchExt;
 use lance_datafusion::exec::execute_plan;
-use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::scalar::FullTextSearchQuery;
+use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::vector::DIST_COL;
 use lance_io::stream::RecordBatchStreamAdapter;
 
+use crate::DistanceType;
 use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
-use crate::rerankers::{check_reranker_result, NormalizeMethod, Reranker};
+use crate::rerankers::{NormalizeMethod, Reranker, check_reranker_result};
 use crate::table::BaseTable;
 use crate::utils::TimeoutStream;
-use crate::DistanceType;
 use crate::{arrow::SendableRecordBatchStream, table::AnyQuery};
 
 mod hybrid;
@@ -47,6 +47,25 @@ pub enum Select {
     ///
     /// See [`Query::select`] for more details and examples
     Dynamic(Vec<(String, String)>),
+    /// Advanced selection using type-safe DataFusion expressions
+    ///
+    /// Similar to [`Select::Dynamic`] but uses [`datafusion_expr::Expr`] instead of
+    /// raw SQL strings. Use [`crate::expr`] helpers to build expressions:
+    ///
+    /// ```
+    /// use lancedb::expr::{col, lit};
+    /// use lancedb::query::Select;
+    ///
+    /// // SELECT id, id * 2 AS id2 FROM ...
+    /// let selection = Select::expr_projection(&[
+    ///     ("id", col("id")),
+    ///     ("id2", col("id") * lit(2)),
+    /// ]);
+    /// ```
+    ///
+    /// Note: For remote/server-side queries the expressions are serialized to SQL strings
+    /// automatically (same as [`Select::Dynamic`]).
+    Expr(Vec<(String, datafusion_expr::Expr)>),
 }
 
 impl Select {
@@ -66,6 +85,29 @@ impl Select {
             columns
                 .iter()
                 .map(|(name, value)| (name.as_ref().to_string(), value.as_ref().to_string()))
+                .collect(),
+        )
+    }
+    /// Create a typed-expression projection.
+    ///
+    /// This is a convenience method for creating a [`Select::Expr`] variant from
+    /// a slice of `(name, expr)` pairs where each `expr` is a [`datafusion_expr::Expr`].
+    ///
+    /// # Example
+    /// ```
+    /// use lancedb::expr::{col, lit};
+    /// use lancedb::query::Select;
+    ///
+    /// let selection = Select::expr_projection(&[
+    ///     ("id", col("id")),
+    ///     ("id2", col("id") * lit(2)),
+    /// ]);
+    /// ```
+    pub fn expr_projection(columns: &[(impl AsRef<str>, datafusion_expr::Expr)]) -> Self {
+        Self::Expr(
+            columns
+                .iter()
+                .map(|(name, expr)| (name.as_ref().to_string(), expr.clone()))
                 .collect(),
         )
     }
@@ -161,10 +203,11 @@ impl IntoQueryVector for &dyn Array {
         if data_type != self.data_type() {
             Err(Error::InvalidInput {
                 message: format!(
-                "failed to create query vector, the input data type was {:?} but the expected data type was {:?}",
-                self.data_type(),
-                data_type
-            )})
+                    "failed to create query vector, the input data type was {:?} but the expected data type was {:?}",
+                    self.data_type(),
+                    data_type
+                ),
+            })
         } else {
             let data = self.to_data();
             Ok(make_array(data))
@@ -186,7 +229,7 @@ impl IntoQueryVector for &[f16] {
             DataType::Float32 => {
                 let arr: Vec<f32> = self.iter().map(|x| f32::from(*x)).collect();
                 Ok(Arc::new(Float32Array::from(arr)))
-            },
+            }
             DataType::Float64 => {
                 let arr: Vec<f64> = self.iter().map(|x| f64::from(*x)).collect();
                 Ok(Arc::new(Float64Array::from(arr)))
@@ -194,8 +237,7 @@ impl IntoQueryVector for &[f16] {
             _ => Err(Error::InvalidInput {
                 message: format!(
                     "failed to create query vector, the input data type was &[f16] but the embedding model \"{}\" expected data type {:?}",
-                    embedding_model_label,
-                    data_type
+                    embedding_model_label, data_type
                 ),
             }),
         }
@@ -216,7 +258,7 @@ impl IntoQueryVector for &[f32] {
             DataType::Float32 => {
                 let arr: Vec<f32> = self.to_vec();
                 Ok(Arc::new(Float32Array::from(arr)))
-            },
+            }
             DataType::Float64 => {
                 let arr: Vec<f64> = self.iter().map(|x| *x as f64).collect();
                 Ok(Arc::new(Float64Array::from(arr)))
@@ -224,8 +266,7 @@ impl IntoQueryVector for &[f32] {
             _ => Err(Error::InvalidInput {
                 message: format!(
                     "failed to create query vector, the input data type was &[f32] but the embedding model \"{}\" expected data type {:?}",
-                    embedding_model_label,
-                    data_type
+                    embedding_model_label, data_type
                 ),
             }),
         }
@@ -239,26 +280,25 @@ impl IntoQueryVector for &[f64] {
         embedding_model_label: &str,
     ) -> Result<Arc<dyn Array>> {
         match data_type {
-                DataType::Float16 => {
-                    let arr: Vec<f16> = self.iter().map(|x| f16::from_f64(*x)).collect();
-                    Ok(Arc::new(Float16Array::from(arr)))
-                }
-                DataType::Float32 => {
-                    let arr: Vec<f32> = self.iter().map(|x| *x as f32).collect();
-                    Ok(Arc::new(Float32Array::from(arr)))
-                },
-                DataType::Float64 => {
-                    let arr: Vec<f64> = self.to_vec();
-                    Ok(Arc::new(Float64Array::from(arr)))
-                }
-                _ => Err(Error::InvalidInput {
-                    message: format!(
-                        "failed to create query vector, the input data type was &[f64] but the embedding model \"{}\" expected data type {:?}",
-                        embedding_model_label,
-                        data_type
-                    ),
-                }),
+            DataType::Float16 => {
+                let arr: Vec<f16> = self.iter().map(|x| f16::from_f64(*x)).collect();
+                Ok(Arc::new(Float16Array::from(arr)))
             }
+            DataType::Float32 => {
+                let arr: Vec<f32> = self.iter().map(|x| *x as f32).collect();
+                Ok(Arc::new(Float32Array::from(arr)))
+            }
+            DataType::Float64 => {
+                let arr: Vec<f64> = self.to_vec();
+                Ok(Arc::new(Float64Array::from(arr)))
+            }
+            _ => Err(Error::InvalidInput {
+                message: format!(
+                    "failed to create query vector, the input data type was &[f64] but the embedding model \"{}\" expected data type {:?}",
+                    embedding_model_label, data_type
+                ),
+            }),
+        }
     }
 }
 
@@ -1011,13 +1051,13 @@ impl VectorQuery {
                 message: "minimum_nprobes must be greater than 0".to_string(),
             });
         }
-        if let Some(maximum_nprobes) = self.request.maximum_nprobes {
-            if minimum_nprobes > maximum_nprobes {
-                return Err(Error::InvalidInput {
-                    message: "minimum_nprobes must be less than or equal to maximum_nprobes"
-                        .to_string(),
-                });
-            }
+        if let Some(maximum_nprobes) = self.request.maximum_nprobes
+            && minimum_nprobes > maximum_nprobes
+        {
+            return Err(Error::InvalidInput {
+                message: "minimum_nprobes must be less than or equal to maximum_nprobes"
+                    .to_string(),
+            });
         }
         self.request.minimum_nprobes = minimum_nprobes;
         Ok(self)
@@ -1407,8 +1447,8 @@ mod tests {
     use super::*;
     use arrow::{array::downcast_array, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{
-        cast::AsArray, types::Float32Type, FixedSizeListArray, Float32Array, Int32Array,
-        RecordBatch, StringArray,
+        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray, cast::AsArray,
+        types::Float32Type,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
@@ -1416,7 +1456,7 @@ mod tests {
     use rand::seq::IndexedRandom;
     use tempfile::tempdir;
 
-    use crate::{connect, database::CreateTableMode, index::Index, Table};
+    use crate::{Table, connect, database::CreateTableMode, index::Index};
 
     #[tokio::test]
     async fn test_setters_getters() {
@@ -1594,6 +1634,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_select_with_expr_projection() {
+        // Mirrors test_select_with_transform but uses Select::Expr instead of Select::Dynamic
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test_expr.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let batches = make_non_empty_batches();
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", batches)
+            .execute()
+            .await
+            .unwrap();
+
+        use crate::expr::{col, lit};
+        let query = table.query().limit(10).select(Select::expr_projection(&[
+            ("id2", col("id") * lit(2i32)),
+            ("id", col("id")),
+        ]));
+
+        let schema = query.output_schema().await.unwrap();
+        assert_eq!(
+            schema,
+            Arc::new(ArrowSchema::new(vec![
+                ArrowField::new("id2", DataType::Int32, true),
+                ArrowField::new("id", DataType::Int32, true),
+            ]))
+        );
+
+        let result = query.execute().await;
+        let mut batches = result
+            .expect("should have result")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        let batch = batches.pop().unwrap();
+
+        // id and id2
+        assert_eq!(batch.num_columns(), 2);
+
+        let id: &Int32Array = batch.column_by_name("id").unwrap().as_primitive();
+        let id2: &Int32Array = batch.column_by_name("id2").unwrap().as_primitive();
+
+        id.iter().zip(id2.iter()).for_each(|(id, id2)| {
+            let id = id.unwrap();
+            let id2 = id2.unwrap();
+            assert_eq!(id * 2, id2);
+        });
+    }
+
+    #[tokio::test]
     async fn test_execute_no_vector() {
         // TODO: Switch back to memory://foo after https://github.com/lancedb/lancedb/issues/1051
         // is fixed
@@ -1754,11 +1846,13 @@ mod tests {
             .limit(1)
             .execute()
             .await;
-        assert!(error_result
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("No vector column found to match with the query vector dimension: 3"));
+        assert!(
+            error_result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("No vector column found to match with the query vector dimension: 3")
+        );
     }
 
     #[tokio::test]
@@ -2010,7 +2104,7 @@ mod tests {
 
         // Sample 1 - 3 tokens for each string value
         let tokens = ["a", "b", "c", "d", "e"];
-        use rand::{rng, Rng};
+        use rand::{Rng, rng};
 
         let mut rng = rng();
         let text: StringArray = (0..nrows)

@@ -25,8 +25,8 @@ use futures::{StreamExt, TryStreamExt};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::io::RecordBatchStream;
 use lance_arrow::RecordBatchExt;
-use lance_core::error::LanceOptionExt;
 use lance_core::ROW_ID;
+use lance_core::error::LanceOptionExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -339,6 +339,12 @@ impl PermutationReader {
                 }
                 Ok(false)
             }
+            Select::Expr(columns) => {
+                // For Expr projections, we check if any alias is _rowid.
+                // We can't validate the expression itself (it may differ from _rowid)
+                // but we allow it through; the column will be included.
+                Ok(columns.iter().any(|(alias, _)| alias == ROW_ID))
+            }
         }
     }
 
@@ -500,10 +506,10 @@ mod tests {
     use rand::seq::SliceRandom;
 
     use crate::{
+        Table,
         arrow::SendableRecordBatchStream,
         query::{ExecutableQuery, QueryBase},
-        test_utils::datagen::{virtual_table, LanceDbDatagenExt},
-        Table,
+        test_utils::datagen::{LanceDbDatagenExt, virtual_table},
     };
 
     use super::*;

@@ -5,8 +5,9 @@ use std::sync::Mutex;
 
 use lancedb::DistanceType;
 use pyo3::{
+    PyResult,
     exceptions::{PyRuntimeError, PyValueError},
-    pyfunction, PyResult,
+    pyfunction,
 };
 
 /// A wrapper around a rust builder

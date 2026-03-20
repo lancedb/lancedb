@@ -15,10 +15,9 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use futures::StreamExt;
 use lancedb::{
-    connect,
+    Error, Result, connect,
     embeddings::{EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry},
     query::ExecutableQuery,
-    Error, Result,
 };
 
 #[tokio::test]
@@ -262,17 +261,19 @@ fn create_some_records() -> Result<Box<dyn arrow_array::RecordBatchReader + Send
 
     // Create a RecordBatch stream.
     let batches = RecordBatchIterator::new(
-        vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
-                Arc::new(StringArray::from_iter(std::iter::repeat_n(
-                    Some("hello world".to_string()),
-                    TOTAL,
-                ))),
-            ],
-        )
-        .unwrap()]
+        vec![
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
+                    Arc::new(StringArray::from_iter(std::iter::repeat_n(
+                        Some("hello world".to_string()),
+                        TOTAL,
+                    ))),
+                ],
+            )
+            .unwrap(),
+        ]
         .into_iter()
         .map(Ok),
         schema.clone(),

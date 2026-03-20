@@ -17,8 +17,8 @@ use lancedb::query::VectorQuery as LanceDbVectorQuery;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::error::convert_error;
 use crate::error::NapiErrorExt;
+use crate::error::convert_error;
 use crate::iterator::RecordBatchIterator;
 use crate::rerankers::RerankHybridCallbackArgs;
 use crate::rerankers::Reranker;
@@ -551,15 +551,12 @@ fn parse_fts_query(query: Object) -> napi::Result<FullTextSearchQuery> {
             }
         };
         let mut query = FullTextSearchQuery::new_query(query);
-        if let Some(cols) = columns {
-            if !cols.is_empty() {
-                query = query.with_columns(&cols).map_err(|e| {
-                    napi::Error::from_reason(format!(
-                        "Failed to set full text search columns: {}",
-                        e
-                    ))
-                })?;
-            }
+        if let Some(cols) = columns
+            && !cols.is_empty()
+        {
+            query = query.with_columns(&cols).map_err(|e| {
+                napi::Error::from_reason(format!("Failed to set full text search columns: {}", e))
+            })?;
         }
         Ok(query)
     } else {

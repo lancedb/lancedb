@@ -24,7 +24,7 @@ pub use sql::expr_to_sql_string;
 use std::sync::Arc;
 
 use arrow_schema::DataType;
-use datafusion_expr::{expr_fn::cast, Expr, ScalarUDF};
+use datafusion_expr::{Expr, ScalarUDF, expr_fn::cast};
 use datafusion_functions::string::expr_fn as string_expr_fn;
 
 pub use datafusion_expr::{col, lit};

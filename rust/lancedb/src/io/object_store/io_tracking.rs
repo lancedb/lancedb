@@ -10,8 +10,9 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use lance::io::WrappingObjectStore;
 use object_store::{
-    path::Path, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
     PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as OSResult, UploadPart,
+    path::Path,
 };
 
 #[derive(Debug, Default)]

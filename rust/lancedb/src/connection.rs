@@ -17,6 +17,7 @@ use lance_namespace::models::{
 #[cfg(feature = "aws")]
 use object_store::aws::AwsCredential;
 
+use crate::Table;
 use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
@@ -31,7 +32,6 @@ use crate::remote::{
     client::ClientConfig,
     db::{OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION},
 };
-use crate::Table;
 use lance::io::ObjectStoreParams;
 pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
@@ -136,6 +136,7 @@ impl OpenTableBuilder {
                 lance_read_params: None,
                 location: None,
                 namespace_client: None,
+                managed_versioning: None,
             },
             embedding_registry,
         }
@@ -235,6 +236,29 @@ impl OpenTableBuilder {
         self
     }
 
+    /// Set a namespace client for managed versioning support.
+    ///
+    /// When a namespace client is provided and the table has `managed_versioning` enabled,
+    /// the table will use the namespace's commit handler to notify the namespace of
+    /// version changes. This enables features like event emission for table modifications.
+    pub fn namespace_client(mut self, client: Arc<dyn lance_namespace::LanceNamespace>) -> Self {
+        self.request.namespace_client = Some(client);
+        self
+    }
+
+    /// Set whether managed versioning is enabled for this table.
+    ///
+    /// When set to `Some(true)`, the table will use namespace-managed commits.
+    /// When set to `Some(false)`, the table will use local commits even if namespace_client is set.
+    /// When set to `None` (default), the value will be fetched from the namespace if namespace_client is set.
+    ///
+    /// This is typically set when the caller has already queried the namespace and knows the
+    /// managed_versioning status, avoiding a redundant describe_table call.
+    pub fn managed_versioning(mut self, enabled: bool) -> Self {
+        self.request.managed_versioning = Some(enabled);
+        self
+    }
+
     /// Open the table
     pub async fn execute(self) -> Result<Table> {
         let table = self.parent.open_table(self.request).await?;
@@ -291,6 +315,12 @@ impl CloneTableBuilder {
     /// When false, performs a deep clone (not yet implemented).
     pub fn is_shallow(mut self, is_shallow: bool) -> Self {
         self.request.is_shallow = is_shallow;
+        self
+    }
+
+    /// Set a namespace client for managed versioning support.
+    pub fn namespace_client(mut self, client: Arc<dyn lance_namespace::LanceNamespace>) -> Self {
+        self.request.namespace_client = Some(client);
         self
     }
 
@@ -566,8 +596,11 @@ pub struct ConnectBuilder {
 }
 
 #[cfg(feature = "remote")]
-const ENV_VARS_TO_STORAGE_OPTS: [(&str, &str); 1] =
-    [("AZURE_STORAGE_ACCOUNT_NAME", "azure_storage_account_name")];
+const ENV_VARS_TO_STORAGE_OPTS: [(&str, &str); 3] = [
+    ("AZURE_STORAGE_ACCOUNT_NAME", "azure_storage_account_name"),
+    ("AZURE_CLIENT_ID", "azure_client_id"),
+    ("AZURE_TENANT_ID", "azure_tenant_id"),
+];
 
 impl ConnectBuilder {
     /// Create a new [`ConnectOptions`] with the given database URI.
@@ -758,10 +791,10 @@ impl ConnectBuilder {
         options: &mut HashMap<String, String>,
     ) {
         for (env_key, opt_key) in env_var_to_remote_storage_option {
-            if let Ok(env_value) = std::env::var(env_key) {
-                if !options.contains_key(*opt_key) {
-                    options.insert((*opt_key).to_string(), env_value);
-                }
+            if let Ok(env_value) = std::env::var(env_key)
+                && !options.contains_key(*opt_key)
+            {
+                options.insert((*opt_key).to_string(), env_value);
             }
         }
     }
@@ -1011,14 +1044,13 @@ mod tests {
     #[cfg(feature = "remote")]
     #[test]
     fn test_apply_env_defaults() {
-        let env_key = "TEST_APPLY_ENV_DEFAULTS_ENVIRONMENT_VARIABLE_ENV_KEY";
-        let env_val = "TEST_APPLY_ENV_DEFAULTS_ENVIRONMENT_VARIABLE_ENV_VAL";
+        let env_key = "PATH";
+        let env_val = std::env::var(env_key).expect("PATH should be set in test environment");
         let opts_key = "test_apply_env_defaults_environment_variable_opts_key";
-        std::env::set_var(env_key, env_val);
 
         let mut options = HashMap::new();
         ConnectBuilder::apply_env_defaults(&[(env_key, opts_key)], &mut options);
-        assert_eq!(Some(&env_val.to_string()), options.get(opts_key));
+        assert_eq!(Some(&env_val), options.get(opts_key));
 
         options.insert(opts_key.to_string(), "EXPLICIT-VALUE".to_string());
         ConnectBuilder::apply_env_defaults(&[(env_key, opts_key)], &mut options);

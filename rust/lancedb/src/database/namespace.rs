@@ -7,18 +7,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
 use lance_io::object_store::{ObjectStoreParams, StorageOptionsAccessor};
 use lance_namespace::{
-    models::{
-        CreateEmptyTableRequest, CreateNamespaceRequest, CreateNamespaceResponse,
-        DeclareTableRequest, DescribeNamespaceRequest, DescribeNamespaceResponse,
-        DescribeTableRequest, DropNamespaceRequest, DropNamespaceResponse, DropTableRequest,
-        ListNamespacesRequest, ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
-    },
     LanceNamespace,
+    models::{
+        CreateNamespaceRequest, CreateNamespaceResponse, DeclareTableRequest,
+        DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
+        DropNamespaceRequest, DropNamespaceResponse, DropTableRequest, ListNamespacesRequest,
+        ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+    },
 };
 use lance_namespace_impls::ConnectBuilder;
-use log::warn;
+use lance_table::io::commit::CommitHandler;
+use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 
 use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
@@ -206,83 +208,48 @@ impl Database for LanceNamespaceDatabase {
         let mut table_id = request.namespace.clone();
         table_id.push(request.name.clone());
 
-        // Try declare_table first, falling back to create_empty_table for backwards
-        // compatibility with older namespace clients that don't support declare_table
         let declare_request = DeclareTableRequest {
             id: Some(table_id.clone()),
             ..Default::default()
         };
 
-        let (location, initial_storage_options) =
-            match self.namespace.declare_table(declare_request).await {
-                Ok(response) => {
-                    let loc = response.location.ok_or_else(|| Error::Runtime {
-                        message: "Table location is missing from declare_table response"
-                            .to_string(),
-                    })?;
-                    // Use storage options from response, fall back to self.storage_options
-                    let opts = response
-                        .storage_options
-                        .or_else(|| Some(self.storage_options.clone()))
-                        .filter(|o| !o.is_empty());
-                    (loc, opts)
-                }
-                Err(e) => {
-                    // Check if the error is "not supported" and try create_empty_table as fallback
-                    let err_str = e.to_string().to_lowercase();
-                    if err_str.contains("not supported") || err_str.contains("not implemented") {
-                        warn!(
-                            "declare_table is not supported by the namespace client, \
-                        falling back to deprecated create_empty_table. \
-                        create_empty_table is deprecated and will be removed in Lance 3.0.0. \
-                        Please upgrade your namespace client to support declare_table."
-                        );
-                        #[allow(deprecated)]
-                        let create_empty_request = CreateEmptyTableRequest {
-                            id: Some(table_id.clone()),
-                            ..Default::default()
-                        };
+        let (location, initial_storage_options, managed_versioning) = {
+            let response = self.namespace.declare_table(declare_request).await?;
+            let loc = response.location.ok_or_else(|| Error::Runtime {
+                message: "Table location is missing from declare_table response".to_string(),
+            })?;
+            // Use storage options from response, fall back to self.storage_options
+            let opts = response
+                .storage_options
+                .or_else(|| Some(self.storage_options.clone()))
+                .filter(|o| !o.is_empty());
+            (loc, opts, response.managed_versioning)
+        };
 
-                        #[allow(deprecated)]
-                        let create_response = self
-                            .namespace
-                            .create_empty_table(create_empty_request)
-                            .await
-                            .map_err(|e| Error::Runtime {
-                                message: format!("Failed to create empty table: {}", e),
-                            })?;
+        // Build write params with storage options and commit handler
+        let mut params = request.write_options.lance_write_params.unwrap_or_default();
 
-                        let loc = create_response.location.ok_or_else(|| Error::Runtime {
-                            message: "Table location is missing from create_empty_table response"
-                                .to_string(),
-                        })?;
-                        // For deprecated path, use self.storage_options
-                        let opts = if self.storage_options.is_empty() {
-                            None
-                        } else {
-                            Some(self.storage_options.clone())
-                        };
-                        (loc, opts)
-                    } else {
-                        return Err(Error::Runtime {
-                            message: format!("Failed to declare table: {}", e),
-                        });
-                    }
-                }
-            };
-
-        let write_params = if let Some(storage_opts) = initial_storage_options {
-            let mut params = request.write_options.lance_write_params.unwrap_or_default();
+        // Set up storage options if provided
+        if let Some(storage_opts) = initial_storage_options {
             let store_params = params
                 .store_params
                 .get_or_insert_with(ObjectStoreParams::default);
             store_params.storage_options_accessor = Some(Arc::new(
                 StorageOptionsAccessor::with_static_options(storage_opts),
             ));
-            Some(params)
-        } else {
-            request.write_options.lance_write_params
-        };
+        }
+
+        // Set up commit handler when managed_versioning is enabled
+        if managed_versioning == Some(true) {
+            let external_store =
+                LanceNamespaceExternalManifestStore::new(self.namespace.clone(), table_id.clone());
+            let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
+                external_manifest_store: Arc::new(external_store),
+            });
+            params.commit_handler = Some(commit_handler);
+        }
+
+        let write_params = Some(params);
 
         let native_table = NativeTable::create_from_namespace(
             self.namespace.clone(),

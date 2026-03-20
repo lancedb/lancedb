@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use arrow_array::{Array, BooleanArray, RecordBatch, UInt64Array};
@@ -15,13 +15,13 @@ use lance_arrow::SchemaExt;
 use lance_core::ROW_ID;
 
 use crate::{
+    Error, Result,
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     dataloader::{
         permutation::shuffle::{Shuffler, ShufflerConfig},
         permutation::util::TemporaryDirectory,
     },
     query::{Query, QueryBase, Select},
-    Error, Result,
 };
 
 pub const SPLIT_ID_COLUMN: &str = "split_id";

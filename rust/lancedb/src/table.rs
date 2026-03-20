@@ -8,55 +8,59 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_execution::TaskContext;
 use datafusion_expr::Expr;
-use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::ExecutionPlan;
-use futures::stream::FuturesUnordered;
+use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use futures::StreamExt;
-use lance::dataset::builder::DatasetBuilder;
+use futures::stream::FuturesUnordered;
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::WriteMode;
+use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::{InsertBuilder, WriteParams};
-use lance::index::vector::utils::infer_vector_dim;
 use lance::index::vector::VectorIndexParams;
+use lance::index::vector::utils::infer_vector_dim;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
+use lance_index::DatasetIndexExt;
+use lance_index::IndexType;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::vector::bq::RQBuildParams;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
-use lance_index::DatasetIndexExt;
-use lance_index::IndexType;
 use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsAccessor};
 pub use query::AnyQuery;
 
+use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
 use lance_namespace::LanceNamespace;
+use lance_namespace::models::DescribeTableRequest;
 use lance_table::format::Manifest;
+use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::ManifestNamingScheme;
+use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::format;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::data::scannable::{estimate_write_partitions, PeekedScannable, Scannable};
+use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
-use crate::index::vector::VectorIndex;
 use crate::index::IndexStatistics;
-use crate::index::{vector::suggested_num_sub_vectors, Index, IndexBuilder};
+use crate::index::vector::VectorIndex;
+use crate::index::{Index, IndexBuilder, vector::suggested_num_sub_vectors};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
 use crate::table::write_progress::WriteProgressTracker;
 use crate::utils::{
-    supported_bitmap_data_type, supported_btree_data_type, supported_fts_data_type,
-    supported_label_list_data_type, supported_vector_data_type, PatchReadParam, PatchWriteParam,
+    PatchReadParam, PatchWriteParam, supported_bitmap_data_type, supported_btree_data_type,
+    supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
 };
 
 use self::dataset::DatasetConsistencyWrapper;
@@ -276,8 +280,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     /// Drop an index from the table.
     async fn drop_index(&self, name: &str) -> Result<()>;
-    /// Prewarm an index in the table
+    /// Prewarm an index in the table.
     async fn prewarm_index(&self, name: &str) -> Result<()>;
+    /// Prewarm data for the table.
+    ///
+    /// Currently only supported on remote tables.
+    /// If `columns` is `None`, all columns are prewarmed.
+    async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()>;
     /// Get statistics about the index.
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
     /// Merge insert new records into the table.
@@ -973,17 +982,7 @@ impl Table {
     ///  * Prune: Removes old versions of the dataset
     ///  * Index: Optimizes the indices, adding new data to existing indices
     ///
-    /// <section class="warning">Experimental API</section>
-    ///
-    /// The optimization process is undergoing active development and may change.
-    /// Our goal with these changes is to improve the performance of optimization and
-    /// reduce the complexity.
-    ///
-    /// That being said, it is essential today to run optimize if you want the best
-    /// performance.  It should be stable and safe to use in production, but it our
-    /// hope that the API may be simplified (or not even need to be called) in the future.
-    ///
-    /// The frequency an application shoudl call optimize is based on the frequency of
+    /// The frequency an application should call optimize is based on the frequency of
     /// data modifications.  If data is frequently added, deleted, or updated then
     /// optimize should be run frequently.  A good rule of thumb is to run optimize if
     /// you have added or modified 100,000 or more records or run more than 20 data
@@ -1150,20 +1149,43 @@ impl Table {
         self.inner.drop_index(name).await
     }
 
-    /// Prewarm an index in the table
+    /// Prewarm an index in the table.
     ///
-    /// This is a hint to fully load the index into memory.  It can be used to
-    /// avoid cold starts
+    /// This is a hint to the database that the index will be accessed in the
+    /// future and should be loaded into memory if possible.  This can reduce
+    /// cold-start latency for subsequent queries.
+    ///
+    /// This call initiates prewarming and returns once the request is accepted.
+    /// It is idempotent and safe to call from multiple clients concurrently.
     ///
     /// It is generally wasteful to call this if the index does not fit into the
-    /// available cache.
-    ///
-    /// Note: This function is not yet supported on all indices, in which case it
-    /// may do nothing.
+    /// available cache.  Not all index types support prewarming; unsupported
+    /// indices will silently ignore the request.
     ///
     /// Use [`Self::list_indices()`] to find the names of the indices.
     pub async fn prewarm_index(&self, name: &str) -> Result<()> {
         self.inner.prewarm_index(name).await
+    }
+
+    /// Prewarm data for the table.
+    ///
+    /// This is a hint to the database that the given columns will be accessed in
+    /// the future and the database should prefetch the data if possible.  This
+    /// can reduce cold-start latency for subsequent queries.  Currently only
+    /// supported on remote tables.
+    ///
+    /// This call initiates prewarming and returns once the request is accepted.
+    /// It is idempotent and safe to call from multiple clients concurrently —
+    /// calling it on already-prewarmed columns is a no-op on the server.
+    ///
+    /// This operation has a large upfront cost but can speed up future queries
+    /// that need to fetch the given columns.  Large columns such as embeddings
+    /// or binary data may not be practical to prewarm.  This feature is intended
+    /// for workloads that issue many queries against the same columns.
+    ///
+    /// If `columns` is `None`, all columns are prewarmed.
+    pub async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()> {
+        self.inner.prewarm_data(columns).await
     }
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
@@ -1243,10 +1265,13 @@ pub struct NativeTable {
     // This comes from the connection options. We store here so we can pass down
     // to the dataset when we recreate it (for example, in checkout_latest).
     read_consistency_interval: Option<std::time::Duration>,
-    // Optional namespace client for server-side query execution.
-    // When set, queries will be executed on the namespace server instead of locally.
-    // pub (crate) namespace_client so query.rs can access the fields
+    // Optional namespace client for namespace operations (e.g., managed versioning).
+    // pub(crate) so query.rs can access the field for server-side query execution.
     pub(crate) namespace_client: Option<Arc<dyn LanceNamespace>>,
+    // Whether to enable server-side query execution via the namespace client.
+    // When true and namespace_client is set, queries will be executed on the
+    // namespace server instead of locally.
+    pub(crate) server_side_query_enabled: bool,
 }
 
 impl std::fmt::Debug for NativeTable {
@@ -1258,6 +1283,7 @@ impl std::fmt::Debug for NativeTable {
             .field("uri", &self.uri)
             .field("read_consistency_interval", &self.read_consistency_interval)
             .field("namespace_client", &self.namespace_client)
+            .field("server_side_query_enabled", &self.server_side_query_enabled)
             .finish()
     }
 }
@@ -1294,7 +1320,7 @@ impl NativeTable {
     /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, vec![], None, None, None, None).await
+        Self::open_with_params(uri, &name, vec![], None, None, None, None, false, None).await
     }
 
     /// Opens an existing Table
@@ -1304,7 +1330,10 @@ impl NativeTable {
     /// * `base_path` - The base path where the table is located
     /// * `name` The Table name
     /// * `params` The [ReadParams] to use when opening the table
-    /// * `namespace_client` - Optional namespace client for server-side query execution
+    /// * `namespace_client` - Optional namespace client for namespace operations
+    /// * `server_side_query_enabled` - Whether to enable server-side query execution
+    /// * `managed_versioning` - Whether managed versioning is enabled. If None and namespace_client
+    ///   is provided, the value will be fetched via describe_table.
     ///
     /// # Returns
     ///
@@ -1318,6 +1347,8 @@ impl NativeTable {
         params: Option<ReadParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
+        server_side_query_enabled: bool,
+        managed_versioning: Option<bool>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -1326,17 +1357,54 @@ impl NativeTable {
             None => params,
         };
 
-        let dataset = DatasetBuilder::from_uri(uri)
-            .with_read_params(params)
-            .load()
-            .await
-            .map_err(|e| match e {
-                lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
-                    name: name.to_string(),
-                    source: Box::new(e),
-                },
-                e => e.into(),
-            })?;
+        // Build table_id from namespace + name
+        let mut table_id = namespace.clone();
+        table_id.push(name.to_string());
+
+        // Determine if managed_versioning is enabled
+        // Use the provided value if available, otherwise query the namespace
+        let managed_versioning = match managed_versioning {
+            Some(value) => value,
+            None if namespace_client.is_some() => {
+                let ns_client = namespace_client.as_ref().unwrap();
+                let describe_request = DescribeTableRequest {
+                    id: Some(table_id.clone()),
+                    ..Default::default()
+                };
+                let response = ns_client
+                    .describe_table(describe_request)
+                    .await
+                    .map_err(|e| Error::Runtime {
+                        message: format!(
+                            "Failed to describe table via namespace client: {}. \
+                             If you don't need managed versioning, don't pass namespace_client.",
+                            e
+                        ),
+                    })?;
+                response.managed_versioning == Some(true)
+            }
+            None => false,
+        };
+
+        let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
+
+        // Set up commit handler when managed_versioning is enabled
+        if managed_versioning && let Some(ref ns_client) = namespace_client {
+            let external_store =
+                LanceNamespaceExternalManifestStore::new(ns_client.clone(), table_id.clone());
+            let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
+                external_manifest_store: Arc::new(external_store),
+            });
+            builder = builder.with_commit_handler(commit_handler);
+        }
+
+        let dataset = builder.load().await.map_err(|e| match e {
+            lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
+                name: name.to_string(),
+                source: Box::new(e),
+            },
+            e => e.into(),
+        })?;
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
         let id = Self::build_id(&namespace, name);
@@ -1349,6 +1417,7 @@ impl NativeTable {
             dataset,
             read_consistency_interval,
             namespace_client,
+            server_side_query_enabled,
         })
     }
 
@@ -1452,6 +1521,7 @@ impl NativeTable {
             dataset,
             read_consistency_interval,
             namespace_client: stored_namespace_client,
+            server_side_query_enabled,
         })
     }
 
@@ -1491,7 +1561,8 @@ impl NativeTable {
     /// * `namespace` - The namespace path. When non-empty, an explicit URI must be provided.
     /// * `batches` RecordBatch to be saved in the database.
     /// * `params` - Write parameters.
-    /// * `namespace_client` - Optional namespace client for server-side query execution
+    /// * `namespace_client` - Optional namespace client for namespace operations
+    /// * `server_side_query_enabled` - Whether to enable server-side query execution
     ///
     /// # Returns
     ///
@@ -1506,6 +1577,7 @@ impl NativeTable {
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
+        server_side_query_enabled: bool,
     ) -> Result<Self> {
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
@@ -1538,6 +1610,7 @@ impl NativeTable {
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             read_consistency_interval,
             namespace_client,
+            server_side_query_enabled,
         })
     }
 
@@ -1551,6 +1624,7 @@ impl NativeTable {
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
+        server_side_query_enabled: bool,
     ) -> Result<Self> {
         let data: Box<dyn Scannable> = Box::new(RecordBatch::new_empty(schema));
         Self::create(
@@ -1562,6 +1636,7 @@ impl NativeTable {
             params,
             read_consistency_interval,
             namespace_client,
+            server_side_query_enabled,
         )
         .await
     }
@@ -1665,6 +1740,7 @@ impl NativeTable {
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             read_consistency_interval,
             namespace_client: stored_namespace_client,
+            server_side_query_enabled,
         })
     }
 
@@ -2286,6 +2362,12 @@ impl BaseTable for NativeTable {
         Ok(dataset.prewarm_index(index_name).await?)
     }
 
+    async fn prewarm_data(&self, _columns: Option<Vec<String>>) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "prewarm_data is currently only supported on remote tables.".into(),
+        })
+    }
+
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult> {
         // Delegate to the submodule implementation
         update::execute_update(self, update).await
@@ -2609,22 +2691,21 @@ pub struct FragmentSummaryStats {
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use arrow_array::{
-        builder::{ListBuilder, StringBuilder},
         Array, BooleanArray, FixedSizeListArray, Int32Array, LargeStringArray, RecordBatch,
         RecordBatchIterator, RecordBatchReader, StringArray,
+        builder::{ListBuilder, StringBuilder},
     };
     use arrow_array::{BinaryArray, LargeBinaryArray};
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
-    use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance::Dataset;
-    use rand::Rng;
+    use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use tempfile::tempdir;
 
     use super::*;
@@ -2680,7 +2761,7 @@ mod tests {
             vec![Ok(batch.clone())],
             batch.schema(),
         ));
-        let table = NativeTable::create(uri, "test", vec![], reader, None, None, None, None)
+        let table = NativeTable::create(uri, "test", vec![], reader, None, None, None, None, false)
             .await
             .unwrap();
 
@@ -2831,9 +2912,8 @@ mod tests {
             false,
         )]));
 
-        let mut rng = rand::thread_rng();
         let float_arr = Float32Array::from(
-            repeat_with(|| rng.gen::<f32>())
+            repeat_with(rand::random::<f32>)
                 .take(512 * dimension as usize)
                 .collect::<Vec<f32>>(),
         );
@@ -2938,8 +3018,8 @@ mod tests {
             .await
             .unwrap();
 
-        use lance::index::vector::ivf::v2::IvfPq as LanceIvfPq;
         use lance::index::DatasetIndexInternalExt;
+        use lance::index::vector::ivf::v2::IvfPq as LanceIvfPq;
         use lance_index::metrics::NoOpMetricsCollector;
         use lance_index::vector::VectorIndex as LanceVectorIndex;
 
@@ -2987,9 +3067,8 @@ mod tests {
             false,
         )]));
 
-        let mut rng = rand::thread_rng();
         let float_arr = Float32Array::from(
-            repeat_with(|| rng.gen::<f32>())
+            repeat_with(rand::random::<f32>)
                 .take(512 * dimension as usize)
                 .collect::<Vec<f32>>(),
         );
@@ -3047,9 +3126,8 @@ mod tests {
             false,
         )]));
 
-        let mut rng = rand::thread_rng();
         let float_arr = Float32Array::from(
-            repeat_with(|| rng.gen::<f32>())
+            repeat_with(rand::random::<f32>)
                 .take(512 * dimension as usize)
                 .collect::<Vec<f32>>(),
         );
@@ -3310,16 +3388,20 @@ mod tests {
             .unwrap();
 
         // Can not create btree or bitmap index on list column
-        assert!(table
-            .create_index(&["tags"], Index::BTree(Default::default()))
-            .execute()
-            .await
-            .is_err());
-        assert!(table
-            .create_index(&["tags"], Index::Bitmap(Default::default()))
-            .execute()
-            .await
-            .is_err());
+        assert!(
+            table
+                .create_index(&["tags"], Index::BTree(Default::default()))
+                .execute()
+                .await
+                .is_err()
+        );
+        assert!(
+            table
+                .create_index(&["tags"], Index::Bitmap(Default::default()))
+                .execute()
+                .await
+                .is_err()
+        );
 
         // Create bitmap index on the "category" column
         table

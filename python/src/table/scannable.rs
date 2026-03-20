@@ -10,11 +10,11 @@ use arrow::{
 };
 use futures::StreamExt;
 use lancedb::{
+    Error,
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     data::scannable::Scannable,
-    Error,
 };
-use pyo3::{types::PyAnyMethods, FromPyObject, Py, PyAny, Python};
+use pyo3::{FromPyObject, Py, PyAny, Python, types::PyAnyMethods};
 
 /// Adapter that implements Scannable for a Python reader factory callable.
 ///
@@ -99,15 +99,15 @@ impl Scannable for PyScannable {
                         // Channel closed. Check if the task panicked — a panic
                         // drops the sender without sending an error, so without
                         // this check we'd silently return a truncated stream.
-                        if let Some(handle) = join_handle {
-                            if let Err(join_err) = handle.await {
-                                return Some((
-                                    Err(Error::Runtime {
-                                        message: format!("Reader task panicked: {}", join_err),
-                                    }),
-                                    (rx, None),
-                                ));
-                            }
+                        if let Some(handle) = join_handle
+                            && let Err(join_err) = handle.await
+                        {
+                            return Some((
+                                Err(Error::Runtime {
+                                    message: format!("Reader task panicked: {}", join_err),
+                                }),
+                                (rx, None),
+                            ));
                         }
                         None
                     }

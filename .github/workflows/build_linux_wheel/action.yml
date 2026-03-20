@@ -29,6 +29,7 @@ runs:
       if: ${{ inputs.arm-build == 'false' }}
       uses: PyO3/maturin-action@v1
       with:
+        maturin-version: "1.12.4"
         command: build
         working-directory: python
         docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/'"
@@ -44,6 +45,7 @@ runs:
       if: ${{ inputs.arm-build == 'true' }}
       uses: PyO3/maturin-action@v1
       with:
+        maturin-version: "1.12.4"
         command: build
         working-directory: python
         docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/'"

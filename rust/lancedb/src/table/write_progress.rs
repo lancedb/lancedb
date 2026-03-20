@@ -6,8 +6,8 @@
 //! You can add a callback to process progress in [`crate::table::AddDataBuilder::progress`].
 //! [`WriteProgress`] is the struct passed to the callback.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// Progress snapshot for a write operation.
@@ -184,8 +184,8 @@ impl Drop for ActiveTaskGuard {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use arrow_array::record_batch;
 

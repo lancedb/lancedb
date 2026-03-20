@@ -1,3 +1,4 @@
+use futures::FutureExt;
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 use serde::{Deserialize, Serialize};
@@ -7,6 +8,9 @@ use crate::Result;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct DeleteResult {
+    /// The number of rows that were deleted.
+    #[serde(default)]
+    pub num_deleted_rows: u64,
     // The commit version associated with the operation.
     // A version of `0` indicates compatibility with legacy servers that do not return
     /// a commit version.
@@ -20,16 +24,20 @@ pub struct DeleteResult {
 pub(crate) async fn execute_delete(table: &NativeTable, predicate: &str) -> Result<DeleteResult> {
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
-    dataset.delete(predicate).await?;
+    let delete_result = dataset.delete(predicate).boxed().await?;
+    let num_deleted_rows = delete_result.num_deleted_rows;
     let version = dataset.version().version;
     table.dataset.update(dataset);
-    Ok(DeleteResult { version })
+    Ok(DeleteResult {
+        num_deleted_rows,
+        version,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use crate::connect;
-    use arrow_array::{record_batch, Int32Array, RecordBatch};
+    use arrow_array::{Int32Array, RecordBatch, record_batch};
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -106,6 +114,32 @@ mod tests {
         let current_schema = table.schema().await.unwrap();
         //check if the original schema is the same as current
         assert_eq!(current_schema, original_schema);
+    }
+
+    #[tokio::test]
+    async fn test_delete_returns_num_deleted_rows() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2, 3, 4, 5])).unwrap();
+        let table = conn
+            .create_table("test_num_deleted", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        // Delete 2 rows (id > 3 means id=4 and id=5)
+        let result = table.delete("id > 3").await.unwrap();
+        assert_eq!(result.num_deleted_rows, 2);
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        // Delete 0 rows (no rows match)
+        let result = table.delete("id > 100").await.unwrap();
+        assert_eq!(result.num_deleted_rows, 0);
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        // Delete remaining rows
+        let result = table.delete("true").await.unwrap();
+        assert_eq!(result.num_deleted_rows, 3);
+        assert_eq!(table.count_rows(None).await.unwrap(), 0);
     }
 
     #[tokio::test]

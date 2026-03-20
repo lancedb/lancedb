@@ -4,12 +4,12 @@
 use core::fmt;
 use std::sync::{Arc, Mutex};
 
-use datafusion_common::{stats::Precision, DataFusionError, Result as DFResult, Statistics};
+use datafusion_common::{DataFusionError, Result as DFResult, Statistics, stats::Precision};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{
-    execution_plan::EmissionType, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execution_plan::EmissionType,
 };
 use futures::TryStreamExt;
 

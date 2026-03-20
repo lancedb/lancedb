@@ -5,11 +5,11 @@
 
 use std::{fmt::Formatter, sync::Arc};
 
-use futures::{stream::BoxStream, TryFutureExt};
+use futures::{TryFutureExt, stream::BoxStream};
 use lance::io::WrappingObjectStore;
 use object_store::{
-    path::Path, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result, UploadPart,
+    Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result, UploadPart, path::Path,
 };
 
 use async_trait::async_trait;

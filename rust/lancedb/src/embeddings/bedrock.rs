@@ -8,7 +8,7 @@ use arrow::array::{AsArray, Float32Builder};
 use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float32Array};
 use arrow_data::ArrayData;
 use arrow_schema::DataType;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::EmbeddingFunction;
 use crate::{Error, Result};

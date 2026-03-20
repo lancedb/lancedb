@@ -7,9 +7,14 @@ on:
   pull_request:
     paths:
       - Cargo.toml
+      - Cargo.lock
       - python/**
       - rust/**
       - .github/workflows/python.yml
+      - .github/workflows/build_linux_wheel/**
+      - .github/workflows/build_mac_wheel/**
+      - .github/workflows/build_windows_wheel/**
+      - .github/workflows/run_tests/**
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

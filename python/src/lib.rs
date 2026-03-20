@@ -2,14 +2,14 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use arrow::RecordBatchStream;
-use connection::{connect, Connection};
+use connection::{Connection, connect};
 use env_logger::Env;
 use index::IndexConfig;
 use permutation::{PyAsyncPermutationBuilder, PyPermutationReader};
 use pyo3::{
-    pymodule,
+    Bound, PyResult, Python, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
@@ -23,6 +23,7 @@ pub mod connection;
 pub mod error;
 pub mod header;
 pub mod index;
+pub mod namespace;
 pub mod permutation;
 pub mod query;
 pub mod session;
