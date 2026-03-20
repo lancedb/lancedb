@@ -526,6 +526,7 @@ def test_add_progress_callback(mem_db: DBConnection):
         assert "output_bytes" in p
         assert "total_rows" in p
         assert "elapsed_seconds" in p
+        assert "active_tasks" in p
 
 
 def test_add_progress_tqdm_like(mem_db: DBConnection):
@@ -535,9 +536,16 @@ def test_add_progress_tqdm_like(mem_db: DBConnection):
         def __init__(self):
             self.total = None
             self.n = 0
+            self.postfix = None
 
         def update(self, n):
             self.n += n
+
+        def set_postfix_str(self, s):
+            self.postfix = s
+
+        def refresh(self):
+            pass
 
     table = mem_db.create_table(
         "test",
@@ -548,6 +556,10 @@ def test_add_progress_tqdm_like(mem_db: DBConnection):
     table.add([{"id": 3}, {"id": 4}], progress=bar)
 
     assert len(table) == 4
+    # Postfix should contain throughput and worker count
+    if bar.postfix is not None:
+        assert "MB/s" in bar.postfix
+        assert "workers" in bar.postfix
 
 
 def test_polars(mem_db: DBConnection):

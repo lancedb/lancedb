@@ -1053,11 +1053,14 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         ));
 
         let task_ctx = Arc::new(datafusion_execution::TaskContext::default());
+        let tracker = output.tracker.clone();
         let mut join_set = tokio::task::JoinSet::new();
         for partition in 0..num_partitions {
             let exec = insert.clone();
             let ctx = task_ctx.clone();
+            let tracker = tracker.clone();
             join_set.spawn(async move {
+                let _guard = tracker.as_ref().map(|t| t.track_task());
                 let mut stream = exec
                     .execute(partition, ctx)
                     .map_err(|e| -> Error { e.into() })?;

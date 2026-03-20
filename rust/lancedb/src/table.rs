@@ -2211,6 +2211,7 @@ impl BaseTable for NativeTable {
                 }
             }
         }
+        let tracker_for_tasks = output.tracker.clone();
         let _finish = FinishOnDrop(output.tracker);
 
         // Execute all partitions in parallel.
@@ -2219,7 +2220,9 @@ impl BaseTable for NativeTable {
         for partition in 0..num_partitions {
             let exec = insert_exec.clone();
             let ctx = task_ctx.clone();
+            let tracker = tracker_for_tasks.clone();
             handles.push(tokio::spawn(async move {
+                let _guard = tracker.as_ref().map(|t| t.track_task());
                 let mut stream = exec
                     .execute(partition, ctx)
                     .map_err(|e| -> Error { e.into() })?;

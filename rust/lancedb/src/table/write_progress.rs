@@ -6,6 +6,7 @@
 //! You can add a callback to process progress in [`crate::table::AddDataBuilder::progress`].
 //! [`WriteProgress`] is the struct passed to the callback.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,7 @@ pub struct WriteProgress {
     output_rows: usize,
     output_bytes: usize,
     total_rows: Option<usize>,
+    active_tasks: usize,
     done: bool,
 }
 
@@ -46,6 +48,11 @@ impl WriteProgress {
         self.total_rows
     }
 
+    /// Number of parallel write tasks currently in flight.
+    pub fn active_tasks(&self) -> usize {
+        self.active_tasks
+    }
+
     /// Whether the write operation has completed.
     ///
     /// The final callback always has `done = true`.  Callers can use this to
@@ -64,6 +71,7 @@ pub type ProgressCallback = Arc<dyn Fn(&WriteProgress) + Send + Sync>;
 /// Call [`WriteProgressTracker::finish`] once after all data is written.
 pub(crate) struct WriteProgressTracker {
     rows_any_bytes: std::sync::Mutex<(usize, usize)>,
+    active_tasks: Arc<AtomicUsize>,
     start: Instant,
     /// Known total rows from the input source, if available.
     total_rows: Option<usize>,
@@ -74,10 +82,17 @@ impl WriteProgressTracker {
     pub fn new(callback: ProgressCallback, total_rows: Option<usize>) -> Self {
         Self {
             rows_any_bytes: std::sync::Mutex::new((0, 0)),
+            active_tasks: Arc::new(AtomicUsize::new(0)),
             start: Instant::now(),
             total_rows,
             callback,
         }
+    }
+
+    /// Increment the active task count. Returns a guard that decrements on drop.
+    pub fn track_task(&self) -> ActiveTaskGuard {
+        self.active_tasks.fetch_add(1, Ordering::Relaxed);
+        ActiveTaskGuard(self.active_tasks.clone())
     }
 
     /// Record a batch of rows passing through the scan node.
@@ -93,6 +108,7 @@ impl WriteProgressTracker {
                 output_rows: guard.0,
                 output_bytes: guard.1,
                 total_rows: self.total_rows,
+                active_tasks: self.active_tasks.load(Ordering::Relaxed),
                 done: false,
             }
         };
@@ -111,10 +127,20 @@ impl WriteProgressTracker {
                 output_rows: guard.0,
                 output_bytes: guard.1,
                 total_rows: Some(self.total_rows.unwrap_or(guard.0)),
+                active_tasks: self.active_tasks.load(Ordering::Relaxed),
                 done: true,
             }
         };
         (self.callback)(&progress);
+    }
+}
+
+/// RAII guard that decrements the active task count when dropped.
+pub(crate) struct ActiveTaskGuard(Arc<AtomicUsize>);
+
+impl Drop for ActiveTaskGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -140,8 +166,10 @@ mod tests {
 
         let callback_count = Arc::new(AtomicUsize::new(0));
         let last_rows = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
         let cb_count = callback_count.clone();
         let cb_rows = last_rows.clone();
+        let cb_active = max_active.clone();
 
         let new_data = record_batch!(("id", Int32, [4, 5, 6])).unwrap();
         table
@@ -149,6 +177,7 @@ mod tests {
             .progress(move |p| {
                 cb_count.fetch_add(1, Ordering::SeqCst);
                 cb_rows.store(p.output_rows(), Ordering::SeqCst);
+                cb_active.fetch_max(p.active_tasks(), Ordering::SeqCst);
             })
             .execute()
             .await
@@ -158,6 +187,8 @@ mod tests {
         assert!(callback_count.load(Ordering::SeqCst) >= 1);
         // Progress tracks the newly inserted rows, not the total table size.
         assert_eq!(last_rows.load(Ordering::SeqCst), 3);
+        // At least one callback should have seen an active task.
+        assert!(max_active.load(Ordering::SeqCst) >= 1);
     }
 
     #[tokio::test]

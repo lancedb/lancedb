@@ -1000,14 +1000,17 @@ class Table(ABC):
             Progress reporting during the add operation. Can be either:
 
             - A **callable** that receives a dict with keys ``output_rows``,
-              ``output_bytes``, ``total_rows``, and ``elapsed_seconds``::
+              ``output_bytes``, ``total_rows``, ``elapsed_seconds``,
+              ``active_tasks``, and ``done``::
 
                 def on_progress(p):
-                    print(f"{p['output_rows']}/{p['total_rows']} rows")
+                    print(f"{p['output_rows']}/{p['total_rows']} rows, "
+                          f"{p['active_tasks']} workers")
                 table.add(data, progress=on_progress)
 
             - A **tqdm-compatible** progress bar whose ``total`` and
-              ``update()`` will be called automatically::
+              ``update()`` will be called automatically. The postfix shows
+              write throughput (MB/s) and active worker count::
 
                 with tqdm() as pbar:
                     table.add(data, progress=pbar)

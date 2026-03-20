@@ -124,10 +124,7 @@ impl AddDataBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn progress(
-        mut self,
-        callback: impl Fn(&WriteProgress) + Send + Sync + 'static,
-    ) -> Self {
+    pub fn progress(mut self, callback: impl Fn(&WriteProgress) + Send + Sync + 'static) -> Self {
         self.progress_callback = Some(Arc::new(callback));
         self
     }

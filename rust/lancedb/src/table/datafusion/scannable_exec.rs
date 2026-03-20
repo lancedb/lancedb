@@ -14,9 +14,7 @@ use datafusion_physical_plan::{
 use futures::TryStreamExt;
 
 use crate::table::write_progress::WriteProgressTracker;
-use crate::{
-    arrow::SendableRecordBatchStreamExt, data::scannable::Scannable,
-};
+use crate::{arrow::SendableRecordBatchStreamExt, data::scannable::Scannable};
 
 pub(crate) struct ScannableExec {
     // We don't require Scannable to be Sync, so we wrap it in a Mutex to allow safe concurrent access.
@@ -36,10 +34,7 @@ impl std::fmt::Debug for ScannableExec {
 }
 
 impl ScannableExec {
-    pub fn new(
-        source: Box<dyn Scannable>,
-        tracker: Option<Arc<WriteProgressTracker>>,
-    ) -> Self {
+    pub fn new(source: Box<dyn Scannable>, tracker: Option<Arc<WriteProgressTracker>>) -> Self {
         let schema = source.schema();
         let eq_properties = EquivalenceProperties::new(schema);
         let properties = PlanProperties::new(

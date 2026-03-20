@@ -321,6 +321,7 @@ impl Table {
                         dict.set_item("total_rows", p.total_rows()).ok();
                         dict.set_item("elapsed_seconds", p.elapsed().as_secs_f64())
                             .ok();
+                        dict.set_item("active_tasks", p.active_tasks()).ok();
                         dict.set_item("done", p.done()).ok();
                         if let Err(e) = progress_obj.call1(py, (dict,)) {
                             eprintln!("progress callback error: {e}");
@@ -348,6 +349,16 @@ impl Table {
                             if let Err(e) = progress_obj.call_method1(py, "update", (delta,)) {
                                 eprintln!("progress update error: {e}");
                             }
+                        }
+                        // Show throughput and active workers in tqdm postfix.
+                        let elapsed = p.elapsed().as_secs_f64();
+                        if elapsed > 0.0 {
+                            let mb_per_sec = p.output_bytes() as f64 / elapsed / 1_000_000.0;
+                            let postfix =
+                                format!("{:.1} MB/s | {} workers", mb_per_sec, p.active_tasks());
+                            progress_obj
+                                .call_method1(py, "set_postfix_str", (postfix,))
+                                .ok();
                         }
                         if p.done() {
                             // Force a final refresh so the bar shows completion.
