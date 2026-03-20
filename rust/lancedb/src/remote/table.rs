@@ -10,7 +10,7 @@ use super::ARROW_STREAM_CONTENT_TYPE;
 use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::db::ServerVersion;
-use crate::data::scannable::{estimate_write_partitions, PeekedScannable, Scannable};
+use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::index::waiter::wait_for_index;
