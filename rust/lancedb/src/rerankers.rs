@@ -18,6 +18,54 @@ pub mod rrf;
 /// column name for reranker relevance score
 const RELEVANCE_SCORE: &str = "_relevance_score";
 
+/// Controls which scores are returned in the reranker output.
+///
+/// - [`ReturnScore::Relevance`]: Default behavior. The output contains
+///   `_relevance_score` alongside whatever score columns were naturally
+///   produced by the merge (typically `_score` from FTS search).
+///   `_distance` is not included because the merge uses the FTS schema as
+///   its base, so the vector `_distance` column is dropped during merging.
+/// - [`ReturnScore::All`]: All raw score columns (`_distance` from vector
+///   search and `_score` from FTS search) are retained alongside
+///   `_relevance_score`. Missing columns are filled with `null` values so
+///   that the two result sets can be concatenated cleanly.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ReturnScore {
+    /// Return `_relevance_score` and whatever score columns naturally survive
+    /// the merge (default).
+    #[default]
+    Relevance,
+    /// Return `_relevance_score` plus all original score columns (`_distance`
+    /// and `_score`), filling missing values with `null`.
+    All,
+}
+
+impl FromStr for ReturnScore {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "relevance" => Ok(Self::Relevance),
+            "all" => Ok(Self::All),
+            _ => Err(Error::InvalidInput {
+                message: format!(
+                    "invalid return_score value: \"{}\". Expected \"relevance\" or \"all\"",
+                    s
+                ),
+            }),
+        }
+    }
+}
+
+impl std::fmt::Display for ReturnScore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Relevance => write!(f, "relevance"),
+            Self::All => write!(f, "all"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum NormalizeMethod {
     Score,
