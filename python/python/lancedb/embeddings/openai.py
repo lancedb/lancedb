@@ -97,29 +97,85 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
                 valid_texts.append(text)
                 valid_indices.append(idx)
 
+        if not valid_texts:
+            return [None] * len(texts)
+
         # TODO retry, rate limit, token limit
         try:
-            kwargs = {
-                "input": valid_texts,
-                "model": self.name,
-            }
-            if self.name != "text-embedding-ada-002":
-                kwargs["dimensions"] = self.dim
-
-            rs = self._openai_client.embeddings.create(**kwargs)
-            valid_embeddings = {
-                idx: v.embedding for v, idx in zip(rs.data, valid_indices)
-            }
+            valid_embeddings = self._generate_valid_embeddings(
+                valid_texts,
+                valid_indices,
+                openai,
+            )
         except openai.AuthenticationError:
             logging.error("Authentication failed: Invalid API key provided")
             raise
-        except openai.BadRequestError:
-            logging.exception("Bad request: %s", texts)
-            return [None] * len(texts)
         except Exception:
             logging.exception("OpenAI embeddings error")
             raise
         return [valid_embeddings.get(idx, None) for idx in range(len(texts))]
+
+    def _generate_valid_embeddings(
+        self, valid_texts: List[str], valid_indices: List[int], openai
+    ) -> dict[int, List[float]]:
+        try:
+            return {
+                idx: embedding
+                for idx, embedding in zip(
+                    valid_indices,
+                    self._request_embeddings(valid_texts),
+                )
+            }
+        except openai.BadRequestError:
+            logging.warning(
+                "OpenAI rejected a batched embedding request; retrying row-by-row "
+                "to isolate invalid inputs."
+            )
+            return self._generate_embeddings_row_by_row(
+                valid_texts,
+                valid_indices,
+                openai,
+            )
+
+    def _generate_embeddings_row_by_row(
+        self, valid_texts: List[str], valid_indices: List[int], openai
+    ) -> dict[int, List[float]]:
+        valid_embeddings = {}
+
+        for idx, text in zip(valid_indices, valid_texts):
+            try:
+                embeddings = self._request_embeddings([text])
+            except openai.BadRequestError:
+                logging.warning(
+                    "OpenAI rejected embedding input at row %s; storing null so "
+                    "ingestion can continue.",
+                    idx,
+                )
+                continue
+
+            if embeddings:
+                valid_embeddings[idx] = embeddings[0]
+            else:
+                logging.warning(
+                    "OpenAI returned no embedding for row %s; storing null so "
+                    "ingestion can continue.",
+                    idx,
+                )
+
+        return valid_embeddings
+
+    def _request_embeddings(self, texts: List[str]) -> List[List[float]]:
+        rs = self._openai_client.embeddings.create(**self._request_kwargs(texts))
+        return [item.embedding for item in rs.data]
+
+    def _request_kwargs(self, texts: List[str]) -> dict:
+        kwargs = {
+            "input": texts,
+            "model": self.name,
+        }
+        if self.name != "text-embedding-ada-002":
+            kwargs["dimensions"] = self.dim
+        return kwargs
 
     @cached_property
     def _openai_client(self):
