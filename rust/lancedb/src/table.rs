@@ -83,7 +83,6 @@ use futures::future::join_all;
 pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
-use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
 pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
 pub use schema_evolution::{AddColumnsResult, AlterColumnsResult, DropColumnsResult};
@@ -2420,57 +2419,35 @@ impl BaseTable for NativeTable {
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         let dataset = self.dataset.get().await?;
-        let indices = dataset.load_indices().await?;
-        let results = futures::stream::iter(indices.as_slice()).then(|idx| async {
-
-            // skip Lance internal indexes
-            if idx.name == FRAG_REUSE_INDEX_NAME {
-                return None;
-            }
-
-            let stats = match dataset.index_statistics(idx.name.as_str()).await {
-                Ok(stats) => stats,
-                Err(e) => {
-                    log::warn!("Failed to get statistics for index {} ({}): {}", idx.name, idx.uuid, e);
-                    return None;
-                }
-            };
-
-            let stats: serde_json::Value = match serde_json::from_str(&stats) {
-                Ok(stats) => stats,
-                Err(e) => {
-                    log::warn!("Failed to deserialize index statistics for index {} ({}): {}", idx.name, idx.uuid, e);
-                    return None;
-                }
-            };
-
-            let Some(index_type) = stats.get("index_type").and_then(|v| v.as_str()) else {
-                log::warn!("Index statistics was missing 'index_type' field for index {} ({})", idx.name, idx.uuid);
-                return None;
-            };
-
-            let index_type: crate::index::IndexType = match index_type.parse() {
-                Ok(index_type) => index_type,
-                Err(e) => {
-                    log::warn!("Failed to parse index type for index {} ({}): {}", idx.name, idx.uuid, e);
-                    return None;
-                }
-            };
-
-            let mut columns = Vec::with_capacity(idx.fields.len());
-            for field_id in &idx.fields {
-                let Some(field) = dataset.schema().field_by_id(*field_id) else {
-                    log::warn!("The index {} ({}) referenced a field with id {} which does not exist in the schema", idx.name, idx.uuid, field_id);
-                    return None;
+        let indices = dataset.describe_indices(None).await?
+            .into_iter()
+            .filter_map(|idx_desc| {
+                let index_type: crate::index::IndexType = match idx_desc.index_type().parse() {
+                    Ok(index_type) => index_type,
+                    Err(e) => {
+                        log::warn!("Failed to parse index type for index {}: {}", idx_desc.name(), e);
+                        return None;
+                    }
                 };
-                columns.push(field.name.clone());
-            }
 
-            let name = idx.name.clone();
-            Some(IndexConfig { index_type, columns, name })
-        }).collect::<Vec<_>>().await;
+                let field_ids = idx_desc.field_ids();
+                let mut columns = Vec::with_capacity(field_ids.len());
+                for field_id in field_ids {
+                    let Some(field) = dataset.schema().field_by_id(*field_id as i32) else {
+                        log::warn!("The index {} referenced a field with id {} which does not exist in the schema", idx_desc.name(), field_id);
+                        return None;
+                    };
+                    columns.push(field.name.clone());
+                }
 
-        Ok(results.into_iter().flatten().collect())
+                Some(IndexConfig {
+                    name: idx_desc.name().to_string(),
+                    index_type,
+                    columns,
+                })
+            })
+            .collect();
+        Ok(indices)
     }
 
     async fn uri(&self) -> Result<String> {
@@ -3305,6 +3282,7 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 5);
 
+        // list_indices returns indices in alphabetical order by name
         let mut configs_iter = index_configs.into_iter();
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
@@ -3312,19 +3290,19 @@ mod tests {
 
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
-        assert_eq!(index.columns, vec!["is_active".to_string()]);
-
-        let index = configs_iter.next().unwrap();
-        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
         assert_eq!(index.columns, vec!["data".to_string()]);
 
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
-        assert_eq!(index.columns, vec!["large_data".to_string()]);
+        assert_eq!(index.columns, vec!["is_active".to_string()]);
 
         let index = configs_iter.next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
         assert_eq!(index.columns, vec!["large_category".to_string()]);
+
+        let index = configs_iter.next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
+        assert_eq!(index.columns, vec!["large_data".to_string()]);
     }
 
     #[tokio::test]
