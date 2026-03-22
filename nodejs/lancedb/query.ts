@@ -9,6 +9,7 @@ import {
   fromRecordBatchToBuffer,
   tableFromIPC,
 } from "./arrow";
+import { Expr, exprToSQL } from "./expr";
 import { type IvfPqOptions } from "./indices";
 import {
   JsFullTextQuery,
@@ -356,8 +357,9 @@ export class StandardQueryBase<
    * Filtering performance can often be improved by creating a scalar index
    * on the filter column(s).
    */
-  where(predicate: string): this {
-    this.doCall((inner: NativeQueryType) => inner.onlyIf(predicate));
+  where(predicate: string | Expr): this {
+    const sql = exprToSQL(predicate);
+    this.doCall((inner: NativeQueryType) => inner.onlyIf(sql));
     return this;
   }
   /**
@@ -365,7 +367,7 @@ export class StandardQueryBase<
    * @see where
    * @deprecated Use `where` instead
    */
-  filter(predicate: string): this {
+  filter(predicate: string | Expr): this {
     return this.where(predicate);
   }
 
