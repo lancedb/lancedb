@@ -1,4 +1,5 @@
-import { no } from "zod/v4/locales";
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 import { type IntoSql, toSQL as valueToSQL } from "./util"; 
 
 export type binaryOp =  "=" | "!=" | "<" | "<=" | ">=" | ">" | "AND" | "OR" | "+" | "*" | "-" | "/" | "%" | "LIKE"

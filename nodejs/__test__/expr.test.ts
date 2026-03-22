@@ -1,4 +1,5 @@
- 
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 import { col, exprToSQL, func, lit } from "../lancedb/expr";
  
 describe("Expr", () => {
