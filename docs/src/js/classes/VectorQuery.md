@@ -498,6 +498,30 @@ This is useful for pagination.
 
 ***
 
+### orderBy()
+
+```ts
+orderBy(ordering): this
+```
+
+Sort the results by the specified column(s).
+
+#### Parameters
+
+* **ordering**: [`ColumnOrdering`](../interfaces/ColumnOrdering.md) \| [`ColumnOrdering`](../interfaces/ColumnOrdering.md)[]
+
+#### Returns
+
+`this`
+
+This query builder.
+
+#### Inherited from
+
+`StandardQueryBase.orderBy`
+
+***
+
 ### outputSchema()
 
 ```ts

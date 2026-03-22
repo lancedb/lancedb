@@ -18,7 +18,7 @@ use lancedb::query::QueryBase;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::QueryFilter;
 use lancedb::query::{
-    ExecutableQuery, Query as LanceDbQuery, Select, TakeQuery as LanceDbTakeQuery,
+    ColumnOrdering, ExecutableQuery, Query as LanceDbQuery, Select, TakeQuery as LanceDbTakeQuery,
     VectorQuery as LanceDbVectorQuery,
 };
 use lancedb::table::AnyQuery;
@@ -207,6 +207,48 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
 #[derive(Clone)]
 pub struct PyQueryVectors(Vec<Arc<dyn Array>>);
 
+#[derive(Clone, FromPyObject)]
+#[pyo3(from_item_all)]
+pub struct PyColumnOrdering {
+    pub column_name: String,
+    pub ascending: bool,
+    pub nulls_first: bool,
+}
+
+impl From<ColumnOrdering> for PyColumnOrdering {
+    fn from(ordering: ColumnOrdering) -> Self {
+        Self {
+            column_name: ordering.column_name,
+            ascending: ordering.ascending,
+            nulls_first: ordering.nulls_first,
+        }
+    }
+}
+
+impl From<PyColumnOrdering> for ColumnOrdering {
+    fn from(ordering: PyColumnOrdering) -> Self {
+        Self {
+            column_name: ordering.column_name,
+            ascending: ordering.ascending,
+            nulls_first: ordering.nulls_first,
+        }
+    }
+}
+
+impl<'py> IntoPyObject<'py> for PyColumnOrdering {
+    type Target = PyDict;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: pyo3::Python<'py>) -> PyResult<Self::Output> {
+        let dict = PyDict::new(py);
+        dict.set_item("column_name", self.column_name)?;
+        dict.set_item("ascending", self.ascending)?;
+        dict.set_item("nulls_first", self.nulls_first)?;
+        Ok(dict)
+    }
+}
+
 impl<'py> IntoPyObject<'py> for PyQueryVectors {
     type Target = PyList;
     type Output = Bound<'py, Self::Target>;
@@ -246,6 +288,7 @@ pub struct PyQueryRequest {
     pub bypass_vector_index: Option<bool>,
     pub postfilter: Option<bool>,
     pub norm: Option<String>,
+    pub order_by: Option<Vec<PyColumnOrdering>>,
 }
 
 impl From<AnyQuery> for PyQueryRequest {
@@ -273,6 +316,9 @@ impl From<AnyQuery> for PyQueryRequest {
                 bypass_vector_index: None,
                 postfilter: None,
                 norm: None,
+                order_by: query_request
+                    .order_by
+                    .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
             },
             AnyQuery::VectorQuery(vector_query) => Self {
                 limit: vector_query.base.limit,
@@ -297,6 +343,10 @@ impl From<AnyQuery> for PyQueryRequest {
                 bypass_vector_index: Some(!vector_query.use_index),
                 postfilter: Some(!vector_query.base.prefilter),
                 norm: vector_query.base.norm.map(|n| n.to_string()),
+                order_by: vector_query
+                    .base
+                    .order_by
+                    .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
             },
         }
     }
@@ -461,6 +511,13 @@ impl Query {
         })
     }
 
+    pub fn order_by(&mut self, ordering: Option<Vec<PyColumnOrdering>>) -> PyResult<()> {
+        let ordering =
+            ordering.map(|ordering| ordering.into_iter().map(ColumnOrdering::from).collect());
+        self.inner.order_by(ordering).infer_error()?;
+        Ok(())
+    }
+
     #[pyo3(signature = ())]
     pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
@@ -623,6 +680,13 @@ impl FTSQuery {
         self.inner = self.inner.clone().offset(offset as usize);
     }
 
+    pub fn order_by(&mut self, ordering: Option<Vec<PyColumnOrdering>>) -> PyResult<()> {
+        let ordering =
+            ordering.map(|ordering| ordering.into_iter().map(ColumnOrdering::from).collect());
+        self.inner.order_by(ordering).infer_error()?;
+        Ok(())
+    }
+
     pub fn fast_search(&mut self) {
         self.inner = self.inner.clone().fast_search();
     }
@@ -746,6 +810,13 @@ impl VectorQuery {
 
     pub fn offset(&mut self, offset: u32) {
         self.inner = self.inner.clone().offset(offset as usize);
+    }
+
+    pub fn order_by(&mut self, ordering: Option<Vec<PyColumnOrdering>>) -> PyResult<()> {
+        let ordering =
+            ordering.map(|ordering| ordering.into_iter().map(ColumnOrdering::from).collect());
+        self.inner.order_by(ordering).infer_error()?;
+        Ok(())
     }
 
     pub fn fast_search(&mut self) {
@@ -908,6 +979,12 @@ impl HybridQuery {
     pub fn offset(&mut self, offset: u32) {
         self.inner_vec.offset(offset);
         self.inner_fts.offset(offset);
+    }
+
+    pub fn order_by(&mut self, ordering: Option<Vec<PyColumnOrdering>>) -> PyResult<()> {
+        self.inner_vec.order_by(ordering.clone())?;
+        self.inner_fts.order_by(ordering)?;
+        Ok(())
     }
 
     pub fn fast_search(&mut self) {
