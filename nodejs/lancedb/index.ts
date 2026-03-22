@@ -128,7 +128,14 @@ export {
   MultiVector,
 } from "./arrow";
 export { IntoSql, packBits } from "./util";
-
+export {
+  Expr,
+  col,
+  lit,
+  func,
+  type binaryOp,
+  type IntoExpr,
+} from "./expr"
 /**
  * Connect to a LanceDB instance at the given URI.
  *
