@@ -128,8 +128,8 @@ impl WriteProgressTracker {
 
     /// Record a batch of rows passing through the scan node.
     pub fn record_batch(&self, rows: usize, bytes: usize) {
-        // Lock the callback first to ensure non-reentrant invocation, then
-        // update state while still holding the callback lock.
+        // Lock order: callback first, then rows_and_bytes. This is the only
+        // order used anywhere, so deadlocks cannot occur.
         let mut cb = self.callback.lock().unwrap();
         let mut guard = self.rows_and_bytes.lock().unwrap();
         guard.0 += rows;
@@ -184,6 +184,20 @@ pub(crate) struct ActiveTaskGuard(Arc<AtomicUsize>);
 impl Drop for ActiveTaskGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// RAII guard that calls [`WriteProgressTracker::finish`] on drop.
+///
+/// This ensures the final `done=true` callback fires even if the write
+/// errors or the future is cancelled.
+pub(crate) struct FinishOnDrop(pub Option<Arc<WriteProgressTracker>>);
+
+impl Drop for FinishOnDrop {
+    fn drop(&mut self) {
+        if let Some(t) = self.0.take() {
+            t.finish();
+        }
     }
 }
 

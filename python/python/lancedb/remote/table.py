@@ -4,7 +4,7 @@
 from datetime import timedelta
 import logging
 from functools import cached_property
-from typing import Any, Dict, Iterable, List, Optional, Union, Literal
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union, Literal
 import warnings
 
 from lancedb._lancedb import (
@@ -35,6 +35,7 @@ import pyarrow as pa
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
+from lancedb.table import _normalize_progress
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
 from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
@@ -308,7 +309,7 @@ class RemoteTable(Table):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        progress: Optional[Any] = None,
+        progress: Optional[Union[bool, Callable, Any]] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table). It has the same API signature as
         the OSS version.
@@ -340,8 +341,6 @@ class RemoteTable(Table):
         AddResult
             An object containing the new version number of the table after adding data.
         """
-        from lancedb.table import _normalize_progress
-
         progress, owns = _normalize_progress(progress)
         try:
             return LOOP.run(

@@ -57,7 +57,6 @@ use crate::index::{Index, IndexBuilder, vector::suggested_num_sub_vectors};
 use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
-use crate::table::write_progress::WriteProgressTracker;
 use crate::utils::{
     PatchReadParam, PatchWriteParam, supported_bitmap_data_type, supported_btree_data_type,
     supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
@@ -2277,21 +2276,11 @@ impl BaseTable for NativeTable {
 
         let insert_exec = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
 
-        // The tracker is called per batch inside ScannableExec; finish() is
-        // called once execution completes (or fails) so callers always see done=true.
-        struct FinishOnDrop(Option<Arc<WriteProgressTracker>>);
-        impl Drop for FinishOnDrop {
-            fn drop(&mut self) {
-                if let Some(t) = self.0.take() {
-                    t.finish();
-                }
-            }
-        }
         let tracker_for_tasks = output.tracker.clone();
         if let Some(ref t) = tracker_for_tasks {
             t.set_total_tasks(num_partitions);
         }
-        let _finish = FinishOnDrop(output.tracker);
+        let _finish = write_progress::FinishOnDrop(output.tracker);
 
         // Execute all partitions in parallel.
         let task_ctx = Arc::new(TaskContext::default());

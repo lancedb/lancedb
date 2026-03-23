@@ -5,7 +5,7 @@ pub mod insert;
 
 use self::insert::RemoteInsertExec;
 use crate::expr::expr_to_sql_string;
-use crate::table::write_progress::WriteProgressTracker;
+use crate::table::write_progress::FinishOnDrop;
 
 use super::ARROW_STREAM_CONTENT_TYPE;
 use super::client::RequestResultExt;
@@ -1286,16 +1286,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let output = add.into_plan(&table_schema, &table_def)?;
 
-        // The tracker is called per batch inside ScannableExec; finish() is
-        // called once execution completes (or fails) so callers always see done=true.
-        struct FinishOnDrop(Option<Arc<WriteProgressTracker>>);
-        impl Drop for FinishOnDrop {
-            fn drop(&mut self) {
-                if let Some(t) = self.0.take() {
-                    t.finish();
-                }
-            }
-        }
         if let Some(ref t) = output.tracker {
             t.set_total_tasks(num_partitions);
         }
