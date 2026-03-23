@@ -74,6 +74,7 @@ pub mod optimize;
 pub mod query;
 pub mod schema_evolution;
 pub mod update;
+pub mod write_progress;
 use crate::index::waiter::wait_for_index;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::PreprocessingOutput;
@@ -2276,13 +2277,21 @@ impl BaseTable for NativeTable {
 
         let insert_exec = Arc::new(InsertExec::new(ds_wrapper.clone(), ds, plan, lance_params));
 
+        let tracker_for_tasks = output.tracker.clone();
+        if let Some(ref t) = tracker_for_tasks {
+            t.set_total_tasks(num_partitions);
+        }
+        let _finish = write_progress::FinishOnDrop(output.tracker);
+
         // Execute all partitions in parallel.
         let task_ctx = Arc::new(TaskContext::default());
         let handles = FuturesUnordered::new();
         for partition in 0..num_partitions {
             let exec = insert_exec.clone();
             let ctx = task_ctx.clone();
+            let tracker = tracker_for_tasks.clone();
             handles.push(tokio::spawn(async move {
+                let _guard = tracker.as_ref().map(|t| t.track_task());
                 let mut stream = exec
                     .execute(partition, ctx)
                     .map_err(|e| -> Error { e.into() })?;

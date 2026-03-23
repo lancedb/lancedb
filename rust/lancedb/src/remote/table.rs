@@ -5,6 +5,7 @@ pub mod insert;
 
 use self::insert::RemoteInsertExec;
 use crate::expr::expr_to_sql_string;
+use crate::table::write_progress::FinishOnDrop;
 
 use super::ARROW_STREAM_CONTENT_TYPE;
 use super::client::RequestResultExt;
@@ -939,12 +940,15 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
     async fn add_single_partition(&self, output: PreprocessingOutput) -> Result<AddResult> {
         use crate::remote::retry::RetryCounter;
 
+        let _guard = output.tracker.as_ref().map(|t| t.track_task());
+
         let mut insert: Arc<dyn ExecutionPlan> = Arc::new(RemoteInsertExec::new(
             self.name.clone(),
             self.identifier.clone(),
             self.client.clone(),
             output.plan,
             output.overwrite,
+            output.tracker.clone(),
         ));
 
         let mut retry_counter =
@@ -1045,6 +1049,11 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
         output: &PreprocessingOutput,
         num_partitions: usize,
     ) -> Result<()> {
+        debug_assert!(
+            output.rescannable,
+            "multipart inserts require rescannable input for retry support"
+        );
+
         let plan = Arc::new(
             datafusion_physical_plan::repartition::RepartitionExec::try_new(
                 output.plan.clone(),
@@ -1059,14 +1068,18 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
             plan,
             output.overwrite,
             upload_id.to_string(),
+            output.tracker.clone(),
         ));
 
         let task_ctx = Arc::new(datafusion_execution::TaskContext::default());
+        let tracker = output.tracker.clone();
         let mut join_set = tokio::task::JoinSet::new();
         for partition in 0..num_partitions {
             let exec = insert.clone();
             let ctx = task_ctx.clone();
+            let tracker = tracker.clone();
             join_set.spawn(async move {
+                let _guard = tracker.as_ref().map(|t| t.track_task());
                 let mut stream = exec
                     .execute(partition, ctx)
                     .map_err(|e| -> Error { e.into() })?;
@@ -1272,6 +1285,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         };
 
         let output = add.into_plan(&table_schema, &table_def)?;
+
+        if let Some(ref t) = output.tracker {
+            t.set_total_tasks(num_partitions);
+        }
+        let _finish = FinishOnDrop(output.tracker.clone());
 
         if num_partitions > 1 {
             self.add_multipart(output, num_partitions).await
@@ -1975,6 +1993,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             self.client.clone(),
             input,
             overwrite,
+            None,
         )))
     }
 }
@@ -5167,6 +5186,77 @@ mod tests {
             ids.iter().all(|id| id == "test-upload-123"),
             "All requests should use the same upload_id, got: {:?}",
             *ids
+        );
+    }
+
+    #[tokio::test]
+    async fn test_multipart_write_progress() {
+        let callback_count = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let last_total_tasks = Arc::new(AtomicUsize::new(0));
+        let seen_done = Arc::new(std::sync::Mutex::new(false));
+
+        let cb_count = callback_count.clone();
+        let cb_active = max_active.clone();
+        let cb_total = last_total_tasks.clone();
+        let cb_done = seen_done.clone();
+
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 4, 0),
+            move |request| {
+                let path = request.url().path();
+
+                if path == "/v1/table/my_table/describe/" {
+                    return simple_describe_response();
+                }
+                if path == "/v1/table/my_table/multipart_write/create" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"upload_id": "prog-upload"}"#.to_string())
+                        .unwrap();
+                }
+                if path == "/v1/table/my_table/insert/" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 1}"#.to_string())
+                        .unwrap();
+                }
+                if path == "/v1/table/my_table/multipart_write/complete" {
+                    return http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 3}"#.to_string())
+                        .unwrap();
+                }
+                panic!("Unexpected request path: {}", path);
+            },
+        );
+
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        table
+            .add(vec![batch])
+            .write_parallelism(2)
+            .progress(move |p| {
+                cb_count.fetch_add(1, Ordering::SeqCst);
+                cb_active.fetch_max(p.active_tasks(), Ordering::SeqCst);
+                cb_total.store(p.total_tasks(), Ordering::SeqCst);
+                if p.done() {
+                    *cb_done.lock().unwrap() = true;
+                }
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        assert!(
+            callback_count.load(Ordering::SeqCst) >= 1,
+            "expected at least one progress callback"
+        );
+        assert!(*seen_done.lock().unwrap(), "must see done=true");
+        assert_eq!(last_total_tasks.load(Ordering::SeqCst), 2);
+        assert!(
+            max_active.load(Ordering::SeqCst) >= 1,
+            "expected at least one active task"
         );
     }
 

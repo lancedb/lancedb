@@ -135,7 +135,10 @@ class Table:
     def close(self) -> None: ...
     async def schema(self) -> pa.Schema: ...
     async def add(
-        self, data: pa.RecordBatchReader, mode: Literal["append", "overwrite"]
+        self,
+        data: pa.RecordBatchReader,
+        mode: Literal["append", "overwrite"],
+        progress: Optional[Any] = None,
     ) -> AddResult: ...
     async def update(
         self, updates: Dict[str, str], where: Optional[str]

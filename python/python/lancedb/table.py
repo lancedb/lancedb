@@ -14,6 +14,7 @@ from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     Dict,
     Iterable,
     List,
@@ -556,6 +557,21 @@ def _table_uri(base: str, table_name: str) -> str:
     return join_uri(base, f"{table_name}.lance")
 
 
+def _normalize_progress(progress):
+    """Normalize a ``progress`` parameter for :meth:`Table.add`.
+
+    Returns ``(progress_obj, owns)`` where *owns* is True when we created a
+    tqdm bar that the caller must close.
+    """
+    if progress is True:
+        from tqdm.auto import tqdm
+
+        return tqdm(unit=" rows"), True
+    if progress is False or progress is None:
+        return None, False
+    return progress, False
+
+
 class Table(ABC):
     """
     A Table is a collection of Records in a LanceDB Database.
@@ -974,6 +990,7 @@ class Table(ABC):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
+        progress: Optional[Union[bool, Callable, Any]] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -995,6 +1012,29 @@ class Table(ABC):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: bool, callable, or tqdm-like, optional
+            Progress reporting during the add operation. Can be:
+
+            - ``True`` to automatically create and display a tqdm progress
+              bar (requires ``tqdm`` to be installed)::
+
+                table.add(data, progress=True)
+
+            - A **callable** that receives a dict with keys ``output_rows``,
+              ``output_bytes``, ``total_rows``, ``elapsed_seconds``,
+              ``active_tasks``, ``total_tasks``, and ``done``::
+
+                def on_progress(p):
+                    print(f"{p['output_rows']}/{p['total_rows']} rows, "
+                          f"{p['active_tasks']}/{p['total_tasks']} workers")
+                table.add(data, progress=on_progress)
+
+            - A **tqdm-compatible** progress bar whose ``total`` and
+              ``update()`` will be called automatically. The postfix shows
+              write throughput (MB/s) and active worker count::
+
+                with tqdm() as pbar:
+                    table.add(data, progress=pbar)
 
         Returns
         -------
@@ -2492,6 +2532,7 @@ class LanceTable(Table):
         mode: AddMode = "append",
         on_bad_vectors: OnBadVectorsType = "error",
         fill_value: float = 0.0,
+        progress: Optional[Union[bool, Callable, Any]] = None,
     ) -> AddResult:
         """Add data to the table.
         If vector columns are missing and the table
@@ -2510,17 +2551,29 @@ class LanceTable(Table):
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: bool, callable, or tqdm-like, optional
+            A callback or tqdm-compatible progress bar. See
+            :meth:`Table.add` for details.
 
         Returns
         -------
         int
             The number of vectors in the table.
         """
-        return LOOP.run(
-            self._table.add(
-                data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        progress, owns = _normalize_progress(progress)
+        try:
+            return LOOP.run(
+                self._table.add(
+                    data,
+                    mode=mode,
+                    on_bad_vectors=on_bad_vectors,
+                    fill_value=fill_value,
+                    progress=progress,
+                )
             )
-        )
+        finally:
+            if owns:
+                progress.close()
 
     def merge(
         self,
@@ -3769,6 +3822,7 @@ class AsyncTable:
         mode: Optional[Literal["append", "overwrite"]] = "append",
         on_bad_vectors: Optional[OnBadVectorsType] = None,
         fill_value: Optional[float] = None,
+        progress: Optional[Union[bool, Callable, Any]] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table).
 
@@ -3790,6 +3844,9 @@ class AsyncTable:
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: callable or tqdm-like, optional
+            A callback or tqdm-compatible progress bar. See
+            :meth:`Table.add` for details.
 
         """
         schema = await self.schema()
@@ -3813,8 +3870,9 @@ class AsyncTable:
             )
         _register_optional_converters()
         data = to_scannable(data)
+        progress, owns = _normalize_progress(progress)
         try:
-            return await self._inner.add(data, mode or "append")
+            return await self._inner.add(data, mode or "append", progress=progress)
         except RuntimeError as e:
             if "Cast error" in str(e):
                 raise ValueError(e)
@@ -3822,6 +3880,9 @@ class AsyncTable:
                 raise ValueError(e)
             else:
                 raise
+        finally:
+            if owns:
+                progress.close()
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """

@@ -4861,6 +4861,7 @@ dependencies = [
  "lance-namespace",
  "lance-namespace-impls",
  "lancedb",
+ "log",
  "pin-project",
  "pyo3",
  "pyo3-async-runtimes",
