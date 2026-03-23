@@ -321,39 +321,46 @@ impl Table {
                 op = op.progress(move |p| {
                     Python::attach(|py| {
                         let dict = PyDict::new(py);
-                        dict.set_item("output_rows", p.output_rows()).ok();
-                        dict.set_item("output_bytes", p.output_bytes()).ok();
-                        dict.set_item("total_rows", p.total_rows()).ok();
-                        dict.set_item("elapsed_seconds", p.elapsed().as_secs_f64())
-                            .ok();
-                        dict.set_item("active_tasks", p.active_tasks()).ok();
-                        dict.set_item("total_tasks", p.total_tasks()).ok();
-                        dict.set_item("done", p.done()).ok();
+                        if let Err(e) = dict
+                            .set_item("output_rows", p.output_rows())
+                            .and_then(|_| dict.set_item("output_bytes", p.output_bytes()))
+                            .and_then(|_| dict.set_item("total_rows", p.total_rows()))
+                            .and_then(|_| {
+                                dict.set_item("elapsed_seconds", p.elapsed().as_secs_f64())
+                            })
+                            .and_then(|_| dict.set_item("active_tasks", p.active_tasks()))
+                            .and_then(|_| dict.set_item("total_tasks", p.total_tasks()))
+                            .and_then(|_| dict.set_item("done", p.done()))
+                        {
+                            log::warn!("progress dict error: {e}");
+                            return;
+                        }
                         if let Err(e) = progress_obj.call1(py, (dict,)) {
-                            eprintln!("progress callback error: {e}");
+                            log::warn!("progress callback error: {e}");
                         }
                     });
                 });
             } else {
                 // tqdm-like: has update() method.
-                let last_rows = std::sync::atomic::AtomicUsize::new(0);
-                let total_set = std::sync::atomic::AtomicBool::new(false);
+                let mut last_rows: usize = 0;
+                let mut total_set = false;
                 op = op.progress(move |p| {
                     let current = p.output_rows();
-                    let prev = last_rows.swap(current, std::sync::atomic::Ordering::Relaxed);
+                    let prev = last_rows;
+                    last_rows = current;
                     Python::attach(|py| {
                         if let Some(total) = p.total_rows()
-                            && !total_set.load(std::sync::atomic::Ordering::Relaxed)
+                            && !total_set
                         {
                             if let Err(e) = progress_obj.setattr(py, "total", total) {
-                                eprintln!("progress setattr error: {e}");
+                                log::warn!("progress setattr error: {e}");
                             }
-                            total_set.store(true, std::sync::atomic::Ordering::Relaxed);
+                            total_set = true;
                         }
                         let delta = current.saturating_sub(prev);
                         if delta > 0 {
                             if let Err(e) = progress_obj.call_method1(py, "update", (delta,)) {
-                                eprintln!("progress update error: {e}");
+                                log::warn!("progress update error: {e}");
                             }
                             // Show throughput and active workers in tqdm postfix.
                             let elapsed = p.elapsed().as_secs_f64();
@@ -365,14 +372,18 @@ impl Table {
                                     p.active_tasks(),
                                     p.total_tasks()
                                 );
-                                progress_obj
-                                    .call_method1(py, "set_postfix_str", (postfix,))
-                                    .ok();
+                                if let Err(e) =
+                                    progress_obj.call_method1(py, "set_postfix_str", (postfix,))
+                                {
+                                    log::warn!("progress set_postfix_str error: {e}");
+                                }
                             }
                         }
                         if p.done() {
                             // Force a final refresh so the bar shows completion.
-                            progress_obj.call_method0(py, "refresh").ok();
+                            if let Err(e) = progress_obj.call_method0(py, "refresh") {
+                                log::warn!("progress refresh error: {e}");
+                            }
                         }
                     });
                 });

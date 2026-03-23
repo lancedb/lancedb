@@ -6,8 +6,8 @@
 //! You can add a callback to process progress in [`crate::table::AddDataBuilder::progress`].
 //! [`WriteProgress`] is the struct passed to the callback.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Progress snapshot for a write operation.
@@ -69,12 +69,18 @@ impl WriteProgress {
 }
 
 /// Callback type for progress updates.
-pub type ProgressCallback = Arc<dyn Fn(&WriteProgress) + Send + Sync>;
+///
+/// Callbacks are serialized by the tracker and are never invoked reentrantly,
+/// so `FnMut` is safe to use here.
+pub type ProgressCallback = Arc<Mutex<dyn FnMut(&WriteProgress) + Send>>;
 
 /// Tracks progress of a write operation and invokes a [`ProgressCallback`].
 ///
 /// Call [`WriteProgressTracker::record_batch`] for each batch written.
 /// Call [`WriteProgressTracker::finish`] once after all data is written.
+///
+/// The callback is never invoked reentrantly: all state updates and callback
+/// invocations are serialized behind a single lock.
 impl std::fmt::Debug for WriteProgressTracker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WriteProgressTracker")
@@ -122,15 +128,15 @@ impl WriteProgressTracker {
 
     /// Record a batch of rows passing through the scan node.
     pub fn record_batch(&self, rows: usize, bytes: usize) {
-        let progress = {
-            // We hold a lock here to update the rows/bytes counts atomically,
-            // since multiple batches may be processed concurrently.
-            let mut guard = self.rows_and_bytes.lock().unwrap();
-            guard.0 += rows;
-            guard.1 += bytes;
-            self.snapshot(guard.0, guard.1, false)
-        };
-        (self.callback)(&progress);
+        // Lock the callback first to ensure non-reentrant invocation, then
+        // update state while still holding the callback lock.
+        let mut cb = self.callback.lock().unwrap();
+        let mut guard = self.rows_and_bytes.lock().unwrap();
+        guard.0 += rows;
+        guard.1 += bytes;
+        let progress = self.snapshot(guard.0, guard.1, false);
+        drop(guard);
+        cb(&progress);
     }
 
     /// Record wire bytes from the insert layer (e.g. IPC-encoded bytes for
@@ -145,13 +151,12 @@ impl WriteProgressTracker {
     /// `total_rows` is always `Some` on the final callback: it uses the known
     /// total if available, or falls back to the number of rows actually written.
     pub fn finish(&self) {
-        let progress = {
-            let guard = self.rows_and_bytes.lock().unwrap();
-            let mut snap = self.snapshot(guard.0, guard.1, true);
-            snap.total_rows = Some(self.total_rows.unwrap_or(guard.0));
-            snap
-        };
-        (self.callback)(&progress);
+        let mut cb = self.callback.lock().unwrap();
+        let guard = self.rows_and_bytes.lock().unwrap();
+        let mut snap = self.snapshot(guard.0, guard.1, true);
+        snap.total_rows = Some(self.total_rows.unwrap_or(guard.0));
+        drop(guard);
+        cb(&snap);
     }
 
     fn snapshot(&self, rows: usize, in_memory_bytes: usize, done: bool) -> WriteProgress {

@@ -124,8 +124,8 @@ impl AddDataBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn progress(mut self, callback: impl Fn(&WriteProgress) + Send + Sync + 'static) -> Self {
-        self.progress_callback = Some(Arc::new(callback));
+    pub fn progress(mut self, callback: impl FnMut(&WriteProgress) + Send + 'static) -> Self {
+        self.progress_callback = Some(Arc::new(std::sync::Mutex::new(callback)));
         self
     }
 
