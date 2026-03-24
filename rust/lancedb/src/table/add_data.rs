@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Fields, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema};
 use lance::dataset::WriteMode;
 use serde::{Deserialize, Serialize};
 
@@ -178,9 +178,20 @@ impl AddDataBuilder {
             .map(|cb| Arc::new(WriteProgressTracker::new(cb, self.data.num_rows())));
         let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> =
             Arc::new(ScannableExec::new(self.data, tracker.clone()));
-        // Skip casting when overwriting — the input schema replaces the table schema.
         let plan = if overwrite {
-            plan
+            // For overwrite, cast columns that match the table schema to preserve
+            // original types (e.g. fixed_size_list<float32> instead of list<double>).
+            // Columns unique to the input pass through as-is.
+            let input_schema = plan.schema();
+            let target_fields: Vec<Field> = input_schema
+                .fields()
+                .iter()
+                .map(|f| match table_schema.field_with_name(f.name()) {
+                    Ok(tf) => tf.clone(),
+                    Err(_) => f.as_ref().clone(),
+                })
+                .collect();
+            cast_to_table_schema(plan, &Schema::new(target_fields))?
         } else {
             cast_to_table_schema(plan, table_schema)?
         };
@@ -447,6 +458,86 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), new_batch.num_rows());
+    }
+
+    #[tokio::test]
+    async fn test_add_overwrite_preserves_vector_type() {
+        let table_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "embedding",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                false,
+            ),
+        ]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("overwrite_cast", table_schema.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        // Insert initial data with correct types
+        let initial = RecordBatch::try_new(
+            table_schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1])),
+                Arc::new(
+                    FixedSizeListArray::try_new(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        4,
+                        Arc::new(Float32Array::from(vec![0.1f32, 0.2, 0.3, 0.4])),
+                        None,
+                    )
+                    .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        table.add(initial).execute().await.unwrap();
+
+        // Overwrite with list<double> (mimics PyArrow type inference)
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "embedding",
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+                false,
+            ),
+        ]));
+        let overwrite_batch = RecordBatch::try_new(
+            input_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![2, 3])),
+                Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                    Some(vec![1.0, 2.0, 3.0, 4.0].into_iter().map(Some)),
+                    Some(vec![5.0, 6.0, 7.0, 8.0].into_iter().map(Some)),
+                ])),
+            ],
+        )
+        .unwrap();
+
+        table
+            .add(overwrite_batch)
+            .mode(AddDataMode::Overwrite)
+            .execute()
+            .await
+            .unwrap();
+
+        let result_schema = table.schema().await.unwrap();
+        assert_eq!(
+            result_schema
+                .field_with_name("embedding")
+                .unwrap()
+                .data_type(),
+            table_schema
+                .field_with_name("embedding")
+                .unwrap()
+                .data_type(),
+            "overwrite should preserve fixed_size_list<float32> vector type"
+        );
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
     }
 
     #[tokio::test]
