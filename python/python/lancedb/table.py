@@ -3859,7 +3859,7 @@ class AsyncTable:
         # new code path is ready.
         if on_bad_vectors != "error" or (
             schema.metadata is not None and b"embedding_functions" in schema.metadata
-        ):
+        ) or mode == "overwrite":
             data = _sanitize_data(
                 data,
                 schema,
