@@ -4615,7 +4615,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb"
-version = "0.27.2-beta.0"
+version = "0.27.2-beta.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -4697,7 +4697,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-nodejs"
-version = "0.27.2-beta.0"
+version = "0.27.2-beta.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -4717,7 +4717,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-python"
-version = "0.30.2-beta.0"
+version = "0.30.2-beta.1"
 dependencies = [
  "arrow",
  "async-trait",
