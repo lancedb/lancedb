@@ -1202,7 +1202,7 @@ async def test_header_provider_overrides_static_headers():
 
 
 def test_close():
-    """Test that close() works without AttributeError (regression for _client vs _conn)."""
+    """Test that close() works without AttributeError."""
     import asyncio
 
     def handler(req):
