@@ -568,4 +568,4 @@ class RemoteDBConnection(DBConnection):
 
     async def close(self):
         """Close the connection to the database."""
-        self._client.close()
+        self._conn.close()
