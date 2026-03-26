@@ -23,8 +23,10 @@ runs:
   steps:
     - name: CONFIRM ARM BUILD
       shell: bash
+      env:
+        ARM_BUILD: ${{ inputs.arm-build }}
       run: |
-        echo "ARM BUILD: ${{ inputs.arm-build }}"
+        echo "ARM BUILD: $ARM_BUILD"
     - name: Build x86_64 Manylinux wheel
       if: ${{ inputs.arm-build == 'false' }}
       uses: PyO3/maturin-action@v1
