@@ -117,8 +117,9 @@ export type TableLike =
 export type IntoVector =
   | Float32Array
   | Float64Array
+  | Uint8Array
   | number[]
-  | Promise<Float32Array | Float64Array | number[]>;
+  | Promise<Float32Array | Float64Array | Uint8Array | number[]>;
 
 export type MultiVector = IntoVector[];
 
@@ -130,8 +131,36 @@ export function isIntoVector(value: unknown): value is IntoVector {
   return (
     value instanceof Float32Array ||
     value instanceof Float64Array ||
+    value instanceof Uint8Array ||
+    (typeof globalThis.Float16Array !== "undefined" &&
+      value instanceof globalThis.Float16Array) ||
     (Array.isArray(value) && !Array.isArray(value[0]))
   );
+}
+
+/**
+ * Extract the underlying byte buffer and data type from a typed array
+ * for passing to the Rust NAPI layer without precision loss.
+ */
+export function extractVectorBuffer(
+  vector: Float32Array | Float64Array | Uint8Array,
+): { data: Uint8Array; dtype: string } | null {
+  if (typeof globalThis.Float16Array !== "undefined" && vector instanceof globalThis.Float16Array) {
+    return {
+      data: new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength),
+      dtype: "float16",
+    };
+  }
+  if (vector instanceof Float64Array) {
+    return {
+      data: new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength),
+      dtype: "float64",
+    };
+  }
+  if (vector instanceof Uint8Array && !(vector instanceof Float32Array)) {
+    return { data: vector, dtype: "uint8" };
+  }
+  return null;
 }
 
 export function isArrowTable(value: object): value is TableLike {

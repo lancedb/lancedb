@@ -3,6 +3,9 @@
 
 use std::sync::Arc;
 
+use arrow_array::{Array, Float16Array as ArrowFloat16Array, Float32Array as ArrowFloat32Array, Float64Array as ArrowFloat64Array, UInt8Array as ArrowUInt8Array};
+use arrow_buffer::{Buffer, ScalarBuffer};
+use half::f16;
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
     Operator, PhraseQuery,
@@ -23,6 +26,32 @@ use crate::iterator::RecordBatchIterator;
 use crate::rerankers::RerankHybridCallbackArgs;
 use crate::rerankers::Reranker;
 use crate::util::{parse_distance_type, schema_to_buffer};
+
+fn bytes_to_arrow_array(data: Uint8Array, dtype: String) -> napi::Result<Arc<dyn Array>> {
+    let buf = Buffer::from(data.to_vec());
+    match dtype.as_str() {
+        "float16" => {
+            let scalar_buf = ScalarBuffer::<f16>::new(buf, 0, buf.len() / 2);
+            Ok(Arc::new(ArrowFloat16Array::new(scalar_buf, None)))
+        }
+        "float32" => {
+            let scalar_buf = ScalarBuffer::<f32>::new(buf, 0, buf.len() / 4);
+            Ok(Arc::new(ArrowFloat32Array::new(scalar_buf, None)))
+        }
+        "float64" => {
+            let scalar_buf = ScalarBuffer::<f64>::new(buf, 0, buf.len() / 8);
+            Ok(Arc::new(ArrowFloat64Array::new(scalar_buf, None)))
+        }
+        "uint8" => {
+            let scalar_buf = ScalarBuffer::<u8>::new(buf, 0, buf.len());
+            Ok(Arc::new(ArrowUInt8Array::new(scalar_buf, None)))
+        }
+        _ => Err(napi::Error::from_reason(format!(
+            "Unsupported vector dtype: {}. Expected one of: float16, float32, float64, uint8",
+            dtype
+        ))),
+    }
+}
 
 #[napi]
 pub struct Query {
@@ -75,6 +104,13 @@ impl Query {
             .clone()
             .nearest_to(vector.as_ref())
             .default_error()?;
+        Ok(VectorQuery { inner })
+    }
+
+    #[napi]
+    pub fn nearest_to_raw(&mut self, data: Uint8Array, dtype: String) -> Result<VectorQuery> {
+        let array = bytes_to_arrow_array(data, dtype).default_error()?;
+        let inner = self.inner.clone().nearest_to(array).default_error()?;
         Ok(VectorQuery { inner })
     }
 
@@ -160,6 +196,13 @@ impl VectorQuery {
             .clone()
             .add_query_vector(vector.as_ref())
             .default_error()?;
+        Ok(())
+    }
+
+    #[napi]
+    pub fn add_query_vector_raw(&mut self, data: Uint8Array, dtype: String) -> Result<()> {
+        let array = bytes_to_arrow_array(data, dtype).default_error()?;
+        self.inner = self.inner.clone().add_query_vector(array).default_error()?;
         Ok(())
     }
 
