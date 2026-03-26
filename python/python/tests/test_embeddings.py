@@ -242,6 +242,51 @@ def test_embedding_with_bad_results(tmp_path):
     assert tbl["vector"].null_count == 1
 
 
+def test_embedding_with_empty_output_vectors(tmp_path):
+    """Regression test for issue #1672.
+
+    When an embedding function returns an empty list (e.g. for empty-string
+    inputs), _append_vector_columns used to crash because PyArrow cannot cast
+    [] into a fixed-size list element.  The fix replaces wrong-length vectors
+    with None before building the Arrow array so that _handle_bad_vectors can
+    process them normally.
+    """
+
+    @register("empty-vec-embedding")
+    class EmptyVecEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 128
+
+        def generate_embeddings(
+            self, texts: Union[List[str], np.ndarray]
+        ) -> list:
+            # Simulate a model that returns an empty list for blank inputs
+            return [
+                [] if text.strip() == "" else np.random.randn(self.ndims()).tolist()
+                for text in texts
+            ]
+
+    db = lancedb.connect(tmp_path)
+    registry = EmbeddingFunctionRegistry.get_instance()
+    model = registry.get("empty-vec-embedding").create()
+
+    class Schema(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    table = db.create_table("test_empty_vec", schema=Schema, mode="overwrite")
+
+    # Should not crash; the row with the empty string should be dropped
+    table.add(
+        [{"text": "hello world"}, {"text": ""}, {"text": "foo"}],
+        on_bad_vectors="drop",
+    )
+
+    assert len(table) == 2
+    texts = table.to_arrow()["text"].to_pylist()
+    assert "" not in texts
+
+
 def test_with_existing_vectors(tmp_path):
     @register("mock-embedding")
     class MockEmbeddingFunction(TextEmbeddingFunction):
