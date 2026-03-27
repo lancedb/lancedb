@@ -2,3 +2,4 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 pub mod object_store;
+pub mod read_files;

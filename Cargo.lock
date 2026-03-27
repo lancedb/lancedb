@@ -1985,6 +1985,7 @@ dependencies = [
  "datafusion-datasource-arrow",
  "datafusion-datasource-csv",
  "datafusion-datasource-json",
+ "datafusion-datasource-parquet",
  "datafusion-execution",
  "datafusion-expr",
  "datafusion-expr-common",
@@ -2006,6 +2007,7 @@ dependencies = [
  "log",
  "object_store",
  "parking_lot",
+ "parquet",
  "rand 0.9.2",
  "regex",
  "sqlparser 0.59.0",
@@ -2079,6 +2081,7 @@ dependencies = [
  "libc",
  "log",
  "object_store",
+ "parquet",
  "paste",
  "sqlparser 0.59.0",
  "tokio",
@@ -2191,6 +2194,36 @@ dependencies = [
  "datafusion-session",
  "futures",
  "object_store",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-datasource-parquet"
+version = "52.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23798383465e0c569bd442d1453b50691261f8ad6511d840c48457b3bf51ae21"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "bytes",
+ "datafusion-common",
+ "datafusion-common-runtime",
+ "datafusion-datasource",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions-aggregate-common",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-adapter",
+ "datafusion-physical-expr-common",
+ "datafusion-physical-plan",
+ "datafusion-pruning",
+ "datafusion-session",
+ "futures",
+ "itertools 0.14.0",
+ "log",
+ "object_store",
+ "parking_lot",
+ "parquet",
  "tokio",
 ]
 
@@ -3007,6 +3040,7 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -3956,6 +3990,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "integer-encoding"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bb03732005da905c88227371639bf1ad885cc712789c011c31c5fb3ab3ccf02"
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4099,7 +4139,7 @@ dependencies = [
  "jiff",
  "nom 8.0.0",
  "num-traits",
- "ordered-float",
+ "ordered-float 5.1.0",
  "rand 0.9.2",
  "ryu",
  "serde",
@@ -5543,6 +5583,15 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "ordered-float"
+version = "2.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "ordered-float"
 version = "5.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f4779c6901a562440c3786d08192c6fbda7c1c2060edd10006b05ee35d10f2d"
@@ -5613,6 +5662,43 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "parquet"
+version = "57.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ee96b29972a257b855ff2341b37e61af5f12d6af1158b6dcdb5b31ea07bb3cb"
+dependencies = [
+ "ahash",
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-cast",
+ "arrow-data",
+ "arrow-ipc",
+ "arrow-schema",
+ "arrow-select",
+ "base64 0.22.1",
+ "brotli 8.0.2",
+ "bytes",
+ "chrono",
+ "flate2",
+ "futures",
+ "half",
+ "hashbrown 0.16.1",
+ "lz4_flex 0.12.1",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "object_store",
+ "paste",
+ "seq-macro",
+ "simdutf8",
+ "snap",
+ "thrift",
+ "tokio",
+ "twox-hash",
+ "zstd",
 ]
 
 [[package]]
@@ -7591,6 +7677,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "snap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
+
+[[package]]
 name = "socket2"
 version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8153,6 +8245,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "thrift"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e54bc85fc7faa8bc175c4bab5b92ba8d9a3ce893d0e9f42cc455c8ab16a9e09"
+dependencies = [
+ "byteorder",
+ "integer-encoding",
+ "ordered-float 2.10.1",
 ]
 
 [[package]]
@@ -9378,6 +9481,12 @@ dependencies = [
  "memchr",
  "typed-path",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3be3d40e40a133f9c916ee3f9f4fa2d9d63435b5fbe1bfc6d9dae0aa0ada1513"
 
 [[package]]
 name = "zmij"

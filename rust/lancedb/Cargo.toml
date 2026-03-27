@@ -29,7 +29,7 @@ datafusion-functions.workspace = true
 datafusion-physical-expr.workspace = true
 datafusion-sql.workspace = true
 datafusion-physical-plan.workspace = true
-datafusion.workspace = true
+datafusion = { workspace = true, features = ["parquet"] }
 object_store = { workspace = true }
 snafu = { workspace = true }
 half = { workspace = true }
