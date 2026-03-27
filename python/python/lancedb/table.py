@@ -278,7 +278,7 @@ def _sanitize_data(
 
     if metadata:
         new_metadata = target_schema.metadata or {}
-        new_metadata = new_metadata.update(metadata)
+        new_metadata.update(metadata)
         target_schema = target_schema.with_metadata(new_metadata)
 
     _validate_schema(target_schema)
