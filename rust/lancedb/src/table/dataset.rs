@@ -82,7 +82,7 @@ impl DatasetConsistencyWrapper {
     /// pinned dataset regardless of consistency mode.
     pub async fn get(&self) -> Result<Arc<Dataset>> {
         {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock()?;
             if state.pinned_version.is_some() {
                 return Ok(state.dataset.clone());
             }
@@ -101,7 +101,7 @@ impl DatasetConsistencyWrapper {
             }
             ConsistencyMode::Strong => refresh_latest(self.state.clone()).await,
             ConsistencyMode::Lazy => {
-                let state = self.state.lock().unwrap();
+                let state = self.state.lock()?;
                 Ok(state.dataset.clone())
             }
         }
@@ -116,7 +116,7 @@ impl DatasetConsistencyWrapper {
     /// concurrent [`as_time_travel`](Self::as_time_travel) call), the update
     /// is silently ignored — the write already committed to storage.
     pub fn update(&self, dataset: Dataset) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.pinned_version.is_some() {
             // A concurrent as_time_travel() beat us here. The write succeeded
             // in storage, but since we're now pinned we don't advance the
@@ -139,7 +139,7 @@ impl DatasetConsistencyWrapper {
 
     /// Check that the dataset is in a mutable mode (Latest).
     pub fn ensure_mutable(&self) -> Result<()> {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock()?;
         if state.pinned_version.is_some() {
             Err(crate::Error::InvalidInput {
                 message: "table cannot be modified when a specific version is checked out"
@@ -152,13 +152,16 @@ impl DatasetConsistencyWrapper {
 
     /// Returns the version, if in time travel mode, or None otherwise.
     pub fn time_travel_version(&self) -> Option<u64> {
-        self.state.lock().unwrap().pinned_version
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pinned_version
     }
 
     /// Convert into a wrapper in latest version mode.
     pub async fn as_latest(&self) -> Result<()> {
         let dataset = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock()?;
             if state.pinned_version.is_none() {
                 return Ok(());
             }
@@ -168,7 +171,7 @@ impl DatasetConsistencyWrapper {
         let latest_version = dataset.latest_version_id().await?;
         let new_dataset = dataset.checkout_version(latest_version).await?;
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock()?;
         if state.pinned_version.is_some() {
             state.dataset = Arc::new(new_dataset);
             state.pinned_version = None;
@@ -184,7 +187,7 @@ impl DatasetConsistencyWrapper {
         let target_ref = target_version.into();
 
         let (should_checkout, dataset) = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock()?;
             let should = match state.pinned_version {
                 None => true,
                 Some(version) => match &target_ref {
@@ -204,7 +207,7 @@ impl DatasetConsistencyWrapper {
         let new_dataset = dataset.checkout_version(target_ref).await?;
         let version_value = new_dataset.version().version;
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock()?;
         state.dataset = Arc::new(new_dataset);
         state.pinned_version = Some(version_value);
         Ok(())
@@ -212,7 +215,7 @@ impl DatasetConsistencyWrapper {
 
     pub async fn reload(&self) -> Result<()> {
         let (dataset, pinned_version) = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock()?;
             (state.dataset.clone(), state.pinned_version)
         };
 
@@ -230,7 +233,7 @@ impl DatasetConsistencyWrapper {
 
                 let new_dataset = dataset.checkout_version(version).await?;
 
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock()?;
                 if state.pinned_version == Some(version) {
                     state.dataset = Arc::new(new_dataset);
                 }
@@ -242,14 +245,14 @@ impl DatasetConsistencyWrapper {
 }
 
 async fn refresh_latest(state: Arc<Mutex<DatasetState>>) -> Result<Arc<Dataset>> {
-    let dataset = { state.lock().unwrap().dataset.clone() };
+    let dataset = { state.lock()?.dataset.clone() };
 
     let mut ds = (*dataset).clone();
     ds.checkout_latest().await?;
     let new_arc = Arc::new(ds);
 
     {
-        let mut state = state.lock().unwrap();
+        let mut state = state.lock()?;
         if state.pinned_version.is_none()
             && new_arc.manifest().version >= state.dataset.manifest().version
         {
@@ -611,5 +614,109 @@ mod tests {
         }
         let s = io_stats.incremental_stats();
         assert_eq!(s.read_iops, 0, "step 5, elapsed={:?}", start.elapsed());
+    }
+
+    /// Helper: poison the mutex inside a DatasetConsistencyWrapper.
+    fn poison_state(wrapper: &DatasetConsistencyWrapper) {
+        let state = wrapper.state.clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = state.lock().unwrap();
+            panic!("intentional panic to poison mutex");
+        });
+        let _ = handle.join(); // join collects the panic
+        assert!(wrapper.state.lock().is_err(), "mutex should be poisoned");
+    }
+
+    #[tokio::test]
+    async fn test_get_returns_error_on_poisoned_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        poison_state(&wrapper);
+
+        // get() should return Err, not panic
+        let result = wrapper.get().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_ensure_mutable_returns_error_on_poisoned_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        poison_state(&wrapper);
+
+        let result = wrapper.ensure_mutable();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_update_recovers_from_poisoned_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+        let ds_v2 = append_to_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        poison_state(&wrapper);
+
+        // update() returns (), should not panic
+        wrapper.update(ds_v2);
+    }
+
+    #[tokio::test]
+    async fn test_time_travel_version_recovers_from_poisoned_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        poison_state(&wrapper);
+
+        // Should not panic, returns whatever was in the mutex
+        let _version = wrapper.time_travel_version();
+    }
+
+    #[tokio::test]
+    async fn test_as_latest_returns_error_on_poisoned_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        poison_state(&wrapper);
+
+        let result = wrapper.as_latest().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_as_time_travel_returns_error_on_poisoned_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        poison_state(&wrapper);
+
+        let result = wrapper.as_time_travel(1u64).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_reload_returns_error_on_poisoned_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let ds = create_test_dataset(uri).await;
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        poison_state(&wrapper);
+
+        let result = wrapper.reload().await;
+        assert!(result.is_err());
     }
 }

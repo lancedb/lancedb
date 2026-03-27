@@ -204,7 +204,9 @@ impl ExecutionPlan for InsertExec {
 
             let to_commit = {
                 // Don't hold the lock over an await point.
-                let mut txns = partial_transactions.lock().unwrap();
+                let mut txns = partial_transactions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 txns.push(transaction);
                 if txns.len() == total_partitions {
                     Some(std::mem::take(&mut *txns))

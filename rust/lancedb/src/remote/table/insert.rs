@@ -130,7 +130,10 @@ impl<S: HttpSend + 'static> RemoteInsertExec<S> {
     // TODO: this will be used when we wire this up to Table::add().
     #[allow(dead_code)]
     pub fn add_result(&self) -> Option<AddResult> {
-        self.add_result.lock().unwrap().clone()
+        self.add_result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Stream the input into an HTTP body as an Arrow IPC stream, capturing any
