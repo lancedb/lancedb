@@ -293,3 +293,5 @@ export async function connect(
   );
   return new LocalConnection(nativeConn);
 }
+
+export { FileSource, readFiles } from "./file_source";
