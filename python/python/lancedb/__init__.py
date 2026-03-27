@@ -27,6 +27,7 @@ from .namespace import (
     LanceNamespaceDBConnection,
     AsyncLanceNamespaceDBConnection,
 )
+from .read_files import FileSource, read_files
 
 
 def _check_s3_bucket_with_dots(
@@ -271,12 +272,14 @@ __all__ = [
     "AsyncConnection",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
+    "FileSource",
     "URI",
     "sanitize_uri",
     "vector",
     "DBConnection",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
+    "read_files",
     "RemoteDBConnection",
     "Session",
     "StorageOptionsProvider",
