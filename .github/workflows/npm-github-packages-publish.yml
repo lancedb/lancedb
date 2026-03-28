@@ -1,0 +1,280 @@
+name: NPM GitHub Packages Publish
+
+env:
+  MACOSX_DEPLOYMENT_TARGET: '10.13'
+  CARGO_INCREMENTAL: '0'
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+on:
+  # Publish a nightly build on every push to main
+  push:
+    branches:
+      - main
+  # Manual trigger: choose between nightly and release
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type'
+        required: true
+        default: 'nightly'
+        type: choice
+        options:
+          - nightly
+          - release
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-lancedb:
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - target: aarch64-apple-darwin
+            host: macos-latest
+            features: fp16kernels
+            pre_build: brew install protobuf
+          - target: x86_64-pc-windows-msvc
+            host: windows-latest
+            features: ","
+            pre_build: |-
+              choco install --no-progress protoc ninja nasm
+              tail -n 1000 /c/ProgramData/chocolatey/logs/chocolatey.log
+              # There is an issue where choco doesn't add nasm to the path
+              export PATH="$PATH:/c/Program Files/NASM"
+              nasm -v
+          - target: aarch64-pc-windows-msvc
+            host: windows-latest
+            features: ","
+            pre_build: |-
+                choco install --no-progress protoc
+                rustup target add aarch64-pc-windows-msvc
+          - target: x86_64-unknown-linux-gnu
+            host: ubuntu-latest
+            features: fp16kernels
+            # https://github.com/napi-rs/napi-rs/blob/main/debian.Dockerfile
+            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
+            pre_build: |-
+              set -e &&
+              apt-get update &&
+              apt-get install -y protobuf-compiler pkg-config &&
+              export TARGET_CC=clang TARGET_CXX=clang++
+          - target: x86_64-unknown-linux-musl
+            host: ubuntu-2404-8x-x64
+            features: fp16kernels
+            pre_build: |-
+              set -e &&
+              sudo apt-get update &&
+              sudo apt-get install -y protobuf-compiler pkg-config &&
+              rustup target add x86_64-unknown-linux-musl &&
+              export EXTRA_ARGS="-x"
+          - target: aarch64-unknown-linux-gnu
+            host: ubuntu-2404-8x-x64
+            # https://github.com/napi-rs/napi-rs/blob/main/debian-aarch64.Dockerfile
+            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
+            features: "fp16kernels"
+            pre_build: |-
+              set -e &&
+              apt-get update &&
+              apt-get install -y protobuf-compiler pkg-config &&
+              export TARGET_CC=clang TARGET_CXX=clang++ &&
+              export CFLAGS="$CFLAGS -DAT_HWCAP2=26" &&
+              rustup target add aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
+            host: ubuntu-2404-8x-x64
+            features: ","
+            pre_build: |-
+              set -e &&
+              sudo apt-get update &&
+              sudo apt-get install -y protobuf-compiler &&
+              rustup target add aarch64-unknown-linux-musl &&
+              export EXTRA_ARGS="-x"
+    name: build - ${{ matrix.settings.target }}
+    runs-on: ${{ matrix.settings.host }}
+    defaults:
+      run:
+        working-directory: nodejs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup node
+        uses: actions/setup-node@v4
+        if: ${{ !matrix.settings.docker }}
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: nodejs/package-lock.json
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.settings.docker }}
+        with:
+          toolchain: stable
+          targets: ${{ matrix.settings.target }}
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            .cargo-cache
+            target/
+          key: nodejs-${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        if: ${{ contains(matrix.settings.target, 'musl') }}
+        with:
+          version: 0.14.1
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        if: ${{ contains(matrix.settings.target, 'musl') }}
+        with:
+          tool: cargo-zigbuild
+      - name: Build in docker
+        uses: addnab/docker-run-action@v3
+        if: ${{ matrix.settings.docker }}
+        with:
+          image: ${{ matrix.settings.docker }}
+          options: "--user 0:0 -v ${{ github.workspace }}/.cargo-cache/git/db:/usr/local/cargo/git/db \
+                    -v ${{ github.workspace }}/.cargo/registry/cache:/usr/local/cargo/registry/cache \
+                    -v ${{ github.workspace }}/.cargo/registry/index:/usr/local/cargo/registry/index \
+                    -v ${{ github.workspace }}:/build -w /build/nodejs"
+          run: |
+            set -e
+            ${{ matrix.settings.pre_build }}
+            npx napi build --platform --release \
+              --features ${{ matrix.settings.features }} \
+              --target ${{ matrix.settings.target }} \
+              --dts ../lancedb/native.d.ts \
+              --js ../lancedb/native.js \
+              --strip \
+              --output-dir dist/
+      - name: Build
+        run: |
+          ${{ matrix.settings.pre_build }}
+          npx napi build --platform --release \
+              --features ${{ matrix.settings.features }} \
+              --target ${{ matrix.settings.target }} \
+              --dts ../lancedb/native.d.ts \
+              --js ../lancedb/native.js \
+              --strip \
+              $EXTRA_ARGS \
+              --output-dir dist/
+        if: ${{ !matrix.settings.docker }}
+        shell: bash
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lancedb-${{ matrix.settings.target }}
+          path: nodejs/dist/*.node
+          if-no-files-found: error
+      - name: Make generic artifacts
+        if: ${{ matrix.settings.target == 'aarch64-apple-darwin' }}
+        run: npm run tsc
+      - name: Upload Generic Artifacts
+        if: ${{ matrix.settings.target == 'aarch64-apple-darwin' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-dist
+          path: |
+            nodejs/dist/*
+            !nodejs/dist/*.node
+
+  publish:
+    name: Publish to GitHub Packages
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: nodejs
+    needs:
+      - build-lancedb
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: nodejs/package-lock.json
+          registry-url: "https://npm.pkg.github.com"
+      - name: Install dependencies
+        run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: nodejs-dist
+          path: nodejs/dist
+      - uses: actions/download-artifact@v4
+        name: Download arch-specific binaries
+        with:
+          pattern: lancedb-*
+          path: nodejs/nodejs-artifacts
+          merge-multiple: true
+      - name: Display structure of downloaded files
+        run: find dist && find nodejs-artifacts
+      - name: Move artifacts
+        run: npx napi artifacts -d nodejs-artifacts
+      - name: Determine version and npm tag
+        id: versioning
+        run: |
+          BASE_VERSION=$(node -p "require('./package.json').version")
+          RELEASE_TYPE="${{ inputs.release_type || 'nightly' }}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+
+          if [[ "$RELEASE_TYPE" == "nightly" ]]; then
+            VERSION="${BASE_VERSION}-nightly.${SHORT_SHA}"
+            NPM_TAG="nightly"
+          else
+            VERSION="$BASE_VERSION"
+            NPM_TAG="latest"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "npm_tag=$NPM_TAG" >> $GITHUB_OUTPUT
+          echo "Publishing version: $VERSION with tag: $NPM_TAG"
+      - name: Update package scope and version for GitHub Packages
+        run: |
+          node << 'EOF'
+            const fs = require('fs');
+            const path = require('path');
+            const version = process.env.VERSION;
+
+            // Update main package.json
+            const pkg = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
+            pkg.name = pkg.name.replace('@lancedb', '@thedeltalab');
+            pkg.version = version;
+            fs.writeFileSync('./package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('Main:', pkg.name, pkg.version);
+
+            // Update all platform package.json files
+            const npmDir = './npm';
+            if (fs.existsSync(npmDir)) {
+              for (const platform of fs.readdirSync(npmDir)) {
+                const p = path.join(npmDir, platform, 'package.json');
+                if (fs.existsSync(p)) {
+                  const pp = JSON.parse(fs.readFileSync(p, 'utf8'));
+                  pp.name = pp.name.replace('@lancedb', '@thedeltalab');
+                  pp.version = version;
+                  fs.writeFileSync(p, JSON.stringify(pp, null, 2) + '\n');
+                  console.log('Platform:', pp.name, pp.version);
+                }
+              }
+            }
+          EOF
+        env:
+          VERSION: ${{ steps.versioning.outputs.version }}
+      - name: List packages
+        run: find npm
+      - name: Publish to GitHub Packages
+        run: |
+          echo "Publishing ${{ steps.versioning.outputs.version }} as tag=${{ steps.versioning.outputs.npm_tag }}"
+          npm publish --access public --tag ${{ steps.versioning.outputs.npm_tag }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
