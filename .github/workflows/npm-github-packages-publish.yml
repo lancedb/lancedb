@@ -10,10 +10,11 @@ permissions:
   id-token: write
 
 on:
-  # 每天 UTC 02:00 自动触发 nightly 构建
-  schedule:
-    - cron: '0 2 * * *'
-  # 手动触发，可选择发布类型
+  # Publish a nightly build on every push to main
+  push:
+    branches:
+      - main
+  # Manual trigger: choose between nightly and release
   workflow_dispatch:
     inputs:
       release_type:
@@ -220,32 +221,25 @@ jobs:
         run: find dist && find nodejs-artifacts
       - name: Move artifacts
         run: npx napi artifacts -d nodejs-artifacts
-      - name: Determine version and tag
+      - name: Determine version and npm tag
         id: versioning
         run: |
           BASE_VERSION=$(node -p "require('./package.json').version")
           RELEASE_TYPE="${{ inputs.release_type || 'nightly' }}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
 
           if [[ "$RELEASE_TYPE" == "nightly" ]]; then
-            DATE=$(date -u +%Y%m%d)
-            SHORT_SHA=$(git rev-parse --short HEAD)
-            VERSION="${BASE_VERSION}-nightly.${DATE}.${SHORT_SHA}"
+            VERSION="${BASE_VERSION}-nightly.${SHORT_SHA}"
             NPM_TAG="nightly"
           else
-            # release: 使用 package.json 中的版本号（去掉 beta/pre 后缀）
-            # 如果当前已经是干净版本则直接使用，否则取主版本部分
-            if [[ "$BASE_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-              VERSION="$BASE_VERSION"
-            else
-              VERSION="${BASH_REMATCH[1]:-$BASE_VERSION}"
-            fi
+            VERSION="$BASE_VERSION"
             NPM_TAG="latest"
           fi
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "npm_tag=$NPM_TAG" >> $GITHUB_OUTPUT
           echo "Publishing version: $VERSION with tag: $NPM_TAG"
-      - name: Update package name and version for GitHub Packages
+      - name: Update package scope and version for GitHub Packages
         run: |
           node << 'EOF'
             const fs = require('fs');
@@ -280,7 +274,7 @@ jobs:
         run: find npm
       - name: Publish to GitHub Packages
         run: |
-          echo "Publishing ${{ steps.versioning.outputs.version }} as @${{ steps.versioning.outputs.npm_tag }}"
+          echo "Publishing ${{ steps.versioning.outputs.version }} as tag=${{ steps.versioning.outputs.npm_tag }}"
           npm publish --access public --tag ${{ steps.versioning.outputs.npm_tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
