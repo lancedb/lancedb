@@ -86,7 +86,8 @@
     "lint": "biome check . && biome format .",
     "lint-fix": "biome check --write . && biome format --write .",
     "prepublishOnly": "napi prepublish -t npm",
-    "test": "jest --verbose",
+    "pretest": "echo 'NOTE: --experimental-vm-modules is required as a workaround for @smithy/middleware-retry>=4.4.43 using dynamic import() in CJS builds (ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING_FLAG). Revert to plain jest once upstream smithy-typescript fixes CJS dynamic import usage.'",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --verbose",
     "integration": "S3_TEST=1 npm run test",
     "universal": "napi universalize",
     "version": "napi version"
