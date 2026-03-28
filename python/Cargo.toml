@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-python"
-version = "0.30.0"
+version = "0.30.2-beta.1"
 edition.workspace = true
 description = "Python bindings for LanceDB"
 license.workspace = true
@@ -23,6 +23,7 @@ lance-namespace.workspace = true
 lance-namespace-impls.workspace = true
 lance-io.workspace = true
 env_logger.workspace = true
+log.workspace = true
 pyo3 = { version = "0.26", features = ["extension-module", "abi3-py39"] }
 pyo3-async-runtimes = { version = "0.26", features = [
     "attributes",
