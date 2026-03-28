@@ -3857,26 +3857,23 @@ class AsyncTable:
 
         # _santitize_data is an old code path, but we will use it until the
         # new code path is ready.
-        if on_bad_vectors != "error" or (
+        if mode == "overwrite":
+            # For overwrite, apply the same preprocessing as create_table
+            # so vector columns are inferred as FixedSizeList.
+            data, _ = sanitize_create_table(
+                data, None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            )
+        elif on_bad_vectors != "error" or (
             schema.metadata is not None and b"embedding_functions" in schema.metadata
         ):
-            # For overwrite, use None as target schema so _infer_target_schema
-            # is triggered, matching the create_table schema inference path.
-            target = None if mode == "overwrite" else schema
             data = _sanitize_data(
                 data,
-                target,
+                schema,
                 metadata=schema.metadata,
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
                 allow_subschema=True,
             )
-        elif mode == "overwrite":
-            # Apply schema inference for overwrite to detect vector columns
-            # and convert them to FixedSizeList, matching create_table behavior.
-            reader = _into_pyarrow_reader(data, None)
-            target_schema, reader = _infer_target_schema(reader)
-            data = _cast_to_target_schema(reader, target_schema)
         _register_optional_converters()
         data = to_scannable(data)
         progress, owns = _normalize_progress(progress)
