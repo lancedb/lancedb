@@ -527,6 +527,36 @@ async def test_add_async(mem_db_async: AsyncConnection):
     assert await table.count_rows() == 3
 
 
+def test_add_overwrite_infers_vector_schema(mem_db: DBConnection):
+    """Overwrite should infer vector columns the same way create_table does.
+
+    Regression test for https://github.com/lancedb/lancedb/issues/3183
+    """
+    table = mem_db.create_table(
+        "test_overwrite_vec",
+        data=[
+            {"vector": [1.0, 2.0, 3.0, 4.0], "item": "foo"},
+            {"vector": [5.0, 6.0, 7.0, 8.0], "item": "bar"},
+        ],
+    )
+    # create_table infers vector as fixed_size_list<float32, 4>
+    original_type = table.schema.field("vector").type
+    assert pa.types.is_fixed_size_list(original_type)
+
+    # overwrite with plain Python lists (PyArrow infers list<double>)
+    table.add(
+        [
+            {"vector": [10.0, 20.0, 30.0, 40.0], "item": "baz"},
+        ],
+        mode="overwrite",
+    )
+    # overwrite should infer vector column the same way as create_table
+    new_type = table.schema.field("vector").type
+    assert pa.types.is_fixed_size_list(new_type), (
+        f"Expected fixed_size_list after overwrite, got {new_type}"
+    )
+
+
 def test_add_progress_callback(mem_db: DBConnection):
     table = mem_db.create_table(
         "test",
