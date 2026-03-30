@@ -4,8 +4,8 @@
 import {
   Table as ArrowTable,
   type IntoVector,
-  extractVectorBuffer,
   RecordBatch,
+  extractVectorBuffer,
   fromBufferToRecordBatch,
   fromRecordBatchToBuffer,
   tableFromIPC,
@@ -675,7 +675,7 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
       return new VectorQuery(res);
     } else {
       super.doCall((inner) => {
-        const raw = extractVectorBuffer(vector as any);
+        const raw = Array.isArray(vector) ? null : extractVectorBuffer(vector);
         if (raw) {
           inner.addQueryVectorRaw(raw.data, raw.dtype);
         } else {
@@ -771,9 +771,11 @@ export class Query extends StandardQueryBase<NativeQuery> {
   nearestTo(vector: IntoVector): VectorQuery {
     const callNearestTo = (
       inner: NativeQuery,
-      resolved: Exclude<IntoVector, Promise<any>>,
+      resolved: Float32Array | Float64Array | Uint8Array | number[],
     ): NativeVectorQuery => {
-      const raw = extractVectorBuffer(resolved as any);
+      const raw = Array.isArray(resolved)
+        ? null
+        : extractVectorBuffer(resolved);
       if (raw) {
         return inner.nearestToRaw(raw.data, raw.dtype);
       }

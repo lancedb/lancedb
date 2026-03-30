@@ -4700,6 +4700,7 @@ name = "lancedb-nodejs"
 version = "0.27.2-beta.1"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
  "arrow-ipc",
  "arrow-schema",
  "async-trait",
@@ -4707,6 +4708,7 @@ dependencies = [
  "aws-lc-sys",
  "env_logger",
  "futures",
+ "half",
  "lancedb",
  "log",
  "lzma-sys",

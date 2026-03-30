@@ -7,12 +7,9 @@ import { type Table, connect } from "../lancedb";
 import {
   Field,
   FixedSizeList,
-  Float16,
   Float32,
-  Float64,
   Int64,
   Schema,
-  Uint8,
   makeArrowTable,
 } from "../lancedb/arrow";
 
@@ -93,17 +90,17 @@ describe("Vector query with different typed arrays", () => {
     expect(results.length).toBeGreaterThanOrEqual(2);
   });
 
-  // Float16Array is only available in Node 22+
-  const hasFloat16 = typeof globalThis.Float16Array !== "undefined";
+  // Float16Array is only available in Node 22+; not in TypeScript's standard lib yet
+  const float16ArrayCtor = (globalThis as unknown as Record<string, unknown>)
+    .Float16Array as (new (values: number[]) => unknown) | undefined;
+  const hasFloat16 = float16ArrayCtor !== undefined;
   const f16it = hasFloat16 ? it : it.skip;
 
   f16it("should search with Float16Array via raw path", async () => {
     const table = await createFloat32Table();
-    // @ts-expect-error Float16Array not in TS types yet
     const results = await table
       .query()
-      // @ts-expect-error Float16Array not in TS types yet
-      .nearestTo(new globalThis.Float16Array([1.0, 0.0]))
+      .nearestTo(new float16ArrayCtor!([1.0, 0.0]) as Float32Array)
       .limit(1)
       .toArray();
 

@@ -7,7 +7,7 @@ use arrow_array::{
     Array, Float16Array as ArrowFloat16Array, Float32Array as ArrowFloat32Array,
     Float64Array as ArrowFloat64Array, UInt8Array as ArrowUInt8Array,
 };
-use arrow_buffer::{Buffer, ScalarBuffer};
+use arrow_buffer::ScalarBuffer;
 use half::f16;
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
@@ -31,22 +31,23 @@ use crate::rerankers::Reranker;
 use crate::util::{parse_distance_type, schema_to_buffer};
 
 fn bytes_to_arrow_array(data: Uint8Array, dtype: String) -> napi::Result<Arc<dyn Array>> {
-    let buf = Buffer::from(data.to_vec());
+    let buf = arrow_buffer::Buffer::from(data.to_vec());
+    let num_bytes = buf.len();
     match dtype.as_str() {
         "float16" => {
-            let scalar_buf = ScalarBuffer::<f16>::new(buf, 0, buf.len() / 2);
+            let scalar_buf = ScalarBuffer::<f16>::new(buf, 0, num_bytes / 2);
             Ok(Arc::new(ArrowFloat16Array::new(scalar_buf, None)))
         }
         "float32" => {
-            let scalar_buf = ScalarBuffer::<f32>::new(buf, 0, buf.len() / 4);
+            let scalar_buf = ScalarBuffer::<f32>::new(buf, 0, num_bytes / 4);
             Ok(Arc::new(ArrowFloat32Array::new(scalar_buf, None)))
         }
         "float64" => {
-            let scalar_buf = ScalarBuffer::<f64>::new(buf, 0, buf.len() / 8);
+            let scalar_buf = ScalarBuffer::<f64>::new(buf, 0, num_bytes / 8);
             Ok(Arc::new(ArrowFloat64Array::new(scalar_buf, None)))
         }
         "uint8" => {
-            let scalar_buf = ScalarBuffer::<u8>::new(buf, 0, buf.len());
+            let scalar_buf = ScalarBuffer::<u8>::new(buf, 0, num_bytes);
             Ok(Arc::new(ArrowUInt8Array::new(scalar_buf, None)))
         }
         _ => Err(napi::Error::from_reason(format!(

@@ -127,13 +127,19 @@ export function isMultiVector(value: unknown): value is MultiVector {
   return Array.isArray(value) && isIntoVector(value[0]);
 }
 
+// Float16Array is not in TypeScript's standard lib yet; access dynamically
+type Float16ArrayCtor = new (
+  ...args: unknown[]
+) => { buffer: ArrayBuffer; byteOffset: number; byteLength: number };
+const float16ArrayCtor = (globalThis as unknown as Record<string, unknown>)
+  .Float16Array as Float16ArrayCtor | undefined;
+
 export function isIntoVector(value: unknown): value is IntoVector {
   return (
     value instanceof Float32Array ||
     value instanceof Float64Array ||
     value instanceof Uint8Array ||
-    (typeof globalThis.Float16Array !== "undefined" &&
-      value instanceof globalThis.Float16Array) ||
+    (float16ArrayCtor !== undefined && value instanceof float16ArrayCtor) ||
     (Array.isArray(value) && !Array.isArray(value[0]))
   );
 }
@@ -145,7 +151,7 @@ export function isIntoVector(value: unknown): value is IntoVector {
 export function extractVectorBuffer(
   vector: Float32Array | Float64Array | Uint8Array,
 ): { data: Uint8Array; dtype: string } | null {
-  if (typeof globalThis.Float16Array !== "undefined" && vector instanceof globalThis.Float16Array) {
+  if (float16ArrayCtor !== undefined && vector instanceof float16ArrayCtor) {
     return {
       data: new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength),
       dtype: "float16",
