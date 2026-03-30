@@ -2143,3 +2143,33 @@ def test_table_uri(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("my_table", data=[{"x": 0}])
     assert table.uri == str(tmp_path / "my_table.lance")
+
+
+def test_sanitize_data_metadata_not_stripped():
+    """Regression test: dict.update() returns None, so assigning its result
+    would silently replace metadata with None, causing with_metadata(None)
+    to strip all schema metadata from the target schema."""
+    from lancedb.table import _sanitize_data
+
+    schema = pa.schema(
+        [pa.field("x", pa.int64())],
+        metadata={b"existing_key": b"existing_value"},
+    )
+    batch = pa.record_batch([pa.array([1, 2, 3])], schema=schema)
+
+    # Use a different field type so the reader and target schemas differ,
+    # forcing _cast_to_target_schema to rebuild the schema with the
+    # target's metadata (instead of taking the fast-path).
+    target_schema = pa.schema(
+        [pa.field("x", pa.int32())],
+        metadata={b"existing_key": b"existing_value"},
+    )
+
+    reader = pa.RecordBatchReader.from_batches(schema, [batch])
+    metadata = {b"new_key": b"new_value"}
+    result = _sanitize_data(reader, target_schema=target_schema, metadata=metadata)
+
+    result_schema = result.schema
+    assert result_schema.metadata is not None
+    assert result_schema.metadata[b"existing_key"] == b"existing_value"
+    assert result_schema.metadata[b"new_key"] == b"new_value"
