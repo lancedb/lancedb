@@ -122,7 +122,7 @@ where
     /// This is a cheap synchronous check useful as a fast path before
     /// constructing a fetch closure for [`get()`](Self::get).
     pub fn try_get(&self) -> Option<V> {
-        let cache = self.inner.lock().unwrap();
+        let cache = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         cache.state.fresh_value(self.ttl, self.refresh_window)
     }
 
@@ -138,7 +138,7 @@ where
     {
         // Fast path: check if cache is fresh
         {
-            let cache = self.inner.lock().unwrap();
+            let cache = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(value) = cache.state.fresh_value(self.ttl, self.refresh_window) {
                 return Ok(value);
             }
@@ -147,7 +147,7 @@ where
         // Slow path
         let mut fetch = Some(fetch);
         let action = {
-            let mut cache = self.inner.lock().unwrap();
+            let mut cache = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             self.determine_action(&mut cache, &mut fetch)
         };
 
@@ -161,7 +161,7 @@ where
     ///
     /// This avoids a blocking fetch on the first [`get()`](Self::get) call.
     pub fn seed(&self, value: V) {
-        let mut cache = self.inner.lock().unwrap();
+        let mut cache = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         cache.state = State::Current(value, clock::now());
     }
 
@@ -170,7 +170,7 @@ where
     /// Any in-flight background fetch from before this call will not update the
     /// cache (the generation counter prevents stale writes).
     pub fn invalidate(&self) {
-        let mut cache = self.inner.lock().unwrap();
+        let mut cache = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         cache.state = State::Empty;
         cache.generation += 1;
     }
@@ -267,7 +267,7 @@ where
         let fut_for_spawn = shared.clone();
         tokio::spawn(async move {
             let result = fut_for_spawn.await;
-            let mut cache = inner.lock().unwrap();
+            let mut cache = inner.lock().unwrap_or_else(|e| e.into_inner());
             // Only update if no invalidation has happened since we started
             if cache.generation != generation {
                 return;
@@ -589,5 +589,68 @@ mod tests {
         // Should get fresh data, not the stale background result
         let v = cache.get(ok_fetcher(count.clone(), "fresh")).await.unwrap();
         assert_eq!(v, "fresh");
+    }
+
+    /// Helper: poison the inner mutex of a BackgroundCache.
+    fn poison_cache(cache: &BackgroundCache<String, TestError>) {
+        let inner = cache.inner.clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = inner.lock().unwrap();
+            panic!("intentional panic to poison mutex");
+        });
+        let _ = handle.join();
+        assert!(cache.inner.lock().is_err(), "mutex should be poisoned");
+    }
+
+    #[tokio::test]
+    async fn test_try_get_recovers_from_poisoned_lock() {
+        let cache = new_cache();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        // Seed a value first
+        cache.get(ok_fetcher(count.clone(), "hello")).await.unwrap();
+        cache.get(ok_fetcher(count.clone(), "hello")).await.unwrap(); // peek
+
+        poison_cache(&cache);
+
+        // try_get() should not panic — it recovers via unwrap_or_else
+        let result = cache.try_get();
+        // The value may or may not be fresh depending on timing, but it must not panic
+        let _ = result;
+    }
+
+    #[tokio::test]
+    async fn test_get_recovers_from_poisoned_lock() {
+        let cache = new_cache();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        poison_cache(&cache);
+
+        // get() should not panic — it recovers and can still fetch
+        let result = cache.get(ok_fetcher(count.clone(), "recovered")).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "recovered");
+    }
+
+    #[tokio::test]
+    async fn test_seed_recovers_from_poisoned_lock() {
+        let cache = new_cache();
+        poison_cache(&cache);
+
+        // seed() should not panic
+        cache.seed("seeded".to_string());
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_recovers_from_poisoned_lock() {
+        let cache = new_cache();
+        let count = Arc::new(AtomicUsize::new(0));
+
+        cache.get(ok_fetcher(count.clone(), "hello")).await.unwrap();
+
+        poison_cache(&cache);
+
+        // invalidate() should not panic
+        cache.invalidate();
     }
 }
