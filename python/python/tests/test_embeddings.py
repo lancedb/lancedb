@@ -559,7 +559,8 @@ def test_url_retrieve_downloads_image():
     matching the real usage pattern in embedding functions.
     """
     import io
-    from PIL import Image
+
+    Image = pytest.importorskip("PIL.Image")
     from lancedb.embeddings.utils import url_retrieve
 
     image_url = "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg"
