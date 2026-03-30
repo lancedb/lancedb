@@ -3,7 +3,10 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Array, Float16Array as ArrowFloat16Array, Float32Array as ArrowFloat32Array, Float64Array as ArrowFloat64Array, UInt8Array as ArrowUInt8Array};
+use arrow_array::{
+    Array, Float16Array as ArrowFloat16Array, Float32Array as ArrowFloat32Array,
+    Float64Array as ArrowFloat64Array, UInt8Array as ArrowUInt8Array,
+};
 use arrow_buffer::{Buffer, ScalarBuffer};
 use half::f16;
 use lancedb::index::scalar::{
@@ -109,7 +112,7 @@ impl Query {
 
     #[napi]
     pub fn nearest_to_raw(&mut self, data: Uint8Array, dtype: String) -> Result<VectorQuery> {
-        let array = bytes_to_arrow_array(data, dtype).default_error()?;
+        let array = bytes_to_arrow_array(data, dtype)?;
         let inner = self.inner.clone().nearest_to(array).default_error()?;
         Ok(VectorQuery { inner })
     }
@@ -201,7 +204,7 @@ impl VectorQuery {
 
     #[napi]
     pub fn add_query_vector_raw(&mut self, data: Uint8Array, dtype: String) -> Result<()> {
-        let array = bytes_to_arrow_array(data, dtype).default_error()?;
+        let array = bytes_to_arrow_array(data, dtype)?;
         self.inner = self.inner.clone().add_query_vector(array).default_error()?;
         Ok(())
     }
