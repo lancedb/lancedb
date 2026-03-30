@@ -257,9 +257,7 @@ def test_embedding_with_empty_output_vectors(tmp_path):
         def ndims(self):
             return 128
 
-        def generate_embeddings(
-            self, texts: Union[List[str], np.ndarray]
-        ) -> list:
+        def generate_embeddings(self, texts: Union[List[str], np.ndarray]) -> list:
             # Simulate a model that returns an empty list for blank inputs
             return [
                 [] if text.strip() == "" else np.random.randn(self.ndims()).tolist()

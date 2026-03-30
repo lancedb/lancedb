@@ -528,9 +528,7 @@ def _append_vector_columns(
                     # tries to cast them into a fixed-size list array.
                     expected_ndims = conf.function.ndims()
                     col_data = [
-                        v
-                        if v is not None and len(v) == expected_ndims
-                        else None
+                        v if v is not None and len(v) == expected_ndims else None
                         for v in col_data
                     ]
                     if no_vector_column:
