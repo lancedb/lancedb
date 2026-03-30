@@ -117,8 +117,9 @@ export type TableLike =
 export type IntoVector =
   | Float32Array
   | Float64Array
+  | Uint8Array
   | number[]
-  | Promise<Float32Array | Float64Array | number[]>;
+  | Promise<Float32Array | Float64Array | Uint8Array | number[]>;
 
 export type MultiVector = IntoVector[];
 
@@ -126,12 +127,46 @@ export function isMultiVector(value: unknown): value is MultiVector {
   return Array.isArray(value) && isIntoVector(value[0]);
 }
 
+// Float16Array is not in TypeScript's standard lib yet; access dynamically
+type Float16ArrayCtor = new (
+  ...args: unknown[]
+) => { buffer: ArrayBuffer; byteOffset: number; byteLength: number };
+const float16ArrayCtor = (globalThis as unknown as Record<string, unknown>)
+  .Float16Array as Float16ArrayCtor | undefined;
+
 export function isIntoVector(value: unknown): value is IntoVector {
   return (
     value instanceof Float32Array ||
     value instanceof Float64Array ||
+    value instanceof Uint8Array ||
+    (float16ArrayCtor !== undefined && value instanceof float16ArrayCtor) ||
     (Array.isArray(value) && !Array.isArray(value[0]))
   );
+}
+
+/**
+ * Extract the underlying byte buffer and data type from a typed array
+ * for passing to the Rust NAPI layer without precision loss.
+ */
+export function extractVectorBuffer(
+  vector: Float32Array | Float64Array | Uint8Array,
+): { data: Uint8Array; dtype: string } | null {
+  if (float16ArrayCtor !== undefined && vector instanceof float16ArrayCtor) {
+    return {
+      data: new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength),
+      dtype: "float16",
+    };
+  }
+  if (vector instanceof Float64Array) {
+    return {
+      data: new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength),
+      dtype: "float64",
+    };
+  }
+  if (vector instanceof Uint8Array && !(vector instanceof Float32Array)) {
+    return { data: vector, dtype: "uint8" };
+  }
+  return null;
 }
 
 export function isArrowTable(value: object): value is TableLike {
