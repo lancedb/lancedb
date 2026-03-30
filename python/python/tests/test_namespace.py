@@ -8,6 +8,7 @@ import shutil
 import pytest
 import pyarrow as pa
 import lancedb
+from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 
 
 class TestNamespaceConnection:
@@ -130,7 +131,7 @@ class TestNamespaceConnection:
         assert len(list(db.table_names(namespace=["test_ns"]))) == 0
 
         # Should not be able to open dropped table
-        with pytest.raises(RuntimeError):
+        with pytest.raises(TableNotFoundError):
             db.open_table("table1", namespace=["test_ns"])
 
     def test_create_table_with_schema(self):
@@ -340,7 +341,7 @@ class TestNamespaceConnection:
         db.create_table("test_table", schema=schema, namespace=["test_namespace"])
 
         # Try to drop namespace with tables - should fail
-        with pytest.raises(RuntimeError, match="is not empty"):
+        with pytest.raises(NamespaceNotEmptyError):
             db.drop_namespace(["test_namespace"])
 
         # Drop table first
