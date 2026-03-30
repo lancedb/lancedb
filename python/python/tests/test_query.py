@@ -25,6 +25,7 @@ from lancedb.query import (
     AsyncHybridQuery,
     AsyncQueryBase,
     AsyncVectorQuery,
+    ColumnOrdering,
     LanceVectorQueryBuilder,
     MatchQuery,
     PhraseQuery,
@@ -162,6 +163,71 @@ def test_offset(table):
     assert len(results_without_offset.to_pandas()) == 2
     results_with_offset = LanceVectorQueryBuilder(table, [0, 0], "vector").offset(1)
     assert len(results_with_offset.to_pandas()) == 1
+
+
+def test_order_by_plain_query(mem_db):
+    table = mem_db.create_table(
+        "test_order_by",
+        pa.table(
+            {
+                "group": [1, 1, 1, 2],
+                "score": [None, 1.0, 1.0, 0.5],
+                "name": ["z", "b", "a", "c"],
+            }
+        ),
+    )
+
+    res = (
+        table.search()
+        .order_by(
+            [
+                ColumnOrdering(column_name="group", ascending=True, nulls_first=False),
+                ColumnOrdering(column_name="score", ascending=True, nulls_first=True),
+                ColumnOrdering(column_name="name", ascending=True, nulls_first=False),
+            ]
+        )
+        .to_arrow()
+    )
+
+    assert res.select(["group", "score", "name"]).to_pylist() == [
+        {"group": 1, "score": None, "name": "z"},
+        {"group": 1, "score": 1.0, "name": "a"},
+        {"group": 1, "score": 1.0, "name": "b"},
+        {"group": 2, "score": 0.5, "name": "c"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_order_by_async_query(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table(
+        "test_order_by_async",
+        pa.table(
+            {
+                "group": [1, 1, 1, 2],
+                "score": [None, 1.0, 1.0, 0.5],
+                "name": ["z", "b", "a", "c"],
+            }
+        ),
+    )
+
+    res = await (
+        table.query()
+        .order_by(
+            [
+                ColumnOrdering(column_name="group", ascending=True, nulls_first=False),
+                ColumnOrdering(column_name="score", ascending=True, nulls_first=True),
+                ColumnOrdering(column_name="name", ascending=True, nulls_first=False),
+            ]
+        )
+        .to_arrow()
+    )
+
+    assert res.select(["group", "score", "name"]).to_pylist() == [
+        {"group": 1, "score": None, "name": "z"},
+        {"group": 1, "score": 1.0, "name": "a"},
+        {"group": 1, "score": 1.0, "name": "b"},
+        {"group": 2, "score": 0.5, "name": "c"},
+    ]
 
 
 def test_query_builder(table):

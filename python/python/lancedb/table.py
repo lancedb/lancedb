@@ -4211,6 +4211,8 @@ class AsyncTable:
             async_query = async_query.fast_search()
         if query.with_row_id:
             async_query = async_query.with_row_id()
+        if query.order_by:
+            async_query = async_query.order_by(query.order_by)
 
         if query.vector:
             async_query = async_query.nearest_to(query.vector).distance_range(

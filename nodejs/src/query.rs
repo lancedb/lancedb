@@ -3,6 +3,12 @@
 
 use std::sync::Arc;
 
+use crate::error::NapiErrorExt;
+use crate::error::convert_error;
+use crate::iterator::RecordBatchIterator;
+use crate::rerankers::RerankHybridCallbackArgs;
+use crate::rerankers::Reranker;
+use crate::util::{parse_distance_type, schema_to_buffer};
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
     Operator, PhraseQuery,
@@ -13,16 +19,27 @@ use lancedb::query::QueryBase;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::Select;
 use lancedb::query::TakeQuery as LanceDbTakeQuery;
-use lancedb::query::VectorQuery as LanceDbVectorQuery;
+use lancedb::query::{ColumnOrdering as LanceDbColumnOrdering, VectorQuery as LanceDbVectorQuery};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::error::NapiErrorExt;
-use crate::error::convert_error;
-use crate::iterator::RecordBatchIterator;
-use crate::rerankers::RerankHybridCallbackArgs;
-use crate::rerankers::Reranker;
-use crate::util::{parse_distance_type, schema_to_buffer};
+#[napi(object)]
+pub struct ColumnOrdering {
+    pub ascending: bool,
+    pub nulls_first: bool,
+    pub column_name: String,
+}
+
+impl From<ColumnOrdering> for LanceDbColumnOrdering {
+    fn from(value: ColumnOrdering) -> Self {
+        match (value.ascending, value.nulls_first) {
+            (true, true) => Self::asc_nulls_first(value.column_name),
+            (true, false) => Self::asc_nulls_last(value.column_name),
+            (false, true) => Self::desc_nulls_first(value.column_name),
+            (false, false) => Self::desc_nulls_last(value.column_name),
+        }
+    }
+}
 
 #[napi]
 pub struct Query {
@@ -86,6 +103,18 @@ impl Query {
     #[napi]
     pub fn with_row_id(&mut self) {
         self.inner = self.inner.clone().with_row_id();
+    }
+
+    #[napi]
+    pub fn order_by(&mut self, ordering: Option<Vec<ColumnOrdering>>) -> napi::Result<()> {
+        let ordering = ordering.map(|ordering| {
+            ordering
+                .into_iter()
+                .map(LanceDbColumnOrdering::from)
+                .collect()
+        });
+        self.inner.order_by(ordering).default_error()?;
+        Ok(())
     }
 
     #[napi(catch_unwind)]
@@ -278,6 +307,18 @@ impl VectorQuery {
     ) -> napi::Result<()> {
         let reranker = Reranker::new(rerank_hybrid)?;
         self.inner = self.inner.clone().rerank(Arc::new(reranker));
+        Ok(())
+    }
+
+    #[napi]
+    pub fn order_by(&mut self, ordering: Option<Vec<ColumnOrdering>>) -> napi::Result<()> {
+        let ordering = ordering.map(|ordering| {
+            ordering
+                .into_iter()
+                .map(LanceDbColumnOrdering::from)
+                .collect()
+        });
+        self.inner.order_by(ordering).default_error()?;
         Ok(())
     }
 

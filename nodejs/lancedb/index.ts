@@ -73,6 +73,7 @@ export {
   VectorQuery,
   TakeQuery,
   QueryExecutionOptions,
+  ColumnOrdering,
   FullTextSearchOptions,
   RecordBatchIterator,
   FullTextQuery,
