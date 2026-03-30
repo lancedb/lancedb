@@ -546,3 +546,23 @@ def test_openai_no_retry_on_401(mock_sleep):
     assert mock_func.call_count == 1
     # Verify that sleep was never called (no retries)
     assert mock_sleep.call_count == 0
+
+
+def test_url_retrieve_downloads_image():
+    """
+    Embedding functions like open-clip, siglip, and jinaai use url_retrieve()
+    to download images from HTTP URLs. For example, open_clip._to_pil() calls:
+
+        PIL_Image.open(io.BytesIO(url_retrieve(image)))
+
+    Verify that url_retrieve() can download an image and open it as PIL Image,
+    matching the real usage pattern in embedding functions.
+    """
+    import io
+    from PIL import Image
+    from lancedb.embeddings.utils import url_retrieve
+
+    image_url = "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg"
+    image_bytes = url_retrieve(image_url)
+    img = Image.open(io.BytesIO(image_bytes))
+    assert img.size[0] > 0 and img.size[1] > 0
