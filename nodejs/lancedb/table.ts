@@ -18,6 +18,7 @@ import {
 } from "./arrow";
 
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import { FileSource } from "./file_source";
 import { IndexOptions } from "./indices";
 import { MergeInsertBuilder } from "./merge";
 import {
@@ -147,12 +148,15 @@ export abstract class Table {
   abstract schema(): Promise<Schema>;
   /**
    * Insert records into this Table.
-   * @param {Data} data Records to be inserted into the Table
+   * @param {Data | FileSource} data Records or a file source to be inserted
+   * into the Table. Pass a {@link FileSource} (from {@link readFiles}) to
+   * stream data from Parquet, CSV, or Lance files without materializing them
+   * in memory.
    * @returns {Promise<AddResult>} A promise that resolves to an object
    * containing the new version number of the table
    */
   abstract add(
-    data: Data,
+    data: Data | FileSource,
     options?: Partial<AddDataOptions>,
   ): Promise<AddResult>;
   /**
@@ -612,10 +616,15 @@ export class LocalTable extends Table {
     return tbl.schema;
   }
 
-  async add(data: Data, options?: Partial<AddDataOptions>): Promise<AddResult> {
+  async add(
+    data: Data | FileSource,
+    options?: Partial<AddDataOptions>,
+  ): Promise<AddResult> {
     const mode = options?.mode ?? "append";
+    if (data instanceof FileSource) {
+      return this.inner.addFromFileSource(data._native, mode);
+    }
     const schema = await this.schema();
-
     const buffer = await fromDataToBuffer(data, undefined, schema);
     return await this.inner.add(buffer, mode);
   }

@@ -262,6 +262,8 @@ impl Display for DistanceType {
 pub use connection::connect;
 /// Connect to a namespace-backed database
 pub use connection::connect_namespace;
+/// Read files as a streaming data source
+pub use io::read_files::read_files;
 
 /// Re-export Lance Session and ObjectStoreRegistry for custom session creation
 pub use lance::session::Session;

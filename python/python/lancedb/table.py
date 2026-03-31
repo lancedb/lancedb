@@ -169,6 +169,10 @@ def _into_pyarrow_reader(
         return pa.RecordBatchReader.from_batches(data.schema, [data])
     elif _check_for_lance(data) and isinstance(data, lance.LanceDataset):
         return data.scanner().to_reader()
+    elif type(data).__module__ == "lancedb.read_files" and hasattr(data, "_dataset"):
+        # FileSource — delegate to its underlying dataset.
+        # Using module/attr check avoids a circular import.
+        return _into_pyarrow_reader(data._dataset, schema)
     elif isinstance(data, pa.dataset.Dataset):
         return data.scanner().to_reader()
     elif isinstance(data, pa.dataset.Scanner):

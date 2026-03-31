@@ -96,6 +96,29 @@ impl Table {
         Ok(res.into())
     }
 
+    /// Add data from files on disk, streaming directly into the table without
+    /// materializing data in the JavaScript layer.
+    #[napi(catch_unwind)]
+    pub async fn add_from_file_source(
+        &self,
+        source: &crate::read_files::NativeFileSource,
+        mode: String,
+    ) -> napi::Result<AddResult> {
+        let file_source = lancedb::read_files(&source.pattern)
+            .await
+            .default_error()?;
+        let mut op = self.inner_ref()?.add(file_source);
+        op = if mode == "append" {
+            op.mode(AddDataMode::Append)
+        } else if mode == "overwrite" {
+            op.mode(AddDataMode::Overwrite)
+        } else {
+            return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
+        };
+        let res = op.execute().await.default_error()?;
+        Ok(res.into())
+    }
+
     #[napi(catch_unwind)]
     pub async fn count_rows(&self, filter: Option<String>) -> napi::Result<i64> {
         self.inner_ref()?

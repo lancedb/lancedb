@@ -14,6 +14,7 @@ mod iterator;
 pub mod merge;
 pub mod permutation;
 mod query;
+mod read_files;
 pub mod remote;
 mod rerankers;
 mod session;
