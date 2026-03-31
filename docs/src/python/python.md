@@ -36,6 +36,20 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.table.Tags
 
+## Expressions
+
+Type-safe expression builder for filters and projections. Use these instead
+of raw SQL strings with [where][lancedb.query.LanceQueryBuilder.where] and
+[select][lancedb.query.LanceQueryBuilder.select].
+
+::: lancedb.expr.Expr
+
+::: lancedb.expr.col
+
+::: lancedb.expr.lit
+
+::: lancedb.expr.func
+
 ## Querying (Synchronous)
 
 ::: lancedb.query.Query

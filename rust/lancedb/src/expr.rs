@@ -27,7 +27,17 @@ use arrow_schema::DataType;
 use datafusion_expr::{Expr, ScalarUDF, expr_fn::cast};
 use datafusion_functions::string::expr_fn as string_expr_fn;
 
-pub use datafusion_expr::{col, lit};
+pub use datafusion_expr::lit;
+
+/// Create a column reference expression, preserving the name exactly as given.
+///
+/// Unlike DataFusion's built-in [`col`][datafusion_expr::col], this function
+/// does **not** normalise the identifier to lower-case, so
+/// `col("firstName")` correctly references a field named `firstName`.
+pub fn col(name: impl Into<String>) -> DfExpr {
+    use datafusion_common::Column;
+    DfExpr::Column(Column::new_unqualified(name))
+}
 
 pub use datafusion_expr::Expr as DfExpr;
 

@@ -1,3 +1,5 @@
 # Test data created by some example tests
 data/
 _lancedb.pyd
+# macOS debug symbols bundle generated during build
+*.dSYM/

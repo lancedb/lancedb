@@ -4211,7 +4211,7 @@ class AsyncTable:
             async_query = async_query.offset(query.offset)
         if query.columns:
             async_query = async_query.select(query.columns)
-        if query.filter:
+        if query.filter is not None:
             async_query = async_query.where(query.filter)
         if query.fast_search:
             async_query = async_query.fast_search()
