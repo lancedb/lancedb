@@ -38,6 +38,7 @@ from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
 from .util import flatten_columns
+from .expr import Expr
 from lancedb._lancedb import fts_query_to_json
 from typing_extensions import Annotated
 
@@ -70,7 +71,7 @@ def ensure_vector_query(
 ) -> Union[List[float], List[List[float]], pa.Array, List[pa.Array]]:
     if isinstance(val, list):
         if len(val) == 0:
-            return ValueError("Vector query must be a non-empty list")
+            raise ValueError("Vector query must be a non-empty list")
         sample = val[0]
     else:
         if isinstance(val, float):
@@ -83,7 +84,7 @@ def ensure_vector_query(
         return val
     if isinstance(sample, list):
         if len(sample) == 0:
-            return ValueError("Vector query must be a non-empty list")
+            raise ValueError("Vector query must be a non-empty list")
         if isinstance(sample[0], float):
             # val is list of list of floats
             return val
@@ -449,8 +450,8 @@ class Query(pydantic.BaseModel):
         ensure_vector_query,
     ] = None
 
-    # sql filter to refine the query with
-    filter: Optional[str] = None
+    # sql filter or type-safe Expr to refine the query with
+    filter: Optional[Union[str, Expr]] = None
 
     # if True then apply the filter after vector search
     postfilter: Optional[bool] = None
@@ -464,8 +465,8 @@ class Query(pydantic.BaseModel):
     # distance type to use for vector search
     distance_type: Optional[str] = None
 
-    # which columns to return in the results
-    columns: Optional[Union[List[str], Dict[str, str]]] = None
+    # which columns to return in the results (dict values may be str or Expr)
+    columns: Optional[Union[List[str], Dict[str, Union[str, Expr]]]] = None
 
     # minimum number of IVF partitions to search
     #
@@ -856,14 +857,15 @@ class LanceQueryBuilder(ABC):
             self._offset = offset
         return self
 
-    def select(self, columns: Union[list[str], dict[str, str]]) -> Self:
+    def select(self, columns: Union[list[str], dict[str, Union[str, Expr]]]) -> Self:
         """Set the columns to return.
 
         Parameters
         ----------
-        columns: list of str, or dict of str to str default None
+        columns: list of str, or dict of str to str or Expr
             List of column names to be fetched.
-            Or a dictionary of column names to SQL expressions.
+            Or a dictionary of column names to SQL expressions or
+            :class:`~lancedb.expr.Expr` objects.
             All columns are fetched if None or unspecified.
 
         Returns
@@ -877,15 +879,15 @@ class LanceQueryBuilder(ABC):
             raise ValueError("columns must be a list or a dictionary")
         return self
 
-    def where(self, where: str, prefilter: bool = True) -> Self:
+    def where(self, where: Union[str, Expr], prefilter: bool = True) -> Self:
         """Set the where clause.
 
         Parameters
         ----------
-        where: str
-            The where clause which is a valid SQL where clause. See
-            `Lance filter pushdown <https://lance.org/guide/read_and_write#filter-push-down>`_
-            for valid SQL expressions.
+        where: str or :class:`~lancedb.expr.Expr`
+            The filter condition.  Can be a SQL string or a type-safe
+            :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+            and :func:`~lancedb.expr.lit`.
         prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
@@ -1355,15 +1357,17 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         return result_set
 
-    def where(self, where: str, prefilter: bool = None) -> LanceVectorQueryBuilder:
+    def where(
+        self, where: Union[str, Expr], prefilter: bool = None
+    ) -> LanceVectorQueryBuilder:
         """Set the where clause.
 
         Parameters
         ----------
-        where: str
-            The where clause which is a valid SQL where clause. See
-            `Lance filter pushdown <https://lance.org/guide/read_and_write#filter-push-down>`_
-            for valid SQL expressions.
+        where: str or :class:`~lancedb.expr.Expr`
+            The filter condition.  Can be a SQL string or a type-safe
+            :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+            and :func:`~lancedb.expr.lit`.
         prefilter: bool, default True
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
@@ -2205,8 +2209,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.select(self._columns)
             self._fts_query.select(self._columns)
         if self._where:
-            self._vector_query.where(self._where, self._postfilter)
-            self._fts_query.where(self._where, self._postfilter)
+            self._vector_query.where(self._where, not self._postfilter)
+            self._fts_query.where(self._where, not self._postfilter)
         if self._with_row_id:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
@@ -2286,10 +2290,20 @@ class AsyncQueryBase(object):
         """
         if isinstance(columns, list) and all(isinstance(c, str) for c in columns):
             self._inner.select_columns(columns)
-        elif isinstance(columns, dict) and all(
-            isinstance(k, str) and isinstance(v, str) for k, v in columns.items()
-        ):
-            self._inner.select(list(columns.items()))
+        elif isinstance(columns, dict) and all(isinstance(k, str) for k in columns):
+            if any(isinstance(v, Expr) for v in columns.values()):
+                # At least one value is an Expr — use the type-safe path.
+                from .expr import _coerce
+
+                pairs = [(k, _coerce(v)._inner) for k, v in columns.items()]
+                self._inner.select_expr(pairs)
+            elif all(isinstance(v, str) for v in columns.values()):
+                self._inner.select(list(columns.items()))
+            else:
+                raise TypeError(
+                    "dict values must be str or Expr, got "
+                    + str({k: type(v) for k, v in columns.items()})
+                )
         else:
             raise TypeError("columns must be a list of column names or a dict")
         return self
@@ -2529,11 +2543,13 @@ class AsyncStandardQuery(AsyncQueryBase):
         """
         super().__init__(inner)
 
-    def where(self, predicate: str) -> Self:
+    def where(self, predicate: Union[str, Expr]) -> Self:
         """
         Only return rows matching the given predicate
 
-        The predicate should be supplied as an SQL query string.
+        The predicate can be a SQL string or a type-safe
+        :class:`~lancedb.expr.Expr` built with :func:`~lancedb.expr.col`
+        and :func:`~lancedb.expr.lit`.
 
         Examples
         --------
@@ -2545,7 +2561,10 @@ class AsyncStandardQuery(AsyncQueryBase):
         Filtering performance can often be improved by creating a scalar index
         on the filter column(s).
         """
-        self._inner.where(predicate)
+        if isinstance(predicate, Expr):
+            self._inner.where_expr(predicate._inner)
+        else:
+            self._inner.where(predicate)
         return self
 
     def limit(self, limit: int) -> Self:

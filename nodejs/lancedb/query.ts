@@ -5,6 +5,7 @@ import {
   Table as ArrowTable,
   type IntoVector,
   RecordBatch,
+  extractVectorBuffer,
   fromBufferToRecordBatch,
   fromRecordBatchToBuffer,
   tableFromIPC,
@@ -661,10 +662,8 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
       const res = (async () => {
         try {
           const v = await vector;
-          const arr = Float32Array.from(v);
-          //
           // biome-ignore lint/suspicious/noExplicitAny: we need to get the `inner`, but js has no package scoping
-          const value: any = this.addQueryVector(arr);
+          const value: any = this.addQueryVector(v);
           const inner = value.inner as
             | NativeVectorQuery
             | Promise<NativeVectorQuery>;
@@ -676,7 +675,12 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
       return new VectorQuery(res);
     } else {
       super.doCall((inner) => {
-        inner.addQueryVector(Float32Array.from(vector));
+        const raw = Array.isArray(vector) ? null : extractVectorBuffer(vector);
+        if (raw) {
+          inner.addQueryVectorRaw(raw.data, raw.dtype);
+        } else {
+          inner.addQueryVector(Float32Array.from(vector as number[]));
+        }
       });
       return this;
     }
@@ -765,14 +769,23 @@ export class Query extends StandardQueryBase<NativeQuery> {
    * a default `limit` of 10 will be used.  @see {@link Query#limit}
    */
   nearestTo(vector: IntoVector): VectorQuery {
+    const callNearestTo = (
+      inner: NativeQuery,
+      resolved: Float32Array | Float64Array | Uint8Array | number[],
+    ): NativeVectorQuery => {
+      const raw = Array.isArray(resolved)
+        ? null
+        : extractVectorBuffer(resolved);
+      if (raw) {
+        return inner.nearestToRaw(raw.data, raw.dtype);
+      }
+      return inner.nearestTo(Float32Array.from(resolved as number[]));
+    };
+
     if (this.inner instanceof Promise) {
       const nativeQuery = this.inner.then(async (inner) => {
-        if (vector instanceof Promise) {
-          const arr = await vector.then((v) => Float32Array.from(v));
-          return inner.nearestTo(arr);
-        } else {
-          return inner.nearestTo(Float32Array.from(vector));
-        }
+        const resolved = vector instanceof Promise ? await vector : vector;
+        return callNearestTo(inner, resolved);
       });
       return new VectorQuery(nativeQuery);
     }
@@ -780,10 +793,8 @@ export class Query extends StandardQueryBase<NativeQuery> {
       const res = (async () => {
         try {
           const v = await vector;
-          const arr = Float32Array.from(v);
-          //
           // biome-ignore lint/suspicious/noExplicitAny: we need to get the `inner`, but js has no package scoping
-          const value: any = this.nearestTo(arr);
+          const value: any = this.nearestTo(v);
           const inner = value.inner as
             | NativeVectorQuery
             | Promise<NativeVectorQuery>;
@@ -794,7 +805,7 @@ export class Query extends StandardQueryBase<NativeQuery> {
       })();
       return new VectorQuery(res);
     } else {
-      const vectorQuery = this.inner.nearestTo(Float32Array.from(vector));
+      const vectorQuery = callNearestTo(this.inner, vector);
       return new VectorQuery(vectorQuery);
     }
   }

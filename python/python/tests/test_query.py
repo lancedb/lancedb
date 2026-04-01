@@ -30,6 +30,7 @@ from lancedb.query import (
     PhraseQuery,
     Query,
     FullTextSearchQuery,
+    ensure_vector_query,
 )
 from lancedb.rerankers.cross_encoder import CrossEncoderReranker
 from lancedb.table import AsyncTable, LanceTable
@@ -1499,6 +1500,18 @@ def test_search_empty_table(mem_db):
     # Search on empty table should return empty results, not crash
     results = table.search([1.0, 2.0]).limit(5).to_list()
     assert results == []
+
+
+def test_ensure_vector_query_empty_list():
+    """Regression: ensure_vector_query used to return instead of raise ValueError."""
+    with pytest.raises(ValueError, match="non-empty"):
+        ensure_vector_query([])
+
+
+def test_ensure_vector_query_nested_empty_list():
+    """Regression: ensure_vector_query used to return instead of raise ValueError."""
+    with pytest.raises(ValueError, match="non-empty"):
+        ensure_vector_query([[]])
 
 
 def test_fast_search(tmp_path):

@@ -4,7 +4,7 @@
 from datetime import timedelta
 import logging
 from functools import cached_property
-from typing import Dict, Iterable, List, Optional, Union, Literal
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union, Literal
 import warnings
 
 from lancedb._lancedb import (
@@ -35,6 +35,7 @@ import pyarrow as pa
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
+from lancedb.table import _normalize_progress
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder, LanceTakeQueryBuilder
 from ..table import AsyncTable, IndexStatistics, Query, Table, Tags
@@ -308,6 +309,7 @@ class RemoteTable(Table):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        progress: Optional[Union[bool, Callable, Any]] = None,
     ) -> AddResult:
         """Add more data to the [Table](Table). It has the same API signature as
         the OSS version.
@@ -330,17 +332,29 @@ class RemoteTable(Table):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        progress: bool, callable, or tqdm-like, optional
+            A callback or tqdm-compatible progress bar. See
+            :meth:`Table.add` for details.
 
         Returns
         -------
         AddResult
             An object containing the new version number of the table after adding data.
         """
-        return LOOP.run(
-            self._table.add(
-                data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        progress, owns = _normalize_progress(progress)
+        try:
+            return LOOP.run(
+                self._table.add(
+                    data,
+                    mode=mode,
+                    on_bad_vectors=on_bad_vectors,
+                    fill_value=fill_value,
+                    progress=progress,
+                )
             )
-        )
+        finally:
+            if owns:
+                progress.close()
 
     def search(
         self,

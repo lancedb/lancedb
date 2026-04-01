@@ -52,7 +52,7 @@ new EmbeddingFunction<T, M>(): EmbeddingFunction<T, M>
 ### computeQueryEmbeddings()
 
 ```ts
-computeQueryEmbeddings(data): Promise<number[] | Float32Array | Float64Array>
+computeQueryEmbeddings(data): Promise<number[] | Uint8Array | Float32Array | Float64Array>
 ```
 
 Compute the embeddings for a single query
@@ -63,7 +63,7 @@ Compute the embeddings for a single query
 
 #### Returns
 
-`Promise`&lt;`number`[] \| `Float32Array` \| `Float64Array`&gt;
+`Promise`&lt;`number`[] \| `Uint8Array` \| `Float32Array` \| `Float64Array`&gt;
 
 ***
 

@@ -72,6 +72,10 @@ impl ServerVersion {
     pub fn support_structural_fts(&self) -> bool {
         self.0 >= semver::Version::new(0, 3, 0)
     }
+
+    pub fn support_multipart_write(&self) -> bool {
+        self.0 >= semver::Version::new(0, 4, 0)
+    }
 }
 
 pub const OPT_REMOTE_PREFIX: &str = "remote_database_";
@@ -807,12 +811,7 @@ impl RemoteOptions {
 
 impl From<StorageOptions> for RemoteOptions {
     fn from(options: StorageOptions) -> Self {
-        let supported_opts = vec![
-            "account_name",
-            "azure_storage_account_name",
-            "azure_client_id",
-            "azure_tenant_id",
-        ];
+        let supported_opts = vec!["account_name", "azure_storage_account_name"];
         let mut filtered = HashMap::new();
         for opt in supported_opts {
             if let Some(v) = options.0.get(opt) {

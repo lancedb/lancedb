@@ -66,13 +66,13 @@ impl IoTrackingStore {
     }
 
     fn record_read(&self, num_bytes: u64) {
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.read_iops += 1;
         stats.read_bytes += num_bytes;
     }
 
     fn record_write(&self, num_bytes: u64) {
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.write_iops += 1;
         stats.write_bytes += num_bytes;
     }
@@ -229,10 +229,63 @@ impl MultipartUpload for IoTrackingMultipartUpload {
 
     fn put_part(&mut self, payload: PutPayload) -> UploadPart {
         {
-            let mut stats = self.stats.lock().unwrap();
+            let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
             stats.write_iops += 1;
             stats.write_bytes += payload.content_length() as u64;
         }
         self.target.put_part(payload)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: poison a Mutex<IoStats> by panicking while holding the lock.
+    fn poison_stats(stats: &Arc<Mutex<IoStats>>) {
+        let stats_clone = stats.clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = stats_clone.lock().unwrap();
+            panic!("intentional panic to poison stats mutex");
+        });
+        let _ = handle.join();
+        assert!(stats.lock().is_err(), "mutex should be poisoned");
+    }
+
+    #[test]
+    fn test_record_read_recovers_from_poisoned_lock() {
+        let stats = Arc::new(Mutex::new(IoStats::default()));
+        let store = IoTrackingStore {
+            target: Arc::new(object_store::memory::InMemory::new()),
+            stats: stats.clone(),
+        };
+
+        poison_stats(&stats);
+
+        // record_read should not panic
+        store.record_read(1024);
+
+        // Verify the stats were updated despite poisoning
+        let s = stats.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(s.read_iops, 1);
+        assert_eq!(s.read_bytes, 1024);
+    }
+
+    #[test]
+    fn test_record_write_recovers_from_poisoned_lock() {
+        let stats = Arc::new(Mutex::new(IoStats::default()));
+        let store = IoTrackingStore {
+            target: Arc::new(object_store::memory::InMemory::new()),
+            stats: stats.clone(),
+        };
+
+        poison_stats(&stats);
+
+        // record_write should not panic
+        store.record_write(2048);
+
+        let s = stats.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(s.write_iops, 1);
+        assert_eq!(s.write_bytes, 2048);
     }
 }

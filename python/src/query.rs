@@ -35,12 +35,10 @@ use pyo3::types::PyList;
 use pyo3::types::{PyDict, PyString};
 use pyo3::{FromPyObject, exceptions::PyRuntimeError};
 use pyo3::{PyErr, pyclass};
-use pyo3::{
-    exceptions::{PyNotImplementedError, PyValueError},
-    intern,
-};
+use pyo3::{exceptions::PyValueError, intern};
 use pyo3_async_runtimes::tokio::future_into_py;
 
+use crate::expr::PyExpr;
 use crate::util::parse_distance_type;
 use crate::{arrow::RecordBatchStream, util::PyLanceDB};
 use crate::{error::PythonErrorExt, index::class_name};
@@ -344,9 +342,13 @@ impl<'py> IntoPyObject<'py> for PyQueryFilter {
 
     fn into_pyobject(self, py: pyo3::Python<'py>) -> PyResult<Self::Output> {
         match self.0 {
-            QueryFilter::Datafusion(_) => Err(PyNotImplementedError::new_err(
-                "Datafusion filter has no conversion to Python",
-            )),
+            QueryFilter::Datafusion(expr) => {
+                // Serialize the DataFusion expression to a SQL string so that
+                // callers (e.g. remote tables) see the same format as Sql.
+                let sql = lancedb::expr::expr_to_sql_string(&expr)
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                Ok(sql.into_pyobject(py)?.into_any())
+            }
             QueryFilter::Sql(sql) => Ok(sql.into_pyobject(py)?.into_any()),
             QueryFilter::Substrait(substrait) => Ok(substrait.into_pyobject(py)?.into_any()),
         }
@@ -370,8 +372,18 @@ impl Query {
         self.inner = self.inner.clone().only_if(predicate);
     }
 
+    pub fn where_expr(&mut self, expr: PyExpr) {
+        self.inner = self.inner.clone().only_if_expr(expr.0);
+    }
+
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner = self.inner.clone().select(Select::dynamic(&columns));
+    }
+
+    pub fn select_expr(&mut self, columns: Vec<(String, PyExpr)>) {
+        let pairs: Vec<(String, lancedb::expr::DfExpr)> =
+            columns.into_iter().map(|(name, e)| (name, e.0)).collect();
+        self.inner = self.inner.clone().select(Select::Expr(pairs));
     }
 
     pub fn select_columns(&mut self, columns: Vec<String>) {
@@ -607,8 +619,18 @@ impl FTSQuery {
         self.inner = self.inner.clone().only_if(predicate);
     }
 
+    pub fn where_expr(&mut self, expr: PyExpr) {
+        self.inner = self.inner.clone().only_if_expr(expr.0);
+    }
+
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner = self.inner.clone().select(Select::dynamic(&columns));
+    }
+
+    pub fn select_expr(&mut self, columns: Vec<(String, PyExpr)>) {
+        let pairs: Vec<(String, lancedb::expr::DfExpr)> =
+            columns.into_iter().map(|(name, e)| (name, e.0)).collect();
+        self.inner = self.inner.clone().select(Select::Expr(pairs));
     }
 
     pub fn select_columns(&mut self, columns: Vec<String>) {
@@ -725,6 +747,10 @@ impl VectorQuery {
         self.inner = self.inner.clone().only_if(predicate);
     }
 
+    pub fn where_expr(&mut self, expr: PyExpr) {
+        self.inner = self.inner.clone().only_if_expr(expr.0);
+    }
+
     pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {
         let data: ArrayData = ArrayData::from_pyarrow_bound(&vector)?;
         let array = make_array(data);
@@ -734,6 +760,12 @@ impl VectorQuery {
 
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner = self.inner.clone().select(Select::dynamic(&columns));
+    }
+
+    pub fn select_expr(&mut self, columns: Vec<(String, PyExpr)>) {
+        let pairs: Vec<(String, lancedb::expr::DfExpr)> =
+            columns.into_iter().map(|(name, e)| (name, e.0)).collect();
+        self.inner = self.inner.clone().select(Select::Expr(pairs));
     }
 
     pub fn select_columns(&mut self, columns: Vec<String>) {
@@ -890,9 +922,19 @@ impl HybridQuery {
         self.inner_fts.r#where(predicate);
     }
 
+    pub fn where_expr(&mut self, expr: PyExpr) {
+        self.inner_vec.where_expr(expr.clone());
+        self.inner_fts.where_expr(expr);
+    }
+
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner_vec.select(columns.clone());
         self.inner_fts.select(columns);
+    }
+
+    pub fn select_expr(&mut self, columns: Vec<(String, PyExpr)>) {
+        self.inner_vec.select_expr(columns.clone());
+        self.inner_fts.select_expr(columns);
     }
 
     pub fn select_columns(&mut self, columns: Vec<String>) {
