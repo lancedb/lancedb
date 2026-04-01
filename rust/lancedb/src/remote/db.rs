@@ -17,6 +17,7 @@ use lance_namespace::models::{
 };
 
 use crate::Error;
+use crate::data::sanitize::maybe_infer_fsl_scannable;
 use crate::database::{
     CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
     OpenTableRequest, ReadConsistency, TableNamesRequest,
@@ -440,6 +441,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if request.write_options.infer_schema {
+            request.data = maybe_infer_fsl_scannable(request.data).await?;
+        }
         let body = stream_as_body(request.data.scan_as_stream())?;
 
         let identifier =

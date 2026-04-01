@@ -63,6 +63,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
+use crate::data::sanitize::maybe_infer_fsl_scannable;
+use crate::table::AddDataMode;
+
 const REQUEST_TIMEOUT_HEADER: HeaderName = HeaderName::from_static("x-request-timeout-ms");
 const METRIC_TYPE_KEY: &str = "metric_type";
 const INDEX_TYPE_KEY: &str = "index_type";
@@ -1254,6 +1257,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     }
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         self.check_mutable().await?;
+
+        // For overwrite, infer FSL schema from incoming data (no existing table schema to cast to).
+        if matches!(add.mode, AddDataMode::Overwrite) && add.write_options.infer_schema {
+            add.data = maybe_infer_fsl_scannable(add.data).await?;
+        }
 
         let table_schema = self.schema().await?;
         let table_def = TableDefinition::try_from_rich_schema(table_schema.clone())?;

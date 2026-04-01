@@ -441,6 +441,7 @@ mod tests {
             .add(new_batch.clone())
             .write_options(WriteOptions {
                 lance_write_params: Some(param),
+                ..Default::default()
             })
             .mode(AddDataMode::Append)
             .execute()

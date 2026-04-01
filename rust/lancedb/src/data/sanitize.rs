@@ -11,13 +11,75 @@ use arrow_array::{
 };
 use arrow_cast::{can_cast_types, cast};
 use arrow_schema::{ArrowError, DataType, Field, Schema};
+use futures::StreamExt;
 use half::f16;
 use lance_arrow::{DataTypeExt, FixedSizeListArrayExt};
 use log::warn;
 use num_traits::cast::AsPrimitive;
 
-use super::inspect::infer_dimension;
+use super::inspect::{infer_dimension, infer_fsl_schema};
+use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
+use crate::data::scannable::{PeekedScannable, Scannable};
 use crate::error::Result;
+
+/// A [`Scannable`] wrapper that applies [`coerce_schema_batch`] to every batch,
+/// converting columns to the target schema (e.g. List → FixedSizeList).
+pub(crate) struct CoerceScannable {
+    pub(crate) inner: Box<dyn Scannable>,
+    pub(crate) schema: Arc<Schema>,
+}
+
+impl Scannable for CoerceScannable {
+    fn schema(&self) -> arrow_schema::SchemaRef {
+        self.schema.clone()
+    }
+
+    fn num_rows(&self) -> Option<usize> {
+        self.inner.num_rows()
+    }
+
+    fn rescannable(&self) -> bool {
+        self.inner.rescannable()
+    }
+
+    fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+        let inner_stream = self.inner.scan_as_stream();
+        let target_schema = self.schema.clone();
+        let stream = inner_stream.map(move |batch_result| {
+            batch_result.and_then(|batch| {
+                coerce_schema_batch(batch, target_schema.clone()).map_err(crate::Error::from)
+            })
+        });
+        Box::pin(SimpleRecordBatchStream {
+            schema: self.schema.clone(),
+            stream,
+        })
+    }
+}
+
+/// Peek at the first batch of `data` to infer FSL schema, then return a
+/// [`Scannable`] that applies the conversion if the schema changed.
+///
+/// Variable-length list columns whose names contain "vector" or "embedding" are
+/// converted to FixedSizeList when a uniform dimension can be inferred.
+pub async fn maybe_infer_fsl_scannable(data: Box<dyn Scannable>) -> Result<Box<dyn Scannable>> {
+    let mut peeked = PeekedScannable::new(data);
+    let Some(first_batch) = peeked.peek().await else {
+        return Ok(Box::new(peeked));
+    };
+
+    let original_schema = peeked.schema();
+    let inferred_schema = infer_fsl_schema(&first_batch);
+
+    if inferred_schema != original_schema {
+        Ok(Box::new(CoerceScannable {
+            inner: Box::new(peeked),
+            schema: inferred_schema,
+        }))
+    } else {
+        Ok(Box::new(peeked))
+    }
+}
 
 fn cast_array<I: ArrowNumericType, O: ArrowNumericType>(
     arr: &PrimitiveArray<I>,
