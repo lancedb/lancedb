@@ -228,6 +228,7 @@ mod test {
             .create_table("test", data)
             .write_options(WriteOptions {
                 lance_write_params: Some(param),
+                ..Default::default()
             })
             .execute()
             .await;

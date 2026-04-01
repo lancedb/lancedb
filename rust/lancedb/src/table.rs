@@ -47,6 +47,7 @@ use std::format;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::data::sanitize::maybe_infer_fsl_scannable;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
@@ -182,7 +183,8 @@ enum BadVectorHandling {
 }
 
 /// Options to use when writing data
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct WriteOptions {
     // Coming soon: https://github.com/lancedb/lancedb/issues/992
     // /// What behavior to take if the data contains invalid vectors
@@ -192,6 +194,19 @@ pub struct WriteOptions {
     /// Overlapping `OpenTableBuilder` options (e.g. [AddDataBuilder::mode]) will take
     /// precedence over their counterparts in `WriteOptions` (e.g. [WriteParams::mode]).
     pub lance_write_params: Option<WriteParams>,
+    /// If true (the default), variable-length list columns whose names contain "vector"
+    /// or "embedding" will be automatically converted to FixedSizeList when their
+    /// dimension can be inferred from the data. Set to false to disable this behavior.
+    pub infer_schema: bool,
+}
+
+impl Default for WriteOptions {
+    fn default() -> Self {
+        Self {
+            lance_write_params: None,
+            infer_schema: true,
+        }
+    }
 }
 
 /// Filters that can be used to limit the rows returned by a query
@@ -2223,6 +2238,13 @@ impl BaseTable for NativeTable {
     async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
         let table_def = self.table_definition().await?;
 
+        // For overwrite, infer FSL schema from the incoming data. The table schema is
+        // not yet established, so we can't cast to it. For append, the table schema
+        // already exists and schema casting handles type alignment.
+        if matches!(add.mode, AddDataMode::Overwrite) && add.write_options.infer_schema {
+            add.data = maybe_infer_fsl_scannable(add.data).await?;
+        }
+
         self.dataset.ensure_mutable()?;
         let ds_wrapper = self.dataset.clone();
         let ds = self.dataset.get().await?;
@@ -3870,5 +3892,68 @@ mod tests {
         let result = table.list_indices().await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].index_type, crate::index::IndexType::Bitmap);
+    }
+
+    #[tokio::test]
+    async fn test_add_overwrite_infers_fsl() {
+        use arrow_array::ListArray;
+        use arrow_array::types::Float32Type;
+        use arrow_schema::DataType;
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        // Create initial table with scalar data
+        let init_schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+            "id",
+            DataType::Int32,
+            false,
+        )]));
+        let init_batch = RecordBatch::try_new(
+            init_schema.clone(),
+            vec![Arc::new(arrow_array::Int32Array::from(vec![0]))],
+        )
+        .unwrap();
+        let db = crate::connect(uri).execute().await.unwrap();
+        db.create_table("test", init_batch).execute().await.unwrap();
+
+        // Overwrite with a list-typed "vector" column — should become FSL
+        let new_schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", DataType::Int32, false),
+            arrow_schema::Field::new(
+                "vector",
+                DataType::List(Arc::new(arrow_schema::Field::new(
+                    "item",
+                    DataType::Float32,
+                    true,
+                ))),
+                true,
+            ),
+        ]));
+        let new_batch = RecordBatch::try_new(
+            new_schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int32Array::from(vec![1, 2])),
+                Arc::new(ListArray::from_iter_primitive::<Float32Type, _, _>(
+                    (0..2).map(|_| Some(vec![Some(0.1f32), Some(0.2), Some(0.3)])),
+                )),
+            ],
+        )
+        .unwrap();
+        let table = db.open_table("test").execute().await.unwrap();
+        table
+            .add(new_batch)
+            .mode(crate::table::AddDataMode::Overwrite)
+            .execute()
+            .await
+            .unwrap();
+
+        let stored_schema = table.schema().await.unwrap();
+        let vector_field = stored_schema.field_with_name("vector").unwrap();
+        assert!(
+            matches!(vector_field.data_type(), DataType::FixedSizeList(_, 3)),
+            "expected FixedSizeList(_, 3), got {:?}",
+            vector_field.data_type()
+        );
     }
 }
