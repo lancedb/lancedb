@@ -11,7 +11,6 @@ use std::{collections::HashMap, sync::Arc};
 use lance::dataset::refs::Ref;
 use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
-use lance_datafusion::utils::StreamingWriteSource;
 use lance_encoding::version::LanceFileVersion;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
 use lance_table::io::commit::commit_handler_from_url;
@@ -19,6 +18,7 @@ use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
 
 use crate::connection::ConnectRequest;
+use crate::data::sanitize::maybe_infer_fsl_scannable;
 use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
@@ -1040,13 +1040,17 @@ impl Database for ListingDatabase {
             stable_row_ids_override,
         );
 
-        let data_schema = request.data.arrow_schema();
+        let data_schema = request.data.schema();
+        let mut data = request.data;
+        if request.write_options.infer_schema {
+            data = maybe_infer_fsl_scannable(data).await?;
+        }
 
         match NativeTable::create(
             &table_uri,
             &request.name,
             request.namespace_path.clone(),
-            request.data,
+            data,
             self.store_wrapper.clone(),
             Some(write_params),
             self.read_consistency_interval,
@@ -2034,6 +2038,7 @@ mod tests {
                 }),
                 ..Default::default()
             }),
+            ..Default::default()
         };
 
         let table = db
@@ -2107,6 +2112,7 @@ mod tests {
                 }),
                 ..Default::default()
             }),
+            ..Default::default()
         };
 
         let table = db
@@ -2610,5 +2616,103 @@ mod tests {
             .await
             .unwrap();
         assert!(post_drop.tables.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_create_table_infers_fsl() {
+        use arrow_array::ListArray;
+        use arrow_array::types::Float32Type;
+        use arrow_schema::DataType;
+
+        let (_tempdir, db) = setup_database().await;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "embedding",
+                DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(ListArray::from_iter_primitive::<Float32Type, _, _>(
+                    (0..3).map(|_| Some(vec![Some(1.0f32), Some(2.0), Some(3.0), Some(4.0)])),
+                )),
+            ],
+        )
+        .unwrap();
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "vectors".to_string(),
+                namespace_path: vec![],
+                data: Box::new(vec![batch]),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        let stored_schema = table.schema().await.unwrap();
+        let embedding_field = stored_schema.field_with_name("embedding").unwrap();
+        assert!(
+            matches!(embedding_field.data_type(), DataType::FixedSizeList(_, 4)),
+            "expected FixedSizeList(_, 4), got {:?}",
+            embedding_field.data_type()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_table_infers_fsl_disabled() {
+        use arrow_array::ListArray;
+        use arrow_array::types::Float32Type;
+
+        let (_tempdir, db) = setup_database().await;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "embedding",
+                DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(ListArray::from_iter_primitive::<Float32Type, _, _>(
+                    (0..2).map(|_| Some(vec![Some(1.0f32), Some(2.0)])),
+                )),
+            ],
+        )
+        .unwrap();
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "vectors_no_infer".to_string(),
+                namespace_path: vec![],
+                data: Box::new(vec![batch]),
+                mode: CreateTableMode::Create,
+                write_options: WriteOptions {
+                    infer_schema: false,
+                    ..Default::default()
+                },
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        let stored_schema = table.schema().await.unwrap();
+        let embedding_field = stored_schema.field_with_name("embedding").unwrap();
+        assert!(
+            matches!(embedding_field.data_type(), DataType::List(_)),
+            "expected List (inference disabled), got {:?}",
+            embedding_field.data_type()
+        );
     }
 }
