@@ -30,7 +30,10 @@ use crate::error::{Error, Result};
 #[cfg(feature = "remote")]
 use crate::remote::{
     client::ClientConfig,
-    db::{OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION},
+    db::{
+        OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION,
+        OPT_REMOTE_WAL_HOST_OVERRIDE,
+    },
 };
 use lance::io::ObjectStoreParams;
 pub use lance_encoding::version::LanceFileVersion;
@@ -667,6 +670,24 @@ impl ConnectBuilder {
         self
     }
 
+    /// Set the WAL host override for routing merge_insert requests
+    /// to a separate WAL/ingest service.
+    ///
+    /// This option is only used when connecting to LanceDB Cloud (db:// URIs)
+    /// and will be ignored for other URIs.
+    ///
+    /// # Arguments
+    ///
+    /// * `wal_host_override` - The WAL host override to use for the connection
+    #[cfg(feature = "remote")]
+    pub fn wal_host_override(mut self, wal_host_override: &str) -> Self {
+        self.request.options.insert(
+            OPT_REMOTE_WAL_HOST_OVERRIDE.to_string(),
+            wal_host_override.to_string(),
+        );
+        self
+    }
+
     /// Set the database specific options
     ///
     /// See [crate::database::listing::ListingDatabaseOptions] for the options available for
@@ -820,6 +841,7 @@ impl ConnectBuilder {
             &api_key,
             &region,
             options.host_override,
+            options.wal_host_override,
             self.request.client_config,
             storage_options.into(),
         )?);

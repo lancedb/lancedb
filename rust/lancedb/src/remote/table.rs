@@ -1369,13 +1369,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.check_mutable().await?;
 
         let timeout = params.timeout;
+        let use_wal = params.use_wal;
 
         let query = MergeInsertRequest::try_from(params)?;
-        let mut request = self
-            .client
-            .post(&format!("/v1/table/{}/merge_insert/", self.identifier))
-            .query(&query)
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+        let path = format!("/v1/table/{}/merge_insert/", self.identifier);
+        let mut request = if use_wal {
+            self.client.post_wal(&path)
+        } else {
+            self.client.post(&path)
+        }
+        .query(&query)
+        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
         if let Some(timeout) = timeout {
             // (If it doesn't fit into u64, it's not worth sending anyways.)
@@ -2460,6 +2464,43 @@ mod tests {
             assert_eq!(result.num_inserted_rows, 3);
             assert_eq!(result.num_updated_rows, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_use_wal() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            if request.url().path() == "/v1/table/my_table/merge_insert/" {
+                // Verify the request was sent to the WAL host
+                assert_eq!(
+                    request.url().host_str().unwrap(),
+                    "localhost-wal",
+                    "merge_insert with use_wal should route to WAL host"
+                );
+
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1, "num_deleted_rows": 0, "num_inserted_rows": 3, "num_updated_rows": 0}"#)
+                    .unwrap()
+            } else {
+                panic!("Unexpected request path: {}", request.url().path());
+            }
+        });
+
+        let mut builder = table.merge_insert(&["some_col"]);
+        builder.use_wal(true);
+        let result = builder.execute(data).await.unwrap();
+
+        assert_eq!(result.num_inserted_rows, 3);
     }
 
     #[tokio::test]
