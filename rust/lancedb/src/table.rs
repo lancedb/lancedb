@@ -23,7 +23,7 @@ use lance::index::vector::VectorIndexParams;
 use lance::index::vector::utils::infer_vector_dim;
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
-use lance_index::DatasetIndexExt;
+use lance::index::DatasetIndexExt;
 use lance_index::IndexType;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
 use lance_index::vector::bq::RQBuildParams;
