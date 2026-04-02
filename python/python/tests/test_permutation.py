@@ -546,7 +546,8 @@ def test_permutations_metadata_without_split_names_key(mem_db: DBConnection):
 
 
 def test_from_tables_string_split_missing_names_key(mem_db: DBConnection):
-    """Regression: from_tables() with a string split must raise ValueError, not AttributeError.
+    """Regression: from_tables() with a string split must raise ValueError, not
+    AttributeError.
 
     Previously, `.get(b"split_names", None).decode()` crashed with AttributeError
     when the metadata dict existed but had no split_names key.
