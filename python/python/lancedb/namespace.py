@@ -224,6 +224,7 @@ class LanceNamespaceDBConnection(DBConnection):
         read_consistency_interval: Optional[timedelta] = None,
         storage_options: Optional[Dict[str, str]] = None,
         session: Optional[Session] = None,
+        namespace_client_pushdown_operations: Optional[List[str]] = None,
     ):
         """
         Initialize a namespace-based LanceDB connection.
@@ -239,11 +240,15 @@ class LanceNamespaceDBConnection(DBConnection):
             Additional options for the storage backend
         session : Optional[Session]
             A session to use for this connection
+        namespace_client_pushdown_operations : Optional[List[str]]
+            List of operation names to push down to the namespace server.
+            For example: ["QueryTable", "CreateTable"]
         """
         self._namespace_client = namespace
         self.read_consistency_interval = read_consistency_interval
         self.storage_options = storage_options or {}
         self.session = session
+        self.namespace_client_pushdown_operations = namespace_client_pushdown_operations or []
 
     @override
     def table_names(
@@ -285,11 +290,15 @@ class LanceNamespaceDBConnection(DBConnection):
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
+        # namespace_path is an alias for namespace
+        if namespace_path is not None:
+            namespace = namespace_path
         if namespace is None:
             namespace = []
         if mode.lower() not in ["create", "overwrite"]:
@@ -384,10 +393,14 @@ class LanceNamespaceDBConnection(DBConnection):
         name: str,
         *,
         namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
+        # namespace_path is an alias for namespace
+        if namespace_path is not None:
+            namespace = namespace_path
         if namespace is None:
             namespace = []
         table_id = namespace + [name]
@@ -425,7 +438,15 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
     @override
-    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
+    def drop_table(
+        self,
+        name: str,
+        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
+    ):
+        # namespace_path is an alias for namespace
+        if namespace_path is not None:
+            namespace = namespace_path
         # Use namespace drop_table directly
         if namespace is None:
             namespace = []
@@ -684,6 +705,7 @@ class AsyncLanceNamespaceDBConnection:
         read_consistency_interval: Optional[timedelta] = None,
         storage_options: Optional[Dict[str, str]] = None,
         session: Optional[Session] = None,
+        namespace_client_pushdown_operations: Optional[List[str]] = None,
     ):
         """
         Initialize an async namespace-based LanceDB connection.
@@ -699,11 +721,15 @@ class AsyncLanceNamespaceDBConnection:
             Additional options for the storage backend
         session : Optional[Session]
             A session to use for this connection
+        namespace_client_pushdown_operations : Optional[List[str]]
+            List of operation names to push down to the namespace server.
+            For example: ["QueryTable", "CreateTable"]
         """
         self._namespace_client = namespace
         self.read_consistency_interval = read_consistency_interval
         self.storage_options = storage_options or {}
         self.session = session
+        self.namespace_client_pushdown_operations = namespace_client_pushdown_operations or []
 
     async def table_names(
         self,
@@ -743,12 +769,16 @@ class AsyncLanceNamespaceDBConnection:
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ) -> AsyncTable:
         """Create a new table in the namespace."""
+        # namespace_path is an alias for namespace
+        if namespace_path is not None:
+            namespace = namespace_path
         if namespace is None:
             namespace = []
         if mode.lower() not in ["create", "overwrite"]:
@@ -846,11 +876,15 @@ class AsyncLanceNamespaceDBConnection:
         name: str,
         *,
         namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         storage_options_provider: Optional[StorageOptionsProvider] = None,
         index_cache_size: Optional[int] = None,
     ) -> AsyncTable:
         """Open an existing table from the namespace."""
+        # namespace_path is an alias for namespace
+        if namespace_path is not None:
+            namespace = namespace_path
         if namespace is None:
             namespace = []
         table_id = namespace + [name]
@@ -899,8 +933,16 @@ class AsyncLanceNamespaceDBConnection:
         lance_table = await asyncio.to_thread(_open_table)
         return lance_table._table
 
-    async def drop_table(self, name: str, namespace: Optional[List[str]] = None):
+    async def drop_table(
+        self,
+        name: str,
+        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
+    ):
         """Drop a table from the namespace."""
+        # namespace_path is an alias for namespace
+        if namespace_path is not None:
+            namespace = namespace_path
         if namespace is None:
             namespace = []
         table_id = namespace + [name]
