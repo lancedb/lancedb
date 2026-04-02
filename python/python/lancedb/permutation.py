@@ -284,9 +284,8 @@ class Permutations:
         self.permutation_table = permutation_table
 
         if permutation_table.schema.metadata is not None:
-            split_names = permutation_table.schema.metadata.get(
-                b"split_names", None
-            ).decode("utf-8")
+            raw = permutation_table.schema.metadata.get(b"split_names")
+            split_names = raw.decode("utf-8") if raw is not None else None
             if split_names is not None:
                 self.split_names = json.loads(split_names)
                 self.split_dict = {
@@ -460,9 +459,8 @@ class Permutation:
                         f"Cannot create a permutation on split `{split}`"
                         " because no split names are defined in the permutation table"
                     )
-                split_names = permutation_table.schema.metadata.get(
-                    b"split_names", None
-                ).decode("utf-8")
+                raw = permutation_table.schema.metadata.get(b"split_names")
+                split_names = raw.decode("utf-8") if raw is not None else None
                 if split_names is None:
                     raise ValueError(
                         f"Cannot create a permutation on split `{split}`"
