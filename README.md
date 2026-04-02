@@ -1,9 +1,3 @@
-<a href="https://cloud.lancedb.com" target="_blank">
-  <img src="https://github.com/user-attachments/assets/92dad0a2-2a37-4ce1-b783-0d1b4f30a00c" alt="LanceDB Cloud Public Beta" width="100%" style="max-width: 100%;">
-</a>
-<div align="center">
-
-[![LanceDB](docs/src/assets/hero-header.png)](https://lancedb.com)
 [![Website](https://img.shields.io/badge/-Website-100000?style=for-the-badge&labelColor=645cfb&color=645cfb)](https://lancedb.com/)
 [![Blog](https://img.shields.io/badge/Blog-100000?style=for-the-badge&labelColor=645cfb&color=645cfb)](https://blog.lancedb.com/)
 [![Discord](https://img.shields.io/badge/-Discord-100000?style=for-the-badge&logo=discord&logoColor=white&labelColor=645cfb&color=645cfb)](https://discord.gg/zMM32dvNtd)
