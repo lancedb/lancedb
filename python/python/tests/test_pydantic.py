@@ -696,7 +696,7 @@ def test_enum_types():
 
     schema = pydantic_to_schema(TestModel)
 
-    assert schema.field("status").type == pa.utf8()
+    assert schema.field("status").type == pa.dictionary(pa.int32(), pa.utf8())
     assert schema.field("priority").type == pa.int64()
-    assert schema.field("opt_status").type == pa.utf8()
+    assert schema.field("opt_status").type == pa.dictionary(pa.int32(), pa.utf8())
     assert schema.field("opt_status").nullable

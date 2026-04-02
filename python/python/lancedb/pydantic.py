@@ -316,11 +316,17 @@ def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
             # For regular Vector
             return pa.list_(tp.value_arrow_type(), tp.dim())
         if _safe_issubclass(tp, Enum):
-            # Map Enum to the Arrow type of its value.  Fall back to utf8 if the
-            # value type cannot be determined (e.g. mixed-type or empty enums).
+            # Map Enum to the Arrow type of its value.
+            # For string-valued enums, use dictionary encoding for efficiency.
+            # For integer enums, use the native type.
+            # Fall back to utf8 for mixed-type or empty enums.
             value_types = {type(m.value) for m in tp}
             if len(value_types) == 1:
-                return _py_type_to_arrow_type(value_types.pop(), field)
+                value_type = value_types.pop()
+                if value_type is str:
+                    # Use dictionary encoding for string enums
+                    return pa.dictionary(pa.int32(), pa.utf8())
+                return _py_type_to_arrow_type(value_type, field)
             return pa.utf8()
     return _py_type_to_arrow_type(tp, field)
 
