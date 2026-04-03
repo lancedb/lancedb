@@ -55,6 +55,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete_filt: Option<String>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) use_index: bool,
+    pub(crate) use_wal: bool,
 }
 
 impl MergeInsertBuilder {
@@ -69,6 +70,7 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
             use_index: true,
+            use_wal: false,
         }
     }
 
@@ -145,6 +147,18 @@ impl MergeInsertBuilder {
     /// If not set, defaults to `true` (use index if available).
     pub fn use_index(&mut self, use_index: bool) -> &mut Self {
         self.use_index = use_index;
+        self
+    }
+
+    /// Controls whether to route the merge insert operation through the WAL host.
+    ///
+    /// When set to `true`, the operation will be sent to the WAL host instead of
+    /// the main API host. The WAL host is auto-derived from the database connection
+    /// or can be explicitly set via [`crate::connection::ConnectBuilder::wal_host_override`].
+    ///
+    /// Defaults to `false`.
+    pub fn use_wal(&mut self, use_wal: bool) -> &mut Self {
+        self.use_wal = use_wal;
         self
     }
 

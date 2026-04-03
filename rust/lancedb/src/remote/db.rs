@@ -82,6 +82,7 @@ pub const OPT_REMOTE_PREFIX: &str = "remote_database_";
 pub const OPT_REMOTE_API_KEY: &str = "remote_database_api_key";
 pub const OPT_REMOTE_REGION: &str = "remote_database_region";
 pub const OPT_REMOTE_HOST_OVERRIDE: &str = "remote_database_host_override";
+pub const OPT_REMOTE_WAL_HOST_OVERRIDE: &str = "remote_database_wal_host_override";
 // TODO: add support for configuring client config via key/value options
 
 #[derive(Clone, Debug, Default)]
@@ -95,6 +96,11 @@ pub struct RemoteDatabaseOptions {
     /// This is required when connecting to LanceDB Enterprise and should be
     /// provided if using an on-premises LanceDB Enterprise instance.
     pub host_override: Option<String>,
+    /// The WAL host override
+    ///
+    /// When set, merge_insert operations using WAL routing will be sent to
+    /// this host instead of the auto-derived WAL host.
+    pub wal_host_override: Option<String>,
     /// Storage options configure the storage layer (e.g. S3, GCS, Azure, etc.)
     ///
     /// See available options at <https://lancedb.com/docs/storage/>
@@ -113,6 +119,7 @@ impl RemoteDatabaseOptions {
         let api_key = map.get(OPT_REMOTE_API_KEY).cloned();
         let region = map.get(OPT_REMOTE_REGION).cloned();
         let host_override = map.get(OPT_REMOTE_HOST_OVERRIDE).cloned();
+        let wal_host_override = map.get(OPT_REMOTE_WAL_HOST_OVERRIDE).cloned();
         let storage_options = map
             .iter()
             .filter(|(key, _)| !key.starts_with(OPT_REMOTE_PREFIX))
@@ -122,6 +129,7 @@ impl RemoteDatabaseOptions {
             api_key,
             region,
             host_override,
+            wal_host_override,
             storage_options,
         })
     }
@@ -140,6 +148,12 @@ impl DatabaseOptions for RemoteDatabaseOptions {
         }
         if let Some(host_override) = &self.host_override {
             map.insert(OPT_REMOTE_HOST_OVERRIDE.to_string(), host_override.clone());
+        }
+        if let Some(wal_host_override) = &self.wal_host_override {
+            map.insert(
+                OPT_REMOTE_WAL_HOST_OVERRIDE.to_string(),
+                wal_host_override.clone(),
+            );
         }
     }
 }
@@ -185,6 +199,19 @@ impl RemoteDatabaseOptionsBuilder {
         self.options.host_override = Some(host_override);
         self
     }
+
+    /// Set the WAL host override
+    ///
+    /// When set, merge_insert operations using WAL routing will be sent to
+    /// this host instead of the auto-derived WAL host.
+    ///
+    /// # Arguments
+    ///
+    /// * `wal_host_override` - The WAL host override
+    pub fn wal_host_override(mut self, wal_host_override: String) -> Self {
+        self.options.wal_host_override = Some(wal_host_override);
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -204,6 +231,7 @@ impl RemoteDatabase {
         api_key: &str,
         region: &str,
         host_override: Option<String>,
+        wal_host_override: Option<String>,
         client_config: ClientConfig,
         options: RemoteOptions,
     ) -> Result<Self> {
@@ -231,6 +259,7 @@ impl RemoteDatabase {
             &parsed,
             region,
             host_override,
+            wal_host_override,
             header_map,
             client_config.clone(),
         )?;
