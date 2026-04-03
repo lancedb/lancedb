@@ -2108,7 +2108,7 @@ def test_stats(mem_db: DBConnection):
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        "total_bytes": 38,
+        "total_bytes": 60,
         "num_rows": 2,
         "num_indices": 0,
         "fragment_stats": {

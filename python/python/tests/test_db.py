@@ -183,8 +183,8 @@ def test_table_names(tmp_db: lancedb.DBConnection):
     result = list(tmp_db.table_names("test2", limit=2))
     assert result == ["test3"], f"Expected ['test3'], got {result}"
 
-    # Test that namespace parameter can be passed as keyword
-    result = list(tmp_db.table_names(namespace=[]))
+    # Test that namespace_path parameter can be passed as keyword
+    result = list(tmp_db.table_names(namespace_path=[]))
     assert len(result) == 3
 
 
@@ -909,7 +909,7 @@ def test_local_namespace_operations(tmp_path):
         NotImplementedError,
         match="Namespace operations are not supported for listing database",
     ):
-        db.list_namespaces(namespace=["test"])
+        db.list_namespaces(namespace_path=["test"])
 
 
 def test_local_create_namespace_not_supported(tmp_path):

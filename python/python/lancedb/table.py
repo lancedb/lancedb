@@ -89,7 +89,6 @@ from .index import lang_mapping
 
 if TYPE_CHECKING:
     from .db import LanceDBConnection
-    from .io import StorageOptionsProvider
     from ._lancedb import (
         Table as LanceDBTable,
         OptimizeStats,
@@ -1776,30 +1775,30 @@ class LanceTable(Table):
         connection: "LanceDBConnection",
         name: str,
         *,
-        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
-        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
         managed_versioning: Optional[bool] = None,
+        pushdown_operations: Optional[set] = None,
         _async: AsyncTable = None,
     ):
-        if namespace is None:
-            namespace = []
+        if namespace_path is None:
+            namespace_path = []
         self._conn = connection
-        self._namespace = namespace
+        self._namespace_path = namespace_path
         self._location = location  # Store location for use in _dataset_path
         self._namespace_client = namespace_client
+        self._pushdown_operations = pushdown_operations or set()
         if _async is not None:
             self._table = _async
         else:
             self._table = LOOP.run(
                 connection._conn.open_table(
                     name,
-                    namespace=namespace,
+                    namespace_path=namespace_path,
                     storage_options=storage_options,
-                    storage_options_provider=storage_options_provider,
                     index_cache_size=index_cache_size,
                     location=location,
                     namespace_client=namespace_client,
@@ -1814,13 +1813,13 @@ class LanceTable(Table):
     @property
     def namespace(self) -> List[str]:
         """Return the namespace path of the table."""
-        return self._namespace
+        return self._namespace_path
 
     @property
     def id(self) -> str:
         """Return the full identifier of the table (namespace$name)."""
-        if self._namespace:
-            return "$".join(self._namespace + [self.name])
+        if self._namespace_path:
+            return "$".join(self._namespace_path + [self.name])
         return self.name
 
     @classmethod
@@ -1841,26 +1840,26 @@ class LanceTable(Table):
         db,
         name,
         *,
-        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
-        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         index_cache_size: Optional[int] = None,
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
         managed_versioning: Optional[bool] = None,
+        pushdown_operations: Optional[set] = None,
     ):
-        if namespace is None:
-            namespace = []
+        if namespace_path is None:
+            namespace_path = []
         tbl = cls(
             db,
             name,
-            namespace=namespace,
+            namespace_path=namespace_path,
             storage_options=storage_options,
-            storage_options_provider=storage_options_provider,
             index_cache_size=index_cache_size,
             location=location,
             namespace_client=namespace_client,
             managed_versioning=managed_versioning,
+            pushdown_operations=pushdown_operations,
         )
 
         # check the dataset exists
@@ -1893,11 +1892,11 @@ class LanceTable(Table):
             )
 
         if self._namespace_client is not None:
-            table_id = self._namespace + [self.name]
+            table_id = self._namespace_path + [self.name]
             return lance.dataset(
                 version=self.version,
                 storage_options=self._conn.storage_options,
-                namespace=self._namespace_client,
+                namespace_client=self._namespace_client,
                 table_id=table_id,
                 **kwargs,
             )
@@ -2803,13 +2802,13 @@ class LanceTable(Table):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str | bool]] = None,
-        storage_options_provider: Optional["StorageOptionsProvider"] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
         location: Optional[str] = None,
         namespace_client: Optional[Any] = None,
+        pushdown_operations: Optional[set] = None,
     ):
         """
         Create a new table.
@@ -2864,13 +2863,14 @@ class LanceTable(Table):
             Deprecated.  Set `storage_options` when connecting to the database and set
             `new_table_enable_v2_manifest_paths` in the options.
         """
-        if namespace is None:
-            namespace = []
+        if namespace_path is None:
+            namespace_path = []
         self = cls.__new__(cls)
         self._conn = db
-        self._namespace = namespace
+        self._namespace_path = namespace_path
         self._location = location
         self._namespace_client = namespace_client
+        self._pushdown_operations = pushdown_operations or set()
 
         if data_storage_version is not None:
             warnings.warn(
@@ -2903,9 +2903,8 @@ class LanceTable(Table):
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
                 embedding_functions=embedding_functions,
-                namespace=namespace,
+                namespace_path=namespace_path,
                 storage_options=storage_options,
-                storage_options_provider=storage_options_provider,
                 location=location,
             )
         )
@@ -2974,6 +2973,15 @@ class LanceTable(Table):
         batch_size: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> pa.RecordBatchReader:
+        if (
+            "QueryTable" in self._pushdown_operations
+            and self._namespace_client is not None
+        ):
+            from lancedb.namespace import _execute_server_side_query
+
+            table_id = self._namespace_path + [self.name]
+            return _execute_server_side_query(self._namespace_client, table_id, query)
+
         async_iter = LOOP.run(
             self._table._execute_query(query, batch_size=batch_size, timeout=timeout)
         )
