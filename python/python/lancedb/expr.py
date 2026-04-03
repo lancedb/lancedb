@@ -25,6 +25,10 @@ import pyarrow as pa
 
 from lancedb._lancedb import PyExpr, expr_col, expr_lit, expr_func
 
+from datetime import date, datetime
+
+from decimal import Decimal
+
 __all__ = ["Expr", "col", "lit", "func"]
 
 _STR_TO_PA_TYPE: dict = {
@@ -63,7 +67,7 @@ def _coerce(value: "ExprLike") -> "Expr":
 
 
 # Type alias used in annotations.
-ExprLike = Union["Expr", bool, int, float, str]
+ExprLike = Union["Expr", bool, int, float, str, date, datetime, bytes, Decimal]
 
 
 class Expr:
@@ -261,20 +265,44 @@ def col(name: str) -> Expr:
     return Expr(expr_col(name))
 
 
-def lit(value: Union[bool, int, float, str]) -> Expr:
+def lit(
+    value: Union[bool, int, float, str, date, datetime, bytes, Decimal]
+) -> Expr:
     """Create a literal (constant) value expression.
 
     Parameters
     ----------
     value:
-        A Python ``bool``, ``int``, ``float``, or ``str``.
+        A Python ``bool``, ``int``, ``float``, ``str``, ``date``,
+        ``datetime``, ``bytes``, or ``Decimal``.
 
     Examples
     --------
     >>> from lancedb.expr import col, lit
     >>> col("price") * lit(1.1)
     Expr((price * 1.1))
+
+    >>> from datetime import date
+    >>> col("created_at") == lit(date(2024, 1, 1))
+    Expr((created_at = '2024-01-01'))
     """
+
+    # Normalize extended types before passing to expr_lit
+    if isinstance(value, datetime):
+        value = value.isoformat()
+
+    elif isinstance(value, date):
+        value = value.isoformat()
+
+    elif isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError("lit() only supports UTF-8 encoded bytes")
+
+    elif isinstance(value, Decimal):
+        value = float(value)
+
     return Expr(expr_lit(value))
 
 

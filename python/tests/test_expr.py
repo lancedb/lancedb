@@ -7,6 +7,8 @@ import pytest
 import pyarrow as pa
 import lancedb
 from lancedb.expr import Expr, col, lit, func
+from datetime import date, datetime
+from decimal import Decimal
 
 
 # ── unit tests for Expr construction ─────────────────────────────────────────
@@ -45,6 +47,30 @@ class TestExprConstruction:
     def test_func_unknown_raises(self):
         with pytest.raises(Exception):
             func("not_a_real_function", col("x"))
+
+    def test_lit_date(self):
+        e = lit(date(2024, 1, 1))
+        assert isinstance(e, Expr)
+        assert "2024-01-01" in e.to_sql()
+
+    def test_lit_datetime(self):
+        e = lit(datetime(2024, 1, 1, 10, 0))
+        assert isinstance(e, Expr)
+        assert "2024-01-01" in e.to_sql()
+
+    def test_lit_bytes(self):
+        e = lit(b"hello")
+        assert isinstance(e, Expr)
+        assert "hello" in e.to_sql()
+
+    def test_lit_decimal(self):
+        e = lit(Decimal("10.5"))
+        assert isinstance(e, Expr)
+        assert "10.5" in e.to_sql()
+    
+    def test_lit_bytes_non_utf8_raises(self):
+        with pytest.raises(ValueError, match="UTF-8"):
+            lit(b"\xff\xfe")
 
 
 class TestExprOperators:
