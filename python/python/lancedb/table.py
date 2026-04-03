@@ -3407,7 +3407,13 @@ def _infer_target_schema(
 
 def _modal_list_size(arr: Union[pa.ListArray, pa.ChunkedArray]) -> int:
     # Use the most common length of the list as the dimensions
-    return pc.mode(pc.list_value_length(arr))[0].as_py()["mode"]
+    # Filter out empty lists first, as they should not affect dimension calculation
+    non_empty_mask = pc.greater(pc.list_value_length(arr), 0)
+    non_empty_arr = arr.filter(non_empty_mask)
+    if len(non_empty_arr) == 0:
+        # All lists are empty, fall back to mode of original (will likely error later)
+        return pc.mode(pc.list_value_length(arr))[0].as_py()["mode"]
+    return pc.mode(pc.list_value_length(non_empty_arr))[0].as_py()["mode"]
 
 
 def _validate_schema(schema: pa.Schema):
