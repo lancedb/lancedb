@@ -316,6 +316,41 @@ def test_linear_combination(tmp_path, use_tantivy):
     _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
 
 
+def test_linear_combination_merge_results_regression():
+    reranker = LinearCombinationReranker(weight=0.6, fill=0.25, return_score="all")
+
+    vector_results = pa.Table.from_pydict(
+        {
+            "_rowid": [0, 1],
+            "_distance": [0.2, 0.4],
+            "_text": ["a", "b"],
+        }
+    )
+    fts_results = pa.Table.from_pydict(
+        {
+            "_rowid": [1, 2],
+            "_score": [0.1, 0.9],
+            "_text": ["b", "c"],
+        }
+    )
+
+    combined_results = reranker.merge_results(
+        vector_results, fts_results, reranker.fill
+    )
+    assert combined_results["_rowid"].to_pylist() == [2, 0, 1]
+
+    relevance_scores = {
+        row["_rowid"]: row["_relevance_score"] for row in combined_results.to_pylist()
+    }
+    assert relevance_scores == pytest.approx(
+        {
+            0: 0.6 * 0.8 + 0.4 * 0.75,
+            1: 0.6 * 0.6 + 0.4 * 0.1,
+            2: 0.6 * 0.75 + 0.4 * 0.9,
+        }
+    )
+
+
 @pytest.mark.parametrize("use_tantivy", [True, False])
 def test_rrf_reranker(tmp_path, use_tantivy):
     reranker = RRFReranker()
