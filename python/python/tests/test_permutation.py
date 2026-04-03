@@ -1051,3 +1051,61 @@ def test_getitems_invalid_offset(some_permutation: Permutation):
     """Test __getitems__ with an out-of-range offset raises an error."""
     with pytest.raises(Exception):
         some_permutation.__getitems__([999999])
+
+
+def test_select_rowid(some_permutation: Permutation):
+    """Test that _rowid can be selected alongside regular columns."""
+    perm_with_rowid = some_permutation.select_columns(["_rowid", "id"])
+    assert "_rowid" in perm_with_rowid.column_names
+    batches = list(perm_with_rowid.iter(100, skip_last_batch=False))
+    for batch in batches:
+        assert "_rowid" in batch[0]
+
+
+def test_select_rowid_only(some_permutation: Permutation):
+    """Test that _rowid can be selected as the sole column."""
+    perm_rowid_only = some_permutation.select_columns(["_rowid"])
+    assert perm_rowid_only.column_names == ["_rowid"]
+    batches = list(perm_rowid_only.iter(100, skip_last_batch=False))
+    assert len(batches) > 0
+    for batch in batches:
+        assert list(batch[0].keys()) == ["_rowid"]
+
+
+def test_select_rowid_not_in_default(some_permutation: Permutation):
+    """Test that _rowid is NOT in the default column_names or schema."""
+    assert "_rowid" not in some_permutation.column_names
+    assert "_rowid" not in some_permutation.schema.names
+
+
+def test_select_rowid_identity_permutation(mem_db):
+    """Test that _rowid works with an identity permutation."""
+    tbl = mem_db.create_table(
+        "test_rowid_identity", pa.table({"id": range(10), "value": range(10)})
+    )
+    perm = Permutation.identity(tbl)
+    perm_with_rowid = perm.select_columns(["_rowid", "id"])
+    batches = list(perm_with_rowid.iter(10, skip_last_batch=False))
+    assert len(batches) == 1
+    assert "_rowid" in batches[0][0]
+
+
+def test_rename_rowid(some_permutation: Permutation):
+    """Test that _rowid can be selected and then renamed."""
+    perm_with_rowid = some_permutation.select_columns(["_rowid", "id"])
+    renamed = perm_with_rowid.rename_column("_rowid", "my_row_id")
+    assert "my_row_id" in renamed.column_names
+    assert "_rowid" not in renamed.column_names
+    batches = list(renamed.iter(100, skip_last_batch=False))
+    for batch in batches:
+        assert "my_row_id" in batch[0]
+        assert "_rowid" not in batch[0]
+
+
+def test_remove_rowid_after_select(some_permutation: Permutation):
+    """Test that _rowid can be selected and then removed."""
+    perm_with_rowid = some_permutation.select_columns(["_rowid", "id"])
+    assert "_rowid" in perm_with_rowid.column_names
+    perm_without_rowid = perm_with_rowid.remove_columns(["_rowid"])
+    assert "_rowid" not in perm_without_rowid.column_names
+    assert perm_without_rowid.column_names == ["id"]
