@@ -103,7 +103,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         },
         numIndices: 0,
         numRows: 3,
-        totalBytes: 24,
+        totalBytes: 44,
       });
     });
 

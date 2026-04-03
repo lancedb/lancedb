@@ -1294,7 +1294,7 @@ version = "3.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "519bd3116aeeb42d5372c29d982d16d0170d3d4a5ed85fc7dd91642ffff3c67c"
 dependencies = [
- "darling 0.23.0",
+ "darling 0.20.11",
  "ident_case",
  "prettyplease",
  "proc-macro2",
@@ -2682,7 +2682,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2876,7 +2876,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3072,8 +3072,8 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsst"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow-array",
  "rand 0.9.2",
@@ -3956,6 +3956,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-uring"
+version = "0.7.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdd7bddefd0a8833b88a4b68f90dae22c7450d11b354198baee3874fd811b344"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4037,7 +4048,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4123,8 +4134,8 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4190,8 +4201,8 @@ dependencies = [
 
 [[package]]
 name = "lance-arrow"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4211,8 +4222,8 @@ dependencies = [
 
 [[package]]
 name = "lance-bitpacking"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrayref",
  "paste",
@@ -4221,8 +4232,8 @@ dependencies = [
 
 [[package]]
 name = "lance-core"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4259,8 +4270,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datafusion"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4290,8 +4301,8 @@ dependencies = [
 
 [[package]]
 name = "lance-datagen"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4309,8 +4320,8 @@ dependencies = [
 
 [[package]]
 name = "lance-encoding"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4347,8 +4358,8 @@ dependencies = [
 
 [[package]]
 name = "lance-file"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -4380,8 +4391,8 @@ dependencies = [
 
 [[package]]
 name = "lance-index"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4445,8 +4456,8 @@ dependencies = [
 
 [[package]]
 name = "lance-io"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -4466,10 +4477,13 @@ dependencies = [
  "deepsize",
  "futures",
  "http 1.4.0",
+ "io-uring",
  "lance-arrow",
  "lance-core",
  "lance-namespace",
+ "libc",
  "log",
+ "moka",
  "object_store",
  "object_store_opendal",
  "opendal",
@@ -4487,8 +4501,8 @@ dependencies = [
 
 [[package]]
 name = "lance-linalg"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4504,8 +4518,8 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow",
  "async-trait",
@@ -4518,8 +4532,8 @@ dependencies = [
 
 [[package]]
 name = "lance-namespace-impls"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -4564,8 +4578,8 @@ dependencies = [
 
 [[package]]
 name = "lance-table"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4604,8 +4618,8 @@ dependencies = [
 
 [[package]]
 name = "lance-testing"
-version = "5.0.0-beta.2"
-source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.2#34e311c7632f62d8e4ff3a6e8bd124f84f0b70dc"
+version = "5.0.0-beta.4"
+source = "git+https://github.com/lance-format/lance.git?tag=v5.0.0-beta.4#d9068e76a301df9e21d7282419f24f61a11375ac"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -4616,7 +4630,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb"
-version = "0.27.2"
+version = "0.28.0-beta.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -4698,7 +4712,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-nodejs"
-version = "0.27.2"
+version = "0.28.0-beta.0"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -4720,7 +4734,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-python"
-version = "0.30.2"
+version = "0.31.0-beta.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -5308,7 +5322,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6288,7 +6302,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
  "heck 0.5.0",
- "itertools 0.14.0",
+ "itertools 0.11.0",
  "log",
  "multimap",
  "petgraph",
@@ -6307,7 +6321,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.11.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -6513,7 +6527,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.3",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7055,7 +7069,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8074,7 +8088,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8879,7 +8893,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

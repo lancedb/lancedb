@@ -166,25 +166,25 @@ export abstract class Connection {
    * List all the table names in this database.
    *
    * Tables will be returned in lexicographical order.
-   * @param {string[]} namespace - The namespace to list tables from (defaults to root namespace)
+   * @param {string[]} namespacePath - The namespace path to list tables from (defaults to root namespace)
    * @param {Partial<TableNamesOptions>} options - options to control the
    * paging / start point
    *
    */
   abstract tableNames(
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<TableNamesOptions>,
   ): Promise<string[]>;
 
   /**
    * Open a table in the database.
    * @param {string} name - The name of the table
-   * @param {string[]} namespace - The namespace of the table (defaults to root namespace)
+   * @param {string[]} namespacePath - The namespace path of the table (defaults to root namespace)
    * @param {Partial<OpenTableOptions>} options - Additional options
    */
   abstract openTable(
     name: string,
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<OpenTableOptions>,
   ): Promise<Table>;
 
@@ -193,7 +193,7 @@ export abstract class Connection {
    * @param {object} options - The options object.
    * @param {string} options.name - The name of the table.
    * @param {Data} options.data - Non-empty Array of Records to be inserted into the table
-   * @param {string[]} namespace - The namespace to create the table in (defaults to root namespace)
+   * @param {string[]} namespacePath - The namespace path to create the table in (defaults to root namespace)
    *
    */
   abstract createTable(
@@ -201,7 +201,7 @@ export abstract class Connection {
       name: string;
       data: Data;
     } & Partial<CreateTableOptions>,
-    namespace?: string[],
+    namespacePath?: string[],
   ): Promise<Table>;
   /**
    * Creates a new Table and initialize it with new data.
@@ -220,13 +220,13 @@ export abstract class Connection {
    * @param {string} name - The name of the table.
    * @param {Record<string, unknown>[] | TableLike} data - Non-empty Array of Records
    * to be inserted into the table
-   * @param {string[]} namespace - The namespace to create the table in (defaults to root namespace)
+   * @param {string[]} namespacePath - The namespace path to create the table in (defaults to root namespace)
    * @param {Partial<CreateTableOptions>} options - Additional options
    */
   abstract createTable(
     name: string,
     data: Record<string, unknown>[] | TableLike,
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<CreateTableOptions>,
   ): Promise<Table>;
 
@@ -245,28 +245,28 @@ export abstract class Connection {
    * Creates a new empty Table
    * @param {string} name - The name of the table.
    * @param {Schema} schema - The schema of the table
-   * @param {string[]} namespace - The namespace to create the table in (defaults to root namespace)
+   * @param {string[]} namespacePath - The namespace path to create the table in (defaults to root namespace)
    * @param {Partial<CreateTableOptions>} options - Additional options
    */
   abstract createEmptyTable(
     name: string,
     schema: import("./arrow").SchemaLike,
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<CreateTableOptions>,
   ): Promise<Table>;
 
   /**
    * Drop an existing table.
    * @param {string} name The name of the table to drop.
-   * @param {string[]} namespace The namespace of the table (defaults to root namespace).
+   * @param {string[]} namespacePath The namespace path of the table (defaults to root namespace).
    */
-  abstract dropTable(name: string, namespace?: string[]): Promise<void>;
+  abstract dropTable(name: string, namespacePath?: string[]): Promise<void>;
 
   /**
    * Drop all tables in the database.
-   * @param {string[]} namespace The namespace to drop tables from (defaults to root namespace).
+   * @param {string[]} namespacePath The namespace path to drop tables from (defaults to root namespace).
    */
-  abstract dropAllTables(namespace?: string[]): Promise<void>;
+  abstract dropAllTables(namespacePath?: string[]): Promise<void>;
 
   /**
    * Clone a table from a source table.
@@ -279,7 +279,7 @@ export abstract class Connection {
    * @param {string} targetTableName - The name of the target table to create.
    * @param {string} sourceUri - The URI of the source table to clone from.
    * @param {object} options - Clone options.
-   * @param {string[]} options.targetNamespace - The namespace for the target table (defaults to root namespace).
+   * @param {string[]} options.targetNamespacePath - The namespace path for the target table (defaults to root namespace).
    * @param {number} options.sourceVersion - The version of the source table to clone.
    * @param {string} options.sourceTag - The tag of the source table to clone.
    * @param {boolean} options.isShallow - Whether to perform a shallow clone (defaults to true).
@@ -288,7 +288,7 @@ export abstract class Connection {
     targetTableName: string,
     sourceUri: string,
     options?: {
-      targetNamespace?: string[];
+      targetNamespacePath?: string[];
       sourceVersion?: number;
       sourceTag?: string;
       isShallow?: boolean;
@@ -319,25 +319,25 @@ export class LocalConnection extends Connection {
   }
 
   async tableNames(
-    namespaceOrOptions?: string[] | Partial<TableNamesOptions>,
+    namespacePathOrOptions?: string[] | Partial<TableNamesOptions>,
     options?: Partial<TableNamesOptions>,
   ): Promise<string[]> {
-    // Detect if first argument is namespace array or options object
-    let namespace: string[] | undefined;
+    // Detect if first argument is namespacePath array or options object
+    let namespacePath: string[] | undefined;
     let tableNamesOptions: Partial<TableNamesOptions> | undefined;
 
-    if (Array.isArray(namespaceOrOptions)) {
-      // First argument is namespace array
-      namespace = namespaceOrOptions;
+    if (Array.isArray(namespacePathOrOptions)) {
+      // First argument is namespacePath array
+      namespacePath = namespacePathOrOptions;
       tableNamesOptions = options;
     } else {
       // First argument is options object (backwards compatibility)
-      namespace = undefined;
-      tableNamesOptions = namespaceOrOptions;
+      namespacePath = undefined;
+      tableNamesOptions = namespacePathOrOptions;
     }
 
     return this.inner.tableNames(
-      namespace ?? [],
+      namespacePath ?? [],
       tableNamesOptions?.startAfter,
       tableNamesOptions?.limit,
     );
@@ -345,12 +345,12 @@ export class LocalConnection extends Connection {
 
   async openTable(
     name: string,
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<OpenTableOptions>,
   ): Promise<Table> {
     const innerTable = await this.inner.openTable(
       name,
-      namespace ?? [],
+      namespacePath ?? [],
       cleanseStorageOptions(options?.storageOptions),
       options?.indexCacheSize,
     );
@@ -362,7 +362,7 @@ export class LocalConnection extends Connection {
     targetTableName: string,
     sourceUri: string,
     options?: {
-      targetNamespace?: string[];
+      targetNamespacePath?: string[];
       sourceVersion?: number;
       sourceTag?: string;
       isShallow?: boolean;
@@ -371,7 +371,7 @@ export class LocalConnection extends Connection {
     const innerTable = await this.inner.cloneTable(
       targetTableName,
       sourceUri,
-      options?.targetNamespace ?? [],
+      options?.targetNamespacePath ?? [],
       options?.sourceVersion ?? null,
       options?.sourceTag ?? null,
       options?.isShallow ?? true,
@@ -406,42 +406,42 @@ export class LocalConnection extends Connection {
     nameOrOptions:
       | string
       | ({ name: string; data: Data } & Partial<CreateTableOptions>),
-    dataOrNamespace?: Record<string, unknown>[] | TableLike | string[],
-    namespaceOrOptions?: string[] | Partial<CreateTableOptions>,
+    dataOrNamespacePath?: Record<string, unknown>[] | TableLike | string[],
+    namespacePathOrOptions?: string[] | Partial<CreateTableOptions>,
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
     if (typeof nameOrOptions !== "string" && "name" in nameOrOptions) {
-      // First overload: createTable(options, namespace?)
+      // First overload: createTable(options, namespacePath?)
       const { name, data, ...createOptions } = nameOrOptions;
-      const namespace = dataOrNamespace as string[] | undefined;
-      return this._createTableImpl(name, data, namespace, createOptions);
+      const namespacePath = dataOrNamespacePath as string[] | undefined;
+      return this._createTableImpl(name, data, namespacePath, createOptions);
     }
 
-    // Second overload: createTable(name, data, namespace?, options?)
+    // Second overload: createTable(name, data, namespacePath?, options?)
     const name = nameOrOptions;
-    const data = dataOrNamespace as Record<string, unknown>[] | TableLike;
+    const data = dataOrNamespacePath as Record<string, unknown>[] | TableLike;
 
-    // Detect if third argument is namespace array or options object
-    let namespace: string[] | undefined;
+    // Detect if third argument is namespacePath array or options object
+    let namespacePath: string[] | undefined;
     let createOptions: Partial<CreateTableOptions> | undefined;
 
-    if (Array.isArray(namespaceOrOptions)) {
-      // Third argument is namespace array
-      namespace = namespaceOrOptions;
+    if (Array.isArray(namespacePathOrOptions)) {
+      // Third argument is namespacePath array
+      namespacePath = namespacePathOrOptions;
       createOptions = options;
     } else {
       // Third argument is options object (backwards compatibility)
-      namespace = undefined;
-      createOptions = namespaceOrOptions;
+      namespacePath = undefined;
+      createOptions = namespacePathOrOptions;
     }
 
-    return this._createTableImpl(name, data, namespace, createOptions);
+    return this._createTableImpl(name, data, namespacePath, createOptions);
   }
 
   private async _createTableImpl(
     name: string,
     data: Data,
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
     if (data === undefined) {
@@ -455,7 +455,7 @@ export class LocalConnection extends Connection {
       name,
       buf,
       mode,
-      namespace ?? [],
+      namespacePath ?? [],
       storageOptions,
     );
 
@@ -465,21 +465,21 @@ export class LocalConnection extends Connection {
   async createEmptyTable(
     name: string,
     schema: import("./arrow").SchemaLike,
-    namespaceOrOptions?: string[] | Partial<CreateTableOptions>,
+    namespacePathOrOptions?: string[] | Partial<CreateTableOptions>,
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
-    // Detect if third argument is namespace array or options object
-    let namespace: string[] | undefined;
+    // Detect if third argument is namespacePath array or options object
+    let namespacePath: string[] | undefined;
     let createOptions: Partial<CreateTableOptions> | undefined;
 
-    if (Array.isArray(namespaceOrOptions)) {
-      // Third argument is namespace array
-      namespace = namespaceOrOptions;
+    if (Array.isArray(namespacePathOrOptions)) {
+      // Third argument is namespacePath array
+      namespacePath = namespacePathOrOptions;
       createOptions = options;
     } else {
       // Third argument is options object (backwards compatibility)
-      namespace = undefined;
-      createOptions = namespaceOrOptions;
+      namespacePath = undefined;
+      createOptions = namespacePathOrOptions;
     }
 
     let mode: string = createOptions?.mode ?? "create";
@@ -502,18 +502,18 @@ export class LocalConnection extends Connection {
       name,
       buf,
       mode,
-      namespace ?? [],
+      namespacePath ?? [],
       storageOptions,
     );
     return new LocalTable(innerTable);
   }
 
-  async dropTable(name: string, namespace?: string[]): Promise<void> {
-    return this.inner.dropTable(name, namespace ?? []);
+  async dropTable(name: string, namespacePath?: string[]): Promise<void> {
+    return this.inner.dropTable(name, namespacePath ?? []);
   }
 
-  async dropAllTables(namespace?: string[]): Promise<void> {
-    return this.inner.dropAllTables(namespace ?? []);
+  async dropAllTables(namespacePath?: string[]): Promise<void> {
+    return this.inner.dropAllTables(namespacePath ?? []);
   }
 }
 
