@@ -522,6 +522,50 @@ def test_no_split_names(some_table: Table):
     assert permutations[1].num_rows == 500
 
 
+def test_permutations_metadata_without_split_names_key(mem_db: DBConnection):
+    """Regression: schema metadata present but missing split_names key must not crash.
+
+    Previously, `.get(b"split_names", None).decode()` was called unconditionally,
+    so any permutation table whose metadata dict had other keys but no split_names
+    raised AttributeError: 'NoneType' has no attribute 'decode'.
+    """
+    base = mem_db.create_table("base_nosplit", pa.table({"x": range(10)}))
+
+    # Build a permutation-like table that carries some metadata but NOT split_names.
+    raw = pa.table(
+        {
+            "row_id": pa.array(range(10), type=pa.uint64()),
+            "split_id": pa.array([0] * 10, type=pa.uint32()),
+        }
+    ).replace_schema_metadata({b"other_key": b"other_value"})
+    perm_tbl = mem_db.create_table("perm_nosplit", raw)
+
+    permutations = Permutations(base, perm_tbl)
+    assert permutations.split_names == []
+    assert permutations.split_dict == {}
+
+
+def test_from_tables_string_split_missing_names_key(mem_db: DBConnection):
+    """Regression: from_tables() with a string split must raise ValueError, not
+    AttributeError.
+
+    Previously, `.get(b"split_names", None).decode()` crashed with AttributeError
+    when the metadata dict existed but had no split_names key.
+    """
+    base = mem_db.create_table("base_strsplit", pa.table({"x": range(10)}))
+
+    raw = pa.table(
+        {
+            "row_id": pa.array(range(10), type=pa.uint64()),
+            "split_id": pa.array([0] * 10, type=pa.uint32()),
+        }
+    ).replace_schema_metadata({b"other_key": b"other_value"})
+    perm_tbl = mem_db.create_table("perm_strsplit", raw)
+
+    with pytest.raises(ValueError, match="no split names are defined"):
+        Permutation.from_tables(base, perm_tbl, split="train")
+
+
 @pytest.fixture
 def some_perm_table(some_table: Table) -> Table:
     return (
