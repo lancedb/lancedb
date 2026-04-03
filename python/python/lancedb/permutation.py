@@ -768,7 +768,10 @@ class Permutation:
         """
         Returns a single row from the permutation by offset
         """
-        return self.__getitems__([index])
+        result = self.__getitems__([index])
+        if isinstance(result, list) and len(result) == 1:
+            return result[0]
+        return result
 
     def __getitems__(self, indices: list[int]) -> Any:
         """
