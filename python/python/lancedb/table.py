@@ -270,15 +270,17 @@ def _sanitize_data(
         reader,
         on_bad_vectors=on_bad_vectors,
         fill_value=fill_value,
+        target_schema=target_schema,
+        metadata=metadata,
     )
 
     if target_schema is None:
         target_schema, reader = _infer_target_schema(reader)
 
     if metadata:
-        new_metadata = target_schema.metadata or {}
-        new_metadata.update(metadata)
-        target_schema = target_schema.with_metadata(new_metadata)
+        target_schema = target_schema.with_metadata(
+            _merge_metadata(target_schema.metadata, metadata)
+        )
 
     _validate_schema(target_schema)
     reader = _cast_to_target_schema(reader, target_schema, allow_subschema)
@@ -294,7 +296,7 @@ def _cast_to_target_schema(
     # pa.Table.cast expects field order not to be changed.
     # Lance doesn't care about field order, so we don't need to rearrange fields
     # to match the target schema. We just need to correctly cast the fields.
-    if reader.schema == target_schema:
+    if reader.schema.equals(target_schema, check_metadata=True):
         # Fast path when the schemas are already the same
         return reader
 
@@ -314,7 +316,13 @@ def _cast_to_target_schema(
     def gen():
         for batch in reader:
             # Table but not RecordBatch has cast.
-            yield pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()[0]
+            cast_batches = (
+                pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()
+            )
+            if cast_batches:
+                yield pa.RecordBatch.from_arrays(
+                    cast_batches[0].columns, schema=reordered_schema
+                )
 
     return pa.RecordBatchReader.from_batches(reordered_schema, gen())
 
@@ -332,37 +340,51 @@ def _align_field_types(
         if target_field is None:
             raise ValueError(f"Field '{field.name}' not found in target schema")
         if pa.types.is_struct(target_field.type):
-            new_type = pa.struct(
-                _align_field_types(
-                    field.type.fields,
-                    target_field.type.fields,
+            if pa.types.is_struct(field.type):
+                new_type = pa.struct(
+                    _align_field_types(
+                        field.type.fields,
+                        target_field.type.fields,
+                    )
                 )
-            )
+            else:
+                new_type = target_field.type
         elif pa.types.is_list(target_field.type):
-            new_type = pa.list_(
-                _align_field_types(
-                    [field.type.value_field],
-                    [target_field.type.value_field],
-                )[0]
-            )
+            if _is_list_like(field.type):
+                new_type = pa.list_(
+                    _align_field_types(
+                        [field.type.value_field],
+                        [target_field.type.value_field],
+                    )[0]
+                )
+            else:
+                new_type = target_field.type
         elif pa.types.is_large_list(target_field.type):
-            new_type = pa.large_list(
-                _align_field_types(
-                    [field.type.value_field],
-                    [target_field.type.value_field],
-                )[0]
-            )
+            if _is_list_like(field.type):
+                new_type = pa.large_list(
+                    _align_field_types(
+                        [field.type.value_field],
+                        [target_field.type.value_field],
+                    )[0]
+                )
+            else:
+                new_type = target_field.type
         elif pa.types.is_fixed_size_list(target_field.type):
-            new_type = pa.list_(
-                _align_field_types(
-                    [field.type.value_field],
-                    [target_field.type.value_field],
-                )[0],
-                target_field.type.list_size,
-            )
+            if _is_list_like(field.type):
+                new_type = pa.list_(
+                    _align_field_types(
+                        [field.type.value_field],
+                        [target_field.type.value_field],
+                    )[0],
+                    target_field.type.list_size,
+                )
+            else:
+                new_type = target_field.type
         else:
             new_type = target_field.type
-        new_fields.append(pa.field(field.name, new_type, field.nullable))
+        new_fields.append(
+            pa.field(field.name, new_type, field.nullable, target_field.metadata)
+        )
     return new_fields
 
 
@@ -440,6 +462,7 @@ def sanitize_create_table(
             schema = data.schema
 
     if metadata:
+        metadata = _merge_metadata(schema.metadata, metadata)
         schema = schema.with_metadata(metadata)
         # Need to apply metadata to the data as well
         if isinstance(data, pa.Table):
@@ -492,9 +515,9 @@ def _append_vector_columns(
     vector columns to the table.
     """
     if schema is None:
-        metadata = metadata or {}
+        metadata = _merge_metadata(metadata)
     else:
-        metadata = schema.metadata or metadata or {}
+        metadata = _merge_metadata(schema.metadata, metadata)
     functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
 
     if not functions:
@@ -3211,43 +3234,157 @@ def _handle_bad_vectors(
     reader: pa.RecordBatchReader,
     on_bad_vectors: Literal["error", "drop", "fill", "null"] = "error",
     fill_value: float = 0.0,
+    target_schema: Optional[pa.Schema] = None,
+    metadata: Optional[dict] = None,
 ) -> pa.RecordBatchReader:
-    vector_columns = []
+    vector_columns = _find_vector_columns(reader.schema, target_schema, metadata)
+    if not vector_columns:
+        return reader
 
-    for field in reader.schema:
-        # They can provide a 'vector' column that isn't yet a FSL
-        named_vector_col = (
-            (
-                pa.types.is_list(field.type)
-                or pa.types.is_large_list(field.type)
-                or pa.types.is_fixed_size_list(field.type)
-            )
-            and pa.types.is_floating(field.type.value_type)
-            and field.name == VECTOR_COLUMN_NAME
-        )
-        # TODO: we're making an assumption that fixed size list of 10 or more
-        # is a vector column. This is definitely a bit hacky.
-        likely_vector_col = (
-            pa.types.is_fixed_size_list(field.type)
-            and pa.types.is_floating(field.type.value_type)
-            and (field.type.list_size >= 10)
-        )
-
-        if named_vector_col or likely_vector_col:
-            vector_columns.append(field.name)
+    output_schema = _vector_output_schema(reader.schema, vector_columns)
 
     def gen():
         for batch in reader:
-            for name in vector_columns:
+            pending_dims = []
+            for vector_column in vector_columns:
+                dim = vector_column["expected_dim"]
+                if target_schema is not None and dim is None:
+                    dim = _infer_vector_dim(batch[vector_column["name"]])
+                    pending_dims.append(vector_column)
                 batch = _handle_bad_vector_column(
                     batch,
-                    vector_column_name=name,
+                    vector_column_name=vector_column["name"],
                     on_bad_vectors=on_bad_vectors,
                     fill_value=fill_value,
+                    expected_dim=dim,
+                    expected_value_type=vector_column["expected_value_type"],
                 )
-            yield batch
+            for vector_column in pending_dims:
+                if vector_column["expected_dim"] is None:
+                    vector_column["expected_dim"] = _infer_vector_dim(
+                        batch[vector_column["name"]]
+                    )
+            if batch.schema.equals(output_schema, check_metadata=True):
+                yield batch
+                continue
 
-    return pa.RecordBatchReader.from_batches(reader.schema, gen())
+            cast_batches = (
+                pa.Table.from_batches([batch]).cast(output_schema).to_batches()
+            )
+            if cast_batches:
+                yield pa.RecordBatch.from_arrays(
+                    cast_batches[0].columns,
+                    schema=output_schema,
+                )
+
+    return pa.RecordBatchReader.from_batches(output_schema, gen())
+
+
+def _find_vector_columns(
+    reader_schema: pa.Schema,
+    target_schema: Optional[pa.Schema],
+    metadata: Optional[dict],
+) -> List[dict]:
+    if target_schema is None:
+        vector_columns = []
+        for field in reader_schema:
+            named_vector_col = (
+                _is_list_like(field.type)
+                and pa.types.is_floating(field.type.value_type)
+                and field.name == VECTOR_COLUMN_NAME
+            )
+            likely_vector_col = (
+                pa.types.is_fixed_size_list(field.type)
+                and pa.types.is_floating(field.type.value_type)
+                and (field.type.list_size >= 10)
+            )
+            if named_vector_col or likely_vector_col:
+                vector_columns.append(
+                    {
+                        "name": field.name,
+                        "expected_dim": None,
+                        "expected_value_type": None,
+                    }
+                )
+        return vector_columns
+
+    reader_column_names = set(reader_schema.names)
+    active_metadata = _merge_metadata(target_schema.metadata, metadata)
+    embedding_function_columns = set(
+        EmbeddingFunctionRegistry.get_instance().parse_functions(active_metadata).keys()
+    )
+    vector_columns = []
+    for field in target_schema:
+        if field.name not in reader_column_names:
+            continue
+        if not _is_list_like(field.type) or not pa.types.is_floating(
+            field.type.value_type
+        ):
+            continue
+
+        reader_field = reader_schema.field(field.name)
+        named_vector_col = (
+            field.name in embedding_function_columns
+            or field.name == VECTOR_COLUMN_NAME
+            or (field.name == "embedding" and pa.types.is_fixed_size_list(field.type))
+        )
+        typed_fixed_vector_col = (
+            pa.types.is_fixed_size_list(reader_field.type)
+            and pa.types.is_floating(reader_field.type.value_type)
+            and reader_field.type.list_size >= 10
+        )
+
+        if named_vector_col or typed_fixed_vector_col:
+            vector_columns.append(
+                {
+                    "name": field.name,
+                    "expected_dim": (
+                        field.type.list_size
+                        if pa.types.is_fixed_size_list(field.type)
+                        else None
+                    ),
+                    "expected_value_type": field.type.value_type,
+                }
+            )
+
+    return vector_columns
+
+
+def _vector_output_schema(
+    reader_schema: pa.Schema,
+    vector_columns: List[dict],
+) -> pa.Schema:
+    columns_by_name = {column["name"]: column for column in vector_columns}
+    fields = []
+    for field in reader_schema:
+        column = columns_by_name.get(field.name)
+        if column is None:
+            output_type = field.type
+        else:
+            output_type = _vector_output_type(field, column)
+        fields.append(pa.field(field.name, output_type, field.nullable, field.metadata))
+    return pa.schema(fields, metadata=reader_schema.metadata)
+
+
+def _vector_output_type(field: pa.Field, vector_column: dict) -> pa.DataType:
+    if not _is_list_like(field.type):
+        return field.type
+
+    if vector_column["expected_value_type"] is not None and (
+        pa.types.is_null(field.type.value_type)
+        or pa.types.is_integer(field.type.value_type)
+        or pa.types.is_unsigned_integer(field.type.value_type)
+    ):
+        return pa.list_(vector_column["expected_value_type"])
+
+    if (
+        vector_column["expected_dim"] is not None
+        and pa.types.is_fixed_size_list(field.type)
+        and field.type.list_size != vector_column["expected_dim"]
+    ):
+        return pa.list_(field.type.value_type)
+
+    return field.type
 
 
 def _handle_bad_vector_column(
@@ -3255,6 +3392,8 @@ def _handle_bad_vector_column(
     vector_column_name: str,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
+    expected_dim: Optional[int] = None,
+    expected_value_type: Optional[pa.DataType] = None,
 ) -> pa.RecordBatch:
     """
     Ensure that the vector column exists and has type fixed_size_list(float)
@@ -3271,14 +3410,39 @@ def _handle_bad_vector_column(
     fill_value: float, default 0.0
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
+    position = data.column_names.index(vector_column_name)
     vec_arr = data[vector_column_name]
+    if not _is_list_like(vec_arr.type):
+        return data
 
-    has_nan = has_nan_values(vec_arr)
+    if (
+        expected_dim is not None
+        and pa.types.is_fixed_size_list(vec_arr.type)
+        and vec_arr.type.list_size != expected_dim
+    ):
+        vec_arr = pa.array(vec_arr.to_pylist(), type=pa.list_(vec_arr.type.value_type))
+        data = data.set_column(position, vector_column_name, vec_arr)
 
-    if pa.types.is_fixed_size_list(vec_arr.type):
+    if expected_value_type is not None and (
+        pa.types.is_integer(vec_arr.type.value_type)
+        or pa.types.is_unsigned_integer(vec_arr.type.value_type)
+    ):
+        vec_arr = pa.array(vec_arr.to_pylist(), type=pa.list_(expected_value_type))
+        data = data.set_column(position, vector_column_name, vec_arr)
+
+    if pa.types.is_floating(vec_arr.type.value_type):
+        has_nan = has_nan_values(vec_arr)
+    else:
+        has_nan = pa.array([False] * len(vec_arr))
+
+    if expected_dim is not None:
+        dim = expected_dim
+    elif pa.types.is_fixed_size_list(vec_arr.type):
         dim = vec_arr.type.list_size
     else:
-        dim = _modal_list_size(vec_arr)
+        dim = _infer_vector_dim(vec_arr)
+        if dim is None:
+            return data
     has_wrong_dim = pc.not_equal(pc.list_value_length(vec_arr), dim)
 
     has_bad_vectors = pc.any(has_nan).as_py() or pc.any(has_wrong_dim).as_py()
@@ -3316,13 +3480,12 @@ def _handle_bad_vector_column(
                 )
             vec_arr = pc.if_else(
                 is_bad,
-                pa.scalar([fill_value] * dim),
+                pa.scalar([fill_value] * dim, type=vec_arr.type),
                 vec_arr,
             )
         else:
             raise ValueError(f"Invalid value for on_bad_vectors: {on_bad_vectors}")
 
-    position = data.column_names.index(vector_column_name)
     return data.set_column(position, vector_column_name, vec_arr)
 
 
@@ -3341,6 +3504,28 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
     has_nan_indices = pc.unique(pc.filter(values_indices, values_has_nan))
     indices = pa.array(range(len(arr)), type=pa.uint32())
     return pc.is_in(indices, has_nan_indices)
+
+
+def _is_list_like(data_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_list(data_type)
+        or pa.types.is_large_list(data_type)
+        or pa.types.is_fixed_size_list(data_type)
+    )
+
+
+def _merge_metadata(*metadata_dicts: Optional[dict]) -> dict:
+    merged = {}
+    for metadata in metadata_dicts:
+        if metadata is None:
+            continue
+        for key, value in metadata.items():
+            if isinstance(key, str):
+                key = key.encode("utf-8")
+            if isinstance(value, str):
+                value = value.encode("utf-8")
+            merged[key] = value
+    return merged
 
 
 def _name_suggests_vector_column(field_name: str) -> bool:
@@ -3408,6 +3593,16 @@ def _infer_target_schema(
 def _modal_list_size(arr: Union[pa.ListArray, pa.ChunkedArray]) -> int:
     # Use the most common length of the list as the dimensions
     return pc.mode(pc.list_value_length(arr))[0].as_py()["mode"]
+
+
+def _infer_vector_dim(arr: Union[pa.Array, pa.ChunkedArray]) -> Optional[int]:
+    if not _is_list_like(arr.type):
+        return None
+    lengths = pc.list_value_length(arr)
+    lengths = pc.filter(lengths, pc.greater(lengths, 0))
+    if len(lengths) == 0:
+        return None
+    return pc.mode(lengths)[0].as_py()["mode"]
 
 
 def _validate_schema(schema: pa.Schema):
