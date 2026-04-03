@@ -111,7 +111,7 @@ class RemoteDBConnection(DBConnection):
     @override
     def list_namespaces(
         self,
-        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> ListNamespacesResponse:
@@ -119,7 +119,7 @@ class RemoteDBConnection(DBConnection):
 
         Parameters
         ----------
-        namespace: List[str], optional
+        namespace_path: List[str], optional
             The parent namespace to list namespaces in.
             None or empty list represents root namespace.
         page_token: str, optional
@@ -133,18 +133,18 @@ class RemoteDBConnection(DBConnection):
         ListNamespacesResponse
             Response containing namespace names and optional page_token for pagination.
         """
-        if namespace is None:
-            namespace = []
+        if namespace_path is None:
+            namespace_path = []
         return LOOP.run(
             self._conn.list_namespaces(
-                namespace=namespace, page_token=page_token, limit=limit
+                namespace_path=namespace_path, page_token=page_token, limit=limit
             )
         )
 
     @override
     def create_namespace(
         self,
-        namespace: List[str],
+        namespace_path: List[str],
         mode: Optional[str] = None,
         properties: Optional[Dict[str, str]] = None,
     ) -> CreateNamespaceResponse:
@@ -152,7 +152,7 @@ class RemoteDBConnection(DBConnection):
 
         Parameters
         ----------
-        namespace: List[str]
+        namespace_path: List[str]
             The namespace identifier to create.
         mode: str, optional
             Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
@@ -167,14 +167,14 @@ class RemoteDBConnection(DBConnection):
         """
         return LOOP.run(
             self._conn.create_namespace(
-                namespace=namespace, mode=mode, properties=properties
+                namespace_path=namespace_path, mode=mode, properties=properties
             )
         )
 
     @override
     def drop_namespace(
         self,
-        namespace: List[str],
+        namespace_path: List[str],
         mode: Optional[str] = None,
         behavior: Optional[str] = None,
     ) -> DropNamespaceResponse:
@@ -182,7 +182,7 @@ class RemoteDBConnection(DBConnection):
 
         Parameters
         ----------
-        namespace: List[str]
+        namespace_path: List[str]
             The namespace identifier to drop.
         mode: str, optional
             Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
@@ -196,16 +196,20 @@ class RemoteDBConnection(DBConnection):
             Response containing properties and transaction_id if applicable.
         """
         return LOOP.run(
-            self._conn.drop_namespace(namespace=namespace, mode=mode, behavior=behavior)
+            self._conn.drop_namespace(
+                namespace_path=namespace_path, mode=mode, behavior=behavior
+            )
         )
 
     @override
-    def describe_namespace(self, namespace: List[str]) -> DescribeNamespaceResponse:
+    def describe_namespace(
+        self, namespace_path: List[str]
+    ) -> DescribeNamespaceResponse:
         """Describe a namespace.
 
         Parameters
         ----------
-        namespace: List[str]
+        namespace_path: List[str]
             The namespace identifier to describe.
 
         Returns
@@ -213,12 +217,12 @@ class RemoteDBConnection(DBConnection):
         DescribeNamespaceResponse
             Response containing the namespace properties.
         """
-        return LOOP.run(self._conn.describe_namespace(namespace=namespace))
+        return LOOP.run(self._conn.describe_namespace(namespace_path=namespace_path))
 
     @override
     def list_tables(
         self,
-        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> ListTablesResponse:
@@ -226,7 +230,7 @@ class RemoteDBConnection(DBConnection):
 
         Parameters
         ----------
-        namespace: List[str], optional
+        namespace_path: List[str], optional
             The namespace to list tables in.
             None or empty list represents root namespace.
         page_token: str, optional
@@ -240,11 +244,11 @@ class RemoteDBConnection(DBConnection):
         ListTablesResponse
             Response containing table names and optional page_token for pagination.
         """
-        if namespace is None:
-            namespace = []
+        if namespace_path is None:
+            namespace_path = []
         return LOOP.run(
             self._conn.list_tables(
-                namespace=namespace, page_token=page_token, limit=limit
+                namespace_path=namespace_path, page_token=page_token, limit=limit
             )
         )
 
@@ -254,7 +258,7 @@ class RemoteDBConnection(DBConnection):
         page_token: Optional[str] = None,
         limit: int = 10,
         *,
-        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """List the names of all tables in the database.
 
@@ -263,7 +267,7 @@ class RemoteDBConnection(DBConnection):
 
         Parameters
         ----------
-        namespace: List[str], default []
+        namespace_path: List[str], default []
             The namespace to list tables in.
             Empty list represents root namespace.
         page_token: str
@@ -282,11 +286,11 @@ class RemoteDBConnection(DBConnection):
             DeprecationWarning,
             stacklevel=2,
         )
-        if namespace is None:
-            namespace = []
+        if namespace_path is None:
+            namespace_path = []
         return LOOP.run(
             self._conn.table_names(
-                namespace=namespace, start_after=page_token, limit=limit
+                namespace_path=namespace_path, start_after=page_token, limit=limit
             )
         )
 
@@ -295,7 +299,7 @@ class RemoteDBConnection(DBConnection):
         self,
         name: str,
         *,
-        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ) -> Table:
@@ -305,7 +309,7 @@ class RemoteDBConnection(DBConnection):
         ----------
         name: str
             The name of the table.
-        namespace: List[str], optional
+        namespace_path: List[str], optional
             The namespace to open the table from.
             None or empty list represents root namespace.
 
@@ -315,15 +319,15 @@ class RemoteDBConnection(DBConnection):
         """
         from .table import RemoteTable
 
-        if namespace is None:
-            namespace = []
+        if namespace_path is None:
+            namespace_path = []
         if index_cache_size is not None:
             logging.info(
                 "index_cache_size is ignored in LanceDb Cloud"
                 " (there is no local cache to configure)"
             )
 
-        table = LOOP.run(self._conn.open_table(name, namespace=namespace))
+        table = LOOP.run(self._conn.open_table(name, namespace_path=namespace_path))
         return RemoteTable(table, self.db_name)
 
     def clone_table(
@@ -331,7 +335,7 @@ class RemoteDBConnection(DBConnection):
         target_table_name: str,
         source_uri: str,
         *,
-        target_namespace: Optional[List[str]] = None,
+        target_namespace_path: Optional[List[str]] = None,
         source_version: Optional[int] = None,
         source_tag: Optional[str] = None,
         is_shallow: bool = True,
@@ -344,7 +348,7 @@ class RemoteDBConnection(DBConnection):
             The name of the target table to create.
         source_uri: str
             The URI of the source table to clone from.
-        target_namespace: List[str], optional
+        target_namespace_path: List[str], optional
             The namespace for the target table.
             None or empty list represents root namespace.
         source_version: int, optional
@@ -361,13 +365,13 @@ class RemoteDBConnection(DBConnection):
         """
         from .table import RemoteTable
 
-        if target_namespace is None:
-            target_namespace = []
+        if target_namespace_path is None:
+            target_namespace_path = []
         table = LOOP.run(
             self._conn.clone_table(
                 target_table_name,
                 source_uri,
-                target_namespace=target_namespace,
+                target_namespace_path=target_namespace_path,
                 source_version=source_version,
                 source_tag=source_tag,
                 is_shallow=is_shallow,
@@ -387,7 +391,7 @@ class RemoteDBConnection(DBConnection):
         exist_ok: bool = False,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: Optional[List[str]] = None,
+        namespace_path: Optional[List[str]] = None,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -395,7 +399,7 @@ class RemoteDBConnection(DBConnection):
         ----------
         name: str
             The name of the table.
-        namespace: List[str], optional
+        namespace_path: List[str], optional
             The namespace to create the table in.
             None or empty list represents root namespace.
         data: The data to initialize the table, *optional*
@@ -495,8 +499,8 @@ class RemoteDBConnection(DBConnection):
                 mode = "exist_ok"
             elif not mode:
                 mode = "exist_ok"
-        if namespace is None:
-            namespace = []
+        if namespace_path is None:
+            namespace_path = []
         validate_table_name(name)
         if embedding_functions is not None:
             logging.warning(
@@ -511,7 +515,7 @@ class RemoteDBConnection(DBConnection):
             self._conn.create_table(
                 name,
                 data,
-                namespace=namespace,
+                namespace_path=namespace_path,
                 mode=mode,
                 schema=schema,
                 on_bad_vectors=on_bad_vectors,
@@ -521,28 +525,28 @@ class RemoteDBConnection(DBConnection):
         return RemoteTable(table, self.db_name)
 
     @override
-    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
+    def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the database.
 
         Parameters
         ----------
         name: str
             The name of the table.
-        namespace: List[str], optional
+        namespace_path: List[str], optional
             The namespace to drop the table from.
             None or empty list represents root namespace.
         """
-        if namespace is None:
-            namespace = []
-        LOOP.run(self._conn.drop_table(name, namespace=namespace))
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(self._conn.drop_table(name, namespace_path=namespace_path))
 
     @override
     def rename_table(
         self,
         cur_name: str,
         new_name: str,
-        cur_namespace: Optional[List[str]] = None,
-        new_namespace: Optional[List[str]] = None,
+        cur_namespace_path: Optional[List[str]] = None,
+        new_namespace_path: Optional[List[str]] = None,
     ):
         """Rename a table in the database.
 
@@ -553,16 +557,16 @@ class RemoteDBConnection(DBConnection):
         new_name: str
             The new name of the table.
         """
-        if cur_namespace is None:
-            cur_namespace = []
-        if new_namespace is None:
-            new_namespace = []
+        if cur_namespace_path is None:
+            cur_namespace_path = []
+        if new_namespace_path is None:
+            new_namespace_path = []
         LOOP.run(
             self._conn.rename_table(
                 cur_name,
                 new_name,
-                cur_namespace=cur_namespace,
-                new_namespace=new_namespace,
+                cur_namespace_path=cur_namespace_path,
+                new_namespace_path=new_namespace_path,
             )
         )
 

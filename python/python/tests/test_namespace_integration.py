@@ -4,9 +4,11 @@
 """
 Integration tests for LanceDB Namespace with S3 and credential refresh.
 
-This test simulates a namespace server that returns incrementing credentials
-and verifies that the credential refresh mechanism works correctly for both
-create_table and open_table operations.
+This test uses DirectoryNamespace with native ops_metrics and vend_input_storage_options
+features to track API calls and test credential refresh mechanisms.
+
+Tests are parameterized to run with both DirectoryNamespace and a CustomNamespace
+wrapper to verify Python-Rust binding works correctly for custom implementations.
 
 Tests verify:
 - Storage options provider is auto-created and used
@@ -18,21 +20,135 @@ Tests verify:
 import copy
 import time
 import uuid
-from threading import Lock
-from typing import Dict
+from typing import Dict, Optional
 
 import pyarrow as pa
 import pytest
-from lance_namespace import (
-    CreateEmptyTableRequest,
-    CreateEmptyTableResponse,
+from lance.namespace import (
     DeclareTableRequest,
     DeclareTableResponse,
     DescribeTableRequest,
     DescribeTableResponse,
+    DirectoryNamespace,
     LanceNamespace,
 )
+from lance_namespace import (
+    CreateNamespaceRequest,
+    CreateNamespaceResponse,
+    CreateTableRequest,
+    CreateTableResponse,
+    CreateTableVersionRequest,
+    CreateTableVersionResponse,
+    DeregisterTableRequest,
+    DeregisterTableResponse,
+    DescribeNamespaceRequest,
+    DescribeNamespaceResponse,
+    DescribeTableVersionRequest,
+    DescribeTableVersionResponse,
+    DropNamespaceRequest,
+    DropNamespaceResponse,
+    DropTableRequest,
+    DropTableResponse,
+    ListNamespacesRequest,
+    ListNamespacesResponse,
+    ListTablesRequest,
+    ListTablesResponse,
+    ListTableVersionsRequest,
+    ListTableVersionsResponse,
+    NamespaceExistsRequest,
+    RegisterTableRequest,
+    RegisterTableResponse,
+    TableExistsRequest,
+)
 from lancedb.namespace import LanceNamespaceDBConnection
+
+
+class CustomNamespace(LanceNamespace):
+    """A custom namespace wrapper that delegates to DirectoryNamespace.
+
+    This class verifies that the Python-Rust binding works correctly for
+    custom namespace implementations that wrap the native DirectoryNamespace.
+    All methods simply delegate to the underlying DirectoryNamespace instance.
+    """
+
+    def __init__(self, inner: DirectoryNamespace):
+        self._inner = inner
+
+    def namespace_id(self) -> str:
+        return f"CustomNamespace[{self._inner.namespace_id()}]"
+
+    def create_namespace(
+        self, request: CreateNamespaceRequest
+    ) -> CreateNamespaceResponse:
+        return self._inner.create_namespace(request)
+
+    def describe_namespace(
+        self, request: DescribeNamespaceRequest
+    ) -> DescribeNamespaceResponse:
+        return self._inner.describe_namespace(request)
+
+    def namespace_exists(self, request: NamespaceExistsRequest) -> None:
+        return self._inner.namespace_exists(request)
+
+    def drop_namespace(self, request: DropNamespaceRequest) -> DropNamespaceResponse:
+        return self._inner.drop_namespace(request)
+
+    def list_namespaces(self, request: ListNamespacesRequest) -> ListNamespacesResponse:
+        return self._inner.list_namespaces(request)
+
+    def create_table(
+        self, request: CreateTableRequest, data: bytes
+    ) -> CreateTableResponse:
+        return self._inner.create_table(request, data)
+
+    def declare_table(self, request: DeclareTableRequest) -> DeclareTableResponse:
+        return self._inner.declare_table(request)
+
+    def describe_table(self, request: DescribeTableRequest) -> DescribeTableResponse:
+        return self._inner.describe_table(request)
+
+    def table_exists(self, request: TableExistsRequest) -> None:
+        return self._inner.table_exists(request)
+
+    def drop_table(self, request: DropTableRequest) -> DropTableResponse:
+        return self._inner.drop_table(request)
+
+    def list_tables(self, request: ListTablesRequest) -> ListTablesResponse:
+        return self._inner.list_tables(request)
+
+    def register_table(self, request: RegisterTableRequest) -> RegisterTableResponse:
+        return self._inner.register_table(request)
+
+    def deregister_table(
+        self, request: DeregisterTableRequest
+    ) -> DeregisterTableResponse:
+        return self._inner.deregister_table(request)
+
+    def list_table_versions(
+        self, request: ListTableVersionsRequest
+    ) -> ListTableVersionsResponse:
+        return self._inner.list_table_versions(request)
+
+    def describe_table_version(
+        self, request: DescribeTableVersionRequest
+    ) -> DescribeTableVersionResponse:
+        return self._inner.describe_table_version(request)
+
+    def create_table_version(
+        self, request: CreateTableVersionRequest
+    ) -> CreateTableVersionResponse:
+        return self._inner.create_table_version(request)
+
+    def retrieve_ops_metrics(self) -> Optional[Dict[str, int]]:
+        return self._inner.retrieve_ops_metrics()
+
+
+def _wrap_if_custom(ns_client: DirectoryNamespace, use_custom: bool):
+    """Wrap namespace client in CustomNamespace if use_custom is True."""
+    if use_custom:
+        return CustomNamespace(ns_client)
+    return ns_client
+
 
 # LocalStack S3 configuration
 CONFIG = {
@@ -89,162 +205,88 @@ def delete_bucket(s3, bucket_name):
         pass
 
 
-class TrackingNamespace(LanceNamespace):
+def create_tracking_namespace(
+    bucket_name: str,
+    storage_options: dict,
+    credential_expires_in_seconds: int = 60,
+    use_custom: bool = False,
+):
+    """Create a DirectoryNamespace with ops metrics and credential vending enabled.
+
+    Uses native DirectoryNamespace features:
+    - ops_metrics_enabled=true: Tracks API call counts via retrieve_ops_metrics()
+    - vend_input_storage_options=true: Returns input storage options in responses
+    - vend_input_storage_options_refresh_interval_millis: Adds expires_at_millis
+
+    Args:
+        bucket_name: S3 bucket name or local path
+        storage_options: Storage options to pass through (credentials, endpoint, etc.)
+        credential_expires_in_seconds: Interval in seconds for credential expiration
+        use_custom: If True, wrap in CustomNamespace for testing custom implementations
+
+    Returns:
+        Tuple of (namespace_client, inner_namespace_client) where inner is always
+        the DirectoryNamespace (used for metrics retrieval)
     """
-    Mock namespace that wraps DirectoryNamespace and tracks API calls.
+    # Add refresh_offset_millis to storage options so that credentials are not
+    # considered expired immediately. Set to 1 second (1000ms) so that refresh
+    # checks work correctly with short-lived credentials in tests.
+    storage_options_with_refresh = dict(storage_options)
+    storage_options_with_refresh["refresh_offset_millis"] = "1000"
 
-    This namespace returns incrementing credentials with each API call to simulate
-    credential rotation. It also tracks the number of times each API is called
-    to verify caching behavior.
-    """
+    dir_props = {f"storage.{k}": v for k, v in storage_options_with_refresh.items()}
 
-    def __init__(
-        self,
-        bucket_name: str,
-        storage_options: Dict[str, str],
-        credential_expires_in_seconds: int = 60,
-    ):
-        from lance.namespace import DirectoryNamespace
+    if bucket_name.startswith("/") or bucket_name.startswith("file://"):
+        dir_props["root"] = f"{bucket_name}/namespace_root"
+    else:
+        dir_props["root"] = f"s3://{bucket_name}/namespace_root"
 
-        self.bucket_name = bucket_name
-        self.base_storage_options = storage_options
-        self.credential_expires_in_seconds = credential_expires_in_seconds
-        self.describe_call_count = 0
-        self.create_call_count = 0
-        self.lock = Lock()
+    # Enable ops metrics tracking
+    dir_props["ops_metrics_enabled"] = "true"
+    # Enable storage options vending
+    dir_props["vend_input_storage_options"] = "true"
+    # Set refresh interval in milliseconds
+    dir_props["vend_input_storage_options_refresh_interval_millis"] = str(
+        credential_expires_in_seconds * 1000
+    )
 
-        # Create underlying DirectoryNamespace with storage options
-        dir_props = {f"storage.{k}": v for k, v in storage_options.items()}
+    inner_ns_client = DirectoryNamespace(**dir_props)
+    ns_client = _wrap_if_custom(inner_ns_client, use_custom)
+    return ns_client, inner_ns_client
 
-        # Use S3 path for bucket name, local path for file paths
-        if bucket_name.startswith("/") or bucket_name.startswith("file://"):
-            dir_props["root"] = f"{bucket_name}/namespace_root"
-        else:
-            dir_props["root"] = f"s3://{bucket_name}/namespace_root"
 
-        self.inner = DirectoryNamespace(**dir_props)
+def get_describe_call_count(namespace_client) -> int:
+    """Get the number of describe_table calls made to the namespace client."""
+    return namespace_client.retrieve_ops_metrics().get("describe_table", 0)
 
-    def get_describe_call_count(self) -> int:
-        """Thread-safe getter for describe call count."""
-        with self.lock:
-            return self.describe_call_count
 
-    def get_create_call_count(self) -> int:
-        """Thread-safe getter for create call count."""
-        with self.lock:
-            return self.create_call_count
-
-    def namespace_id(self) -> str:
-        """Return namespace identifier."""
-        return f"TrackingNamespace {{ inner: {self.inner.namespace_id()} }}"
-
-    def _modify_storage_options(
-        self, storage_options: Dict[str, str], count: int
-    ) -> Dict[str, str]:
-        """
-        Add incrementing credentials with expiration timestamp.
-
-        This simulates a credential rotation system where each call returns
-        new credentials that expire after credential_expires_in_seconds.
-        """
-        # Start from base storage options (endpoint, region, allow_http, etc.)
-        # because DirectoryNamespace returns None for storage_options from
-        # describe_table/declare_table when no credential vendor is configured.
-        modified = copy.deepcopy(self.base_storage_options)
-        if storage_options:
-            modified.update(storage_options)
-
-        # Increment credentials to simulate rotation
-        modified["aws_access_key_id"] = f"AKID_{count}"
-        modified["aws_secret_access_key"] = f"SECRET_{count}"
-        modified["aws_session_token"] = f"TOKEN_{count}"
-
-        # Set expiration time
-        expires_at_millis = int(
-            (time.time() + self.credential_expires_in_seconds) * 1000
-        )
-        modified["expires_at_millis"] = str(expires_at_millis)
-
-        return modified
-
-    def declare_table(self, request: DeclareTableRequest) -> DeclareTableResponse:
-        """Track declare_table calls and inject rotating credentials."""
-        with self.lock:
-            self.create_call_count += 1
-            count = self.create_call_count
-
-        response = self.inner.declare_table(request)
-        response.storage_options = self._modify_storage_options(
-            response.storage_options, count
-        )
-
-        return response
-
-    def create_empty_table(
-        self, request: CreateEmptyTableRequest
-    ) -> CreateEmptyTableResponse:
-        """Track create_empty_table calls and inject rotating credentials."""
-        with self.lock:
-            self.create_call_count += 1
-            count = self.create_call_count
-
-        response = self.inner.create_empty_table(request)
-        response.storage_options = self._modify_storage_options(
-            response.storage_options, count
-        )
-
-        return response
-
-    def describe_table(self, request: DescribeTableRequest) -> DescribeTableResponse:
-        """Track describe_table calls and inject rotating credentials."""
-        with self.lock:
-            self.describe_call_count += 1
-            count = self.describe_call_count
-
-        response = self.inner.describe_table(request)
-        response.storage_options = self._modify_storage_options(
-            response.storage_options, count
-        )
-
-        return response
-
-    # Pass through other methods to inner namespace
-    def list_tables(self, request):
-        return self.inner.list_tables(request)
-
-    def drop_table(self, request):
-        return self.inner.drop_table(request)
-
-    def list_namespaces(self, request):
-        return self.inner.list_namespaces(request)
-
-    def create_namespace(self, request):
-        return self.inner.create_namespace(request)
-
-    def drop_namespace(self, request):
-        return self.inner.drop_namespace(request)
+def get_declare_call_count(namespace_client) -> int:
+    """Get the number of declare_table calls made to the namespace client."""
+    return namespace_client.retrieve_ops_metrics().get("declare_table", 0)
 
 
 @pytest.mark.s3_test
-def test_namespace_create_table_with_provider(s3_bucket: str):
+@pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
+def test_namespace_create_table_with_provider(s3_bucket: str, use_custom: bool):
     """
     Test creating a table through namespace with storage options provider.
 
     Verifies:
-    - create_empty_table is called once to reserve location
+    - declare_table is called once to reserve location
     - Storage options provider is auto-created
     - Table can be written successfully
     - Credentials are cached during write operations
     """
     storage_options = copy.deepcopy(CONFIG)
 
-    namespace = TrackingNamespace(
+    ns_client, inner_ns_client = create_tracking_namespace(
         bucket_name=s3_bucket,
         storage_options=storage_options,
         credential_expires_in_seconds=3600,  # 1 hour
+        use_custom=use_custom,
     )
 
-    db = LanceNamespaceDBConnection(namespace)
+    db = LanceNamespaceDBConnection(ns_client)
 
     # Create unique namespace for this test
     namespace_name = f"test_ns_{uuid.uuid4().hex[:8]}"
@@ -254,8 +296,8 @@ def test_namespace_create_table_with_provider(s3_bucket: str):
     namespace_path = [namespace_name]
 
     # Verify initial state
-    assert namespace.get_create_call_count() == 0
-    assert namespace.get_describe_call_count() == 0
+    assert get_declare_call_count(inner_ns_client) == 0
+    assert get_describe_call_count(inner_ns_client) == 0
 
     # Create table with data
     data = pa.table(
@@ -266,12 +308,12 @@ def test_namespace_create_table_with_provider(s3_bucket: str):
         }
     )
 
-    table = db.create_table(table_name, data, namespace=namespace_path)
+    table = db.create_table(table_name, data, namespace_path=namespace_path)
 
-    # Verify create_empty_table was called exactly once
-    assert namespace.get_create_call_count() == 1
+    # Verify declare_table was called exactly once
+    assert get_declare_call_count(inner_ns_client) == 1
     # describe_table should NOT be called during create in create mode
-    assert namespace.get_describe_call_count() == 0
+    assert get_describe_call_count(inner_ns_client) == 0
 
     # Verify table was created successfully
     assert table.name == table_name
@@ -281,7 +323,8 @@ def test_namespace_create_table_with_provider(s3_bucket: str):
 
 
 @pytest.mark.s3_test
-def test_namespace_open_table_with_provider(s3_bucket: str):
+@pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
+def test_namespace_open_table_with_provider(s3_bucket: str, use_custom: bool):
     """
     Test opening a table through namespace with storage options provider.
 
@@ -293,13 +336,14 @@ def test_namespace_open_table_with_provider(s3_bucket: str):
     """
     storage_options = copy.deepcopy(CONFIG)
 
-    namespace = TrackingNamespace(
+    ns_client, inner_ns_client = create_tracking_namespace(
         bucket_name=s3_bucket,
         storage_options=storage_options,
         credential_expires_in_seconds=3600,
+        use_custom=use_custom,
     )
 
-    db = LanceNamespaceDBConnection(namespace)
+    db = LanceNamespaceDBConnection(ns_client)
 
     # Create unique namespace for this test
     namespace_name = f"test_ns_{uuid.uuid4().hex[:8]}"
@@ -317,21 +361,21 @@ def test_namespace_open_table_with_provider(s3_bucket: str):
         }
     )
 
-    db.create_table(table_name, data, namespace=namespace_path)
+    db.create_table(table_name, data, namespace_path=namespace_path)
 
-    initial_create_count = namespace.get_create_call_count()
-    assert initial_create_count == 1
+    initial_declare_count = get_declare_call_count(inner_ns_client)
+    assert initial_declare_count == 1
 
     # Open the table
-    opened_table = db.open_table(table_name, namespace=namespace_path)
+    opened_table = db.open_table(table_name, namespace_path=namespace_path)
 
     # Verify describe_table was called exactly once
-    assert namespace.get_describe_call_count() == 1
-    # create_empty_table should not be called again
-    assert namespace.get_create_call_count() == initial_create_count
+    assert get_describe_call_count(inner_ns_client) == 1
+    # declare_table should not be called again
+    assert get_declare_call_count(inner_ns_client) == initial_declare_count
 
     # Perform multiple read operations
-    describe_count_after_open = namespace.get_describe_call_count()
+    describe_count_after_open = get_describe_call_count(inner_ns_client)
 
     for _ in range(3):
         result = opened_table.to_pandas()
@@ -340,11 +384,12 @@ def test_namespace_open_table_with_provider(s3_bucket: str):
         assert count == 5
 
     # Verify credentials were cached (no additional describe_table calls)
-    assert namespace.get_describe_call_count() == describe_count_after_open
+    assert get_describe_call_count(inner_ns_client) == describe_count_after_open
 
 
 @pytest.mark.s3_test
-def test_namespace_credential_refresh_on_read(s3_bucket: str):
+@pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
+def test_namespace_credential_refresh_on_read(s3_bucket: str, use_custom: bool):
     """
     Test credential refresh when credentials expire during read operations.
 
@@ -355,13 +400,14 @@ def test_namespace_credential_refresh_on_read(s3_bucket: str):
     """
     storage_options = copy.deepcopy(CONFIG)
 
-    namespace = TrackingNamespace(
+    ns_client, inner_ns_client = create_tracking_namespace(
         bucket_name=s3_bucket,
         storage_options=storage_options,
         credential_expires_in_seconds=3,  # Short expiration for testing
+        use_custom=use_custom,
     )
 
-    db = LanceNamespaceDBConnection(namespace)
+    db = LanceNamespaceDBConnection(ns_client)
 
     # Create unique namespace for this test
     namespace_name = f"test_ns_{uuid.uuid4().hex[:8]}"
@@ -378,16 +424,16 @@ def test_namespace_credential_refresh_on_read(s3_bucket: str):
         }
     )
 
-    db.create_table(table_name, data, namespace=namespace_path)
+    db.create_table(table_name, data, namespace_path=namespace_path)
 
     # Open table (triggers describe_table)
-    opened_table = db.open_table(table_name, namespace=namespace_path)
+    opened_table = db.open_table(table_name, namespace_path=namespace_path)
 
     # Perform an immediate read (should use credentials from open)
     result = opened_table.to_pandas()
     assert len(result) == 3
 
-    describe_count_after_first_read = namespace.get_describe_call_count()
+    describe_count_after_first_read = get_describe_call_count(inner_ns_client)
 
     # Wait for credentials to expire (3 seconds + buffer)
     time.sleep(5)
@@ -396,7 +442,7 @@ def test_namespace_credential_refresh_on_read(s3_bucket: str):
     result = opened_table.to_pandas()
     assert len(result) == 3
 
-    describe_count_after_refresh = namespace.get_describe_call_count()
+    describe_count_after_refresh = get_describe_call_count(inner_ns_client)
     # Verify describe_table was called again (credential refresh)
     refresh_delta = describe_count_after_refresh - describe_count_after_first_read
 
@@ -409,7 +455,8 @@ def test_namespace_credential_refresh_on_read(s3_bucket: str):
 
 
 @pytest.mark.s3_test
-def test_namespace_credential_refresh_on_write(s3_bucket: str):
+@pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
+def test_namespace_credential_refresh_on_write(s3_bucket: str, use_custom: bool):
     """
     Test credential refresh when credentials expire during write operations.
 
@@ -420,13 +467,14 @@ def test_namespace_credential_refresh_on_write(s3_bucket: str):
     """
     storage_options = copy.deepcopy(CONFIG)
 
-    namespace = TrackingNamespace(
+    ns_client, inner_ns_client = create_tracking_namespace(
         bucket_name=s3_bucket,
         storage_options=storage_options,
         credential_expires_in_seconds=3,  # Short expiration
+        use_custom=use_custom,
     )
 
-    db = LanceNamespaceDBConnection(namespace)
+    db = LanceNamespaceDBConnection(ns_client)
 
     # Create unique namespace for this test
     namespace_name = f"test_ns_{uuid.uuid4().hex[:8]}"
@@ -443,7 +491,7 @@ def test_namespace_credential_refresh_on_write(s3_bucket: str):
         }
     )
 
-    table = db.create_table(table_name, initial_data, namespace=namespace_path)
+    table = db.create_table(table_name, initial_data, namespace_path=namespace_path)
 
     # Add more data (should use cached credentials)
     new_data = pa.table(
@@ -471,24 +519,26 @@ def test_namespace_credential_refresh_on_write(s3_bucket: str):
 
 
 @pytest.mark.s3_test
-def test_namespace_overwrite_mode(s3_bucket: str):
+@pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
+def test_namespace_overwrite_mode(s3_bucket: str, use_custom: bool):
     """
     Test creating table in overwrite mode with credential tracking.
 
     Verifies:
-    - First create calls create_empty_table exactly once
+    - First create calls declare_table exactly once
     - Overwrite mode calls describe_table exactly once to check existence
     - Storage options provider works in overwrite mode
     """
     storage_options = copy.deepcopy(CONFIG)
 
-    namespace = TrackingNamespace(
+    ns_client, inner_ns_client = create_tracking_namespace(
         bucket_name=s3_bucket,
         storage_options=storage_options,
         credential_expires_in_seconds=3600,
+        use_custom=use_custom,
     )
 
-    db = LanceNamespaceDBConnection(namespace)
+    db = LanceNamespaceDBConnection(ns_client)
 
     # Create unique namespace for this test
     namespace_name = f"test_ns_{uuid.uuid4().hex[:8]}"
@@ -505,11 +555,11 @@ def test_namespace_overwrite_mode(s3_bucket: str):
         }
     )
 
-    table = db.create_table(table_name, data1, namespace=namespace_path)
-    # Exactly one create_empty_table call for initial create
-    assert namespace.get_create_call_count() == 1
+    table = db.create_table(table_name, data1, namespace_path=namespace_path)
+    # Exactly one declare_table call for initial create
+    assert get_declare_call_count(inner_ns_client) == 1
     # No describe_table calls in create mode
-    assert namespace.get_describe_call_count() == 0
+    assert get_describe_call_count(inner_ns_client) == 0
     assert table.count_rows() == 2
 
     # Overwrite the table
@@ -521,14 +571,14 @@ def test_namespace_overwrite_mode(s3_bucket: str):
     )
 
     table2 = db.create_table(
-        table_name, data2, namespace=namespace_path, mode="overwrite"
+        table_name, data2, namespace_path=namespace_path, mode="overwrite"
     )
 
-    # Should still have only 1 create_empty_table call
+    # Should still have only 1 declare_table call
     # (overwrite reuses location from describe_table)
-    assert namespace.get_create_call_count() == 1
+    assert get_declare_call_count(inner_ns_client) == 1
     # Should have called describe_table exactly once to get existing table location
-    assert namespace.get_describe_call_count() == 1
+    assert get_describe_call_count(inner_ns_client) == 1
 
     # Verify new data
     assert table2.count_rows() == 3
@@ -537,7 +587,8 @@ def test_namespace_overwrite_mode(s3_bucket: str):
 
 
 @pytest.mark.s3_test
-def test_namespace_multiple_tables(s3_bucket: str):
+@pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
+def test_namespace_multiple_tables(s3_bucket: str, use_custom: bool):
     """
     Test creating and opening multiple tables in the same namespace.
 
@@ -548,13 +599,14 @@ def test_namespace_multiple_tables(s3_bucket: str):
     """
     storage_options = copy.deepcopy(CONFIG)
 
-    namespace = TrackingNamespace(
+    ns_client, inner_ns_client = create_tracking_namespace(
         bucket_name=s3_bucket,
         storage_options=storage_options,
         credential_expires_in_seconds=3600,
+        use_custom=use_custom,
     )
 
-    db = LanceNamespaceDBConnection(namespace)
+    db = LanceNamespaceDBConnection(ns_client)
 
     # Create unique namespace for this test
     namespace_name = f"test_ns_{uuid.uuid4().hex[:8]}"
@@ -564,22 +616,22 @@ def test_namespace_multiple_tables(s3_bucket: str):
     # Create first table
     table1_name = f"table1_{uuid.uuid4().hex}"
     data1 = pa.table({"id": [1, 2], "value": [10, 20]})
-    db.create_table(table1_name, data1, namespace=namespace_path)
+    db.create_table(table1_name, data1, namespace_path=namespace_path)
 
     # Create second table
     table2_name = f"table2_{uuid.uuid4().hex}"
     data2 = pa.table({"id": [3, 4], "value": [30, 40]})
-    db.create_table(table2_name, data2, namespace=namespace_path)
+    db.create_table(table2_name, data2, namespace_path=namespace_path)
 
-    # Should have 2 create calls (one per table)
-    assert namespace.get_create_call_count() == 2
+    # Should have 2 declare calls (one per table)
+    assert get_declare_call_count(inner_ns_client) == 2
 
     # Open both tables
-    opened1 = db.open_table(table1_name, namespace=namespace_path)
-    opened2 = db.open_table(table2_name, namespace=namespace_path)
+    opened1 = db.open_table(table1_name, namespace_path=namespace_path)
+    opened2 = db.open_table(table2_name, namespace_path=namespace_path)
 
     # Should have 2 describe calls (one per open)
-    assert namespace.get_describe_call_count() == 2
+    assert get_describe_call_count(inner_ns_client) == 2
 
     # Verify both tables work independently
     assert opened1.count_rows() == 2
@@ -593,7 +645,8 @@ def test_namespace_multiple_tables(s3_bucket: str):
 
 
 @pytest.mark.s3_test
-def test_namespace_with_schema_only(s3_bucket: str):
+@pytest.mark.parametrize("use_custom", [False, True], ids=["DirectoryNS", "CustomNS"])
+def test_namespace_with_schema_only(s3_bucket: str, use_custom: bool):
     """
     Test creating empty table with schema only (no data).
 
@@ -604,13 +657,14 @@ def test_namespace_with_schema_only(s3_bucket: str):
     """
     storage_options = copy.deepcopy(CONFIG)
 
-    namespace = TrackingNamespace(
+    ns_client, inner_ns_client = create_tracking_namespace(
         bucket_name=s3_bucket,
         storage_options=storage_options,
         credential_expires_in_seconds=3600,
+        use_custom=use_custom,
     )
 
-    db = LanceNamespaceDBConnection(namespace)
+    db = LanceNamespaceDBConnection(ns_client)
 
     # Create unique namespace for this test
     namespace_name = f"test_ns_{uuid.uuid4().hex[:8]}"
@@ -628,12 +682,12 @@ def test_namespace_with_schema_only(s3_bucket: str):
         ]
     )
 
-    table = db.create_table(table_name, schema=schema, namespace=namespace_path)
+    table = db.create_table(table_name, schema=schema, namespace_path=namespace_path)
 
-    # Should have called create_empty_table once
-    assert namespace.get_create_call_count() == 1
+    # Should have called declare_table once
+    assert get_declare_call_count(inner_ns_client) == 1
     # Should NOT have called describe_table in create mode
-    assert namespace.get_describe_call_count() == 0
+    assert get_describe_call_count(inner_ns_client) == 0
 
     # Verify empty table
     assert table.count_rows() == 0

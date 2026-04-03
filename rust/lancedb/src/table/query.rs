@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use super::NativeTable;
+use crate::connection::PushdownOperation;
 use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
 use crate::query::{
@@ -40,8 +41,10 @@ pub async fn execute_query(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<DatasetRecordBatchStream> {
-    // If server-side query is enabled and namespace client is configured, use server-side query execution
-    if table.server_side_query_enabled
+    // If QueryTable pushdown is enabled and namespace client is configured, use server-side query execution
+    if table
+        .pushdown_operations
+        .contains(&PushdownOperation::QueryTable)
         && let Some(ref namespace_client) = table.namespace_client
     {
         return execute_namespace_query(table, namespace_client.clone(), query, options).await;
