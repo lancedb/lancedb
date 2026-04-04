@@ -11,9 +11,10 @@ use napi_derive::*;
 use crate::ConnectionOptions;
 use crate::error::NapiErrorExt;
 use crate::header::JsHeaderProvider;
-use crate::reference::parse_version;
+use crate::reference::{JsBranchReference, parse_optional_reference};
 use crate::table::Table;
 use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection};
+use lancedb::table::Reference;
 
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 
@@ -202,10 +203,7 @@ impl Connection {
         namespace_path: Option<Vec<String>>,
         storage_options: Option<HashMap<String, String>>,
         index_cache_size: Option<u32>,
-        version: Option<i64>,
-        tag: Option<String>,
-        branch_name: Option<String>,
-        branch_version_number: Option<i64>,
+        reference: Option<Either3<i64, String, JsBranchReference>>,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.open_table(&name);
 
@@ -219,18 +217,16 @@ impl Connection {
         if let Some(index_cache_size) = index_cache_size {
             builder = builder.index_cache_size(index_cache_size);
         }
-        let tbl = match (version, tag, branch_name, branch_version_number) {
-            (Some(version), None, None, None) => builder
-                .version(parse_version(version, "version")?)
-                .execute()
-                .await
-                .default_error()?,
-            (None, Some(tag), None, None) => builder.tag(tag).execute().await.default_error()?,
-            (None, None, Some(branch_name), branch_version_number) => {
+        let tbl = match parse_optional_reference(reference)? {
+            Some(Reference::VersionNumber(version)) => {
+                builder.version(version).execute().await.default_error()?
+            }
+            Some(Reference::Tag(tag)) => builder.tag(tag).execute().await.default_error()?,
+            Some(Reference::Version(Some(branch_name), branch_version_number)) => {
                 let builder = builder.branch(branch_name);
                 if let Some(version_number) = branch_version_number {
                     builder
-                        .version_number(parse_version(version_number, "branch versionNumber")?)
+                        .version_number(version_number)
                         .execute()
                         .await
                         .default_error()?
@@ -238,17 +234,12 @@ impl Connection {
                     builder.execute().await.default_error()?
                 }
             }
-            (None, None, None, None) => builder.execute().await.default_error()?,
-            (None, None, None, Some(_)) => {
+            Some(Reference::Version(None, _)) => {
                 return Err(napi::Error::from_reason(
-                    "branch versionNumber requires branch name",
+                    "open_table reference must include a branch name when using a branch selector",
                 ));
             }
-            _ => {
-                return Err(napi::Error::from_reason(
-                    "version, tag, and branch are mutually exclusive",
-                ));
-            }
+            None => builder.execute().await.default_error()?,
         };
         Ok(Table::new(tbl))
     }

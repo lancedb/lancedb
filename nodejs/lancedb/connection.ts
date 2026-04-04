@@ -18,7 +18,7 @@ import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Connection as LanceDbConnection } from "./native";
 import { sanitizeTable } from "./sanitize";
 import { cleanseStorageOptions } from "./storage_options";
-import { LocalTable, Table } from "./table";
+import { LocalTable, type Reference as TableReference, Table } from "./table";
 import { assertValidSelectorName, assertValidVersionNumber } from "./util";
 
 export { cleanseStorageOptions } from "./storage_options";
@@ -349,20 +349,12 @@ export abstract class Connection {
   ): Promise<Table>;
 }
 
-function normalizeOpenTableSelector(options?: Partial<OpenTableOptions>): {
-  version: number | null;
-  tag: string | null;
-  branchName: string | null;
-  branchVersionNumber: number | null;
-} {
+function normalizeOpenTableSelector(
+  options?: Partial<OpenTableOptions>,
+): TableReference | null {
   const ref = options?.ref;
   if (ref === undefined) {
-    return {
-      version: null,
-      tag: null,
-      branchName: null,
-      branchVersionNumber: null,
-    };
+    return null;
   }
 
   const hasBranchNameKey = Object.prototype.hasOwnProperty.call(ref, "branchName");
@@ -404,31 +396,18 @@ function normalizeOpenTableSelector(options?: Partial<OpenTableOptions>): {
     if (hasVersionNumber) {
       assertValidVersionNumber(versionNumber, "branch versionNumber");
     }
-    return {
-      version: null,
-      tag: null,
-      branchName,
-      branchVersionNumber: hasVersionNumber ? versionNumber : null,
-    };
+    return hasVersionNumber
+      ? { branch: branchName, version: versionNumber }
+      : { branch: branchName };
   }
 
   if (hasTagName) {
     assertValidSelectorName(tagName, "tagName");
-    return {
-      version: null,
-      tag: tagName,
-      branchName: null,
-      branchVersionNumber: null,
-    };
+    return tagName;
   }
 
   assertValidVersionNumber(versionNumber, "version");
-  return {
-    version: versionNumber,
-    tag: null,
-    branchName: null,
-    branchVersionNumber: null,
-  };
+  return versionNumber;
 }
 
 /** @hideconstructor */
@@ -500,10 +479,7 @@ export class LocalConnection extends Connection {
       namespace ?? [],
       cleanseStorageOptions(openTableOptions?.storageOptions),
       openTableOptions?.indexCacheSize,
-      selector.version,
-      selector.tag,
-      selector.branchName,
-      selector.branchVersionNumber,
+      selector,
     );
 
     return new LocalTable(innerTable);
