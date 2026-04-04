@@ -28,7 +28,7 @@ use lance_namespace::models::{
 
 use crate::data::scannable::Scannable;
 use crate::error::Result;
-use crate::table::{BaseTable, WriteOptions};
+use crate::table::{BaseTable, Reference, WriteOptions};
 
 pub mod listing;
 pub mod namespace;
@@ -70,6 +70,8 @@ pub struct OpenTableRequest {
     /// When Some(true), the table will use namespace-managed commits instead of local commits.
     /// When None and namespace_client is provided, the value will be fetched from the namespace.
     pub managed_versioning: Option<bool>,
+    /// Optional table reference to open.
+    pub reference: Option<Reference>,
 }
 
 impl std::fmt::Debug for OpenTableRequest {
@@ -82,6 +84,7 @@ impl std::fmt::Debug for OpenTableRequest {
             .field("location", &self.location)
             .field("namespace_client", &self.namespace_client)
             .field("managed_versioning", &self.managed_versioning)
+            .field("reference", &self.reference)
             .finish()
     }
 }

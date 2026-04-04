@@ -14,6 +14,7 @@ mod iterator;
 pub mod merge;
 pub mod permutation;
 mod query;
+mod reference;
 pub mod remote;
 mod rerankers;
 mod session;

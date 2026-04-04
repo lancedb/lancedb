@@ -43,7 +43,12 @@ import {
   instanceOfFullTextQuery,
 } from "./query";
 import { sanitizeType } from "./sanitize";
-import { IntoSql, toSQL } from "./util";
+import {
+  IntoSql,
+  assertValidSelectorName,
+  assertValidVersionNumber,
+  toSQL,
+} from "./util";
 export { IndexConfig } from "./native";
 
 /**
@@ -104,6 +109,72 @@ export interface Version {
   version: number;
   timestamp: Date;
   metadata: Record<string, string>;
+}
+
+export type Reference =
+  | number
+  | string
+  | {
+      branch: string;
+      version?: number;
+    };
+
+export type CheckoutReference = number | string;
+
+export interface BranchIdentifier {
+  versionMapping: Array<[number, string]>;
+}
+
+export interface BranchContents {
+  parentBranch: string | null;
+  identifier: BranchIdentifier;
+  parentVersion: number;
+  createdAt: number;
+  manifestSize: number;
+}
+
+export interface CurrentRef {
+  version: number;
+  branch: string | null;
+  tags: string[];
+}
+
+function mapCurrentRef(current: {
+  version: number;
+  branch?: string;
+  tags: string[];
+}): CurrentRef {
+  return {
+    version: current.version,
+    branch: current.branch ?? null,
+    tags: current.tags,
+  };
+}
+
+function mapBranchContents(contents: {
+  parentBranch?: string | null;
+  identifier: {
+    versionMapping: Array<{
+      version: number;
+      id: string;
+    }>;
+  };
+  parentVersion: number;
+  createdAt: number;
+  manifestSize: number;
+}): BranchContents {
+  return {
+    parentBranch: contents.parentBranch ?? null,
+    identifier: {
+      versionMapping: contents.identifier.versionMapping.map(({ version, id }) => [
+        version,
+        id,
+      ]),
+    },
+    parentVersion: contents.parentVersion,
+    createdAt: contents.createdAt,
+    manifestSize: contents.manifestSize,
+  };
 }
 
 /**
@@ -434,7 +505,8 @@ export abstract class Table {
 
   abstract version(): Promise<number>;
   /**
-   * Checks out a specific version of the table _This is an in-place operation._
+   * Checks out a specific version or tag on the current branch timeline.
+   * _This is an in-place operation._
    *
    * This allows viewing previous versions of the table. If you wish to
    * keep writing to the dataset starting from an old version, then use
@@ -442,7 +514,14 @@ export abstract class Table {
    *
    * Calling this method will set the table into time-travel mode. If you
    * wish to return to standard mode, call `checkoutLatest`.
-   * @param {number | string} version The version to checkout, could be version number or tag
+   *
+   * Branches are selected when opening the table with
+   * {@link Connection.openTable}. To read a different branch, reopen the
+   * table with `ref.branchName`.
+   *
+   * Tags must belong to the same branch timeline as the current table handle.
+   *
+   * @param {CheckoutReference} reference The version number or tag to checkout
    * @example
    * ```typescript
    * import * as lancedb from "@lancedb/lancedb"
@@ -455,16 +534,16 @@ export abstract class Table {
    * console.log(table.display());
    * await table.add([{ vector: [0.5, 0.2], type: "vector" }]);
    * await table.checkout(1);
-   * console.log(await table.version()); // 2
+   * console.log(await table.version()); // 1
    * ```
    */
-  abstract checkout(version: number | string): Promise<void>;
+  abstract checkout(reference: CheckoutReference): Promise<void>;
 
   /**
    * Checkout the latest version of the table. _This is an in-place operation._
    *
    * The table will be set back into standard mode, and will track the latest
-   * version of the table.
+   * version of the current branch timeline.
    */
   abstract checkoutLatest(): Promise<void>;
 
@@ -489,6 +568,31 @@ export abstract class Table {
    * ```
    */
   abstract tags(): Promise<Tags>;
+
+  /**
+   * Create a new branch for this table.
+   */
+  abstract createBranch(
+    name: string,
+    options?: {
+      from?: Reference;
+    },
+  ): Promise<void>;
+
+  /**
+   * Delete a branch from this table.
+   */
+  abstract deleteBranch(name: string): Promise<void>;
+
+  /**
+   * List branches for this table.
+   */
+  abstract listBranches(): Promise<Record<string, BranchContents>>;
+
+  /**
+   * Get the current version / branch / tags for this table handle.
+   */
+  abstract currentRef(): Promise<CurrentRef>;
 
   /**
    * Restore the table to the currently checked out version
@@ -878,11 +982,17 @@ export class LocalTable extends Table {
     return await this.inner.version();
   }
 
-  async checkout(version: number | string): Promise<void> {
-    if (typeof version === "string") {
-      return this.inner.checkoutTag(version);
+  async checkout(reference: CheckoutReference): Promise<void> {
+    if (typeof reference === "string") {
+      return this.inner.checkoutTag(reference);
     }
-    return this.inner.checkout(version);
+    if (typeof reference === "number") {
+      assertValidVersionNumber(reference, "version");
+      return this.inner.checkout(reference);
+    }
+    throw new Error(
+      "branch checkout is not supported on an existing table handle; reopen the table with ref.branchName",
+    );
   }
 
   async checkoutLatest(): Promise<void> {
@@ -903,6 +1013,47 @@ export class LocalTable extends Table {
 
   async tags(): Promise<Tags> {
     return await this.inner.tags();
+  }
+
+  async createBranch(
+    name: string,
+    options?: {
+      from?: Reference;
+    },
+  ): Promise<void> {
+    assertValidSelectorName(name, "branch");
+    const from = options?.from;
+    if (typeof from === "number") {
+      assertValidVersionNumber(from, "version");
+    } else if (from != null && typeof from !== "string") {
+      assertValidSelectorName(from.branch, "from.branch");
+      if (from.version !== undefined) {
+        assertValidVersionNumber(from.version, "branch version");
+      }
+    }
+    await this.inner.createBranch(
+      name,
+      from ?? null,
+    );
+  }
+
+  async deleteBranch(name: string): Promise<void> {
+    assertValidSelectorName(name, "branch");
+    await this.inner.deleteBranch(name);
+  }
+
+  async listBranches(): Promise<Record<string, BranchContents>> {
+    const branches = await this.inner.listBranches();
+    return Object.fromEntries(
+      Object.entries(branches).map(([name, contents]) => [
+        name,
+        mapBranchContents(contents),
+      ]),
+    );
+  }
+
+  async currentRef(): Promise<CurrentRef> {
+    return mapCurrentRef(await this.inner.currentRef());
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {

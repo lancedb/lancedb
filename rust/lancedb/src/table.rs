@@ -84,7 +84,9 @@ pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;
-pub use lance::dataset::refs::{TagContents, Tags as LanceTags};
+pub use lance::dataset::refs::{
+    BranchContents, BranchIdentifier, MAIN_BRANCH, Ref as Reference, TagContents, Tags as LanceTags,
+};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
@@ -93,6 +95,13 @@ pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
 pub use schema_evolution::{AddColumnsResult, AlterColumnsResult, DropColumnsResult};
 use serde_with::skip_serializing_none;
 pub use update::{UpdateBuilder, UpdateResult};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentRef {
+    pub version: u64,
+    pub branch: Option<String>,
+    pub tags: Vec<String>,
+}
 
 /// Defines the type of column
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1025,7 +1034,7 @@ impl Table {
         self.inner.version().await
     }
 
-    /// Checks out a specific version of the Table
+    /// Checks out a specific version of the table on the current branch timeline.
     ///
     /// Any read operation on the table will now access the data at the checked out version.
     /// As a consequence, calling this method will disable any read consistency interval
@@ -1038,12 +1047,13 @@ impl Table {
     /// Any operation that modifies the table will fail while the table is in a checked
     /// out state.
     ///
-    /// To return the table to a normal state use `[Self::checkout_latest]`
+    /// To return the table to the latest version of the current branch use
+    /// [`Self::checkout_latest`].
     pub async fn checkout(&self, version: u64) -> Result<()> {
         self.inner.checkout(version).await
     }
 
-    /// Checks out a specific version of the Table by tag
+    /// Checks out a specific version of the table by tag on the current branch timeline.
     ///
     /// Any read operation on the table will now access the data at the version referenced by the tag.
     /// As a consequence, calling this method will disable any read consistency interval
@@ -1056,15 +1066,20 @@ impl Table {
     /// Any operation that modifies the table will fail while the table is in a checked
     /// out state.
     ///
-    /// To return the table to a normal state use `[Self::checkout_latest]`
+    /// The tag must point to the same branch that this table handle was opened on.
+    /// To access a tag on a different branch, open a new table handle with
+    /// [`crate::connection::OpenTableBuilder::branch`].
+    ///
+    /// To return the table to the latest version of the current branch use
+    /// [`Self::checkout_latest`].
     pub async fn checkout_tag(&self, tag: &str) -> Result<()> {
         self.inner.checkout_tag(tag).await
     }
 
-    /// Ensures the table is pointing at the latest version
+    /// Ensures the table is pointing at the latest version of the current branch.
     ///
     /// This can be used to manually update a table when the read_consistency_interval is None
-    /// It can also be used to undo a `[Self::checkout]` operation
+    /// It can also be used to undo a [`Self::checkout`] or [`Self::checkout_tag`] operation.
     pub async fn checkout_latest(&self) -> Result<()> {
         self.inner.checkout_latest().await
     }
@@ -1205,6 +1220,38 @@ impl Table {
         self.inner.tags().await
     }
 
+    /// Create a new branch for this table.
+    pub async fn create_branch(&self, branch: &str, from: Option<Reference>) -> Result<()> {
+        let native = self.inner.as_native().ok_or_else(|| Error::NotSupported {
+            message: "Branch management is not supported for remote tables".to_string(),
+        })?;
+        native.create_branch(branch, from).await
+    }
+
+    /// Delete a branch from this table.
+    pub async fn delete_branch(&self, branch: &str) -> Result<()> {
+        let native = self.inner.as_native().ok_or_else(|| Error::NotSupported {
+            message: "Branch management is not supported for remote tables".to_string(),
+        })?;
+        native.delete_branch(branch).await
+    }
+
+    /// List branches for this table.
+    pub async fn list_branches(&self) -> Result<HashMap<String, BranchContents>> {
+        let native = self.inner.as_native().ok_or_else(|| Error::NotSupported {
+            message: "Branch management is not supported for remote tables".to_string(),
+        })?;
+        native.list_branches().await
+    }
+
+    /// Retrieve the current version / branch / tags for this table handle.
+    pub async fn current_ref(&self) -> Result<CurrentRef> {
+        let native = self.inner.as_native().ok_or_else(|| Error::NotSupported {
+            message: "current_ref is not supported for remote tables".to_string(),
+        })?;
+        native.current_ref().await
+    }
+
     /// Retrieve statistics on the table
     pub async fn stats(&self) -> Result<TableStatistics> {
         self.inner.stats().await
@@ -1309,6 +1356,15 @@ impl std::fmt::Display for NativeTable {
 }
 
 impl NativeTable {
+    fn validate_branch_name(branch: &str, field: &str) -> Result<()> {
+        if branch.is_empty() {
+            return Err(Error::InvalidInput {
+                message: format!("{field} must be a non-empty string"),
+            });
+        }
+        Ok(())
+    }
+
     /// Opens an existing Table
     ///
     /// # Arguments
@@ -1330,6 +1386,7 @@ impl NativeTable {
             None,
             None,
             HashSet::new(),
+            None,
             None,
         )
         .await
@@ -1361,6 +1418,7 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<PushdownOperation>,
         managed_versioning: Option<bool>,
+        reference: Option<Reference>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -1410,6 +1468,16 @@ impl NativeTable {
             builder = builder.with_commit_handler(commit_handler);
         }
 
+        if let Some(reference) = reference.clone() {
+            builder = match reference {
+                Reference::VersionNumber(version) => builder.with_version(version),
+                Reference::Tag(tag) => builder.with_tag(tag.as_str()),
+                Reference::Version(branch, version) => {
+                    builder.with_branch(branch.as_deref().unwrap_or(MAIN_BRANCH), version)
+                }
+            };
+        }
+
         let dataset = builder.load().await.map_err(|e| match e {
             lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
                 name: name.to_string(),
@@ -1430,6 +1498,82 @@ impl NativeTable {
             read_consistency_interval,
             namespace_client,
             pushdown_operations,
+        })
+    }
+
+    pub async fn create_branch(&self, branch: &str, from: Option<Reference>) -> Result<()> {
+        Self::validate_branch_name(branch, "branch")?;
+        if let Some(Reference::Version(Some(branch), _)) = from.as_ref() {
+            Self::validate_branch_name(branch, "from.branch")?;
+        }
+
+        let mut dataset = (*self.dataset.get().await?).clone();
+        let current_branch = dataset
+            .manifest()
+            .branch
+            .clone()
+            .unwrap_or_else(|| MAIN_BRANCH.to_string());
+        let current_reference = Reference::Version(
+            (current_branch != MAIN_BRANCH).then_some(current_branch),
+            None,
+        );
+        dataset
+            .create_branch(branch, from.unwrap_or(current_reference), None)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_branch(&self, branch: &str) -> Result<()> {
+        Self::validate_branch_name(branch, "branch")?;
+        let mut dataset = (*self.dataset.get().await?).clone();
+        let current_branch = dataset
+            .manifest()
+            .branch
+            .clone()
+            .unwrap_or_else(|| MAIN_BRANCH.to_string());
+        if current_branch == branch {
+            return Err(Error::InvalidInput {
+                message: "cannot delete the currently checked out branch".to_string(),
+            });
+        }
+        dataset.delete_branch(branch).await?;
+        Ok(())
+    }
+
+    pub async fn list_branches(&self) -> Result<HashMap<String, BranchContents>> {
+        let dataset = self.dataset.get().await?;
+        dataset.list_branches().await.map_err(Into::into)
+    }
+
+    pub async fn current_ref(&self) -> Result<CurrentRef> {
+        let dataset = self.dataset.get().await?;
+        let current_version = dataset.version().version;
+        let current_branch = dataset
+            .manifest()
+            .branch
+            .clone()
+            .unwrap_or_else(|| MAIN_BRANCH.to_string());
+        let mut tags = dataset
+            .tags()
+            .list()
+            .await?
+            .into_iter()
+            .filter(|(_, contents)| {
+                contents.version == current_version
+                    && contents
+                        .branch
+                        .clone()
+                        .unwrap_or_else(|| MAIN_BRANCH.to_string())
+                        == current_branch
+            })
+            .map(|(tag, _)| tag)
+            .collect::<Vec<_>>();
+        tags.sort();
+
+        Ok(CurrentRef {
+            version: current_version,
+            branch: Some(current_branch),
+            tags,
         })
     }
 
@@ -1458,6 +1602,7 @@ impl NativeTable {
     /// * `pushdown_operations` - Operations to push down to the namespace server.
     ///   When `QueryTable` is included, queries will be executed on the namespace server.
     /// * `session` - Optional session for object stores and caching
+    /// * `reference` - Optional version, tag, or branch selector used when opening the table
     ///
     /// # Returns
     ///
@@ -1472,6 +1617,7 @@ impl NativeTable {
         read_consistency_interval: Option<std::time::Duration>,
         pushdown_operations: HashSet<PushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
+        reference: Option<Reference>,
     ) -> Result<Self> {
         let mut params = params.unwrap_or_default();
 
@@ -1490,6 +1636,12 @@ impl NativeTable {
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());
 
+        if pushdown_operations.contains(&PushdownOperation::QueryTable) && reference.is_some() {
+            return Err(Error::NotSupported {
+                message: "Opening a namespace-backed table at a specific reference is not supported when server-side query is enabled".to_string(),
+            });
+        }
+
         // Use DatasetBuilder::from_namespace which automatically fetches location
         // and storage options from the namespace
         let builder = DatasetBuilder::from_namespace(namespace_client.clone(), table_id)
@@ -1500,6 +1652,18 @@ impl NativeTable {
                 },
                 e => e.into(),
             })?;
+
+        let builder = if let Some(reference) = reference.clone() {
+            match reference {
+                Reference::VersionNumber(version) => builder.with_version(version),
+                Reference::Tag(tag) => builder.with_tag(tag.as_str()),
+                Reference::Version(branch, version) => {
+                    builder.with_branch(branch.as_deref().unwrap_or(MAIN_BRANCH), version)
+                }
+            }
+        } else {
+            builder
+        };
 
         let dataset = builder
             .with_read_params(params)
@@ -2182,6 +2346,15 @@ impl BaseTable for NativeTable {
     }
 
     async fn checkout_tag(&self, tag: &str) -> Result<()> {
+        let dataset = self.dataset.get().await?;
+        let current_branch = dataset.manifest().branch.clone();
+        let tag_contents = dataset.tags().get(tag).await?;
+        if tag_contents.branch != current_branch {
+            return Err(Error::InvalidInput {
+                message: "cannot checkout a tag from a different branch on this table handle"
+                    .to_string(),
+            });
+        }
         self.dataset.as_time_travel(tag).await
     }
 
@@ -2635,8 +2808,8 @@ impl BaseTable for NativeTable {
         input: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
         write_params: WriteParams,
     ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
-        let ds = self.dataset.get().await?;
-        let dataset = Arc::new((*ds).clone());
+        self.dataset.ensure_mutable()?;
+        let dataset = self.dataset.get().await?;
         Ok(Arc::new(datafusion::insert::InsertExec::new(
             self.dataset.clone(),
             dataset,
@@ -2899,6 +3072,135 @@ mod tests {
         assert_eq!(table.version().await.unwrap(), 3);
         table.checkout_latest().await.unwrap();
         assert_eq!(table.version().await.unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_branches() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+        table.add(some_sample_data()).execute().await.unwrap();
+        assert_eq!(table.version().await.unwrap(), 2);
+
+        let mut tags_manager = table.tags().await.unwrap();
+        tags_manager.create("main-v2", 2).await.unwrap();
+
+        table.create_branch("feature-a", None).await.unwrap();
+        table
+            .create_branch("recovery", Some(Reference::Tag("main-v2".to_string())))
+            .await
+            .unwrap();
+
+        let branches = table.list_branches().await.unwrap();
+        assert!(branches.contains_key("feature-a"));
+        assert_eq!(branches["feature-a"].parent_branch, None);
+        assert_eq!(branches["feature-a"].parent_version, 2);
+        assert!(branches["feature-a"].create_at > 0);
+        assert!(branches["feature-a"].manifest_size > 0);
+        assert!(branches.contains_key("recovery"));
+        assert_eq!(branches["recovery"].parent_version, 2);
+
+        let feature_table = conn
+            .open_table("my_table")
+            .branch("feature-a")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(
+            feature_table.current_ref().await.unwrap(),
+            CurrentRef {
+                version: 2,
+                branch: Some("feature-a".to_string()),
+                tags: vec![],
+            }
+        );
+
+        let feature_v2_table = conn
+            .open_table("my_table")
+            .branch("feature-a")
+            .version_number(2)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(
+            feature_v2_table.current_ref().await.unwrap(),
+            CurrentRef {
+                version: 2,
+                branch: Some("feature-a".to_string()),
+                tags: vec![],
+            }
+        );
+
+        feature_table
+            .add(some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(feature_table.version().await.unwrap(), 3);
+
+        feature_table
+            .create_branch("feature-a/deeper", None)
+            .await
+            .unwrap();
+
+        let branches = feature_table.list_branches().await.unwrap();
+        assert_eq!(
+            branches["feature-a/deeper"].parent_branch,
+            Some("feature-a".to_string())
+        );
+        assert_eq!(branches["feature-a/deeper"].parent_version, 3);
+
+        let err = table.create_branch("", None).await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message } if message == "branch must be a non-empty string"
+        ));
+
+        let err = feature_table.delete_branch("feature-a").await.unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message == "cannot delete the currently checked out branch"
+        ));
+
+        table.delete_branch("recovery").await.unwrap();
+        let branches = table.list_branches().await.unwrap();
+        assert!(!branches.contains_key("recovery"));
+    }
+
+    #[tokio::test]
+    async fn test_create_branch_without_from_uses_latest_branch_head() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let stale_table = conn
+            .create_table("my_table", some_sample_data())
+            .execute()
+            .await
+            .unwrap();
+        stale_table.add(some_sample_data()).execute().await.unwrap();
+        assert_eq!(stale_table.version().await.unwrap(), 2);
+
+        let fresh_table = conn.open_table("my_table").execute().await.unwrap();
+        fresh_table.add(some_sample_data()).execute().await.unwrap();
+        assert_eq!(fresh_table.version().await.unwrap(), 3);
+
+        stale_table.create_branch("feature-a", None).await.unwrap();
+
+        let branches = fresh_table.list_branches().await.unwrap();
+        assert_eq!(branches["feature-a"].parent_branch, None);
+        assert_eq!(branches["feature-a"].parent_version, 3);
     }
 
     #[tokio::test]
@@ -3492,7 +3794,7 @@ mod tests {
         let intervals = vec![
             None,
             Some(0),
-            Some(100), // 100 ms
+            Some(500), // 500 ms
         ];
 
         for interval in intervals {
@@ -3530,9 +3832,9 @@ mod tests {
                 Some(0) => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 1);
                 }
-                Some(100) => {
+                Some(500) => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 0);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                     assert_eq!(table2.count_rows(None).await.unwrap(), 1);
                 }
                 _ => unreachable!(),

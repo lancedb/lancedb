@@ -32,12 +32,12 @@ use crate::remote::{
     client::ClientConfig,
     db::{OPT_REMOTE_API_KEY, OPT_REMOTE_HOST_OVERRIDE, OPT_REMOTE_REGION},
 };
+use crate::table::Reference;
 use lance::io::ObjectStoreParams;
 pub use lance_encoding::version::LanceFileVersion;
 #[cfg(feature = "remote")]
 use lance_io::object_store::StorageOptions;
 use lance_io::object_store::{StorageOptionsAccessor, StorageOptionsProvider};
-
 mod create_table;
 
 fn merge_storage_options(
@@ -121,6 +121,12 @@ pub struct OpenTableBuilder {
     embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
 
+/// Builder for opening a table at the latest or a pinned branch reference.
+#[derive(Clone, Debug)]
+pub struct OpenTableBranchBuilder {
+    builder: OpenTableBuilder,
+}
+
 impl OpenTableBuilder {
     pub(crate) fn new(
         parent: Arc<dyn Database>,
@@ -137,6 +143,7 @@ impl OpenTableBuilder {
                 location: None,
                 namespace_client: None,
                 managed_versioning: None,
+                reference: None,
             },
             embedding_registry,
         }
@@ -259,7 +266,10 @@ impl OpenTableBuilder {
         self
     }
 
-    /// Open the table
+    /// Open the table.
+    ///
+    /// Branch selection happens here. Once a table handle has been opened on a
+    /// branch, later checkout operations stay on that branch timeline.
     pub async fn execute(self) -> Result<Table> {
         let table = self.parent.open_table(self.request).await?;
         Ok(Table::new_with_embedding_registry(
@@ -267,6 +277,105 @@ impl OpenTableBuilder {
             self.parent,
             self.embedding_registry,
         ))
+    }
+
+    fn with_reference(mut self, reference: Reference) -> Self {
+        self.request.reference = Some(reference);
+        self
+    }
+
+    /// Open the table at a specific version number on the default timeline.
+    pub fn version(self, version: u64) -> Self {
+        self.with_reference(Reference::VersionNumber(version))
+    }
+
+    /// Open the table at a specific tag.
+    pub fn tag(self, tag: impl Into<String>) -> Self {
+        self.with_reference(Reference::Tag(tag.into()))
+    }
+
+    /// Open the table at the latest version of a specific branch.
+    ///
+    /// To read a different branch later, open a new table handle with this
+    /// selector again. Existing table handles do not support branch checkout.
+    pub fn branch(self, branch: impl Into<String>) -> OpenTableBranchBuilder {
+        OpenTableBranchBuilder {
+            builder: self.with_reference(Reference::Version(Some(branch.into()), None)),
+        }
+    }
+}
+
+impl OpenTableBranchBuilder {
+    /// Pin the selected branch to a specific version number at open time.
+    pub fn version_number(mut self, version: u64) -> Self {
+        let branch = match self.builder.request.reference.take() {
+            Some(Reference::Version(Some(branch), _)) => branch,
+            _ => unreachable!("branch selector builder must carry a branch reference"),
+        };
+        self.builder.request.reference = Some(Reference::Version(Some(branch), Some(version)));
+        self
+    }
+
+    /// Set the size of the index cache, specified as a number of entries.
+    pub fn index_cache_size(mut self, index_cache_size: u32) -> Self {
+        self.builder = self.builder.index_cache_size(index_cache_size);
+        self
+    }
+
+    /// Advanced parameters that can be used to customize table reads.
+    pub fn lance_read_params(mut self, params: ReadParams) -> Self {
+        self.builder = self.builder.lance_read_params(params);
+        self
+    }
+
+    /// Set an option for the storage layer.
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.builder = self.builder.storage_option(key, value);
+        self
+    }
+
+    /// Set multiple options for the storage layer.
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.builder = self.builder.storage_options(pairs);
+        self
+    }
+
+    /// Set the namespace for the table.
+    pub fn namespace(mut self, namespace: Vec<String>) -> Self {
+        self.builder = self.builder.namespace(namespace);
+        self
+    }
+
+    /// Set a custom location for the table.
+    pub fn location(mut self, location: impl Into<String>) -> Self {
+        self.builder = self.builder.location(location);
+        self
+    }
+
+    /// Set a storage options provider for automatic credential refresh.
+    pub fn storage_options_provider(mut self, provider: Arc<dyn StorageOptionsProvider>) -> Self {
+        self.builder = self.builder.storage_options_provider(provider);
+        self
+    }
+
+    /// Set a namespace client for managed versioning support.
+    pub fn namespace_client(mut self, client: Arc<dyn lance_namespace::LanceNamespace>) -> Self {
+        self.builder = self.builder.namespace_client(client);
+        self
+    }
+
+    /// Set whether managed versioning is enabled for this table.
+    pub fn managed_versioning(mut self, enabled: bool) -> Self {
+        self.builder = self.builder.managed_versioning(enabled);
+        self
+    }
+
+    /// Open the table.
+    pub async fn execute(self) -> Result<Table> {
+        self.builder.execute().await
     }
 }
 

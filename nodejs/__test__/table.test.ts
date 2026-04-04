@@ -13,10 +13,12 @@ import * as arrow18 from "apache-arrow-18";
 import {
   Connection,
   MatchQuery,
+  OpenTableOptions,
   PhraseQuery,
   Table,
   connect,
 } from "../lancedb";
+import { LocalTable } from "../lancedb/table";
 import {
   Table as ArrowTable,
   Field,
@@ -1640,6 +1642,316 @@ describe("when dealing with tags", () => {
     expect(await table.countRows()).toBe(1);
     await table.add([{ id: 3n, vector: [0.5, 0.6] }]);
     expect(await table.countRows()).toBe(2);
+  });
+});
+
+async function withBranchTable<T>(
+  callback: (context: { conn: Connection; table: Table }) => Promise<T>,
+): Promise<T> {
+  const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  try {
+    const conn = await connect(tmpDir.name, {
+      readConsistencyInterval: 0,
+    });
+
+    const table = await conn.createTable("my_table", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    await table.add([{ id: 2n, vector: [0.3, 0.4] }]);
+    expect(await table.version()).toBe(2);
+
+    const tagsManager = await table.tags();
+    await tagsManager.create("main-v2", 2);
+
+    await table.createBranch("feature-a");
+    await table.createBranch("recovery", { from: "main-v2" });
+
+    return await callback({ conn, table });
+  } finally {
+    tmpDir.removeCallback();
+  }
+}
+
+it("handles branch refs", async () => {
+  await withBranchTable(async ({ conn, table }) => {
+    const mainRef = {
+      version: 2,
+      branch: "main",
+      tags: ["main-v2"],
+    };
+    const featureRef = {
+      version: 2,
+      branch: "feature-a",
+      tags: [],
+    };
+
+    const branches = await table.listBranches();
+    expect(branches).toHaveProperty("feature-a");
+    expect(branches["feature-a"].parentBranch).toBeNull();
+    expect(branches["feature-a"].parentVersion).toBe(2);
+    expect(branches["feature-a"].createdAt).toBeGreaterThan(0);
+    expect(branches["feature-a"].manifestSize).toBeGreaterThan(0);
+    expect(branches["feature-a"].identifier.versionMapping).toHaveLength(1);
+    expect(branches["feature-a"].identifier.versionMapping[0][0]).toBe(2);
+    expect(branches["feature-a"].identifier.versionMapping[0][1]).toEqual(
+      expect.any(String),
+    );
+    expect(branches).toHaveProperty("recovery");
+    expect(branches["recovery"].identifier.versionMapping).toHaveLength(1);
+    expect(branches["recovery"].identifier.versionMapping[0][0]).toBe(2);
+    expect(branches["recovery"].identifier.versionMapping[0][1]).toEqual(
+      expect.any(String),
+    );
+    const featureBranchId =
+      branches["feature-a"].identifier.versionMapping[0][1];
+
+    expect(await table.currentRef()).toEqual(mainRef);
+
+    const compatOptions: Partial<OpenTableOptions> = {
+      storageOptions: {},
+    };
+    const compatTable = await conn.openTable("my_table", compatOptions);
+    expect(await compatTable.currentRef()).toEqual(mainRef);
+
+    const selectorChecks = [
+      {
+        open: () =>
+          conn.openTable("my_table", undefined, {
+            ref: { versionNumber: 2 },
+          }),
+        expected: mainRef,
+      },
+      {
+        open: () =>
+          conn.openTable("my_table", {
+            ref: { versionNumber: 2 },
+          }),
+        expected: mainRef,
+      },
+      {
+        open: () =>
+          conn.openTable("my_table", undefined, {
+            ref: { tagName: "main-v2" },
+          }),
+        expected: mainRef,
+      },
+      {
+        open: () =>
+          conn.openTable("my_table", {
+            ref: { tagName: "main-v2" },
+          }),
+        expected: mainRef,
+      },
+      {
+        open: () =>
+          conn.openTable("my_table", undefined, {
+            ref: { branchName: "feature-a" },
+          }),
+        expected: featureRef,
+      },
+      {
+        open: () =>
+          conn.openTable("my_table", {
+            ref: { branchName: "feature-a" },
+          }),
+        expected: featureRef,
+      },
+      {
+        open: () =>
+          conn.openTable("my_table", undefined, {
+            ref: { branchName: "feature-a", versionNumber: 2 },
+          }),
+        expected: featureRef,
+      },
+      {
+        open: () =>
+          conn.openTable("my_table", {
+            ref: { branchName: "feature-a", tagName: undefined } as any,
+          }),
+        expected: featureRef,
+      },
+      {
+        open: () =>
+          conn.openTable("my_table", {
+            ref: { versionNumber: 2, tagName: undefined } as any,
+          }),
+        expected: mainRef,
+      },
+    ];
+    for (const { open, expected } of selectorChecks) {
+      const openedTable = await open();
+      expect(await openedTable.currentRef()).toEqual(expected);
+    }
+
+    const nullRefTable = await conn.openTable("my_table", {
+      ref: null as any,
+    });
+    expect(await nullRefTable.currentRef()).toEqual(mainRef);
+
+    const featureTable = await conn.openTable("my_table", {
+      ref: { branchName: "feature-a" },
+    });
+    await featureTable.add([{ id: 3n, vector: [0.5, 0.6] }]);
+    expect(await featureTable.version()).toBe(3);
+
+    const featureTags = await featureTable.tags();
+    await featureTags.create("feature-v3", 3);
+    await featureTable.createBranch("feature-a/deeper");
+    expect(await featureTable.currentRef()).toEqual({
+      version: 3,
+      branch: "feature-a",
+      tags: ["feature-v3"],
+    });
+
+    const nestedBranches = await featureTable.listBranches();
+    expect(
+      nestedBranches["feature-a/deeper"].identifier.versionMapping.map(
+        ([version]) => version,
+      ),
+    ).toEqual([2, 3]);
+    expect(
+      nestedBranches["feature-a/deeper"].identifier.versionMapping[0][1],
+    ).toBe(featureBranchId);
+    expect(
+      nestedBranches["feature-a/deeper"].identifier.versionMapping[1][1],
+    ).toEqual(expect.any(String));
+
+    expect(await table.currentRef()).toEqual(mainRef);
+
+    await featureTable.checkout(2);
+    expect(await featureTable.currentRef()).toEqual({
+      version: 2,
+      branch: "feature-a",
+      tags: [],
+    });
+    expect(await featureTable.countRows()).toBe(2);
+
+    await featureTable.checkout("feature-v3");
+    expect(await featureTable.currentRef()).toEqual({
+      version: 3,
+      branch: "feature-a",
+      tags: ["feature-v3"],
+    });
+    await expect(featureTable.checkout("main-v2")).rejects.toThrow(
+      "cannot checkout a tag from a different branch on this table handle",
+    );
+    await featureTable.checkoutLatest();
+    expect(await featureTable.currentRef()).toEqual({
+      version: 3,
+      branch: "feature-a",
+      tags: ["feature-v3"],
+    });
+
+    await expect(
+      conn.openTable("my_table", { ref: { versionNumber: -1 } }),
+    ).rejects.toThrow("version must be a non-negative integer");
+    await expect(
+      conn.openTable("my_table", {
+        ref: { branchName: "main", versionNumber: -1 },
+      }),
+    ).rejects.toThrow("branch versionNumber must be a non-negative integer");
+    await expect(
+      conn.openTable("my_table", {
+        ref: { versionNumber: 1, tagName: "main-v1" } as any,
+      }),
+    ).rejects.toThrow(
+      "versionNumber, tagName, and branchName are mutually exclusive",
+    );
+    await expect(
+      conn.openTable("my_table", {
+        ref: { tagName: undefined } as any,
+      }),
+    ).rejects.toThrow(
+      "ref must include a defined versionNumber, tagName, or branchName",
+    );
+    await expect(
+      conn.openTable("my_table", {
+        ref: { branchName: undefined } as any,
+      }),
+    ).rejects.toThrow(
+      "ref must include a defined versionNumber, tagName, or branchName",
+    );
+    await expect(
+      conn.openTable("my_table", {
+        ref: { versionNumber: undefined } as any,
+      }),
+    ).rejects.toThrow(
+      "ref must include a defined versionNumber, tagName, or branchName",
+    );
+    await expect(conn.openTable("my_table", { ref: { versionNumber: 1.5 } })).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
+    await expect(
+      conn.openTable("my_table", {
+        ref: { branchName: "main", versionNumber: Number.NaN },
+      }),
+    ).rejects.toThrow("branch versionNumber must be a non-negative integer");
+    await expect(
+      conn.openTable("my_table", {
+        ref: { versionNumber: Number.POSITIVE_INFINITY },
+      }),
+    ).rejects.toThrow("version must be a non-negative integer");
+    await expect(table.checkout(-1)).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
+    await expect(table.checkout(1.5)).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
+    await expect(
+      (table as any).checkout({ branch: "feature-a" }),
+    ).rejects.toThrow(
+      "branch checkout is not supported on an existing table handle; reopen the table with ref.branchName",
+    );
+    await expect(table.createBranch("")).rejects.toThrow(
+      "branch must be a non-empty string",
+    );
+    await expect(table.deleteBranch("")).rejects.toThrow(
+      "branch must be a non-empty string",
+    );
+    await expect(
+      table.createBranch("bad-ref", { from: { branch: "main", version: -1 } }),
+    ).rejects.toThrow("branch version must be a non-negative integer");
+    await expect(
+      table.createBranch("bad-ref", { from: { branch: "" } }),
+    ).rejects.toThrow("from.branch must be a non-empty string");
+    await expect(
+      table.createBranch("bad-ref", { from: 1.5 }),
+    ).rejects.toThrow("version must be a non-negative integer");
+    await expect(
+      table.createBranch("bad-ref", {
+        from: { branch: "main", version: Number.POSITIVE_INFINITY },
+      }),
+    ).rejects.toThrow("branch version must be a non-negative integer");
+
+    let captured:
+      | {
+          name: string;
+          from: unknown;
+        }
+      | undefined;
+    const mockTable = new LocalTable({
+      createBranch: async (name: string, from: unknown) => {
+        captured = { name, from };
+      },
+    } as any);
+    await mockTable.createBranch("feature-a");
+    expect(captured).toEqual({
+      name: "feature-a",
+      from: null,
+    });
+
+    await mockTable.createBranch("null-from", { from: null as any });
+    expect(captured).toEqual({
+      name: "null-from",
+      from: null,
+    });
+
+    await expect(featureTable.deleteBranch("feature-a")).rejects.toThrow(
+      "cannot delete the currently checked out branch",
+    );
+    await table.deleteBranch("recovery");
+    const branchesAfterDelete = await table.listBranches();
+    expect(branchesAfterDelete).not.toHaveProperty("recovery");
   });
 });
 
