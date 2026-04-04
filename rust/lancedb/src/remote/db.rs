@@ -472,6 +472,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                             location: None,
                             namespace_client: None,
                             managed_versioning: None,
+                            reference: None,
                         };
                         let req = (callback)(req);
                         self.open_table(req).await
@@ -562,12 +563,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
-        let identifier = build_table_identifier(
-            &request.name,
-            &request.namespace_path,
-            &self.client.id_delimiter,
-        );
-        let cache_key = build_cache_key(&request.name, &request.namespace_path);
+        if request.reference.is_some() {
+            return Err(Error::NotSupported {
+                message: "Opening a remote table at a specific reference is not supported"
+                    .to_string(),
+            });
+        }
+
+        let identifier =
+            build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
+        let cache_key = build_cache_key(&request.name, &request.namespace);
 
         // We describe the table to confirm it exists before moving on.
         if let Some(table) = self.table_cache.get(&cache_key).await {
@@ -583,17 +588,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let version = parse_server_version(&request_id, &rsp)?;
             let table_identifier = build_table_identifier(
                 &request.name,
-                &request.namespace_path,
+                &request.namespace,
                 &self.client.id_delimiter,
             );
             let table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 request.name.clone(),
-                request.namespace_path.clone(),
+                request.namespace.clone(),
                 table_identifier,
                 version,
             ));
-            let cache_key = build_cache_key(&request.name, &request.namespace_path);
+            let cache_key = build_cache_key(&request.name, &request.namespace);
             self.table_cache.insert(cache_key, table.clone()).await;
             Ok(table)
         }
@@ -953,6 +958,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_remote_rejects_refs() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("open_table with a reference should fail before issuing an HTTP request");
+        });
+
+        let version_result = conn.open_table("table1").version(1).execute().await;
+        assert!(matches!(version_result, Err(Error::NotSupported { .. })));
+
+        let tag_result = conn.open_table("table1").tag("prod").execute().await;
+        assert!(matches!(tag_result, Err(Error::NotSupported { .. })));
+
+        let branch_result = conn
+            .open_table("table1")
+            .branch("feature-a")
+            .version_number(1)
+            .execute()
+            .await;
+        assert!(matches!(branch_result, Err(Error::NotSupported { .. })));
     }
 
     #[tokio::test]

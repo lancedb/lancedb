@@ -198,6 +198,7 @@ impl Database for LanceNamespaceDatabase {
                         self.read_consistency_interval,
                         self.pushdown_operations.clone(),
                         self.session.clone(),
+                        None,
                     )
                     .await?;
 
@@ -279,6 +280,7 @@ impl Database for LanceNamespaceDatabase {
             self.read_consistency_interval,
             self.pushdown_operations.clone(),
             self.session.clone(),
+            request.reference,
         )
         .await?;
 
@@ -353,6 +355,7 @@ mod tests {
     use super::*;
     use crate::connect_namespace;
     use crate::query::ExecutableQuery;
+    use crate::table::Reference;
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
@@ -562,6 +565,229 @@ mod tests {
         // Verify namespace and id
         assert_eq!(opened_table.namespace(), &["test_ns"]);
         assert_eq!(opened_table.id(), "test_ns$describe_test");
+    }
+
+    #[tokio::test]
+    async fn test_namespace_ref_modes() {
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        let table = conn
+            .create_table("ref_test", create_test_data())
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+        table
+            .add(create_test_data())
+            .execute()
+            .await
+            .expect("Failed to append data");
+
+        let mut tags = table.tags().await.expect("Failed to open tags");
+        tags.create("main-v2", 2)
+            .await
+            .expect("Failed to create tag");
+        table
+            .create_branch("feature-a", None)
+            .await
+            .expect("Failed to create branch");
+
+        let feature_table = conn
+            .open_table("ref_test")
+            .namespace(vec!["test_ns".into()])
+            .branch("feature-a")
+            .execute()
+            .await
+            .expect("Failed to open feature branch");
+        feature_table
+            .add(create_test_data())
+            .execute()
+            .await
+            .expect("Failed to append feature branch data");
+
+        let version_table = conn
+            .open_table("ref_test")
+            .namespace(vec!["test_ns".into()])
+            .version(2)
+            .execute()
+            .await
+            .expect("Failed to open version 2");
+        assert_eq!(version_table.count_rows(None).await.unwrap(), 10);
+
+        let tag_table = conn
+            .open_table("ref_test")
+            .namespace(vec!["test_ns".into()])
+            .tag("main-v2")
+            .execute()
+            .await
+            .expect("Failed to open tagged version");
+        assert_eq!(tag_table.count_rows(None).await.unwrap(), 10);
+
+        let branch_table = conn
+            .open_table("ref_test")
+            .namespace(vec!["test_ns".into()])
+            .branch("feature-a")
+            .execute()
+            .await
+            .expect("Failed to open latest feature branch");
+        assert_eq!(branch_table.count_rows(None).await.unwrap(), 15);
+
+        let branch_version_table = conn
+            .open_table("ref_test")
+            .namespace(vec!["test_ns".into()])
+            .branch("feature-a")
+            .version_number(2)
+            .execute()
+            .await
+            .expect("Failed to open feature branch version");
+        assert_eq!(branch_version_table.count_rows(None).await.unwrap(), 10);
+
+        branch_table
+            .checkout(2)
+            .await
+            .expect("Failed to checkout feature branch version");
+        assert_eq!(branch_table.count_rows(None).await.unwrap(), 10);
+
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .server_side_query(true)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        let table = conn
+            .create_table("ref_test", create_test_data())
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+        table
+            .add(create_test_data())
+            .execute()
+            .await
+            .expect("Failed to append data");
+
+        let mut tags = table.tags().await.expect("Failed to open tags");
+        tags.create("main-v2", 2)
+            .await
+            .expect("Failed to create tag");
+        table
+            .create_branch("feature-a", None)
+            .await
+            .expect("Failed to create branch");
+
+        let version_result = conn
+            .open_table("ref_test")
+            .namespace(vec!["test_ns".into()])
+            .version(2)
+            .execute()
+            .await;
+        assert!(matches!(
+            version_result,
+            Err(crate::Error::NotSupported { .. })
+        ));
+
+        let tag_result = conn
+            .open_table("ref_test")
+            .namespace(vec!["test_ns".into()])
+            .tag("main-v2")
+            .execute()
+            .await;
+        assert!(matches!(tag_result, Err(crate::Error::NotSupported { .. })));
+
+        let branch_result = conn
+            .open_table("ref_test")
+            .namespace(vec!["test_ns".into()])
+            .branch("feature-a")
+            .execute()
+            .await;
+        assert!(matches!(
+            branch_result,
+            Err(crate::Error::NotSupported { .. })
+        ));
+
+        let opened_table = conn
+            .open_table("ref_test")
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to reopen table");
+
+        let direct_version_checkout_result = opened_table.checkout(1).await;
+        assert!(matches!(
+            direct_version_checkout_result,
+            Err(crate::Error::NotSupported { .. })
+        ));
+
+        let direct_tag_checkout_result = opened_table.checkout_tag("main-v2").await;
+        assert!(matches!(
+            direct_tag_checkout_result,
+            Err(crate::Error::NotSupported { .. })
+        ));
+
+        let version_checkout_result = opened_table.checkout_ref(Reference::VersionNumber(1)).await;
+        assert!(matches!(
+            version_checkout_result,
+            Err(crate::Error::NotSupported { .. })
+        ));
+
+        let tag_checkout_result = opened_table
+            .checkout_ref(Reference::Tag("main-v2".to_string()))
+            .await;
+        assert!(matches!(
+            tag_checkout_result,
+            Err(crate::Error::NotSupported { .. })
+        ));
+
+        let branch_result = opened_table
+            .checkout_ref(Reference::Branch {
+                branch: "feature-a".to_string(),
+                version: None,
+            })
+            .await;
+        assert!(matches!(
+            branch_result,
+            Err(crate::Error::NotSupported { .. })
+        ));
+
+        let pinned_branch_result = opened_table
+            .checkout_ref(Reference::Branch {
+                branch: "feature-a".to_string(),
+                version: Some(1),
+            })
+            .await;
+        assert!(matches!(
+            pinned_branch_result,
+            Err(crate::Error::NotSupported { .. })
+        ));
     }
 
     #[tokio::test]

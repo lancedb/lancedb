@@ -61,6 +61,7 @@ export {
   Connection,
   CreateTableOptions,
   TableNamesOptions,
+  OpenTableRefOptions,
   OpenTableOptions,
 } from "./connection";
 
@@ -103,6 +104,11 @@ export {
   UpdateOptions,
   OptimizeOptions,
   Version,
+  CheckoutReference,
+  Reference,
+  BranchIdentifier,
+  BranchContents,
+  CurrentRef,
   ColumnAlteration,
 } from "./table";
 

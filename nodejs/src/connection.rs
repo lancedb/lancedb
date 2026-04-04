@@ -11,6 +11,7 @@ use napi_derive::*;
 use crate::ConnectionOptions;
 use crate::error::NapiErrorExt;
 use crate::header::JsHeaderProvider;
+use crate::reference::parse_version;
 use crate::table::Table;
 use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection};
 
@@ -201,6 +202,10 @@ impl Connection {
         namespace_path: Option<Vec<String>>,
         storage_options: Option<HashMap<String, String>>,
         index_cache_size: Option<u32>,
+        version: Option<i64>,
+        tag: Option<String>,
+        branch_name: Option<String>,
+        branch_version_number: Option<i64>,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.open_table(&name);
 
@@ -214,7 +219,37 @@ impl Connection {
         if let Some(index_cache_size) = index_cache_size {
             builder = builder.index_cache_size(index_cache_size);
         }
-        let tbl = builder.execute().await.default_error()?;
+        let tbl = match (version, tag, branch_name, branch_version_number) {
+            (Some(version), None, None, None) => builder
+                .version(parse_version(version, "version")?)
+                .execute()
+                .await
+                .default_error()?,
+            (None, Some(tag), None, None) => builder.tag(tag).execute().await.default_error()?,
+            (None, None, Some(branch_name), branch_version_number) => {
+                let builder = builder.branch(branch_name);
+                if let Some(version_number) = branch_version_number {
+                    builder
+                        .version_number(parse_version(version_number, "branch versionNumber")?)
+                        .execute()
+                        .await
+                        .default_error()?
+                } else {
+                    builder.execute().await.default_error()?
+                }
+            }
+            (None, None, None, None) => builder.execute().await.default_error()?,
+            (None, None, None, Some(_)) => {
+                return Err(napi::Error::from_reason(
+                    "branch versionNumber requires branch name",
+                ));
+            }
+            _ => {
+                return Err(napi::Error::from_reason(
+                    "version, tag, and branch are mutually exclusive",
+                ));
+            }
+        };
         Ok(Table::new(tbl))
     }
 

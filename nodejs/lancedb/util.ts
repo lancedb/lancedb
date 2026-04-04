@@ -45,6 +45,29 @@ export function packBits(data: Array<number>): Array<number> {
   return packed;
 }
 
+export function assertValidVersionNumber(
+  value: unknown,
+  fieldName: string,
+): asserts value is number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 0
+  ) {
+    throw new Error(`${fieldName} must be a non-negative integer`);
+  }
+}
+
+export function assertValidSelectorName(
+  value: unknown,
+  fieldName: string,
+): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${fieldName} must be a non-empty string`);
+  }
+}
+
 export class TTLCache {
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   private readonly cache: Map<string, { value: any; expires: number }>;

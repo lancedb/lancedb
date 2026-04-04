@@ -79,28 +79,26 @@ pub(crate) async fn execute_update(
     update: UpdateBuilder,
 ) -> Result<UpdateResult> {
     table.dataset.ensure_mutable()?;
-
-    // 1. Snapshot the current dataset
     let dataset = table.dataset.get().await?;
 
-    // 2. Initialize the Lance Core builder
+    // 1. Initialize the Lance Core builder
     let mut builder = LanceUpdateBuilder::new(dataset);
 
-    // 3. Apply the filter (WHERE clause)
+    // 2. Apply the filter (WHERE clause)
     if let Some(predicate) = update.filter {
         builder = builder.update_where(&predicate)?;
     }
 
-    // 4. Apply the columns (SET clause)
+    // 3. Apply the columns (SET clause)
     for (column, value) in update.columns {
         builder = builder.set(column, &value)?;
     }
 
-    // 5. Execute the operation (Write new files)
+    // 4. Execute the operation (Write new files)
     let operation = builder.build()?;
     let res = operation.execute().await?;
 
-    // 6. Update the table's view of the latest version
+    // 5. Update the table's view of the latest version
     table.dataset.update(res.new_dataset.as_ref().clone());
 
     Ok(UpdateResult {

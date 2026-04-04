@@ -70,6 +70,29 @@ impl DatasetConsistencyWrapper {
         }
     }
 
+    /// Create a new wrapper pinned to the current dataset version.
+    pub fn new_time_travel(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
+        let pinned_version = dataset.version().version;
+        let dataset = Arc::new(dataset);
+        let consistency = match read_consistency_interval {
+            Some(d) if d == Duration::ZERO => ConsistencyMode::Strong,
+            Some(d) => {
+                let refresh_window = std::cmp::min(std::time::Duration::from_secs(3), d / 4);
+                let cache = BackgroundCache::new(d, refresh_window);
+                cache.seed(dataset.clone());
+                ConsistencyMode::Eventual(cache)
+            }
+            None => ConsistencyMode::Lazy,
+        };
+        Self {
+            state: Arc::new(Mutex::new(DatasetState {
+                dataset,
+                pinned_version: Some(pinned_version),
+            })),
+            consistency,
+        }
+    }
+
     /// Get the current dataset.
     ///
     /// Behavior depends on the consistency mode:
@@ -132,11 +155,6 @@ impl DatasetConsistencyWrapper {
         }
     }
 
-    /// Checkout a branch and track its HEAD for new versions.
-    pub async fn as_branch(&self, _branch: impl Into<String>) -> Result<()> {
-        todo!("Branch support not yet implemented")
-    }
-
     /// Check that the dataset is in a mutable mode (Latest).
     pub fn ensure_mutable(&self) -> Result<()> {
         let state = self.state.lock()?;
@@ -185,16 +203,24 @@ impl DatasetConsistencyWrapper {
 
     pub async fn as_time_travel(&self, target_version: impl Into<refs::Ref>) -> Result<()> {
         let target_ref = target_version.into();
+        if matches!(target_ref, refs::Ref::Version(_, _)) {
+            return Err(Error::InvalidInput {
+                message:
+                    "branch-qualified time travel is not supported on an existing table handle"
+                        .to_string(),
+            });
+        }
 
         let (should_checkout, dataset) = {
             let state = self.state.lock()?;
             let should = match state.pinned_version {
                 None => true,
                 Some(version) => match &target_ref {
-                    refs::Ref::Version(_, Some(target_ver)) => version != *target_ver,
-                    refs::Ref::Version(_, None) => true,
                     refs::Ref::VersionNumber(target_ver) => version != *target_ver,
                     refs::Ref::Tag(_) => true,
+                    refs::Ref::Version(_, _) => unreachable!(
+                        "branch-qualified refs are rejected before time travel state checks"
+                    ),
                 },
             };
             (should, state.dataset.clone())
@@ -406,6 +432,27 @@ mod tests {
 
         wrapper.as_time_travel(1u64).await.unwrap();
         assert_eq!(wrapper.time_travel_version(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_branch_time_travel_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        create_test_dataset(uri).await;
+        let mut ds = append_to_dataset(uri).await;
+        ds.create_branch("feature-a", 2u64, None).await.unwrap();
+
+        let wrapper = DatasetConsistencyWrapper::new_latest(ds, None);
+        let err = wrapper
+            .as_time_travel(("feature-a", 2u64))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message
+                    == "branch-qualified time travel is not supported on an existing table handle"
+        ));
     }
 
     #[tokio::test]

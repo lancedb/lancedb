@@ -301,6 +301,29 @@ Return true if the connection has not been closed
 
 ### openTable()
 
+#### openTable(name, options)
+
+```ts
+abstract openTable(name, options?): Promise<Table>
+```
+
+Open a table in the database.
+
+##### Parameters
+
+* **name**: `string`
+    The name of the table
+
+* **options?**: `Partial`&lt;[`OpenTableOptions`](../interfaces/OpenTableOptions.md)&gt;
+    Additional options. Use
+    `options.ref.branchName` to open a non-main branch.
+
+##### Returns
+
+`Promise`&lt;[`Table`](Table.md)&gt;
+
+#### openTable(name, namespace, options)
+
 ```ts
 abstract openTable(
    name,
@@ -310,7 +333,7 @@ abstract openTable(
 
 Open a table in the database.
 
-#### Parameters
+##### Parameters
 
 * **name**: `string`
     The name of the table
@@ -319,9 +342,10 @@ Open a table in the database.
     The namespace path of the table (defaults to root namespace)
 
 * **options?**: `Partial`&lt;[`OpenTableOptions`](../interfaces/OpenTableOptions.md)&gt;
-    Additional options
+    Additional options. Use
+    `options.ref.branchName` to open a non-main branch.
 
-#### Returns
+##### Returns
 
 `Promise`&lt;[`Table`](Table.md)&gt;
 

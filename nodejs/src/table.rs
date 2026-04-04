@@ -15,6 +15,7 @@ use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
+use crate::reference::{JsBranchReference, parse_optional_reference, parse_version};
 use crate::util::schema_to_buffer;
 
 #[napi]
@@ -348,7 +349,7 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn checkout(&self, version: i64) -> napi::Result<()> {
         self.inner_ref()?
-            .checkout(version as u64)
+            .checkout(parse_version(version, "version")?)
             .await
             .default_error()
     }
@@ -398,6 +399,51 @@ impl Table {
         Ok(Tags {
             inner: self.inner_ref()?.clone(),
         })
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn create_branch(
+        &self,
+        branch: String,
+        from: Option<Either3<i64, String, JsBranchReference>>,
+    ) -> napi::Result<()> {
+        let reference = parse_optional_reference(from)?;
+
+        self.inner_ref()?
+            .create_branch(branch.as_str(), reference)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn delete_branch(&self, branch: String) -> napi::Result<()> {
+        self.inner_ref()?
+            .delete_branch(branch.as_str())
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_branches(&self) -> napi::Result<HashMap<String, BranchContents>> {
+        self.inner_ref()?
+            .list_branches()
+            .await
+            .map(|branches| {
+                branches
+                    .into_iter()
+                    .map(|(name, contents)| (name, contents.into()))
+                    .collect()
+            })
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn current_ref(&self) -> napi::Result<CurrentRef> {
+        self.inner_ref()?
+            .current_ref()
+            .await
+            .map(Into::into)
+            .default_error()
     }
 
     #[napi(catch_unwind)]
@@ -738,6 +784,65 @@ pub struct Version {
     pub version: i64,
     pub timestamp: i64,
     pub metadata: HashMap<String, String>,
+}
+
+#[napi(object)]
+pub struct BranchIdentifierEntry {
+    pub version: i64,
+    pub id: String,
+}
+
+#[napi(object)]
+pub struct BranchIdentifier {
+    pub version_mapping: Vec<BranchIdentifierEntry>,
+}
+
+#[napi(object)]
+pub struct BranchContents {
+    pub parent_branch: Option<String>,
+    pub identifier: BranchIdentifier,
+    pub parent_version: i64,
+    pub created_at: i64,
+    pub manifest_size: i64,
+}
+
+impl From<lancedb::table::BranchContents> for BranchContents {
+    fn from(value: lancedb::table::BranchContents) -> Self {
+        Self {
+            parent_branch: value.parent_branch,
+            identifier: BranchIdentifier {
+                version_mapping: value
+                    .identifier
+                    .version_mapping
+                    .into_iter()
+                    .map(|(version, id)| BranchIdentifierEntry {
+                        version: version as i64,
+                        id,
+                    })
+                    .collect(),
+            },
+            parent_version: value.parent_version as i64,
+            created_at: value.created_at as i64,
+            manifest_size: value.manifest_size as i64,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct CurrentRef {
+    pub version: i64,
+    pub branch: Option<String>,
+    pub tags: Vec<String>,
+}
+
+impl From<lancedb::table::CurrentRef> for CurrentRef {
+    fn from(value: lancedb::table::CurrentRef) -> Self {
+        Self {
+            version: value.version as i64,
+            branch: value.branch,
+            tags: value.tags,
+        }
+    }
 }
 
 #[napi(object)]
