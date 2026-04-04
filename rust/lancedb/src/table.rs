@@ -1502,14 +1502,7 @@ impl NativeTable {
             e => e.into(),
         })?;
 
-        let dataset = match reference {
-            Some(Reference::Version(_, None)) | None => {
-                DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval)
-            }
-            Some(_) => {
-                DatasetConsistencyWrapper::new_time_travel(dataset, read_consistency_interval)
-            }
-        };
+        let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
         let id = Self::build_id(&namespace, name);
 
         Ok(Self {
@@ -1701,14 +1694,7 @@ impl NativeTable {
             })?;
 
         let uri = dataset.uri().to_string();
-        let dataset = match reference {
-            Some(Reference::Version(_, None)) | None => {
-                DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval)
-            }
-            Some(_) => {
-                DatasetConsistencyWrapper::new_time_travel(dataset, read_consistency_interval)
-            }
-        };
+        let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
         let id = Self::build_id(&namespace, name);
 
         let stored_namespace_client =

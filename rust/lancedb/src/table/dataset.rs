@@ -70,29 +70,6 @@ impl DatasetConsistencyWrapper {
         }
     }
 
-    /// Create a new wrapper pinned to the current dataset version.
-    pub fn new_time_travel(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
-        let pinned_version = dataset.version().version;
-        let dataset = Arc::new(dataset);
-        let consistency = match read_consistency_interval {
-            Some(d) if d == Duration::ZERO => ConsistencyMode::Strong,
-            Some(d) => {
-                let refresh_window = std::cmp::min(std::time::Duration::from_secs(3), d / 4);
-                let cache = BackgroundCache::new(d, refresh_window);
-                cache.seed(dataset.clone());
-                ConsistencyMode::Eventual(cache)
-            }
-            None => ConsistencyMode::Lazy,
-        };
-        Self {
-            state: Arc::new(Mutex::new(DatasetState {
-                dataset,
-                pinned_version: Some(pinned_version),
-            })),
-            consistency,
-        }
-    }
-
     /// Get the current dataset.
     ///
     /// Behavior depends on the consistency mode:
