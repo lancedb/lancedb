@@ -1783,6 +1783,11 @@ it("handles branch refs", async () => {
       expect(await openedTable.currentRef()).toEqual(expected);
     }
 
+    const nullRefTable = await conn.openTable("my_table", {
+      ref: null as any,
+    });
+    expect(await nullRefTable.currentRef()).toEqual(mainRef);
+
     const featureTable = await conn.openTable("my_table", {
       ref: { branchName: "feature-a" },
     });
@@ -1932,6 +1937,12 @@ it("handles branch refs", async () => {
     await mockTable.createBranch("feature-a");
     expect(captured).toEqual({
       name: "feature-a",
+      from: null,
+    });
+
+    await mockTable.createBranch("null-from", { from: null as any });
+    expect(captured).toEqual({
+      name: "null-from",
       from: null,
     });
 

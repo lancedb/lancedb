@@ -353,7 +353,7 @@ function normalizeOpenTableSelector(
   options?: Partial<OpenTableOptions>,
 ): TableReference | null {
   const ref = options?.ref;
-  if (ref === undefined) {
+  if (ref == null) {
     return null;
   }
 

@@ -1025,7 +1025,7 @@ export class LocalTable extends Table {
     const from = options?.from;
     if (typeof from === "number") {
       assertValidVersionNumber(from, "version");
-    } else if (from !== undefined && typeof from !== "string") {
+    } else if (from != null && typeof from !== "string") {
       assertValidSelectorName(from.branch, "from.branch");
       if (from.version !== undefined) {
         assertValidVersionNumber(from.version, "branch version");
