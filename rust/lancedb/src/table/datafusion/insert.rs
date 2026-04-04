@@ -87,7 +87,7 @@ pub struct InsertExec {
 }
 
 impl InsertExec {
-    pub(crate) fn new(
+    pub fn new(
         ds_wrapper: DatasetConsistencyWrapper,
         dataset: Arc<Dataset>,
         input: Arc<dyn ExecutionPlan>,
