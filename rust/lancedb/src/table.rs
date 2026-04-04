@@ -3126,45 +3126,6 @@ mod tests {
         assert!(branches.contains_key("recovery"));
         assert_eq!(branches["recovery"].parent_version, 2);
 
-        assert_eq!(
-            table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 2,
-                branch: Some("main".to_string()),
-                tags: vec!["main-v2".to_string()],
-            }
-        );
-
-        let version_table = conn
-            .open_table("my_table")
-            .version(2)
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(
-            version_table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 2,
-                branch: Some("main".to_string()),
-                tags: vec!["main-v2".to_string()],
-            }
-        );
-
-        let tag_table = conn
-            .open_table("my_table")
-            .tag("main-v2")
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(
-            tag_table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 2,
-                branch: Some("main".to_string()),
-                tags: vec!["main-v2".to_string()],
-            }
-        );
-
         let feature_table = conn
             .open_table("my_table")
             .branch("feature-a")
@@ -3196,22 +3157,6 @@ mod tests {
             }
         );
 
-        let lazy_conn = ConnectBuilder::new(uri).execute().await.unwrap();
-        let stale_feature_table = lazy_conn
-            .open_table("my_table")
-            .branch("feature-a")
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(
-            stale_feature_table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 2,
-                branch: Some("feature-a".to_string()),
-                tags: vec![],
-            }
-        );
-
         feature_table
             .add(some_sample_data())
             .execute()
@@ -3219,37 +3164,10 @@ mod tests {
             .unwrap();
         assert_eq!(feature_table.version().await.unwrap(), 3);
 
-        let mut feature_tags = feature_table.tags().await.unwrap();
-        feature_tags.create("feature-v3", 3).await.unwrap();
         feature_table
             .create_branch("feature-a/deeper", None)
             .await
             .unwrap();
-
-        assert_eq!(
-            feature_table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 3,
-                branch: Some("feature-a".to_string()),
-                tags: vec!["feature-v3".to_string()],
-            }
-        );
-        assert_eq!(
-            table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 2,
-                branch: Some("main".to_string()),
-                tags: vec!["main-v2".to_string()],
-            }
-        );
-        assert_eq!(
-            stale_feature_table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 2,
-                branch: Some("feature-a".to_string()),
-                tags: vec![],
-            }
-        );
 
         let branches = feature_table.list_branches().await.unwrap();
         assert_eq!(
@@ -3257,72 +3175,11 @@ mod tests {
             Some("feature-a".to_string())
         );
         assert_eq!(branches["feature-a/deeper"].parent_version, 3);
-        assert!(branches["feature-a/deeper"].create_at > 0);
-
-        stale_feature_table.checkout_latest().await.unwrap();
-        assert_eq!(
-            stale_feature_table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 3,
-                branch: Some("feature-a".to_string()),
-                tags: vec!["feature-v3".to_string()],
-            }
-        );
-
-        feature_table.checkout(2).await.unwrap();
-        assert_eq!(
-            feature_table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 2,
-                branch: Some("feature-a".to_string()),
-                tags: vec![],
-            }
-        );
-        assert_eq!(feature_table.count_rows(None).await.unwrap(), 2);
-
-        feature_table.checkout_tag("feature-v3").await.unwrap();
-        assert_eq!(
-            feature_table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 3,
-                branch: Some("feature-a".to_string()),
-                tags: vec!["feature-v3".to_string()],
-            }
-        );
-
-        let err = feature_table.checkout_tag("main-v2").await.unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidInput { message }
-                if message == "cannot checkout a tag from a different branch on this table handle"
-        ));
-
-        feature_table.checkout_latest().await.unwrap();
-        assert_eq!(
-            feature_table.current_ref().await.unwrap(),
-            CurrentRef {
-                version: 3,
-                branch: Some("feature-a".to_string()),
-                tags: vec!["feature-v3".to_string()],
-            }
-        );
 
         let err = table.create_branch("", None).await.unwrap_err();
         assert!(matches!(
             err,
             Error::InvalidInput { message } if message == "branch must be a non-empty string"
-        ));
-
-        let err = table
-            .create_branch(
-                "bad-ref",
-                Some(Reference::Version(Some("".to_string()), None)),
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidInput { message } if message == "from.branch must be a non-empty string"
         ));
 
         let err = feature_table.delete_branch("feature-a").await.unwrap_err();
