@@ -1644,8 +1644,7 @@ impl NativeTable {
             Self::validate_branch_name(branch, "from.branch")?;
         }
 
-        let dataset = self.dataset.get().await?;
-        let mut dataset = (*dataset).clone();
+        let mut dataset = (*self.dataset.get().await?).clone();
         let current_branch = dataset
             .manifest()
             .branch
@@ -1663,7 +1662,7 @@ impl NativeTable {
 
     pub async fn delete_branch(&self, branch: &str) -> Result<()> {
         Self::validate_branch_name(branch, "branch")?;
-        let dataset = self.dataset.get().await?;
+        let mut dataset = (*self.dataset.get().await?).clone();
         let current_branch = dataset
             .manifest()
             .branch
@@ -1674,7 +1673,6 @@ impl NativeTable {
                 message: "cannot delete the currently checked out branch".to_string(),
             });
         }
-        let mut dataset = (*dataset).clone();
         dataset.delete_branch(branch).await?;
         Ok(())
     }
@@ -2079,8 +2077,7 @@ impl NativeTable {
         right_on: &str,
     ) -> Result<()> {
         self.dataset.ensure_mutable()?;
-        let dataset = self.dataset.get().await?;
-        let mut dataset = (*dataset).clone();
+        let mut dataset = (*self.dataset.get().await?).clone();
         dataset.merge(batches, left_on, right_on).await?;
         self.dataset.update(dataset);
         Ok(())
@@ -2403,8 +2400,7 @@ impl NativeTable {
     /// using V2 manifest paths.
     pub async fn migrate_manifest_paths_v2(&self) -> Result<()> {
         self.dataset.ensure_mutable()?;
-        let dataset = self.dataset.get().await?;
-        let mut dataset = (*dataset).clone();
+        let mut dataset = (*self.dataset.get().await?).clone();
         dataset.migrate_manifest_paths_v2().await?;
         self.dataset.update(dataset);
         Ok(())
@@ -2422,8 +2418,7 @@ impl NativeTable {
         upsert_values: impl IntoIterator<Item = (String, String)>,
     ) -> Result<()> {
         self.dataset.ensure_mutable()?;
-        let dataset = self.dataset.get().await?;
-        let mut dataset = (*dataset).clone();
+        let mut dataset = (*self.dataset.get().await?).clone();
         dataset.update_config(upsert_values).await?;
         self.dataset.update(dataset);
         Ok(())
@@ -2432,8 +2427,7 @@ impl NativeTable {
     /// Delete keys from the config
     pub async fn delete_config_keys(&self, delete_keys: &[&str]) -> Result<()> {
         self.dataset.ensure_mutable()?;
-        let dataset = self.dataset.get().await?;
-        let mut dataset = (*dataset).clone();
+        let mut dataset = (*self.dataset.get().await?).clone();
         // TODO: update this when we implement metadata APIs
         #[allow(deprecated)]
         dataset.delete_config_keys(delete_keys).await?;
@@ -2447,8 +2441,7 @@ impl NativeTable {
         upsert_values: impl IntoIterator<Item = (String, String)>,
     ) -> Result<()> {
         self.dataset.ensure_mutable()?;
-        let dataset = self.dataset.get().await?;
-        let mut dataset = (*dataset).clone();
+        let mut dataset = (*self.dataset.get().await?).clone();
         // TODO: update this when we implement metadata APIs
         #[allow(deprecated)]
         dataset.replace_schema_metadata(upsert_values).await?;
@@ -2468,8 +2461,7 @@ impl NativeTable {
         new_values: impl IntoIterator<Item = (u32, HashMap<String, String>)>,
     ) -> Result<()> {
         self.dataset.ensure_mutable()?;
-        let dataset = self.dataset.get().await?;
-        let mut dataset = (*dataset).clone();
+        let mut dataset = (*self.dataset.get().await?).clone();
         dataset.replace_field_metadata(new_values).await?;
         self.dataset.update(dataset);
         Ok(())
@@ -2667,8 +2659,7 @@ impl BaseTable for NativeTable {
         let index_type = self.get_index_type_for_field(field, &opts.index);
         let columns = [field.name().as_str()];
         self.dataset.ensure_mutable()?;
-        let dataset = self.dataset.get().await?;
-        let mut dataset = (*dataset).clone();
+        let mut dataset = (*self.dataset.get().await?).clone();
         let mut builder = dataset
             .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
             .train(opts.train)
@@ -2684,8 +2675,7 @@ impl BaseTable for NativeTable {
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {
         self.dataset.ensure_mutable()?;
-        let dataset = self.dataset.get().await?;
-        let mut dataset = (*dataset).clone();
+        let mut dataset = (*self.dataset.get().await?).clone();
         dataset.drop_index(index_name).await?;
         self.dataset.update(dataset);
         Ok(())

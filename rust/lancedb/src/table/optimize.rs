@@ -105,8 +105,7 @@ pub struct OptimizeStats {
 pub(crate) async fn optimize_indices(table: &NativeTable, options: &OptimizeOptions) -> Result<()> {
     info!("LanceDB: optimizing indices: {:?}", options);
     table.dataset.ensure_mutable()?;
-    let dataset = table.dataset.get().await?;
-    let mut dataset = (*dataset).clone();
+    let mut dataset = (*table.dataset.get().await?).clone();
     dataset.optimize_indices(options).await?;
     table.dataset.update(dataset);
     Ok(())
@@ -152,8 +151,7 @@ pub(crate) async fn compact_files_impl(
     remap_options: Option<Arc<dyn IndexRemapperOptions>>,
 ) -> Result<CompactionMetrics> {
     table.dataset.ensure_mutable()?;
-    let dataset = table.dataset.get().await?;
-    let mut dataset = (*dataset).clone();
+    let mut dataset = (*table.dataset.get().await?).clone();
     let metrics = compact_files(&mut dataset, options, remap_options).await?;
     table.dataset.update(dataset);
     Ok(metrics)

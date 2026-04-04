@@ -53,8 +53,7 @@ pub(crate) async fn execute_add_columns(
     read_columns: Option<Vec<String>>,
 ) -> Result<AddColumnsResult> {
     table.dataset.ensure_mutable()?;
-    let dataset = table.dataset.get().await?;
-    let mut dataset = (*dataset).clone();
+    let mut dataset = (*table.dataset.get().await?).clone();
     dataset.add_columns(transforms, read_columns, None).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
@@ -69,8 +68,7 @@ pub(crate) async fn execute_alter_columns(
     alterations: &[ColumnAlteration],
 ) -> Result<AlterColumnsResult> {
     table.dataset.ensure_mutable()?;
-    let dataset = table.dataset.get().await?;
-    let mut dataset = (*dataset).clone();
+    let mut dataset = (*table.dataset.get().await?).clone();
     dataset.alter_columns(alterations).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
@@ -85,8 +83,7 @@ pub(crate) async fn execute_drop_columns(
     columns: &[&str],
 ) -> Result<DropColumnsResult> {
     table.dataset.ensure_mutable()?;
-    let dataset = table.dataset.get().await?;
-    let mut dataset = (*dataset).clone();
+    let mut dataset = (*table.dataset.get().await?).clone();
     dataset.drop_columns(columns).await?;
     let version = dataset.version().version;
     table.dataset.update(dataset);
