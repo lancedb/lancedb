@@ -1092,23 +1092,6 @@ impl Table {
         self.inner.checkout_tag(tag).await
     }
 
-    /// Checks out a specific table reference.
-    ///
-    /// This supports version numbers and tags on the current branch timeline.
-    /// Branch switching is not supported on an existing table handle. To read a
-    /// different branch, open a new table with
-    /// [`crate::connection::OpenTableBuilder::branch`].
-    pub async fn checkout_ref(&self, reference: Reference) -> Result<()> {
-        self.reject_server_side_reference_checkout()?;
-        match reference {
-            Reference::VersionNumber(version) => self.checkout(version).await,
-            Reference::Tag(tag) => self.checkout_tag(tag.as_str()).await,
-            Reference::Version(_, _) => Err(Error::InvalidInput {
-                message: "branch checkout is not supported on an existing table handle; reopen the target branch instead".to_string(),
-            }),
-        }
-    }
-
     /// Ensures the table is pointing at the latest version of the current branch.
     ///
     /// This can be used to manually update a table when the read_consistency_interval is None
@@ -1539,38 +1522,6 @@ impl NativeTable {
             namespace_client,
             pushdown_operations,
         })
-    }
-
-    pub async fn checkout_ref(&self, reference: Reference) -> Result<()> {
-        if self
-            .pushdown_operations
-            .contains(&PushdownOperation::QueryTable)
-            && self.namespace_client.is_some()
-        {
-            return Err(Error::NotSupported {
-                message: "Reference checkout is not supported for namespace-backed tables when server-side query is enabled".to_string(),
-            });
-        }
-
-        match reference {
-            Reference::VersionNumber(version) => self.dataset.as_time_travel(version).await,
-            Reference::Tag(tag) => {
-                let dataset = self.dataset.get().await?;
-                let current_branch = dataset.manifest().branch.clone();
-                let tag_contents = dataset.tags().get(tag.as_str()).await?;
-                if tag_contents.branch != current_branch {
-                    return Err(Error::InvalidInput {
-                        message:
-                            "cannot checkout a tag from a different branch on this table handle"
-                                .to_string(),
-                    });
-                }
-                self.dataset.as_time_travel(tag.as_str()).await
-            }
-            Reference::Version(_, _) => Err(Error::InvalidInput {
-                message: "branch checkout is not supported on an existing table handle; reopen the target branch instead".to_string(),
-            }),
-        }
     }
 
     pub async fn create_branch(&self, branch: &str, from: Option<Reference>) -> Result<()> {
@@ -3369,28 +3320,6 @@ mod tests {
                 tags: vec!["feature-v3".to_string()],
             }
         );
-
-        let err = table
-            .checkout_ref(Reference::Version(Some("feature-a".to_string()), None))
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidInput { message }
-                if message
-                    == "branch checkout is not supported on an existing table handle; reopen the target branch instead"
-        ));
-
-        let err = table
-            .checkout_ref(Reference::Version(None, Some(2)))
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidInput { message }
-                if message
-                    == "branch checkout is not supported on an existing table handle; reopen the target branch instead"
-        ));
 
         let err = table.create_branch("", None).await.unwrap_err();
         assert!(matches!(

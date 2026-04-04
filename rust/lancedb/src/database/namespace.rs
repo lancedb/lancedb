@@ -355,7 +355,6 @@ mod tests {
     use super::*;
     use crate::connect_namespace;
     use crate::query::ExecutableQuery;
-    use crate::table::Reference;
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use futures::TryStreamExt;
@@ -753,33 +752,15 @@ mod tests {
             Err(crate::Error::NotSupported { .. })
         ));
 
-        let version_checkout_result = opened_table.checkout_ref(Reference::VersionNumber(1)).await;
+        let version_checkout_result = opened_table.checkout(1).await;
         assert!(matches!(
             version_checkout_result,
             Err(crate::Error::NotSupported { .. })
         ));
 
-        let tag_checkout_result = opened_table
-            .checkout_ref(Reference::Tag("main-v2".to_string()))
-            .await;
+        let tag_checkout_result = opened_table.checkout_tag("main-v2").await;
         assert!(matches!(
             tag_checkout_result,
-            Err(crate::Error::NotSupported { .. })
-        ));
-
-        let branch_result = opened_table
-            .checkout_ref(Reference::Version(Some("feature-a".to_string()), None))
-            .await;
-        assert!(matches!(
-            branch_result,
-            Err(crate::Error::NotSupported { .. })
-        ));
-
-        let pinned_branch_result = opened_table
-            .checkout_ref(Reference::Version(Some("feature-a".to_string()), Some(1)))
-            .await;
-        assert!(matches!(
-            pinned_branch_result,
             Err(crate::Error::NotSupported { .. })
         ));
     }
