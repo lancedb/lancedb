@@ -822,7 +822,7 @@ impl From<lancedb::table::BranchContents> for BranchContents {
                     .collect(),
             },
             parent_version: value.parent_version as i64,
-            created_at: value.created_at as i64,
+            created_at: value.create_at as i64,
             manifest_size: value.manifest_size as i64,
         }
     }

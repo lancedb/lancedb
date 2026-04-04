@@ -84,7 +84,9 @@ pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
 pub use chrono::Duration;
 pub use delete::DeleteResult;
 use futures::future::join_all;
-pub use lance::dataset::refs::{MAIN_BRANCH, TagContents, Tags as LanceTags};
+pub use lance::dataset::refs::{
+    BranchContents, BranchIdentifier, MAIN_BRANCH, Ref as Reference, TagContents, Tags as LanceTags,
+};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::statistics::DatasetStatisticsExt;
 use lance_index::frag_reuse::FRAG_REUSE_INDEX_NAME;
@@ -93,79 +95,6 @@ pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
 pub use schema_evolution::{AddColumnsResult, AlterColumnsResult, DropColumnsResult};
 use serde_with::skip_serializing_none;
 pub use update::{UpdateBuilder, UpdateResult};
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Reference {
-    VersionNumber(u64),
-    Tag(String),
-    Branch {
-        branch: String,
-        version: Option<u64>,
-    },
-}
-
-impl From<u64> for Reference {
-    fn from(value: u64) -> Self {
-        Self::VersionNumber(value)
-    }
-}
-
-impl From<String> for Reference {
-    fn from(value: String) -> Self {
-        Self::Tag(value)
-    }
-}
-
-impl From<&str> for Reference {
-    fn from(value: &str) -> Self {
-        Self::Tag(value.to_string())
-    }
-}
-
-impl From<Reference> for lance::dataset::refs::Ref {
-    fn from(value: Reference) -> Self {
-        match value {
-            Reference::VersionNumber(version) => Self::VersionNumber(version),
-            Reference::Tag(tag) => Self::Tag(tag),
-            Reference::Branch { branch, version } => Self::Version(
-                if branch == MAIN_BRANCH {
-                    None
-                } else {
-                    Some(branch)
-                },
-                version,
-            ),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BranchIdentifier {
-    pub version_mapping: Vec<(u64, String)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BranchContents {
-    pub parent_branch: Option<String>,
-    pub identifier: BranchIdentifier,
-    pub parent_version: u64,
-    pub created_at: u64,
-    pub manifest_size: usize,
-}
-
-impl From<lance::dataset::refs::BranchContents> for BranchContents {
-    fn from(value: lance::dataset::refs::BranchContents) -> Self {
-        Self {
-            parent_branch: value.parent_branch,
-            identifier: BranchIdentifier {
-                version_mapping: value.identifier.version_mapping,
-            },
-            parent_version: value.parent_version,
-            created_at: value.create_at,
-            manifest_size: value.manifest_size,
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentRef {
@@ -1107,7 +1036,9 @@ impl Table {
 
     fn reject_server_side_reference_checkout(&self) -> Result<()> {
         if let Some(native) = self.inner.as_native()
-            && native.server_side_query_enabled
+            && native
+                .pushdown_operations
+                .contains(&PushdownOperation::QueryTable)
             && native.namespace_client.is_some()
         {
             return Err(Error::NotSupported {
@@ -1172,7 +1103,7 @@ impl Table {
         match reference {
             Reference::VersionNumber(version) => self.checkout(version).await,
             Reference::Tag(tag) => self.checkout_tag(tag.as_str()).await,
-            Reference::Branch { .. } => Err(Error::InvalidInput {
+            Reference::Version(_, _) => Err(Error::InvalidInput {
                 message: "branch checkout is not supported on an existing table handle; reopen the target branch instead".to_string(),
             }),
         }
@@ -1487,7 +1418,7 @@ impl NativeTable {
             None,
             None,
             None,
-            false,
+            HashSet::new(),
             None,
             None,
         )
@@ -1574,8 +1505,8 @@ impl NativeTable {
             builder = match reference {
                 Reference::VersionNumber(version) => builder.with_version(version),
                 Reference::Tag(tag) => builder.with_tag(tag.as_str()),
-                Reference::Branch { branch, version } => {
-                    builder.with_branch(branch.as_str(), version)
+                Reference::Version(branch, version) => {
+                    builder.with_branch(branch.as_deref().unwrap_or(MAIN_BRANCH), version)
                 }
             };
         }
@@ -1589,7 +1520,7 @@ impl NativeTable {
         })?;
 
         let dataset = match reference {
-            Some(Reference::Branch { version: None, .. }) | None => {
+            Some(Reference::Version(_, None)) | None => {
                 DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval)
             }
             Some(_) => {
@@ -1611,7 +1542,11 @@ impl NativeTable {
     }
 
     pub async fn checkout_ref(&self, reference: Reference) -> Result<()> {
-        if self.server_side_query_enabled && self.namespace_client.is_some() {
+        if self
+            .pushdown_operations
+            .contains(&PushdownOperation::QueryTable)
+            && self.namespace_client.is_some()
+        {
             return Err(Error::NotSupported {
                 message: "Reference checkout is not supported for namespace-backed tables when server-side query is enabled".to_string(),
             });
@@ -1632,7 +1567,7 @@ impl NativeTable {
                 }
                 self.dataset.as_time_travel(tag.as_str()).await
             }
-            Reference::Branch { .. } => Err(Error::InvalidInput {
+            Reference::Version(_, _) => Err(Error::InvalidInput {
                 message: "branch checkout is not supported on an existing table handle; reopen the target branch instead".to_string(),
             }),
         }
@@ -1640,7 +1575,7 @@ impl NativeTable {
 
     pub async fn create_branch(&self, branch: &str, from: Option<Reference>) -> Result<()> {
         Self::validate_branch_name(branch, "branch")?;
-        if let Some(Reference::Branch { branch, .. }) = from.as_ref() {
+        if let Some(Reference::Version(Some(branch), _)) = from.as_ref() {
             Self::validate_branch_name(branch, "from.branch")?;
         }
 
@@ -1650,10 +1585,10 @@ impl NativeTable {
             .branch
             .clone()
             .unwrap_or_else(|| MAIN_BRANCH.to_string());
-        let current_reference = Reference::Branch {
-            branch: current_branch,
-            version: None,
-        };
+        let current_reference = Reference::Version(
+            (current_branch != MAIN_BRANCH).then_some(current_branch),
+            None,
+        );
         dataset
             .create_branch(branch, from.unwrap_or(current_reference), None)
             .await?;
@@ -1679,12 +1614,7 @@ impl NativeTable {
 
     pub async fn list_branches(&self) -> Result<HashMap<String, BranchContents>> {
         let dataset = self.dataset.get().await?;
-        Ok(dataset
-            .list_branches()
-            .await?
-            .into_iter()
-            .map(|(name, contents)| (name, contents.into()))
-            .collect())
+        dataset.list_branches().await.map_err(Into::into)
     }
 
     pub async fn current_ref(&self) -> Result<CurrentRef> {
@@ -1778,7 +1708,7 @@ impl NativeTable {
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());
 
-        if server_side_query_enabled && reference.is_some() {
+        if pushdown_operations.contains(&PushdownOperation::QueryTable) && reference.is_some() {
             return Err(Error::NotSupported {
                 message: "Opening a namespace-backed table at a specific reference is not supported when server-side query is enabled".to_string(),
             });
@@ -1799,8 +1729,8 @@ impl NativeTable {
             match reference {
                 Reference::VersionNumber(version) => builder.with_version(version),
                 Reference::Tag(tag) => builder.with_tag(tag.as_str()),
-                Reference::Branch { branch, version } => {
-                    builder.with_branch(branch.as_str(), version)
+                Reference::Version(branch, version) => {
+                    builder.with_branch(branch.as_deref().unwrap_or(MAIN_BRANCH), version)
                 }
             }
         } else {
@@ -1821,7 +1751,7 @@ impl NativeTable {
 
         let uri = dataset.uri().to_string();
         let dataset = match reference {
-            Some(Reference::Branch { version: None, .. }) | None => {
+            Some(Reference::Version(_, None)) | None => {
                 DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval)
             }
             Some(_) => {
@@ -3254,24 +3184,10 @@ mod tests {
         assert!(branches.contains_key("feature-a"));
         assert_eq!(branches["feature-a"].parent_branch, None);
         assert_eq!(branches["feature-a"].parent_version, 2);
-        assert!(branches["feature-a"].created_at > 0);
+        assert!(branches["feature-a"].create_at > 0);
         assert!(branches["feature-a"].manifest_size > 0);
-        assert_eq!(branches["feature-a"].identifier.version_mapping.len(), 1);
-        assert_eq!(branches["feature-a"].identifier.version_mapping[0].0, 2);
-        assert!(
-            !branches["feature-a"].identifier.version_mapping[0]
-                .1
-                .is_empty()
-        );
         assert!(branches.contains_key("recovery"));
-        assert_eq!(branches["recovery"].identifier.version_mapping.len(), 1);
-        assert_eq!(branches["recovery"].identifier.version_mapping[0].0, 2);
-        assert!(
-            !branches["recovery"].identifier.version_mapping[0]
-                .1
-                .is_empty()
-        );
-        let feature_a_identifier = branches["feature-a"].identifier.version_mapping.clone();
+        assert_eq!(branches["recovery"].parent_version, 2);
 
         assert_eq!(
             table.current_ref().await.unwrap(),
@@ -3400,23 +3316,11 @@ mod tests {
 
         let branches = feature_table.list_branches().await.unwrap();
         assert_eq!(
-            branches["feature-a/deeper"]
-                .identifier
-                .version_mapping
-                .iter()
-                .map(|(version, _)| *version)
-                .collect::<Vec<_>>(),
-            vec![2, 3]
+            branches["feature-a/deeper"].parent_branch,
+            Some("feature-a".to_string())
         );
-        assert_eq!(
-            branches["feature-a/deeper"].identifier.version_mapping[0].1,
-            feature_a_identifier[0].1
-        );
-        assert!(
-            !branches["feature-a/deeper"].identifier.version_mapping[1]
-                .1
-                .is_empty()
-        );
+        assert_eq!(branches["feature-a/deeper"].parent_version, 3);
+        assert!(branches["feature-a/deeper"].create_at > 0);
 
         stale_feature_table.checkout_latest().await.unwrap();
         assert_eq!(
@@ -3467,10 +3371,18 @@ mod tests {
         );
 
         let err = table
-            .checkout_ref(Reference::Branch {
-                branch: "feature-a".to_string(),
-                version: None,
-            })
+            .checkout_ref(Reference::Version(Some("feature-a".to_string()), None))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidInput { message }
+                if message
+                    == "branch checkout is not supported on an existing table handle; reopen the target branch instead"
+        ));
+
+        let err = table
+            .checkout_ref(Reference::Version(None, Some(2)))
             .await
             .unwrap_err();
         assert!(matches!(
@@ -3489,10 +3401,7 @@ mod tests {
         let err = table
             .create_branch(
                 "bad-ref",
-                Some(Reference::Branch {
-                    branch: "".to_string(),
-                    version: None,
-                }),
+                Some(Reference::Version(Some("".to_string()), None)),
             )
             .await
             .unwrap_err();

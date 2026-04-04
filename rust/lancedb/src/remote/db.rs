@@ -570,9 +570,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             });
         }
 
-        let identifier =
-            build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
-        let cache_key = build_cache_key(&request.name, &request.namespace);
+        let identifier = build_table_identifier(
+            &request.name,
+            &request.namespace_path,
+            &self.client.id_delimiter,
+        );
+        let cache_key = build_cache_key(&request.name, &request.namespace_path);
 
         // We describe the table to confirm it exists before moving on.
         if let Some(table) = self.table_cache.get(&cache_key).await {
@@ -588,17 +591,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let version = parse_server_version(&request_id, &rsp)?;
             let table_identifier = build_table_identifier(
                 &request.name,
-                &request.namespace,
+                &request.namespace_path,
                 &self.client.id_delimiter,
             );
             let table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 request.name.clone(),
-                request.namespace.clone(),
+                request.namespace_path.clone(),
                 table_identifier,
                 version,
             ));
-            let cache_key = build_cache_key(&request.name, &request.namespace);
+            let cache_key = build_cache_key(&request.name, &request.namespace_path);
             self.table_cache.insert(cache_key, table.clone()).await;
             Ok(table)
         }

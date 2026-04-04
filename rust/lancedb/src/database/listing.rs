@@ -951,8 +951,8 @@ impl Database for ListingDatabase {
             None,
             self.read_consistency_interval,
             request.namespace_client,
-            false, // server_side_query_enabled - listing database doesn't support server-side queries
-            None,  // managed_versioning - will be queried if namespace_client is provided
+            HashSet::new(),
+            None, // managed_versioning - will be queried if namespace_client is provided
             None,
         )
         .await?;

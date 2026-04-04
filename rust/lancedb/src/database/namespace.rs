@@ -671,7 +671,7 @@ mod tests {
         properties.insert("root".to_string(), root_path);
 
         let conn = connect_namespace("dir", properties)
-            .server_side_query(true)
+            .pushdown_operation(PushdownOperation::QueryTable)
             .execute()
             .await
             .expect("Failed to connect to namespace");
@@ -768,10 +768,7 @@ mod tests {
         ));
 
         let branch_result = opened_table
-            .checkout_ref(Reference::Branch {
-                branch: "feature-a".to_string(),
-                version: None,
-            })
+            .checkout_ref(Reference::Version(Some("feature-a".to_string()), None))
             .await;
         assert!(matches!(
             branch_result,
@@ -779,10 +776,7 @@ mod tests {
         ));
 
         let pinned_branch_result = opened_table
-            .checkout_ref(Reference::Branch {
-                branch: "feature-a".to_string(),
-                version: Some(1),
-            })
+            .checkout_ref(Reference::Version(Some("feature-a".to_string()), Some(1)))
             .await;
         assert!(matches!(
             pinned_branch_result,

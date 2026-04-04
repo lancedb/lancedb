@@ -22,13 +22,13 @@ pub fn parse_reference(reference: JsReference) -> napi::Result<Reference> {
     match reference {
         Either3::A(version) => Ok(Reference::VersionNumber(parse_version(version, "version")?)),
         Either3::B(tag) => Ok(Reference::Tag(tag)),
-        Either3::C(branch) => Ok(Reference::Branch {
-            branch: branch.branch,
-            version: branch
+        Either3::C(branch) => Ok(Reference::Version(
+            Some(branch.branch),
+            branch
                 .version
                 .map(|version| parse_version(version, "branch version"))
                 .transpose()?,
-        }),
+        )),
     }
 }
 

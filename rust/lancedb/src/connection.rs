@@ -300,10 +300,7 @@ impl OpenTableBuilder {
     /// selector again. Existing table handles do not support branch checkout.
     pub fn branch(self, branch: impl Into<String>) -> OpenTableBranchBuilder {
         OpenTableBranchBuilder {
-            builder: self.with_reference(Reference::Branch {
-                branch: branch.into(),
-                version: None,
-            }),
+            builder: self.with_reference(Reference::Version(Some(branch.into()), None)),
         }
     }
 }
@@ -312,13 +309,10 @@ impl OpenTableBranchBuilder {
     /// Pin the selected branch to a specific version number at open time.
     pub fn version_number(mut self, version: u64) -> Self {
         let branch = match self.builder.request.reference.take() {
-            Some(Reference::Branch { branch, .. }) => branch,
+            Some(Reference::Version(Some(branch), _)) => branch,
             _ => unreachable!("branch selector builder must carry a branch reference"),
         };
-        self.builder.request.reference = Some(Reference::Branch {
-            branch,
-            version: Some(version),
-        });
+        self.builder.request.reference = Some(Reference::Version(Some(branch), Some(version)));
         self
     }
 
