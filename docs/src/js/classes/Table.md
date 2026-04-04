@@ -113,11 +113,10 @@ containing the new version number of the table after altering the columns.
 ### checkout()
 
 ```ts
-abstract checkout(reference): Promise<void>
+abstract checkout(version): Promise<void>
 ```
 
-Checks out a specific version or tag on the current branch timeline.
-_This is an in-place operation._
+Checks out a specific version of the table _This is an in-place operation._
 
 This allows viewing previous versions of the table. If you wish to
 keep writing to the dataset starting from an old version, then use
@@ -126,16 +125,10 @@ the `restore` function.
 Calling this method will set the table into time-travel mode. If you
 wish to return to standard mode, call `checkoutLatest`.
 
-Branches are selected when opening the table with
-[Connection.openTable](Connection.md#opentable). To read a different branch, reopen the
-table with `ref.branchName`.
-
-Tags must belong to the same branch timeline as the current table handle.
-
 #### Parameters
 
-* **reference**: [`CheckoutReference`](../type-aliases/CheckoutReference.md)
-    The version number or tag to checkout
+* **version**: `string` \| `number`
+    The version to checkout, could be version number or tag
 
 #### Returns
 
@@ -154,7 +147,7 @@ console.log(await table.version()); // 1
 console.log(table.display());
 await table.add([{ vector: [0.5, 0.2], type: "vector" }]);
 await table.checkout(1);
-console.log(await table.version()); // 1
+console.log(await table.version()); // 2
 ```
 
 ***
@@ -168,7 +161,7 @@ abstract checkoutLatest(): Promise<void>
 Checkout the latest version of the table. _This is an in-place operation._
 
 The table will be set back into standard mode, and will track the latest
-version of the current branch timeline.
+version of the table.
 
 #### Returns
 
@@ -209,28 +202,6 @@ Count the total number of rows in the dataset.
 #### Returns
 
 `Promise`&lt;`number`&gt;
-
-***
-
-### createBranch()
-
-```ts
-abstract createBranch(name, options?): Promise<void>
-```
-
-Create a new branch for this table.
-
-#### Parameters
-
-* **name**: `string`
-
-* **options?**
-
-* **options.from?**: [`Reference`](../type-aliases/Reference.md)
-
-#### Returns
-
-`Promise`&lt;`void`&gt;
 
 ***
 
@@ -288,20 +259,6 @@ await table.createIndex("my_float_col");
 
 ***
 
-### currentRef()
-
-```ts
-abstract currentRef(): Promise<CurrentRef>
-```
-
-Get the current version / branch / tags for this table handle.
-
-#### Returns
-
-`Promise`&lt;[`CurrentRef`](../interfaces/CurrentRef.md)&gt;
-
-***
-
 ### delete()
 
 ```ts
@@ -320,24 +277,6 @@ Delete the rows that satisfy the predicate.
 
 A promise that resolves to an object
 containing the new version number of the table
-
-***
-
-### deleteBranch()
-
-```ts
-abstract deleteBranch(name): Promise<void>
-```
-
-Delete a branch from this table.
-
-#### Parameters
-
-* **name**: `string`
-
-#### Returns
-
-`Promise`&lt;`void`&gt;
 
 ***
 
@@ -483,20 +422,6 @@ Warning: This is an internal API and the return value is subject to change.
 `Promise`&lt;`undefined` \| `null` \| `Record`&lt;`string`, `string`&gt;&gt;
 
 The storage options, or undefined if no storage options were configured.
-
-***
-
-### listBranches()
-
-```ts
-abstract listBranches(): Promise<Record<string, BranchContents>>
-```
-
-List branches for this table.
-
-#### Returns
-
-`Promise`&lt;`Record`&lt;`string`, [`BranchContents`](../interfaces/BranchContents.md)&gt;&gt;
 
 ***
 
