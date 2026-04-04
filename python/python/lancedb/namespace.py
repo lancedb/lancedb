@@ -890,6 +890,20 @@ class LanceNamespaceDBConnection(DBConnection):
             pushdown_operations=self._pushdown_operations,
         )
 
+    @override
+    def namespace_client(self) -> LanceNamespace:
+        """Get the namespace client for this connection.
+
+        For namespace connections, this returns the backing namespace client
+        that was provided during construction.
+
+        Returns
+        -------
+        LanceNamespace
+            The namespace client for this connection.
+        """
+        return self._namespace_client
+
 
 class AsyncLanceNamespaceDBConnection:
     """
@@ -1386,6 +1400,19 @@ class AsyncLanceNamespaceDBConnection:
             tables=response.tables if response.tables else [],
             page_token=response.page_token,
         )
+
+    async def namespace_client(self) -> LanceNamespace:
+        """Get the namespace client for this connection.
+
+        For namespace connections, this returns the backing namespace client
+        that was provided during construction.
+
+        Returns
+        -------
+        LanceNamespace
+            The namespace client for this connection.
+        """
+        return self._namespace_client
 
 
 def connect_namespace(

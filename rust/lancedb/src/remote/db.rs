@@ -777,6 +777,32 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let namespace = builder.build();
         Ok(Arc::new(namespace) as Arc<dyn lance_namespace::LanceNamespace>)
     }
+
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
+        let mut properties = HashMap::new();
+        properties.insert("uri".to_string(), self.client.host().to_string());
+        properties.insert("delimiter".to_string(), self.client.id_delimiter.clone());
+        for (key, value) in &self.namespace_headers {
+            properties.insert(format!("header.{}", key), value.clone());
+        }
+        // Add TLS configuration if present
+        if let Some(tls_config) = &self.tls_config {
+            if let Some(cert_file) = &tls_config.cert_file {
+                properties.insert("tls.cert_file".to_string(), cert_file.clone());
+            }
+            if let Some(key_file) = &tls_config.key_file {
+                properties.insert("tls.key_file".to_string(), key_file.clone());
+            }
+            if let Some(ssl_ca_cert) = &tls_config.ssl_ca_cert {
+                properties.insert("tls.ssl_ca_cert".to_string(), ssl_ca_cert.clone());
+            }
+            properties.insert(
+                "tls.assert_hostname".to_string(),
+                tls_config.assert_hostname.to_string(),
+            );
+        }
+        Ok(("rest".to_string(), properties))
+    }
 }
 
 /// RemoteOptions contains a subset of StorageOptions that are compatible with Remote LanceDB connections

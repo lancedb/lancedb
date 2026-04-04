@@ -23,11 +23,13 @@ from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP
 from lance_namespace import (
+    LanceNamespace,
     ListNamespacesResponse,
     CreateNamespaceResponse,
     DropNamespaceResponse,
     DescribeNamespaceResponse,
     ListTablesResponse,
+    connect as namespace_connect,
 )
 
 from . import __version__
@@ -506,6 +508,26 @@ class DBConnection(EnforceOverrides):
     @property
     def uri(self) -> str:
         return self._uri
+
+    def namespace_client(self) -> LanceNamespace:
+        """Get the equivalent namespace client for this connection.
+
+        For native storage connections, this returns a DirectoryNamespace
+        pointing to the same root with the same storage options.
+
+        For namespace connections, this returns the backing namespace client.
+
+        For enterprise (remote) connections, this returns a RestNamespace
+        with the same URI and authentication headers.
+
+        Returns
+        -------
+        LanceNamespace
+            The namespace client for this connection.
+        """
+        raise NotImplementedError(
+            "namespace_client is not supported for this connection type"
+        )
 
 
 class LanceDBConnection(DBConnection):
@@ -1043,6 +1065,20 @@ class LanceDBConnection(DBConnection):
                 new_namespace_path=new_namespace_path,
             )
         )
+
+    @override
+    def namespace_client(self) -> LanceNamespace:
+        """Get the equivalent namespace client for this connection.
+
+        Returns a DirectoryNamespace pointing to the same root with the
+        same storage options.
+
+        Returns
+        -------
+        LanceNamespace
+            The namespace client for this connection.
+        """
+        return LOOP.run(self._conn.namespace_client())
 
     @deprecation.deprecated(
         deprecated_in="0.15.1",
@@ -1715,6 +1751,25 @@ class AsyncConnection(object):
         if namespace_path is None:
             namespace_path = []
         await self._inner.drop_all_tables(namespace_path=namespace_path)
+
+    async def namespace_client(self) -> LanceNamespace:
+        """Get the equivalent namespace client for this connection.
+
+        For native storage connections, this returns a DirectoryNamespace
+        pointing to the same root with the same storage options.
+
+        For namespace connections, this returns the backing namespace client.
+
+        For enterprise (remote) connections, this returns a RestNamespace
+        with the same URI and authentication headers.
+
+        Returns
+        -------
+        LanceNamespace
+            The namespace client for this connection.
+        """
+        config = await self._inner.namespace_client_config()
+        return namespace_connect(config["impl"], config["properties"])
 
     @deprecation.deprecated(
         deprecated_in="0.15.1",

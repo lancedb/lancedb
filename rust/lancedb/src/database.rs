@@ -265,4 +265,13 @@ pub trait Database:
     /// For ListingDatabase, it is the equivalent DirectoryNamespace.
     /// For RemoteDatabase, it is the equivalent RestNamespace.
     async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>>;
+
+    /// Get the configuration for constructing an equivalent namespace client.
+    /// Returns (impl_type, properties) where:
+    /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
+    /// - properties: configuration properties for the namespace
+    ///
+    /// This is useful for Python bindings where we want to return a Python
+    /// namespace object rather than a Rust trait object.
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)>;
 }
