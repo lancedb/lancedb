@@ -1034,20 +1034,6 @@ impl Table {
         self.inner.version().await
     }
 
-    fn reject_server_side_reference_checkout(&self) -> Result<()> {
-        if let Some(native) = self.inner.as_native()
-            && native
-                .pushdown_operations
-                .contains(&PushdownOperation::QueryTable)
-            && native.namespace_client.is_some()
-        {
-            return Err(Error::NotSupported {
-                message: "Reference checkout is not supported for namespace-backed tables when server-side query is enabled".to_string(),
-            });
-        }
-        Ok(())
-    }
-
     /// Checks out a specific version of the table on the current branch timeline.
     ///
     /// Any read operation on the table will now access the data at the checked out version.
@@ -1064,7 +1050,6 @@ impl Table {
     /// To return the table to the latest version of the current branch use
     /// [`Self::checkout_latest`].
     pub async fn checkout(&self, version: u64) -> Result<()> {
-        self.reject_server_side_reference_checkout()?;
         self.inner.checkout(version).await
     }
 
@@ -1088,7 +1073,6 @@ impl Table {
     /// To return the table to the latest version of the current branch use
     /// [`Self::checkout_latest`].
     pub async fn checkout_tag(&self, tag: &str) -> Result<()> {
-        self.reject_server_side_reference_checkout()?;
         self.inner.checkout_tag(tag).await
     }
 

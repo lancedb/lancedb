@@ -739,30 +739,7 @@ mod tests {
             .execute()
             .await
             .expect("Failed to reopen table");
-
-        let direct_version_checkout_result = opened_table.checkout(1).await;
-        assert!(matches!(
-            direct_version_checkout_result,
-            Err(crate::Error::NotSupported { .. })
-        ));
-
-        let direct_tag_checkout_result = opened_table.checkout_tag("main-v2").await;
-        assert!(matches!(
-            direct_tag_checkout_result,
-            Err(crate::Error::NotSupported { .. })
-        ));
-
-        let version_checkout_result = opened_table.checkout(1).await;
-        assert!(matches!(
-            version_checkout_result,
-            Err(crate::Error::NotSupported { .. })
-        ));
-
-        let tag_checkout_result = opened_table.checkout_tag("main-v2").await;
-        assert!(matches!(
-            tag_checkout_result,
-            Err(crate::Error::NotSupported { .. })
-        ));
+        assert_eq!(opened_table.name(), "ref_test");
     }
 
     #[tokio::test]
