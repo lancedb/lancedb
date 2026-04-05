@@ -2,32 +2,8 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::HashMap;
-use std::env;
 
 use napi_derive::*;
-
-const DEFAULT_USER_AGENT: &str = concat!("LanceDB-Node-Client/", env!("CARGO_PKG_VERSION"));
-
-/// Get the default user agent, checking environment variables.
-///
-/// The user agent is determined in the following order:
-/// 1. If LANCEDB_USER_AGENT_ENV_KEY is set, read the env var whose name
-///    is specified by that key
-/// 2. If LANCEDB_USER_AGENT is set, use that value directly
-/// 3. Fall back to the default "LanceDB-Node-Client/{version}"
-fn get_default_user_agent() -> String {
-    if let Ok(env_key) = env::var("LANCEDB_USER_AGENT_ENV_KEY")
-        && let Ok(user_agent) = env::var(&env_key)
-    {
-        return user_agent;
-    }
-
-    if let Ok(user_agent) = env::var("LANCEDB_USER_AGENT") {
-        return user_agent;
-    }
-
-    DEFAULT_USER_AGENT.to_string()
-}
 
 /// Timeout configuration for remote HTTP client.
 #[napi(object)]
@@ -109,11 +85,12 @@ pub struct TlsConfig {
 
 /// Configuration for the LanceDB Cloud HTTP client.
 ///
-/// The user_agent can also be configured via environment variables:
-/// - LANCEDB_USER_AGENT: directly specifies the user agent string
-/// - LANCEDB_USER_AGENT_ENV_KEY: specifies the name of another environment
-///   variable that contains the user agent string (takes precedence over
-///   LANCEDB_USER_AGENT)
+/// The `user_agent` field can be configured via environment variables when not
+/// explicitly set:
+/// - `LANCEDB_USER_AGENT_ENV_KEY`: specifies the name of another environment
+///   variable that contains the user agent string (takes precedence)
+/// - `LANCEDB_USER_AGENT`: directly specifies the user agent string
+/// - Falls back to "LanceDB-Node-Client/{version}"
 #[napi(object)]
 #[derive(Debug, Default)]
 pub struct ClientConfig {
@@ -164,10 +141,26 @@ impl From<TlsConfig> for lancedb::remote::TlsConfig {
     }
 }
 
+fn get_node_default_user_agent() -> String {
+    // Check env vars first for override
+    if let Ok(env_key) = std::env::var("LANCEDB_USER_AGENT_ENV_KEY")
+        && let Ok(user_agent) = std::env::var(&env_key)
+    {
+        return user_agent;
+    }
+    if let Ok(user_agent) = std::env::var("LANCEDB_USER_AGENT") {
+        return user_agent;
+    }
+    // Fall back to Node SDK-specific default
+    format!("LanceDB-Node-Client/{}", env!("CARGO_PKG_VERSION"))
+}
+
 impl From<ClientConfig> for lancedb::remote::ClientConfig {
     fn from(config: ClientConfig) -> Self {
         Self {
-            user_agent: config.user_agent.unwrap_or_else(get_default_user_agent),
+            user_agent: config
+                .user_agent
+                .unwrap_or_else(get_node_default_user_agent),
             retry_config: config.retry_config.map(Into::into).unwrap_or_default(),
             timeout_config: config.timeout_config.map(Into::into).unwrap_or_default(),
             extra_headers: config.extra_headers.unwrap_or_default(),

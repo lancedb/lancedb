@@ -7,13 +7,35 @@ use reqwest::{
     Body, Request, RequestBuilder, Response,
     header::{HeaderMap, HeaderValue},
 };
-use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashMap, env, future::Future, str::FromStr, sync::Arc, time::Duration};
 
 use crate::error::{Error, Result};
 use crate::remote::db::RemoteOptions;
 use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+const DEFAULT_USER_AGENT: &str = concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION"));
+
+/// Get the default user agent, checking environment variables.
+///
+/// The user agent is determined in the following order:
+/// 1. If `LANCEDB_USER_AGENT_ENV_KEY` is set, read the env var whose name
+///    is specified by that key
+/// 2. If `LANCEDB_USER_AGENT` is set, use that value directly
+/// 3. Fall back to the default "LanceDB-Rust-Client/{version}"
+fn get_default_user_agent() -> String {
+    if let Ok(env_key) = env::var("LANCEDB_USER_AGENT_ENV_KEY")
+        && let Ok(user_agent) = env::var(&env_key)
+    {
+        return user_agent;
+    }
+
+    if let Ok(user_agent) = env::var("LANCEDB_USER_AGENT") {
+        return user_agent;
+    }
+
+    DEFAULT_USER_AGENT.to_string()
+}
 
 /// Configuration for TLS/mTLS settings.
 #[derive(Clone, Debug, Default)]
@@ -40,8 +62,13 @@ pub trait HeaderProvider: Send + Sync + std::fmt::Debug {
 pub struct ClientConfig {
     pub timeout_config: TimeoutConfig,
     pub retry_config: RetryConfig,
-    /// User agent to use for requests. The default provides the library
-    /// name and version.
+    /// User agent to use for requests.
+    ///
+    /// The default is determined by environment variables:
+    /// 1. If `LANCEDB_USER_AGENT_ENV_KEY` is set, reads the env var whose name
+    ///    is specified by that key
+    /// 2. If `LANCEDB_USER_AGENT` is set, uses that value directly
+    /// 3. Falls back to "LanceDB-Rust-Client/{version}"
     pub user_agent: String,
     // TODO: how to configure request ids?
     pub extra_headers: HashMap<String, String>,
@@ -76,7 +103,7 @@ impl Default for ClientConfig {
         Self {
             timeout_config: TimeoutConfig::default(),
             retry_config: RetryConfig::default(),
-            user_agent: concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION")).into(),
+            user_agent: get_default_user_agent(),
             extra_headers: HashMap::new(),
             id_delimiter: None,
             tls_config: None,

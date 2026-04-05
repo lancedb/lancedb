@@ -11,6 +11,27 @@ from lancedb import __version__
 
 from .header import HeaderProvider
 
+
+def _get_default_user_agent() -> str:
+    """Get the default user agent, checking environment variables first.
+
+    Order of precedence:
+    1. LANCEDB_USER_AGENT_ENV_KEY - name of another env var to read
+    2. LANCEDB_USER_AGENT - direct value
+    3. Default SDK user agent
+    """
+    env_key = os.environ.get("LANCEDB_USER_AGENT_ENV_KEY")
+    if env_key:
+        user_agent = os.environ.get(env_key)
+        if user_agent:
+            return user_agent
+
+    user_agent = os.environ.get("LANCEDB_USER_AGENT")
+    if user_agent:
+        return user_agent
+
+    return f"LanceDB-Python-Client/{__version__}"
+
 __all__ = [
     "TimeoutConfig",
     "RetryConfig",
@@ -18,30 +39,6 @@ __all__ = [
     "ClientConfig",
     "HeaderProvider",
 ]
-
-_DEFAULT_USER_AGENT = f"LanceDB-Python-Client/{__version__}"
-
-
-def _get_default_user_agent() -> str:
-    """Get the default user agent, checking environment variables.
-
-    The user agent is determined in the following order:
-    1. If LANCEDB_USER_AGENT_ENV_KEY is set, read the env var whose name
-       is specified by that key
-    2. If LANCEDB_USER_AGENT is set, use that value directly
-    3. Fall back to the default "LanceDB-Python-Client/{version}"
-    """
-    env_key = os.environ.get("LANCEDB_USER_AGENT_ENV_KEY")
-    if env_key is not None:
-        user_agent = os.environ.get(env_key)
-        if user_agent is not None:
-            return user_agent
-
-    user_agent = os.environ.get("LANCEDB_USER_AGENT")
-    if user_agent is not None:
-        return user_agent
-
-    return _DEFAULT_USER_AGENT
 
 
 @dataclass
@@ -174,14 +171,13 @@ class ClientConfig:
 
     Attributes
     ----------
-    user_agent: str
-        The user agent string to use for HTTP requests. Default is
-        "LanceDB-Python-Client/{version}". This can also be set via environment
-        variables:
-        - LANCEDB_USER_AGENT: directly specifies the user agent string
+    user_agent: Optional[str]
+        The user agent string to use for HTTP requests. If not set, the default
+        is determined in the following order:
         - LANCEDB_USER_AGENT_ENV_KEY: specifies the name of another environment
-          variable that contains the user agent string (takes precedence over
-          LANCEDB_USER_AGENT)
+          variable that contains the user agent string (takes precedence)
+        - LANCEDB_USER_AGENT: directly specifies the user agent string
+        - Falls back to "LanceDB-Python-Client/{version}"
     retry_config: RetryConfig
         Configuration for retrying failed requests.
     timeout_config: Optional[TimeoutConfig]
@@ -196,7 +192,7 @@ class ClientConfig:
         A provider for dynamic HTTP headers.
     """
 
-    user_agent: str = _DEFAULT_USER_AGENT
+    user_agent: Optional[str] = None
     retry_config: RetryConfig = field(default_factory=RetryConfig)
     timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
     extra_headers: Optional[dict] = None
@@ -205,8 +201,7 @@ class ClientConfig:
     header_provider: Optional["HeaderProvider"] = None
 
     def __post_init__(self):
-        # If user_agent is the default, check environment variables
-        if self.user_agent == _DEFAULT_USER_AGENT:
+        if self.user_agent is None:
             self.user_agent = _get_default_user_agent()
         if isinstance(self.retry_config, dict):
             self.retry_config = RetryConfig(**self.retry_config)
