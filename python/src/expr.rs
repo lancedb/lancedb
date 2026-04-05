@@ -141,7 +141,7 @@ pub fn expr_col(name: &str) -> PyExpr {
 
 /// Create a literal value expression.
 ///
-/// Supported Python types: `bool`, `int`, `float`, `str`.
+/// Supported Python types: `bool`, `int`, `float`, `str`, `bytes`, `Decimal`.
 #[pyfunction]
 pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     // bool must be checked before int because bool is a subclass of int in Python
@@ -157,9 +157,25 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
     if let Ok(s) = value.extract::<String>() {
         return Ok(PyExpr(df_lit(s)));
     }
+    if let Ok(b) = value.extract::<Vec<u8>>() {
+        return Ok(PyExpr(df_lit(b)));
+    }
+
+    // Handle Decimal by converting to string to preserve precision
+    // We check if it's a decimal.Decimal instance
+    let type_name = value.get_type().name()?;
+    if type_name == "Decimal" {
+        let s = value.call_method0("__str__")?.extract::<String>()?;
+        // DataFusion's lit(String) creates a Utf8 literal.
+        // To get a true Decimal128, we'd need to parse it and know precision/scale.
+        // However, for now, passing it as a string that can be cast is the safest 
+        // way to avoid float precision loss during the FFI transition.
+        return Ok(PyExpr(df_lit(s)));
+    }
+
     Err(PyValueError::new_err(format!(
-        "unsupported literal type: {}. Supported: bool, int, float, str",
-        value.get_type().name()?
+        "unsupported literal type: {}. Supported: bool, int, float, str, bytes, Decimal",
+        type_name
     )))
 }
 
