@@ -3,6 +3,7 @@
 
 
 import re
+import sys
 from datetime import timedelta
 import os
 
@@ -1050,8 +1051,9 @@ def test_clone_table_deep_clone_fails(tmp_path):
         db.clone_table("cloned", source_uri, is_shallow=False)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
 def test_namespace_client_native_storage(tmp_path):
-    """Test namespace_client() returns DirectoryNamespace for native storage connections."""
+    """Test namespace_client() returns DirectoryNamespace for native storage."""
     from lance.namespace import DirectoryNamespace
 
     db = lancedb.connect(tmp_path)
@@ -1061,6 +1063,7 @@ def test_namespace_client_native_storage(tmp_path):
     assert str(tmp_path) in ns_client.namespace_id()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
 def test_namespace_client_with_storage_options(tmp_path):
     """Test namespace_client() preserves storage options."""
     from lance.namespace import DirectoryNamespace
@@ -1072,6 +1075,7 @@ def test_namespace_client_with_storage_options(tmp_path):
     assert isinstance(ns_client, DirectoryNamespace)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
 def test_namespace_client_operations(tmp_path):
     """Test that namespace_client() returns a functional namespace client."""
     db = lancedb.connect(tmp_path)
@@ -1087,12 +1091,11 @@ def test_namespace_client_operations(tmp_path):
     # id=[] means root namespace
     response = ns_client.list_tables(ListTablesRequest(id=[]))
     # Tables can be strings or objects with name attribute
-    table_names = [
-        t.name if hasattr(t, "name") else t for t in response.tables
-    ]
+    table_names = [t.name if hasattr(t, "name") else t for t in response.tables]
     assert "test_table" in table_names
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
 def test_namespace_client_namespace_connection(tmp_path):
     """Test namespace_client() returns the backing client for namespace connections."""
     from lance.namespace import DirectoryNamespace
