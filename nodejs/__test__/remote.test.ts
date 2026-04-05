@@ -476,6 +476,12 @@ describe("remote connection", () => {
     });
   });
 
+  // Note: User agent can be configured via environment variables:
+  // - LANCEDB_USER_AGENT: directly specifies the user agent string
+  // - LANCEDB_USER_AGENT_ENV_KEY: specifies another env var that contains the user agent
+  // These must be set BEFORE the Node.js process starts, as they are read by native code.
+  // Runtime modifications to process.env may not be visible to the Rust code.
+
   describe("header provider integration", () => {
     it("should work with TypeScript StaticHeaderProvider", async () => {
       let requestCount = 0;
