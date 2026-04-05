@@ -2471,6 +2471,11 @@ impl BaseTable for NativeTable {
                 return None;
             };
 
+            let Some(status) = stats.get("status").and_then(|v| v.as_str()) else {
+                log::warn!("Index statistics was missing 'status' field for index {} ({})", idx.name, idx.uuid);
+                return None;
+            };
+
             let index_type: crate::index::IndexType = match index_type.parse() {
                 Ok(index_type) => index_type,
                 Err(e) => {
@@ -2489,7 +2494,8 @@ impl BaseTable for NativeTable {
             }
 
             let name = idx.name.clone();
-            Some(IndexConfig { index_type, columns, name })
+            let status = status.to_string();
+            Some(IndexConfig { index_type, columns, name, status })
         }).collect::<Vec<_>>().await;
 
         Ok(results.into_iter().flatten().collect())
