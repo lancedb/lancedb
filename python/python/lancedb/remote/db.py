@@ -24,6 +24,7 @@ from ..common import DATA
 from ..db import DBConnection, LOOP
 from ..embeddings import EmbeddingFunctionConfig
 from lance_namespace import (
+    LanceNamespace,
     CreateNamespaceResponse,
     DescribeNamespaceResponse,
     DropNamespaceResponse,
@@ -569,6 +570,19 @@ class RemoteDBConnection(DBConnection):
                 new_namespace_path=new_namespace_path,
             )
         )
+
+    @override
+    def namespace_client(self) -> LanceNamespace:
+        """Get the equivalent namespace client for this connection.
+
+        Returns a RestNamespace with the same URI and authentication headers.
+
+        Returns
+        -------
+        LanceNamespace
+            The namespace client for this connection.
+        """
+        return LOOP.run(self._conn.namespace_client())
 
     async def close(self):
         """Close the connection to the database."""

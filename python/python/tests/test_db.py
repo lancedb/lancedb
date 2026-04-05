@@ -3,6 +3,7 @@
 
 
 import re
+import sys
 from datetime import timedelta
 import os
 
@@ -1048,3 +1049,59 @@ def test_clone_table_deep_clone_fails(tmp_path):
     source_uri = os.path.join(tmp_path, "source.lance")
     with pytest.raises(Exception, match="Deep clone is not yet implemented"):
         db.clone_table("cloned", source_uri, is_shallow=False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
+def test_namespace_client_native_storage(tmp_path):
+    """Test namespace_client() returns DirectoryNamespace for native storage."""
+    from lance.namespace import DirectoryNamespace
+
+    db = lancedb.connect(tmp_path)
+    ns_client = db.namespace_client()
+
+    assert isinstance(ns_client, DirectoryNamespace)
+    assert str(tmp_path) in ns_client.namespace_id()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
+def test_namespace_client_with_storage_options(tmp_path):
+    """Test namespace_client() preserves storage options."""
+    from lance.namespace import DirectoryNamespace
+
+    storage_options = {"timeout": "10s"}
+    db = lancedb.connect(tmp_path, storage_options=storage_options)
+    ns_client = db.namespace_client()
+
+    assert isinstance(ns_client, DirectoryNamespace)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
+def test_namespace_client_operations(tmp_path):
+    """Test that namespace_client() returns a functional namespace client."""
+    db = lancedb.connect(tmp_path)
+    ns_client = db.namespace_client()
+
+    # Create a table through the main db connection
+    data = [{"id": 1, "text": "hello", "vector": [1.0, 2.0]}]
+    db.create_table("test_table", data=data)
+
+    # Verify the namespace client can see the table
+    from lance_namespace import ListTablesRequest
+
+    # id=[] means root namespace
+    response = ns_client.list_tables(ListTablesRequest(id=[]))
+    # Tables can be strings or objects with name attribute
+    table_names = [t.name if hasattr(t, "name") else t for t in response.tables]
+    assert "test_table" in table_names
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Namespace client issues")
+def test_namespace_client_namespace_connection(tmp_path):
+    """Test namespace_client() returns the backing client for namespace connections."""
+    from lance.namespace import DirectoryNamespace
+
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    ns_client = db.namespace_client()
+
+    assert isinstance(ns_client, DirectoryNamespace)
+    assert str(tmp_path) in ns_client.namespace_id()

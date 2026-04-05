@@ -541,6 +541,16 @@ impl Connection {
         self.internal.namespace_client().await
     }
 
+    /// Get the configuration for constructing an equivalent namespace client.
+    /// Returns (impl_type, properties) where:
+    /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
+    /// - properties: configuration properties for the namespace
+    pub async fn namespace_client_config(
+        &self,
+    ) -> Result<(String, std::collections::HashMap<String, String>)> {
+        self.internal.namespace_client_config().await
+    }
+
     /// List tables with pagination support
     pub async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         self.internal.list_tables(request).await

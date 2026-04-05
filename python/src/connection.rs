@@ -474,6 +474,25 @@ impl Connection {
             })
         })
     }
+
+    /// Get the configuration for constructing an equivalent namespace client.
+    /// Returns a dict with:
+    /// - "impl": "dir" for DirectoryNamespace, "rest" for RestNamespace
+    /// - "properties": configuration properties for the namespace
+    #[pyo3(signature = ())]
+    pub fn namespace_client_config(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let py = self_.py();
+        future_into_py(py, async move {
+            let (impl_type, properties) = inner.namespace_client_config().await.infer_error()?;
+            Python::attach(|py| -> PyResult<Py<PyDict>> {
+                let dict = PyDict::new(py);
+                dict.set_item("impl", impl_type)?;
+                dict.set_item("properties", properties)?;
+                Ok(dict.unbind())
+            })
+        })
+    }
 }
 
 #[pyfunction]

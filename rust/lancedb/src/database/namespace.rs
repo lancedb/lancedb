@@ -45,6 +45,10 @@ pub struct LanceNamespaceDatabase {
     uri: String,
     // Operations to push down to the namespace server
     pushdown_operations: HashSet<PushdownOperation>,
+    // Namespace implementation type (e.g., "dir", "rest")
+    ns_impl: String,
+    // Namespace properties used to construct the namespace client
+    ns_properties: HashMap<String, String>,
 }
 
 impl LanceNamespaceDatabase {
@@ -74,6 +78,8 @@ impl LanceNamespaceDatabase {
             session,
             uri: format!("namespace://{}", ns_impl),
             pushdown_operations,
+            ns_impl: ns_impl.to_string(),
+            ns_properties,
         })
     }
 }
@@ -344,6 +350,10 @@ impl Database for LanceNamespaceDatabase {
 
     async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>> {
         Ok(self.namespace.clone())
+    }
+
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
+        Ok((self.ns_impl.clone(), self.ns_properties.clone()))
     }
 }
 

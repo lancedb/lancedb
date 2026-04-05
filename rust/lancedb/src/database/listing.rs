@@ -1099,6 +1099,15 @@ impl Database for ListingDatabase {
         })?;
         Ok(Arc::new(namespace) as Arc<dyn lance_namespace::LanceNamespace>)
     }
+
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), self.uri.clone());
+        for (key, value) in &self.storage_options {
+            properties.insert(format!("storage.{}", key), value.clone());
+        }
+        Ok(("dir".to_string(), properties))
+    }
 }
 
 #[cfg(test)]

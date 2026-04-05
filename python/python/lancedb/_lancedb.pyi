@@ -151,6 +151,9 @@ class Connection(object):
     async def drop_all_tables(
         self, namespace_path: Optional[List[str]] = None
     ) -> None: ...
+    async def namespace_client_config(
+        self,
+    ) -> Dict[str, Any]: ...
 
 class Table:
     def name(self) -> str: ...
