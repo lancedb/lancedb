@@ -116,15 +116,44 @@ class Expr:
         """Greater than or equal to (``col("x") >= 1``)."""
         return Expr(self._inner.gte(_coerce(other)._inner))
 
+    # Reverse comparison operators to allow literals on the left side
+    # e.g., 1 == col("x"), 10 < col("age")
+
+    def __req__(self, other: ExprLike) -> "Expr":
+        return Expr(_coerce(other)._inner.eq(self._inner))
+
+    def __rne__(self, other: ExprLike) -> "Expr":
+        return Expr(_coerce(other)._inner.ne(self._inner))
+
+    def __rlt__(self, other: ExprLike) -> "Expr":
+        return Expr(_coerce(other)._inner.lt(self._inner))
+
+    def __rle__(self, other: ExprLike) -> "Expr":
+        return Expr(_coerce(other)._inner.lte(self._inner))
+
+    def __rgt__(self, other: ExprLike) -> "Expr":
+        return Expr(_coerce(other)._inner.gt(self._inner))
+
+    def __rge__(self, other: ExprLike) -> "Expr":
+        return Expr(_coerce(other)._inner.gte(self._inner))
+
     # ── logical ──────────────────────────────────────────────────────────────
 
     def __and__(self, other: "Expr") -> "Expr":
         """Logical AND (``expr_a & expr_b``)."""
         return Expr(self._inner.and_(_coerce(other)._inner))
 
+    def __rand__(self, other: ExprLike) -> "Expr":
+        """Right-hand logical AND (``True & expr``)."""
+        return Expr(_coerce(other)._inner.and_(self._inner))
+
     def __or__(self, other: "Expr") -> "Expr":
         """Logical OR (``expr_a | expr_b``)."""
         return Expr(self._inner.or_(_coerce(other)._inner))
+
+    def __ror__(self, other: ExprLike) -> "Expr":
+        """Right-hand logical OR (``False | expr``)."""
+        return Expr(_coerce(other)._inner.or_(self._inner))
 
     def __invert__(self) -> "Expr":
         """Logical NOT (``~expr``)."""
@@ -285,23 +314,24 @@ def lit(
     >>> from datetime import date
     >>> col("created_at") == lit(date(2024, 1, 1))
     Expr((created_at = '2024-01-01'))
+
+    >>> # Binary literals support raw bytes (no UTF-8 requirement)
+    >>> col("data") == lit(b"\xff\xfe")
+    Expr((data = '0xfffe'))
+
+    >>> # Decimal literals preserve full precision (no float rounding)
+    >>> from decimal import Decimal
+    >>> col("price") > lit(Decimal("9.99"))
+    Expr((price > 9.99))
+
     """
 
-    # Normalize extended types before passing to expr_lit
+    # Normalize dates/datetimes to ISO strings for stable SQL parsing
     if isinstance(value, datetime):
         value = value.isoformat()
 
     elif isinstance(value, date):
         value = value.isoformat()
-
-    elif isinstance(value, bytes):
-        try:
-            value = value.decode("utf-8")
-        except UnicodeDecodeError:
-            raise ValueError("lit() only supports UTF-8 encoded bytes")
-
-    elif isinstance(value, Decimal):
-        value = float(value)
 
     return Expr(expr_lit(value))
 

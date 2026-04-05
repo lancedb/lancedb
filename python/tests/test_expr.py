@@ -51,26 +51,39 @@ class TestExprConstruction:
     def test_lit_date(self):
         e = lit(date(2024, 1, 1))
         assert isinstance(e, Expr)
+        # Verify it's formatted as a clear date literal in SQL
         assert "2024-01-01" in e.to_sql()
 
     def test_lit_datetime(self):
+        # Naive datetime
         e = lit(datetime(2024, 1, 1, 10, 0))
         assert isinstance(e, Expr)
         assert "2024-01-01" in e.to_sql()
 
-    def test_lit_bytes(self):
-        e = lit(b"hello")
-        assert isinstance(e, Expr)
-        assert "hello" in e.to_sql()
+    def test_lit_datetime_tz(self):
+        # Timezone-aware datetime
+        from datetime import timezone, timedelta
+        tz = timezone(timedelta(hours=5))
+        dt = datetime(2024, 1, 1, 10, 0, tzinfo=tz)
+        e = lit(dt)
+        # Should include the offset
+        assert "+05:00" in e.to_sql()
 
-    def test_lit_decimal(self):
-        e = lit(Decimal("10.5"))
+    def test_lit_bytes_raw(self):
+        # Non-UTF8 bytes should now work (no UnicodeDecodeError)
+        raw_data = b"\xff\xfe\x00\x01"
+        e = lit(raw_data)
         assert isinstance(e, Expr)
-        assert "10.5" in e.to_sql()
-    
-    def test_lit_bytes_non_utf8_raises(self):
-        with pytest.raises(ValueError, match="UTF-8"):
-            lit(b"\xff\xfe")
+        # DataFusion renders binary as hex string in SQL
+        assert "fffe0001" in e.to_sql().lower()
+
+    def test_lit_decimal_precision(self):
+        # High precision Decimal that would be rounded if converted to float
+        d = Decimal("1.234567890123456789")
+        e = lit(d)
+        assert isinstance(e, Expr)
+        # Verify the entire string is preserved in the SQL
+        assert "1.234567890123456789" in e.to_sql()
 
 
 class TestExprOperators:
@@ -261,6 +274,40 @@ class TestExprRepr:
         e = col("x")
         with pytest.raises(TypeError):
             {e: 1}
+
+
+class TestExprReflexive:
+    def test_reflexive_eq(self):
+        e = 1 == col("x")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(1 = x)"
+
+    def test_reflexive_ne(self):
+        e = 1 != col("x")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(1 <> x)"
+
+    def test_reflexive_lt(self):
+        # 1 < x  =>  (1 < x)
+        e = 1 < col("x")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(1 < x)"
+
+    def test_reflexive_gt(self):
+        # 1 > x  =>  (1 > x)
+        e = 1 > col("x")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(1 > x)"
+
+    def test_reflexive_and(self):
+        e = True & col("active")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(true AND active)"
+
+    def test_reflexive_or(self):
+        e = False | col("inactive")
+        assert isinstance(e, Expr)
+        assert e.to_sql() == "(false OR inactive)"
 
 
 # ── integration tests: end-to-end query against a real table ─────────────────
