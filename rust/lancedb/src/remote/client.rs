@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use http::HeaderName;
-use log::debug;
+use log::{debug, info};
 use reqwest::{
     Body, Request, RequestBuilder, Response,
     header::{HeaderMap, HeaderValue},
@@ -453,6 +453,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
 
         for (key, value) in &config.extra_headers {
+            info!("header: {}={}", key, value);
             let key_parsed = HeaderName::from_str(key).map_err(|_| Error::InvalidInput {
                 message: format!("non-ascii value for header '{}' provided", key),
             })?;
