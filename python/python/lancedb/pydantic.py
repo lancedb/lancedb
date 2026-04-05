@@ -10,6 +10,7 @@ import sys
 import types
 from abc import ABC, abstractmethod
 from datetime import date, datetime
+from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -314,6 +315,19 @@ def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
                 return pa.list_(pa.list_(tp.value_arrow_type(), tp.dim()))
             # For regular Vector
             return pa.list_(tp.value_arrow_type(), tp.dim())
+        if _safe_issubclass(tp, Enum):
+            # Map Enum to the Arrow type of its value.
+            # For string-valued enums, use dictionary encoding for efficiency.
+            # For integer enums, use the native type.
+            # Fall back to utf8 for mixed-type or empty enums.
+            value_types = {type(m.value) for m in tp}
+            if len(value_types) == 1:
+                value_type = value_types.pop()
+                if value_type is str:
+                    # Use dictionary encoding for string enums
+                    return pa.dictionary(pa.int32(), pa.utf8())
+                return _py_type_to_arrow_type(value_type, field)
+            return pa.utf8()
     return _py_type_to_arrow_type(tp, field)
 
 

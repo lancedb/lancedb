@@ -119,12 +119,12 @@ impl Connection {
     #[napi(catch_unwind)]
     pub async fn table_names(
         &self,
-        namespace: Vec<String>,
+        namespace_path: Option<Vec<String>>,
         start_after: Option<String>,
         limit: Option<u32>,
     ) -> napi::Result<Vec<String>> {
         let mut op = self.get_inner()?.table_names();
-        op = op.namespace(namespace);
+        op = op.namespace(namespace_path.unwrap_or_default());
         if let Some(start_after) = start_after {
             op = op.start_after(start_after);
         }
@@ -146,7 +146,7 @@ impl Connection {
         name: String,
         buf: Buffer,
         mode: String,
-        namespace: Vec<String>,
+        namespace_path: Option<Vec<String>>,
         storage_options: Option<HashMap<String, String>>,
     ) -> napi::Result<Table> {
         let batches = ipc_file_to_batches(buf.to_vec())
@@ -154,7 +154,7 @@ impl Connection {
         let mode = Self::parse_create_mode_str(&mode)?;
         let mut builder = self.get_inner()?.create_table(&name, batches).mode(mode);
 
-        builder = builder.namespace(namespace);
+        builder = builder.namespace(namespace_path.unwrap_or_default());
 
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
@@ -171,7 +171,7 @@ impl Connection {
         name: String,
         schema_buf: Buffer,
         mode: String,
-        namespace: Vec<String>,
+        namespace_path: Option<Vec<String>>,
         storage_options: Option<HashMap<String, String>>,
     ) -> napi::Result<Table> {
         let schema = ipc_file_to_schema(schema_buf.to_vec()).map_err(|e| {
@@ -183,7 +183,7 @@ impl Connection {
             .create_empty_table(&name, schema)
             .mode(mode);
 
-        builder = builder.namespace(namespace);
+        builder = builder.namespace(namespace_path.unwrap_or_default());
 
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
@@ -198,13 +198,13 @@ impl Connection {
     pub async fn open_table(
         &self,
         name: String,
-        namespace: Vec<String>,
+        namespace_path: Option<Vec<String>>,
         storage_options: Option<HashMap<String, String>>,
         index_cache_size: Option<u32>,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.open_table(&name);
 
-        builder = builder.namespace(namespace);
+        builder = builder.namespace(namespace_path.unwrap_or_default());
 
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
@@ -223,7 +223,7 @@ impl Connection {
         &self,
         target_table_name: String,
         source_uri: String,
-        target_namespace: Vec<String>,
+        target_namespace_path: Option<Vec<String>>,
         source_version: Option<i64>,
         source_tag: Option<String>,
         is_shallow: bool,
@@ -232,7 +232,7 @@ impl Connection {
             .get_inner()?
             .clone_table(&target_table_name, &source_uri);
 
-        builder = builder.target_namespace(target_namespace);
+        builder = builder.target_namespace(target_namespace_path.unwrap_or_default());
 
         if let Some(version) = source_version {
             builder = builder.source_version(version as u64);
@@ -250,18 +250,21 @@ impl Connection {
 
     /// Drop table with the name. Or raise an error if the table does not exist.
     #[napi(catch_unwind)]
-    pub async fn drop_table(&self, name: String, namespace: Vec<String>) -> napi::Result<()> {
+    pub async fn drop_table(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let ns = namespace_path.unwrap_or_default();
         self.get_inner()?
-            .drop_table(&name, &namespace)
+            .drop_table(&name, &ns)
             .await
             .default_error()
     }
 
     #[napi(catch_unwind)]
-    pub async fn drop_all_tables(&self, namespace: Vec<String>) -> napi::Result<()> {
-        self.get_inner()?
-            .drop_all_tables(&namespace)
-            .await
-            .default_error()
+    pub async fn drop_all_tables(&self, namespace_path: Option<Vec<String>>) -> napi::Result<()> {
+        let ns = namespace_path.unwrap_or_default();
+        self.get_inner()?.drop_all_tables(&ns).await.default_error()
     }
 }

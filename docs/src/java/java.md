@@ -14,7 +14,7 @@ Add the following dependency to your `pom.xml`:
 <dependency>
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-core</artifactId>
-    <version>0.27.2</version>
+    <version>0.28.0-beta.1</version>
 </dependency>
 ```
 
@@ -57,32 +57,32 @@ LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
 
 ## Metadata Operations
 
-### Creating a Namespace
+### Creating a Namespace Path
 
-Namespaces organize tables hierarchically. Create a namespace before creating tables within it:
+Namespace paths organize tables hierarchically. Create the desired namespace path before creating tables within it:
 
 ```java
 import org.lance.namespace.model.CreateNamespaceRequest;
 import org.lance.namespace.model.CreateNamespaceResponse;
 
-// Create a child namespace
+// Create a child namespace path
 CreateNamespaceRequest request = new CreateNamespaceRequest();
 request.setId(Arrays.asList("my_namespace"));
 
 CreateNamespaceResponse response = namespaceClient.createNamespace(request);
 ```
 
-You can also create nested namespaces:
+You can also create nested namespace paths:
 
 ```java
-// Create a nested namespace: parent/child
+// Create a nested namespace path: parent/child
 CreateNamespaceRequest request = new CreateNamespaceRequest();
 request.setId(Arrays.asList("parent_namespace", "child_namespace"));
 
 CreateNamespaceResponse response = namespaceClient.createNamespace(request);
 ```
 
-### Describing a Namespace
+### Describing a Namespace Path
 
 ```java
 import org.lance.namespace.model.DescribeNamespaceRequest;
@@ -95,22 +95,22 @@ DescribeNamespaceResponse response = namespaceClient.describeNamespace(request);
 System.out.println("Namespace properties: " + response.getProperties());
 ```
 
-### Listing Namespaces
+### Listing Namespace Paths
 
 ```java
 import org.lance.namespace.model.ListNamespacesRequest;
 import org.lance.namespace.model.ListNamespacesResponse;
 
-// List all namespaces at root level
+// List all namespace paths at the root level
 ListNamespacesRequest request = new ListNamespacesRequest();
 request.setId(Arrays.asList());  // Empty for root
 
 ListNamespacesResponse response = namespaceClient.listNamespaces(request);
 for (String ns : response.getNamespaces()) {
-    System.out.println("Namespace: " + ns);
+    System.out.println("Namespace path: " + ns);
 }
 
-// List child namespaces under a parent
+// List child namespace paths under a parent path
 ListNamespacesRequest childRequest = new ListNamespacesRequest();
 childRequest.setId(Arrays.asList("parent_namespace"));
 
@@ -123,7 +123,7 @@ ListNamespacesResponse childResponse = namespaceClient.listNamespaces(childReque
 import org.lance.namespace.model.ListTablesRequest;
 import org.lance.namespace.model.ListTablesResponse;
 
-// List tables in a namespace
+// List tables in a namespace path
 ListTablesRequest request = new ListTablesRequest();
 request.setId(Arrays.asList("my_namespace"));
 
@@ -133,7 +133,7 @@ for (String table : response.getTables()) {
 }
 ```
 
-### Dropping a Namespace
+### Dropping a Namespace Path
 
 ```java
 import org.lance.namespace.model.DropNamespaceRequest;
@@ -175,7 +175,7 @@ DropTableResponse response = namespaceClient.dropTable(request);
 
 ### Creating a Table
 
-Tables are created within a namespace by providing data in Apache Arrow IPC format:
+Tables are created within a namespace path by providing data in Apache Arrow IPC format:
 
 ```java
 import org.lance.namespace.LanceNamespace;
@@ -242,7 +242,7 @@ try (BufferAllocator allocator = new RootAllocator();
     }
     byte[] tableData = out.toByteArray();
 
-    // Create table in a namespace
+    // Create a table in a namespace path
     CreateTableRequest request = new CreateTableRequest();
     request.setId(Arrays.asList("my_namespace", "my_table"));
     CreateTableResponse response = namespaceClient.createTable(request, tableData);

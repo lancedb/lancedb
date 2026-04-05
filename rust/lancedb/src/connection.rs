@@ -101,9 +101,9 @@ impl TableNamesBuilder {
         self
     }
 
-    /// Set the namespace to list tables from
-    pub fn namespace(mut self, namespace: Vec<String>) -> Self {
-        self.request.namespace = namespace;
+    /// Set the namespace path to list tables from
+    pub fn namespace(mut self, namespace_path: Vec<String>) -> Self {
+        self.request.namespace_path = namespace_path;
         self
     }
 
@@ -131,7 +131,7 @@ impl OpenTableBuilder {
             parent,
             request: OpenTableRequest {
                 name,
-                namespace: vec![],
+                namespace_path: vec![],
                 index_cache_size: None,
                 lance_read_params: None,
                 location: None,
@@ -206,9 +206,9 @@ impl OpenTableBuilder {
         self
     }
 
-    /// Set the namespace for the table
-    pub fn namespace(mut self, namespace: Vec<String>) -> Self {
-        self.request.namespace = namespace;
+    /// Set the namespace path for the table
+    pub fn namespace(mut self, namespace_path: Vec<String>) -> Self {
+        self.request.namespace_path = namespace_path;
         self
     }
 
@@ -303,9 +303,9 @@ impl CloneTableBuilder {
         self
     }
 
-    /// Set the target namespace for the cloned table
-    pub fn target_namespace(mut self, namespace: Vec<String>) -> Self {
-        self.request.target_namespace = namespace;
+    /// Set the target namespace path for the cloned table
+    pub fn target_namespace(mut self, namespace_path: Vec<String>) -> Self {
+        self.request.target_namespace_path = namespace_path;
         self
     }
 
@@ -456,15 +456,15 @@ impl Connection {
         &self,
         old_name: impl AsRef<str>,
         new_name: impl AsRef<str>,
-        cur_namespace: &[String],
-        new_namespace: &[String],
+        cur_namespace_path: &[String],
+        new_namespace_path: &[String],
     ) -> Result<()> {
         self.internal
             .rename_table(
                 old_name.as_ref(),
                 new_name.as_ref(),
-                cur_namespace,
-                new_namespace,
+                cur_namespace_path,
+                new_namespace_path,
             )
             .await
     }
@@ -478,9 +478,11 @@ impl Connection {
     ///
     /// # Arguments
     /// * `name` - The name of the table to drop
-    /// * `namespace` - The namespace to drop the table from
-    pub async fn drop_table(&self, name: impl AsRef<str>, namespace: &[String]) -> Result<()> {
-        self.internal.drop_table(name.as_ref(), namespace).await
+    /// * `namespace_path` - The namespace path to drop the table from
+    pub async fn drop_table(&self, name: impl AsRef<str>, namespace_path: &[String]) -> Result<()> {
+        self.internal
+            .drop_table(name.as_ref(), namespace_path)
+            .await
     }
 
     /// Drop the database
@@ -494,9 +496,9 @@ impl Connection {
     /// Drops all tables in the database
     ///
     /// # Arguments
-    /// * `namespace` - The namespace to drop all tables from. Empty slice represents root namespace.
-    pub async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
-        self.internal.drop_all_tables(namespace).await
+    /// * `namespace_path` - The namespace path to drop all tables from. Empty slice represents root namespace.
+    pub async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()> {
+        self.internal.drop_all_tables(namespace_path).await
     }
 
     /// List immediate child namespace names in the given namespace
@@ -537,6 +539,16 @@ impl Connection {
     /// For RemoteDatabase, it is the equivalent RestNamespace.
     pub async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
         self.internal.namespace_client().await
+    }
+
+    /// Get the configuration for constructing an equivalent namespace client.
+    /// Returns (impl_type, properties) where:
+    /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
+    /// - properties: configuration properties for the namespace
+    pub async fn namespace_client_config(
+        &self,
+    ) -> Result<(String, std::collections::HashMap<String, String>)> {
+        self.internal.namespace_client_config().await
     }
 
     /// List tables with pagination support
@@ -862,6 +874,21 @@ pub fn connect(uri: &str) -> ConnectBuilder {
     ConnectBuilder::new(uri)
 }
 
+use std::collections::HashSet;
+
+/// Operations that can be pushed down to the namespace server.
+///
+/// These operations will be executed on the namespace server instead of locally
+/// when enabled via [`ConnectNamespaceBuilder::pushdown_operations`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PushdownOperation {
+    /// Execute queries on the namespace server via `query_table()` instead of locally.
+    QueryTable,
+    /// Execute table creation on the namespace server via `create_table()`
+    /// instead of using `declare_table` + local write.
+    CreateTable,
+}
+
 pub struct ConnectNamespaceBuilder {
     ns_impl: String,
     properties: HashMap<String, String>,
@@ -869,7 +896,7 @@ pub struct ConnectNamespaceBuilder {
     read_consistency_interval: Option<std::time::Duration>,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     session: Option<Arc<lance::session::Session>>,
-    server_side_query_enabled: bool,
+    pushdown_operations: HashSet<PushdownOperation>,
 }
 
 impl ConnectNamespaceBuilder {
@@ -881,7 +908,7 @@ impl ConnectNamespaceBuilder {
             read_consistency_interval: None,
             embedding_registry: None,
             session: None,
-            server_side_query_enabled: false,
+            pushdown_operations: HashSet::new(),
         }
     }
 
@@ -936,15 +963,30 @@ impl ConnectNamespaceBuilder {
         self
     }
 
-    /// Enable server-side query execution.
+    /// Add operations to push down to the namespace server.
     ///
-    /// When enabled, queries will be executed on the namespace server instead of
-    /// locally. This can improve performance by reducing data transfer and
-    /// leveraging server-side compute resources.
+    /// When operations are added, they will be executed on the namespace server
+    /// instead of locally. This can improve performance by reducing data transfer
+    /// and leveraging server-side compute resources.
     ///
-    /// Default is `false` (queries executed locally).
-    pub fn server_side_query(mut self, enabled: bool) -> Self {
-        self.server_side_query_enabled = enabled;
+    /// Available operations:
+    /// - [`PushdownOperation::QueryTable`]: Execute queries via `namespace.query_table()`
+    /// - [`PushdownOperation::CreateTable`]: Execute table creation via `namespace.create_table()`
+    ///
+    /// By default, no operations are pushed down (all executed locally).
+    pub fn pushdown_operation(mut self, operation: PushdownOperation) -> Self {
+        self.pushdown_operations.insert(operation);
+        self
+    }
+
+    /// Add multiple operations to push down to the namespace server.
+    ///
+    /// See [`Self::pushdown_operation`] for details.
+    pub fn pushdown_operations(
+        mut self,
+        operations: impl IntoIterator<Item = PushdownOperation>,
+    ) -> Self {
+        self.pushdown_operations.extend(operations);
         self
     }
 
@@ -959,7 +1001,7 @@ impl ConnectNamespaceBuilder {
                 self.storage_options,
                 self.read_consistency_interval,
                 self.session,
-                self.server_side_query_enabled,
+                self.pushdown_operations,
             )
             .await?,
         );

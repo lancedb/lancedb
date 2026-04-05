@@ -111,9 +111,9 @@ impl CreateTableBuilder {
         Ok(self)
     }
 
-    /// Set the namespace for the table
-    pub fn namespace(mut self, namespace: Vec<String>) -> Self {
-        self.request.namespace = namespace;
+    /// Set the namespace path for the table
+    pub fn namespace(mut self, namespace_path: Vec<String>) -> Self {
+        self.request.namespace_path = namespace_path;
         self
     }
 

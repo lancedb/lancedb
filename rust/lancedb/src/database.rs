@@ -40,8 +40,8 @@ pub trait DatabaseOptions {
 /// A request to list names of tables in the database (deprecated, use ListTablesRequest)
 #[derive(Clone, Debug, Default)]
 pub struct TableNamesRequest {
-    /// The namespace to list tables in. Empty list represents root namespace.
-    pub namespace: Vec<String>,
+    /// The namespace path to list tables in. Empty list represents root namespace.
+    pub namespace_path: Vec<String>,
     /// If present, only return names that come lexicographically after the supplied
     /// value.
     ///
@@ -56,8 +56,8 @@ pub struct TableNamesRequest {
 #[derive(Clone)]
 pub struct OpenTableRequest {
     pub name: String,
-    /// The namespace to open the table from. Empty list represents root namespace.
-    pub namespace: Vec<String>,
+    /// The namespace path to open the table from. Empty list represents root namespace.
+    pub namespace_path: Vec<String>,
     pub index_cache_size: Option<u32>,
     pub lance_read_params: Option<ReadParams>,
     /// Optional custom location for the table. If not provided, the database will
@@ -76,7 +76,7 @@ impl std::fmt::Debug for OpenTableRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenTableRequest")
             .field("name", &self.name)
-            .field("namespace", &self.namespace)
+            .field("namespace_path", &self.namespace_path)
             .field("index_cache_size", &self.index_cache_size)
             .field("lance_read_params", &self.lance_read_params)
             .field("location", &self.location)
@@ -115,8 +115,8 @@ impl CreateTableMode {
 pub struct CreateTableRequest {
     /// The name of the new table
     pub name: String,
-    /// The namespace to create the table in. Empty list represents root namespace.
-    pub namespace: Vec<String>,
+    /// The namespace path to create the table in. Empty list represents root namespace.
+    pub namespace_path: Vec<String>,
     /// Initial data to write to the table, can be empty.
     pub data: Box<dyn Scannable>,
     /// The mode to use when creating the table
@@ -135,7 +135,7 @@ impl CreateTableRequest {
     pub fn new(name: String, data: Box<dyn Scannable>) -> Self {
         Self {
             name,
-            namespace: vec![],
+            namespace_path: vec![],
             data,
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
@@ -155,8 +155,8 @@ impl CreateTableRequest {
 pub struct CloneTableRequest {
     /// The name of the target table to create
     pub target_table_name: String,
-    /// The namespace for the target table. Empty list represents root namespace.
-    pub target_namespace: Vec<String>,
+    /// The namespace path for the target table. Empty list represents root namespace.
+    pub target_namespace_path: Vec<String>,
     /// The URI of the source table to clone from.
     pub source_uri: String,
     /// Optional version of the source table to clone.
@@ -175,7 +175,7 @@ impl CloneTableRequest {
     pub fn new(target_table_name: String, source_uri: String) -> Self {
         Self {
             target_table_name,
-            target_namespace: vec![],
+            target_namespace_path: vec![],
             source_uri,
             source_version: None,
             source_tag: None,
@@ -251,13 +251,13 @@ pub trait Database:
         &self,
         cur_name: &str,
         new_name: &str,
-        cur_namespace: &[String],
-        new_namespace: &[String],
+        cur_namespace_path: &[String],
+        new_namespace_path: &[String],
     ) -> Result<()>;
     /// Drop a table in the database
-    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()>;
+    async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()>;
     /// Drop all tables in the database
-    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()>;
+    async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;
 
     /// Get the equivalent namespace client of this database
@@ -265,4 +265,13 @@ pub trait Database:
     /// For ListingDatabase, it is the equivalent DirectoryNamespace.
     /// For RemoteDatabase, it is the equivalent RestNamespace.
     async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>>;
+
+    /// Get the configuration for constructing an equivalent namespace client.
+    /// Returns (impl_type, properties) where:
+    /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
+    /// - properties: configuration properties for the namespace
+    ///
+    /// This is useful for Python bindings where we want to return a Python
+    /// namespace object rather than a Rust trait object.
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)>;
 }
