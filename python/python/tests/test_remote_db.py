@@ -1230,3 +1230,77 @@ def test_background_loop_cancellation(exception):
         with pytest.raises(exception):
             loop.run(None)
         mock_future.cancel.assert_called_once()
+
+
+class TestUserAgentEnvConfig:
+    """Tests for user agent configuration via environment variables."""
+
+    def test_lancedb_user_agent_env_var(self, monkeypatch):
+        """Test that LANCEDB_USER_AGENT environment variable sets user agent."""
+        monkeypatch.setenv("LANCEDB_USER_AGENT", "CustomAgent/1.0")
+        monkeypatch.delenv("LANCEDB_USER_AGENT_ENV_KEY", raising=False)
+
+        config = ClientConfig()
+        assert config.user_agent == "CustomAgent/1.0"
+
+    def test_lancedb_user_agent_env_key(self, monkeypatch):
+        """Test LANCEDB_USER_AGENT_ENV_KEY reads another env var."""
+        monkeypatch.setenv("MY_CUSTOM_USER_AGENT", "IndirectAgent/2.0")
+        monkeypatch.setenv("LANCEDB_USER_AGENT_ENV_KEY", "MY_CUSTOM_USER_AGENT")
+        monkeypatch.delenv("LANCEDB_USER_AGENT", raising=False)
+
+        config = ClientConfig()
+        assert config.user_agent == "IndirectAgent/2.0"
+
+    def test_env_key_takes_precedence_over_direct(self, monkeypatch):
+        """Test that LANCEDB_USER_AGENT_ENV_KEY takes precedence."""
+        monkeypatch.setenv("MY_UA", "PriorityAgent/3.0")
+        monkeypatch.setenv("LANCEDB_USER_AGENT_ENV_KEY", "MY_UA")
+        monkeypatch.setenv("LANCEDB_USER_AGENT", "IgnoredAgent/1.0")
+
+        config = ClientConfig()
+        assert config.user_agent == "PriorityAgent/3.0"
+
+    def test_env_key_missing_target_falls_back_to_direct(self, monkeypatch):
+        """Test fallback when LANCEDB_USER_AGENT_ENV_KEY points to missing var."""
+        monkeypatch.setenv("LANCEDB_USER_AGENT_ENV_KEY", "NONEXISTENT_VAR")
+        monkeypatch.setenv("LANCEDB_USER_AGENT", "FallbackAgent/1.0")
+        monkeypatch.delenv("NONEXISTENT_VAR", raising=False)
+
+        config = ClientConfig()
+        assert config.user_agent == "FallbackAgent/1.0"
+
+    def test_no_env_vars_uses_default(self, monkeypatch):
+        """Test that default user agent is used when no env vars are set."""
+        monkeypatch.delenv("LANCEDB_USER_AGENT", raising=False)
+        monkeypatch.delenv("LANCEDB_USER_AGENT_ENV_KEY", raising=False)
+
+        config = ClientConfig()
+        assert config.user_agent == f"LanceDB-Python-Client/{lancedb.__version__}"
+
+    def test_explicit_user_agent_overrides_env(self, monkeypatch):
+        """Test that explicitly provided user_agent overrides env vars."""
+        monkeypatch.setenv("LANCEDB_USER_AGENT", "EnvAgent/1.0")
+        monkeypatch.delenv("LANCEDB_USER_AGENT_ENV_KEY", raising=False)
+
+        config = ClientConfig(user_agent="ExplicitAgent/1.0")
+        assert config.user_agent == "ExplicitAgent/1.0"
+
+    @pytest.mark.asyncio
+    async def test_user_agent_sent_in_request(self, monkeypatch):
+        """Test that env-configured user agent is actually sent in requests."""
+        monkeypatch.setenv("LANCEDB_USER_AGENT", "EnvConfiguredAgent/1.0")
+        monkeypatch.delenv("LANCEDB_USER_AGENT_ENV_KEY", raising=False)
+
+        def handler(request):
+            user_agent = request.headers["User-Agent"]
+            assert user_agent == "EnvConfiguredAgent/1.0"
+
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"tables": []}')
+
+        async with mock_lancedb_connection_async(handler) as db:
+            table_names = await db.table_names()
+            assert table_names == []

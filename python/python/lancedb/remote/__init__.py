@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import os
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import List, Optional
@@ -17,6 +18,30 @@ __all__ = [
     "ClientConfig",
     "HeaderProvider",
 ]
+
+_DEFAULT_USER_AGENT = f"LanceDB-Python-Client/{__version__}"
+
+
+def _get_default_user_agent() -> str:
+    """Get the default user agent, checking environment variables.
+
+    The user agent is determined in the following order:
+    1. If LANCEDB_USER_AGENT_ENV_KEY is set, read the env var whose name
+       is specified by that key
+    2. If LANCEDB_USER_AGENT is set, use that value directly
+    3. Fall back to the default "LanceDB-Python-Client/{version}"
+    """
+    env_key = os.environ.get("LANCEDB_USER_AGENT_ENV_KEY")
+    if env_key is not None:
+        user_agent = os.environ.get(env_key)
+        if user_agent is not None:
+            return user_agent
+
+    user_agent = os.environ.get("LANCEDB_USER_AGENT")
+    if user_agent is not None:
+        return user_agent
+
+    return _DEFAULT_USER_AGENT
 
 
 @dataclass
@@ -145,7 +170,33 @@ class TlsConfig:
 
 @dataclass
 class ClientConfig:
-    user_agent: str = f"LanceDB-Python-Client/{__version__}"
+    """Configuration for the LanceDB Cloud HTTP client.
+
+    Attributes
+    ----------
+    user_agent: str
+        The user agent string to use for HTTP requests. Default is
+        "LanceDB-Python-Client/{version}". This can also be set via environment
+        variables:
+        - LANCEDB_USER_AGENT: directly specifies the user agent string
+        - LANCEDB_USER_AGENT_ENV_KEY: specifies the name of another environment
+          variable that contains the user agent string (takes precedence over
+          LANCEDB_USER_AGENT)
+    retry_config: RetryConfig
+        Configuration for retrying failed requests.
+    timeout_config: Optional[TimeoutConfig]
+        Configuration for request timeouts.
+    extra_headers: Optional[dict]
+        Additional HTTP headers to include in requests.
+    id_delimiter: Optional[str]
+        Delimiter for compound IDs.
+    tls_config: Optional[TlsConfig]
+        TLS/mTLS configuration for secure connections.
+    header_provider: Optional[HeaderProvider]
+        A provider for dynamic HTTP headers.
+    """
+
+    user_agent: str = _DEFAULT_USER_AGENT
     retry_config: RetryConfig = field(default_factory=RetryConfig)
     timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
     extra_headers: Optional[dict] = None
@@ -154,6 +205,9 @@ class ClientConfig:
     header_provider: Optional["HeaderProvider"] = None
 
     def __post_init__(self):
+        # If user_agent is the default, check environment variables
+        if self.user_agent == _DEFAULT_USER_AGENT:
+            self.user_agent = _get_default_user_agent()
         if isinstance(self.retry_config, dict):
             self.retry_config = RetryConfig(**self.retry_config)
         if isinstance(self.timeout_config, dict):
