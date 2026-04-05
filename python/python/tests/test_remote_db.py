@@ -1230,3 +1230,115 @@ def test_background_loop_cancellation(exception):
         with pytest.raises(exception):
             loop.run(None)
         mock_future.cancel.assert_called_once()
+
+
+class TestUserAgentConfig:
+    """Tests for user agent configuration."""
+
+    def test_default_user_agent(self):
+        """Test that default user_agent is the SDK default."""
+        config = ClientConfig()
+        assert config.user_agent == f"LanceDB-Python-Client/{lancedb.__version__}"
+
+    def test_explicit_user_agent(self):
+        """Test that explicitly provided user_agent is preserved."""
+        config = ClientConfig(user_agent="ExplicitAgent/1.0")
+        assert config.user_agent == "ExplicitAgent/1.0"
+
+    def test_user_agent_from_env_var(self):
+        """Test that user_agent can be set via LANCEDB_USER_AGENT env var."""
+        import os
+
+        original = os.environ.get("LANCEDB_USER_AGENT")
+        try:
+            os.environ["LANCEDB_USER_AGENT"] = "EnvAgent/1.0"
+            config = ClientConfig()
+            assert config.user_agent == "EnvAgent/1.0"
+        finally:
+            if original is None:
+                os.environ.pop("LANCEDB_USER_AGENT", None)
+            else:
+                os.environ["LANCEDB_USER_AGENT"] = original
+
+    def test_user_agent_from_env_key(self):
+        """Test that LANCEDB_USER_AGENT_ENV_KEY provides indirect lookup."""
+        import os
+
+        original_key = os.environ.get("LANCEDB_USER_AGENT_ENV_KEY")
+        original_custom = os.environ.get("MY_CUSTOM_UA")
+        try:
+            os.environ["LANCEDB_USER_AGENT_ENV_KEY"] = "MY_CUSTOM_UA"
+            os.environ["MY_CUSTOM_UA"] = "IndirectAgent/2.0"
+            config = ClientConfig()
+            assert config.user_agent == "IndirectAgent/2.0"
+        finally:
+            if original_key is None:
+                os.environ.pop("LANCEDB_USER_AGENT_ENV_KEY", None)
+            else:
+                os.environ["LANCEDB_USER_AGENT_ENV_KEY"] = original_key
+            if original_custom is None:
+                os.environ.pop("MY_CUSTOM_UA", None)
+            else:
+                os.environ["MY_CUSTOM_UA"] = original_custom
+
+    def test_env_key_takes_precedence(self):
+        """Test that LANCEDB_USER_AGENT_ENV_KEY takes precedence."""
+        import os
+
+        original_key = os.environ.get("LANCEDB_USER_AGENT_ENV_KEY")
+        original_direct = os.environ.get("LANCEDB_USER_AGENT")
+        original_custom = os.environ.get("MY_CUSTOM_UA")
+        try:
+            os.environ["LANCEDB_USER_AGENT_ENV_KEY"] = "MY_CUSTOM_UA"
+            os.environ["MY_CUSTOM_UA"] = "IndirectAgent/3.0"
+            os.environ["LANCEDB_USER_AGENT"] = "DirectAgent/3.0"
+            config = ClientConfig()
+            # LANCEDB_USER_AGENT_ENV_KEY takes precedence
+            assert config.user_agent == "IndirectAgent/3.0"
+        finally:
+            if original_key is None:
+                os.environ.pop("LANCEDB_USER_AGENT_ENV_KEY", None)
+            else:
+                os.environ["LANCEDB_USER_AGENT_ENV_KEY"] = original_key
+            if original_direct is None:
+                os.environ.pop("LANCEDB_USER_AGENT", None)
+            else:
+                os.environ["LANCEDB_USER_AGENT"] = original_direct
+            if original_custom is None:
+                os.environ.pop("MY_CUSTOM_UA", None)
+            else:
+                os.environ["MY_CUSTOM_UA"] = original_custom
+
+    def test_explicit_user_agent_takes_precedence_over_env(self):
+        """Test that explicitly set user_agent takes precedence over env vars."""
+        import os
+
+        original = os.environ.get("LANCEDB_USER_AGENT")
+        try:
+            os.environ["LANCEDB_USER_AGENT"] = "EnvAgent/1.0"
+            config = ClientConfig(user_agent="ExplicitAgent/1.0")
+            assert config.user_agent == "ExplicitAgent/1.0"
+        finally:
+            if original is None:
+                os.environ.pop("LANCEDB_USER_AGENT", None)
+            else:
+                os.environ["LANCEDB_USER_AGENT"] = original
+
+    @pytest.mark.asyncio
+    async def test_explicit_user_agent_sent_in_request(self):
+        """Test that explicit user agent is actually sent in requests."""
+
+        def handler(request):
+            user_agent = request.headers["User-Agent"]
+            assert user_agent == "CustomAgent/1.0"
+
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"tables": []}')
+
+        async with mock_lancedb_connection_async(
+            handler, user_agent="CustomAgent/1.0"
+        ) as db:
+            table_names = await db.table_names()
+            assert table_names == []

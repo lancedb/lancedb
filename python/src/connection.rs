@@ -540,7 +540,7 @@ pub fn connect(
 
 #[derive(FromPyObject)]
 pub struct PyClientConfig {
-    user_agent: String,
+    user_agent: Option<String>,
     retry_config: Option<PyClientRetryConfig>,
     timeout_config: Option<PyClientTimeoutConfig>,
     extra_headers: Option<HashMap<String, String>>,
@@ -623,8 +623,11 @@ impl From<PyClientConfig> for lancedb::remote::ClientConfig {
             Arc::new(py_provider) as Arc<dyn lancedb::remote::HeaderProvider>
         });
 
+        // Python SDK handles user_agent defaults (including env var checks)
+        // If somehow None is passed, fall back to Rust core's default
+        let default_config = Self::default();
         Self {
-            user_agent: value.user_agent,
+            user_agent: value.user_agent.unwrap_or(default_config.user_agent),
             retry_config: value.retry_config.map(Into::into).unwrap_or_default(),
             timeout_config: value.timeout_config.map(Into::into).unwrap_or_default(),
             extra_headers: value.extra_headers.unwrap_or_default(),

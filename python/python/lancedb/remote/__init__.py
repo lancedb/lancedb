@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import os
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import List, Optional
@@ -9,6 +10,27 @@ from typing import List, Optional
 from lancedb import __version__
 
 from .header import HeaderProvider
+
+
+def _get_default_user_agent() -> str:
+    """Get the default user agent, checking environment variables first.
+
+    Order of precedence:
+    1. LANCEDB_USER_AGENT_ENV_KEY - name of another env var to read
+    2. LANCEDB_USER_AGENT - direct value
+    3. Default SDK user agent
+    """
+    env_key = os.environ.get("LANCEDB_USER_AGENT_ENV_KEY")
+    if env_key:
+        user_agent = os.environ.get(env_key)
+        if user_agent:
+            return user_agent
+
+    user_agent = os.environ.get("LANCEDB_USER_AGENT")
+    if user_agent:
+        return user_agent
+
+    return f"LanceDB-Python-Client/{__version__}"
 
 __all__ = [
     "TimeoutConfig",
@@ -145,7 +167,32 @@ class TlsConfig:
 
 @dataclass
 class ClientConfig:
-    user_agent: str = f"LanceDB-Python-Client/{__version__}"
+    """Configuration for the LanceDB Cloud HTTP client.
+
+    Attributes
+    ----------
+    user_agent: Optional[str]
+        The user agent string to use for HTTP requests. If not set, the default
+        is determined in the following order:
+        - LANCEDB_USER_AGENT_ENV_KEY: specifies the name of another environment
+          variable that contains the user agent string (takes precedence)
+        - LANCEDB_USER_AGENT: directly specifies the user agent string
+        - Falls back to "LanceDB-Python-Client/{version}"
+    retry_config: RetryConfig
+        Configuration for retrying failed requests.
+    timeout_config: Optional[TimeoutConfig]
+        Configuration for request timeouts.
+    extra_headers: Optional[dict]
+        Additional HTTP headers to include in requests.
+    id_delimiter: Optional[str]
+        Delimiter for compound IDs.
+    tls_config: Optional[TlsConfig]
+        TLS/mTLS configuration for secure connections.
+    header_provider: Optional[HeaderProvider]
+        A provider for dynamic HTTP headers.
+    """
+
+    user_agent: Optional[str] = None
     retry_config: RetryConfig = field(default_factory=RetryConfig)
     timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
     extra_headers: Optional[dict] = None
@@ -154,6 +201,8 @@ class ClientConfig:
     header_provider: Optional["HeaderProvider"] = None
 
     def __post_init__(self):
+        if self.user_agent is None:
+            self.user_agent = _get_default_user_agent()
         if isinstance(self.retry_config, dict):
             self.retry_config = RetryConfig(**self.retry_config)
         if isinstance(self.timeout_config, dict):
