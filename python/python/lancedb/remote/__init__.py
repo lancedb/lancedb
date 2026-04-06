@@ -165,7 +165,7 @@ class ClientConfig:
         Provider for dynamic headers to be added to each request.
     user_id: Optional[str]
         User identifier for tracking purposes. This is sent as the
-        `x-lancedb-user-id` header in requests to LanceDB Cloud.
+        `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
 
         This can also be set via the `LANCEDB_USER_ID` environment variable.
         Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another
