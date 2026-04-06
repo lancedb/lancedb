@@ -32,8 +32,10 @@ python/dist
 *.node
 **/node_modules
 **/.DS_Store
+web/.wasm-tools
 nodejs/lancedb/native*
 dist
+web/.wasm-tools
 
 ## Rust
 target

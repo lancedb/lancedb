@@ -1,0 +1,55 @@
+[package]
+name = "lancedb-wasm"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Read-only HTTP search bindings for LanceDB tables"
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+arrow-array.workspace = true
+arrow-ipc.workspace = true
+arrow-schema.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+http = "1"
+lance-core.workspace = true
+lance-encoding.workspace = true
+lance-file.workspace = true
+lance-io.workspace = true
+lance-table.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlparser = "0.59.0"
+url.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+lance.workspace = true
+lance-index.workspace = true
+lancedb = { path = "../lancedb" }
+object_store = { version = "0.12.0", default-features = false, features = ["http"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bytes = "1"
+chrono.workspace = true
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
+js-sys = "0.3.92"
+object_store = { version = "0.12.0", default-features = false }
+wasm-bindgen = "0.2.115"
+wasm-bindgen-futures = "0.4.55"
+web-sys = { version = "0.3.92", features = ["Headers", "Request", "RequestInit", "Response"] }
+
+[dev-dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+axum = "0.8.4"
+lancedb = { path = "../lancedb" }
+tempfile = "3.23.0"
+tokio = { version = "1.23", features = ["macros", "rt-multi-thread", "sync", "net"] }
+tower-http = { version = "0.6.6", features = ["fs"] }

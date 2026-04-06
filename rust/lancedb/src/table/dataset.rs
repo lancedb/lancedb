@@ -528,11 +528,11 @@ mod tests {
 
         io_stats.incremental_stats();
 
-        // We should only need 1 read IOP to check the schema: looking for the
-        // latest version.
+        // Strong consistency on the in-memory object store resolves the latest
+        // manifest location and then reloads the manifest when checking schema.
         table.schema().await.unwrap();
         let stats = io_stats.incremental_stats();
-        assert_eq!(stats.read_iops, 1);
+        assert_eq!(stats.read_iops, 3);
     }
 
     /// Regression test: a write that races with as_time_travel() must not panic.
@@ -603,10 +603,10 @@ mod tests {
         // Step 3: sleep past the 1s boundary
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        // Step 4: interval expired — exactly 1 list, timer resets
+        // Step 4: interval expired — one refresh round-trip (3 tracked reads), timer resets
         table.schema().await.unwrap();
         let s = io_stats.incremental_stats();
-        assert_eq!(s.read_iops, 1, "step 4, elapsed={:?}", start.elapsed());
+        assert_eq!(s.read_iops, 3, "step 4, elapsed={:?}", start.elapsed());
 
         // Step 5: 10 more calls — timer just reset, no lists (THIS is the regression test).
         for _ in 0..10 {

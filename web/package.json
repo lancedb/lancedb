@@ -1,0 +1,51 @@
+{
+  "name": "@lancedb/lancedb-web",
+  "version": "0.1.0",
+  "description": "Read-only WASM search client for HTTP-hosted Lance tables",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lancedb/lancedb"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./transformers": {
+      "types": "./dist/transformers.d.ts",
+      "default": "./dist/transformers.js"
+    }
+  },
+  "types": "dist/index.d.ts",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "npm run build:wasm && npm run build:ts",
+    "build:all": "npm run build",
+    "build:ts": "tsc -p tsconfig.build.json",
+    "build:wasm": "node ./scripts/build-wasm.mjs",
+    "test": "jest --runInBand"
+  },
+  "dependencies": {
+    "apache-arrow": "^18.1.0"
+  },
+  "peerDependencies": {
+    "@huggingface/transformers": "^3.0.2"
+  },
+  "peerDependenciesMeta": {
+    "@huggingface/transformers": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.13.14",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.8.2"
+  }
+}

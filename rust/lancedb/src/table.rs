@@ -66,6 +66,7 @@ use crate::utils::{
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
+use self::web_publish::{patch_read_params, patch_write_params, wrap_commit_handler};
 
 mod add_data;
 pub mod datafusion;
@@ -76,6 +77,7 @@ pub mod optimize;
 pub mod query;
 pub mod schema_evolution;
 pub mod update;
+mod web_publish;
 pub mod write_progress;
 use crate::index::waiter::wait_for_index;
 #[cfg(feature = "remote")]
@@ -984,6 +986,10 @@ impl Table {
     ///  * Prune: Removes old versions of the dataset
     ///  * Index: Optimizes the indices, adding new data to existing indices
     ///
+    /// For read-heavy serving, use [`Self::optimize_indices_for_search`] to compact
+    /// index segments for lower search latency without changing the public
+    /// [`OptimizeAction`] enum shape.
+    ///
     /// The frequency an application should call optimize is based on the frequency of
     /// data modifications.  If data is frequently added, deleted, or updated then
     /// optimize should be run frequently.  A good rule of thumb is to run optimize if
@@ -991,6 +997,36 @@ impl Table {
     /// modification operations.
     pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.inner.optimize(action).await
+    }
+
+    /// Optimize indices for read-heavy serving by compacting as many index
+    /// segments as currently exist for the selected indices.
+    ///
+    /// Unlike [`Self::optimize`] with [`OptimizeAction::Index`], this helper
+    /// derives a merge window from the current table state and forces
+    /// `retrain = false` to favor search latency over indexing throughput.
+    ///
+    /// ```
+    /// use lancedb::table::{OptimizeOptions, Table};
+    ///
+    /// # async fn optimize(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// table
+    ///     .optimize_indices_for_search(OptimizeOptions::default())
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn optimize_indices_for_search(
+        &self,
+        options: OptimizeOptions,
+    ) -> Result<OptimizeStats> {
+        match self.as_native() {
+            Some(native) => optimize::optimize_indices_for_search(native, options).await,
+            None => Err(Error::NotSupported {
+                message: "search-oriented index optimization is only supported on local tables."
+                    .to_string(),
+            }),
+        }
     }
 
     /// Add new columns to the table, providing values to fill in.
@@ -1362,7 +1398,7 @@ impl NativeTable {
         pushdown_operations: HashSet<PushdownOperation>,
         managed_versioning: Option<bool>,
     ) -> Result<Self> {
-        let params = params.unwrap_or_default();
+        let params = patch_read_params(uri, params.unwrap_or_default()).await?;
         // patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
@@ -1407,7 +1443,7 @@ impl NativeTable {
             let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
                 external_manifest_store: Arc::new(external_store),
             });
-            builder = builder.with_commit_handler(commit_handler);
+            builder = builder.with_commit_handler(wrap_commit_handler(commit_handler));
         }
 
         let dataset = builder.load().await.map_err(|e| match e {
@@ -1591,9 +1627,13 @@ impl NativeTable {
         pushdown_operations: HashSet<PushdownOperation>,
     ) -> Result<Self> {
         // Default params uses format v1.
-        let params = params.unwrap_or(WriteParams {
-            ..Default::default()
-        });
+        let params = patch_write_params(
+            uri,
+            params.unwrap_or(WriteParams {
+                ..Default::default()
+            }),
+        )
+        .await?;
         // patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
@@ -1718,6 +1758,8 @@ impl NativeTable {
         };
         store_params.storage_options_accessor = Some(Arc::new(accessor));
 
+        let params = patch_write_params(uri, params).await?;
+
         // Patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
@@ -1754,6 +1796,15 @@ impl NativeTable {
             namespace_client: stored_namespace_client,
             pushdown_operations,
         })
+    }
+
+    /// Equivalent to [`Table::optimize_indices_for_search`] for callers using
+    /// [`NativeTable`] directly.
+    pub async fn optimize_indices_for_search(
+        &self,
+        options: OptimizeOptions,
+    ) -> Result<OptimizeStats> {
+        optimize::optimize_indices_for_search(self, options).await
     }
 
     /// Merge new data into this table.
