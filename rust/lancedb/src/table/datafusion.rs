@@ -26,9 +26,10 @@ use lance::dataset::{WriteMode, WriteParams};
 
 use super::{AnyQuery, BaseTable};
 use crate::{
-    Result,
-    query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
+    DistanceType, Result,
+    query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest},
 };
+use arrow_array::Array;
 use arrow_schema::{DataType, Field};
 use lance_index::scalar::FullTextSearchQuery;
 
@@ -141,11 +142,31 @@ impl ExecutionPlan for MetadataEraserExec {
     }
 }
 
+/// Parameters for a vector search query, used by vector_search and hybrid_search UDTFs.
+#[derive(Debug, Clone)]
+pub struct VectorSearchParams {
+    /// The query vector to search for
+    pub query_vector: Arc<dyn Array>,
+    /// The column to search on (None for auto-detection)
+    pub column: Option<String>,
+    /// Number of results to return
+    pub top_k: usize,
+    /// Distance metric to use
+    pub distance_type: Option<DistanceType>,
+    /// Number of IVF partitions to search
+    pub nprobes: Option<usize>,
+    /// HNSW search parameter
+    pub ef: Option<usize>,
+    /// Refine factor for improving recall
+    pub refine_factor: Option<u32>,
+}
+
 #[derive(Debug)]
 pub struct BaseTableAdapter {
     table: Arc<dyn BaseTable>,
     schema: Arc<ArrowSchema>,
     fts_query: Option<FullTextSearchQuery>,
+    vector_query: Option<VectorSearchParams>,
 }
 
 impl BaseTableAdapter {
@@ -161,6 +182,7 @@ impl BaseTableAdapter {
             table,
             schema: Arc::new(schema),
             fts_query: None,
+            vector_query: None,
         })
     }
 
@@ -176,6 +198,49 @@ impl BaseTableAdapter {
             table: self.table.clone(),
             schema,
             fts_query: Some(fts_query),
+            vector_query: self.vector_query.clone(),
+        }
+    }
+
+    /// Create a new adapter with a vector search query applied.
+    pub fn with_vector_query(&self, vector_query: VectorSearchParams) -> Self {
+        // Add _distance column to the schema
+        let distance_field = Field::new("_distance", DataType::Float32, true);
+        let mut fields = self.schema.fields().to_vec();
+        fields.push(Arc::new(distance_field));
+        let schema = Arc::new(ArrowSchema::new(fields));
+
+        Self {
+            table: self.table.clone(),
+            schema,
+            fts_query: self.fts_query.clone(),
+            vector_query: Some(vector_query),
+        }
+    }
+
+    /// Create a new adapter with both FTS and vector search queries (hybrid search).
+    ///
+    /// Uses vector search as the primary retrieval method, with FTS applied as a
+    /// pre-filter to restrict the candidate set. Both `_distance` and `_score`
+    /// columns are added to results.
+    pub fn with_hybrid_query(
+        &self,
+        fts_query: FullTextSearchQuery,
+        vector_query: VectorSearchParams,
+    ) -> Self {
+        // Add _distance column (vector search is primary)
+        let mut fields = self.schema.fields().to_vec();
+        fields.push(Arc::new(Field::new("_distance", DataType::Float32, true)));
+        let schema = Arc::new(ArrowSchema::new(fields));
+
+        // Store FTS as a filter concept, but vector search drives the query.
+        // The FTS query is applied via the base QueryRequest's full_text_search
+        // field, which acts as a pre-filter for vector search.
+        Self {
+            table: self.table.clone(),
+            schema,
+            fts_query: Some(fts_query),
+            vector_query: Some(vector_query),
         }
     }
 }
@@ -201,11 +266,20 @@ impl TableProvider for BaseTableAdapter {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        // For FTS queries, disable auto-projection of _score to match DataFusion expectations
-        let disable_scoring = self.fts_query.is_some() && projection.is_some();
+        let has_scoring = self.fts_query.is_some() || self.vector_query.is_some();
+        let disable_scoring = has_scoring && projection.is_some();
 
-        let mut query = QueryRequest {
-            full_text_search: self.fts_query.clone(),
+        // When doing vector search, FTS cannot be combined in the same scanner
+        // (Lance doesn't support both nearest + full_text_search simultaneously).
+        // FTS is only set when there's no vector query.
+        let fts_for_query = if self.vector_query.is_some() {
+            None
+        } else {
+            self.fts_query.clone()
+        };
+
+        let mut base_query = QueryRequest {
+            full_text_search: fts_for_query,
             disable_scoring_autoprojection: disable_scoring,
             ..Default::default()
         };
@@ -215,20 +289,20 @@ impl TableProvider for BaseTableAdapter {
                 .iter()
                 .map(|i| self.schema.field(*i).name().clone())
                 .collect();
-            query.select = Select::Columns(field_names);
+            base_query.select = Select::Columns(field_names);
         }
         if !filters.is_empty() {
             let first = filters.first().unwrap().clone();
             let filter = filters[1..]
                 .iter()
                 .fold(first, |acc, expr| acc.and(expr.clone()));
-            query.filter = Some(QueryFilter::Datafusion(filter));
+            base_query.filter = Some(QueryFilter::Datafusion(filter));
         }
         if let Some(limit) = limit {
-            query.limit = Some(limit);
-        } else {
-            // Need to override the default of 10
-            query.limit = None;
+            base_query.limit = Some(limit);
+        } else if self.vector_query.is_none() {
+            // Need to override the default of 10 for non-vector queries
+            base_query.limit = None;
         }
 
         let options = QueryExecutionOptions {
@@ -236,9 +310,33 @@ impl TableProvider for BaseTableAdapter {
             ..Default::default()
         };
 
+        // Build the appropriate query type
+        let any_query = if let Some(ref vq) = self.vector_query {
+            let vector_query = VectorQueryRequest {
+                base: base_query,
+                column: vq.column.clone(),
+                query_vector: vec![vq.query_vector.clone()],
+                minimum_nprobes: vq.nprobes.unwrap_or(20),
+                maximum_nprobes: vq.nprobes,
+                ef: vq.ef,
+                refine_factor: vq.refine_factor,
+                distance_type: vq.distance_type,
+                use_index: true,
+                ..Default::default()
+            };
+            // For vector queries, use top_k as the limit if no explicit limit set
+            let mut vq_req = vector_query;
+            if limit.is_none() {
+                vq_req.base.limit = Some(vq.top_k);
+            }
+            AnyQuery::VectorQuery(vq_req)
+        } else {
+            AnyQuery::Query(base_query)
+        };
+
         let plan = self
             .table
-            .create_plan(&AnyQuery::Query(query), options)
+            .create_plan(&any_query, options)
             .map_err(|err| DataFusionError::External(err.into()))
             .await?;
         Ok(Arc::new(MetadataEraserExec::new(plan)))

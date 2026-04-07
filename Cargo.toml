@@ -39,6 +39,8 @@ arrow-ord = "57.2"
 arrow-schema = "57.2"
 arrow-select = "57.2"
 arrow-cast = "57.2"
+arrow-flight = { version = "57.2", features = ["flight-sql-experimental"] }
+tonic = "0.14"
 async-trait = "0"
 datafusion = { version = "52.1", default-features = false }
 datafusion-catalog = "52.1"

@@ -88,6 +88,10 @@ candle-transformers = { version = "0.9.1", optional = true }
 candle-nn = { version = "0.9.1", optional = true }
 tokenizers = { version = "0.19.1", optional = true }
 semver = { workspace = true }
+# For flight feature (Arrow Flight SQL server)
+arrow-flight = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
+prost = { version = "0.14", optional = true }
 
 [dev-dependencies]
 anyhow = "1"
@@ -104,6 +108,7 @@ datafusion.workspace = true
 http-body = "1"                                        # Matching reqwest
 rstest = "0.23.0"
 test-log = "0.2"
+tokio-stream = "0.1"
 
 
 [features]
@@ -131,6 +136,7 @@ sentence-transformers = [
     "dep:candle-nn",
     "dep:tokenizers",
 ]
+flight = ["dep:arrow-flight", "dep:tonic", "dep:prost"]
 
 [[example]]
 name = "openai"
@@ -156,6 +162,10 @@ name = "ivf_pq"
 [[example]]
 name = "hybrid_search"
 required-features = ["sentence-transformers"]
+
+[[example]]
+name = "flight_sql"
+required-features = ["flight"]
 
 [package.metadata.docs.rs]
 all-features = true

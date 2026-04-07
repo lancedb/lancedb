@@ -1,29 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! User-Defined Table Functions (UDTFs) for LanceDB
+//! Full-Text Search (FTS) table function for DataFusion SQL integration.
 //!
-//! This module provides table-level UDTFs that integrate with DataFusion's SQL engine.
+//! Usage: `SELECT * FROM fts('table_name', '{"match": {"column": "text", "terms": "query"}}')`
 
 use std::sync::Arc;
 
 use datafusion::catalog::TableFunctionImpl;
 use datafusion_catalog::TableProvider;
-use datafusion_common::{DataFusionError, Result as DataFusionResult, ScalarValue, plan_err};
+use datafusion_common::{DataFusionError, Result as DataFusionResult, plan_err};
 use datafusion_expr::Expr;
 use lance_index::scalar::FullTextSearchQuery;
 
-/// Trait for resolving table names to TableProvider instances.
-pub trait TableResolver: std::fmt::Debug + Send + Sync {
-    /// Resolve a table name to a TableProvider, optionally with an FTS query applied.
-    fn resolve_table(
-        &self,
-        name: &str,
-        fts_query: Option<FullTextSearchQuery>,
-    ) -> DataFusionResult<Arc<dyn TableProvider>>;
-}
+use super::{SearchQuery, TableResolver, extract_string_literal};
 
-/// Full-Text Search table function that operates on LanceDB tables
+/// Full-Text Search table function that operates on LanceDB tables.
+///
+/// Accepts 2 parameters: `fts(table_name, fts_query_json)`
 #[derive(Debug)]
 pub struct FtsTableFunction {
     resolver: Arc<dyn TableResolver>,
@@ -45,20 +39,8 @@ impl TableFunctionImpl for FtsTableFunction {
         let query_json = extract_string_literal(&exprs[1], "fts_query")?;
         let fts_query = parse_fts_query(&query_json)?;
 
-        // Resolver returns a ready-to-use TableProvider with FTS applied
-        self.resolver.resolve_table(&table_name, Some(fts_query))
-    }
-}
-
-fn extract_string_literal(expr: &Expr, param_name: &str) -> DataFusionResult<String> {
-    match expr {
-        Expr::Literal(ScalarValue::Utf8(Some(s)), _) => Ok(s.clone()),
-        Expr::Literal(ScalarValue::LargeUtf8(Some(s)), _) => Ok(s.clone()),
-        _ => plan_err!(
-            "Parameter '{}' must be a string literal, got: {:?}",
-            param_name,
-            expr
-        ),
+        self.resolver
+            .resolve_table(&table_name, Some(SearchQuery::Fts(fts_query)))
     }
 }
 
@@ -91,6 +73,7 @@ pub fn from_json(json: &str) -> crate::Result<lance_index::scalar::inverted::que
 
 #[cfg(test)]
 mod tests {
+    use super::super::{SearchQuery, TableResolver};
     use super::*;
     use crate::{
         Connection, Table,
@@ -100,6 +83,7 @@ mod tests {
     use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema as ArrowSchema};
     use datafusion::prelude::SessionContext;
+    use datafusion_common::DataFusionError;
 
     /// Resolver that looks up tables in a HashMap
     #[derive(Debug)]
@@ -123,7 +107,7 @@ mod tests {
         fn resolve_table(
             &self,
             name: &str,
-            fts_query: Option<FullTextSearchQuery>,
+            search: Option<SearchQuery>,
         ) -> DataFusionResult<Arc<dyn TableProvider>> {
             let table_provider = self
                 .tables
@@ -131,12 +115,10 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| DataFusionError::Plan(format!("Table '{}' not found", name)))?;
 
-            // If no FTS query, return as-is
-            let Some(fts_query) = fts_query else {
+            let Some(search) = search else {
                 return Ok(table_provider);
             };
 
-            // Downcast to BaseTableAdapter and apply FTS query
             let base_adapter = table_provider
                 .as_any()
                 .downcast_ref::<BaseTableAdapter>()
@@ -146,7 +128,15 @@ mod tests {
                     )
                 })?;
 
-            Ok(Arc::new(base_adapter.with_fts_query(fts_query)))
+            match search {
+                SearchQuery::Fts(fts_query) => Ok(Arc::new(base_adapter.with_fts_query(fts_query))),
+                SearchQuery::Vector(vector_query) => {
+                    Ok(Arc::new(base_adapter.with_vector_query(vector_query)))
+                }
+                SearchQuery::Hybrid { fts, vector } => {
+                    Ok(Arc::new(base_adapter.with_hybrid_query(fts, vector)))
+                }
+            }
         }
     }
 

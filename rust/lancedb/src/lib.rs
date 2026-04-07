@@ -170,6 +170,8 @@ pub mod dataloader;
 pub mod embeddings;
 pub mod error;
 pub mod expr;
+#[cfg(feature = "flight")]
+pub mod flight;
 pub mod index;
 pub mod io;
 pub mod ipc;
