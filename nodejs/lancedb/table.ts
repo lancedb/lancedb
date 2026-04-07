@@ -111,13 +111,12 @@ export interface Version {
   metadata: Record<string, string>;
 }
 
-export type Reference =
-  | number
-  | string
-  | {
-      branch: string;
-      version?: number;
-    };
+export interface BranchReference {
+  branch: string;
+  version?: number;
+}
+
+export type Reference = number | string | BranchReference;
 
 export type CheckoutReference = number | string;
 

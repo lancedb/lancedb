@@ -60,9 +60,12 @@ export {
 export {
   Connection,
   CreateTableOptions,
+  OpenTableBranchRefOptions,
   TableNamesOptions,
   OpenTableRefOptions,
   OpenTableOptions,
+  OpenTableTagRefOptions,
+  OpenTableVersionRefOptions,
 } from "./connection";
 
 export { Session } from "./native.js";
@@ -104,6 +107,7 @@ export {
   UpdateOptions,
   OptimizeOptions,
   Version,
+  BranchReference,
   CheckoutReference,
   Reference,
   BranchIdentifier,

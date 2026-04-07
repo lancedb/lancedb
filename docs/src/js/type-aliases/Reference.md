@@ -7,5 +7,5 @@
 # Type Alias: Reference
 
 ```ts
-type Reference: number | string | object;
+type Reference: number | string | BranchReference;
 ```

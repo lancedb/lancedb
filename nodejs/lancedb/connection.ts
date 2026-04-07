@@ -75,34 +75,40 @@ export interface CreateTableOptions {
   embeddingFunction?: EmbeddingFunctionConfig;
 }
 
+export interface OpenTableVersionRefOptions {
+  /**
+   * Open a specific version number on the current table timeline.
+   */
+  versionNumber: number;
+  tagName?: never;
+  branchName?: never;
+}
+
+export interface OpenTableTagRefOptions {
+  versionNumber?: never;
+  /**
+   * Open a specific tag.
+   */
+  tagName: string;
+  branchName?: never;
+}
+
+export interface OpenTableBranchRefOptions {
+  /**
+   * Open a specific branch when the table handle is created.
+   */
+  branchName: string;
+  /**
+   * An optional version number within the selected branch.
+   */
+  versionNumber?: number;
+  tagName?: never;
+}
+
 export type OpenTableRefOptions =
-  | {
-      /**
-       * Open a specific version number on the current table timeline.
-       */
-      versionNumber: number;
-      tagName?: never;
-      branchName?: never;
-    }
-  | {
-      versionNumber?: never;
-      /**
-       * Open a specific tag.
-       */
-      tagName: string;
-      branchName?: never;
-    }
-  | {
-      /**
-       * Open a specific branch when the table handle is created.
-       */
-      branchName: string;
-      /**
-       * An optional version number within the selected branch.
-       */
-      versionNumber?: number;
-      tagName?: never;
-    };
+  | OpenTableVersionRefOptions
+  | OpenTableTagRefOptions
+  | OpenTableBranchRefOptions;
 
 export interface OpenTableOptions {
   /**
