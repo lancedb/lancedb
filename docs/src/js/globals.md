@@ -48,11 +48,14 @@
 - [AddDataOptions](interfaces/AddDataOptions.md)
 - [AddResult](interfaces/AddResult.md)
 - [AlterColumnsResult](interfaces/AlterColumnsResult.md)
+- [BranchContents](interfaces/BranchContents.md)
+- [BranchIdentifier](interfaces/BranchIdentifier.md)
 - [ClientConfig](interfaces/ClientConfig.md)
 - [ColumnAlteration](interfaces/ColumnAlteration.md)
 - [CompactionStats](interfaces/CompactionStats.md)
 - [ConnectionOptions](interfaces/ConnectionOptions.md)
 - [CreateTableOptions](interfaces/CreateTableOptions.md)
+- [CurrentRef](interfaces/CurrentRef.md)
 - [DeleteResult](interfaces/DeleteResult.md)
 - [DropColumnsResult](interfaces/DropColumnsResult.md)
 - [ExecutableQuery](interfaces/ExecutableQuery.md)
@@ -93,13 +96,16 @@
 
 ## Type Aliases
 
+- [CheckoutReference](type-aliases/CheckoutReference.md)
 - [Data](type-aliases/Data.md)
 - [DataLike](type-aliases/DataLike.md)
 - [FieldLike](type-aliases/FieldLike.md)
 - [IntoSql](type-aliases/IntoSql.md)
 - [IntoVector](type-aliases/IntoVector.md)
 - [MultiVector](type-aliases/MultiVector.md)
+- [OpenTableRefOptions](type-aliases/OpenTableRefOptions.md)
 - [RecordBatchLike](type-aliases/RecordBatchLike.md)
+- [Reference](type-aliases/Reference.md)
 - [SchemaLike](type-aliases/SchemaLike.md)
 - [TableLike](type-aliases/TableLike.md)
 
