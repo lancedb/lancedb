@@ -2,11 +2,11 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
-from collections import defaultdict
-from numpy import nan
+from typing import List
+
 import pyarrow as pa
 
-from .base import Reranker
+from .base import Reranker, RerankableResult, VectorResult, FtsResult
 
 
 class LinearCombinationReranker(Reranker):
@@ -41,87 +41,6 @@ class LinearCombinationReranker(Reranker):
     def __str__(self):
         return f"LinearCombinationReranker(weight={self.weight}, fill={self.fill})"
 
-    def rerank_hybrid(
-        self,
-        query: str,  # noqa: F821
-        vector_results: pa.Table,
-        fts_results: pa.Table,
-    ):
-        combined_results = self.merge_results(vector_results, fts_results, self.fill)
-
-        return combined_results
-
-    def merge_results(
-        self, vector_results: pa.Table, fts_results: pa.Table, fill: float
-    ):
-        # If one is empty then return the other and add _relevance_score
-        # column equal the existing vector or fts score
-        if len(vector_results) == 0:
-            results = fts_results.append_column(
-                "_relevance_score",
-                pa.array(fts_results["_score"], type=pa.float32()),
-            )
-            if self.score == "relevance":
-                results = self._keep_relevance_score(results)
-            elif self.score == "all":
-                results = results.append_column(
-                    "_distance",
-                    pa.array([nan] * len(fts_results), type=pa.float32()),
-                )
-            return results
-
-        if len(fts_results) == 0:
-            # invert the distance to relevance score
-            results = vector_results.append_column(
-                "_relevance_score",
-                pa.array(
-                    [
-                        self._invert_score(distance)
-                        for distance in vector_results["_distance"].to_pylist()
-                    ],
-                    type=pa.float32(),
-                ),
-            )
-            if self.score == "relevance":
-                results = self._keep_relevance_score(results)
-            elif self.score == "all":
-                results = results.append_column(
-                    "_score",
-                    pa.array([nan] * len(vector_results), type=pa.float32()),
-                )
-            return results
-        results = defaultdict()
-        for vector_result in vector_results.to_pylist():
-            results[vector_result["_rowid"]] = vector_result
-        for fts_result in fts_results.to_pylist():
-            row_id = fts_result["_rowid"]
-            if row_id in results:
-                results[row_id]["_score"] = fts_result["_score"]
-            else:
-                results[row_id] = fts_result
-
-        combined_list = []
-        for row_id, result in results.items():
-            vector_score = self._invert_score(result.get("_distance", fill))
-            fts_score = result.get("_score", fill)
-            result["_relevance_score"] = self._combine_score(vector_score, fts_score)
-            combined_list.append(result)
-
-        relevance_score_schema = pa.schema(
-            [
-                pa.field("_relevance_score", pa.float32()),
-            ]
-        )
-        combined_schema = pa.unify_schemas(
-            [vector_results.schema, fts_results.schema, relevance_score_schema]
-        )
-        tbl = pa.Table.from_pylist(combined_list, schema=combined_schema).sort_by(
-            [("_relevance_score", "descending")]
-        )
-        if self.score == "relevance":
-            tbl = self._keep_relevance_score(tbl)
-        return tbl
-
     def _combine_score(self, vector_score, fts_score):
         # these scores represent distance
         return 1 - (self.weight * vector_score + (1 - self.weight) * fts_score)
@@ -129,3 +48,41 @@ class LinearCombinationReranker(Reranker):
     def _invert_score(self, dist: float):
         # Invert the score between relevance and distance
         return 1 - dist
+
+    def needs_columns(self):
+        return ["_distance", "_score", "_rowid"]
+
+    def compute_scores(
+        self,
+        query: str,
+        results: List[RerankableResult],
+    ) -> List[pa.Array]:
+        # Collect per-rowid distance and score from typed result sets
+        row_distance = {}  # rowid -> _distance
+        row_fts_score = {}  # rowid -> _score
+
+        for result in results:
+            for row in result.data.to_pylist():
+                rid = row.get("_rowid")
+                if rid is None:
+                    continue
+                if isinstance(result, VectorResult):
+                    if "_distance" in row and row["_distance"] is not None:
+                        row_distance[rid] = row["_distance"]
+                elif isinstance(result, FtsResult):
+                    if "_score" in row and row["_score"] is not None:
+                        row_fts_score[rid] = row["_score"]
+
+        # Compute scores per result set, aligned to each table's rows
+        score_arrays = []
+        for result in results:
+            scores = []
+            for row in result.data.to_pylist():
+                rid = row.get("_rowid")
+                dist = row_distance.get(rid, self.fill)
+                fts = row_fts_score.get(rid, self.fill)
+                vector_score = self._invert_score(dist)
+                scores.append(self._combine_score(vector_score, fts))
+            score_arrays.append(pa.array(scores, type=pa.float32()))
+
+        return score_arrays
