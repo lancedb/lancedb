@@ -3,11 +3,21 @@ name: upload-wheel
 description: "Upload wheels to Pypi"
 inputs:
   pypi_token:
-    required: true
+    required: false
     description: "release token for the repo"
   fury_token:
-    required: true
+    required: false
     description: "release token for the fury repo"
+  repo:
+    required: false
+    description: "pypi, fury, or custom"
+    default: ""
+  custom_pypi_url:
+    required: false
+    description: "Custom PyPI index URL (e.g., Azure Artifacts)"
+  custom_pypi_token:
+    required: false
+    description: "Access token for the custom PyPI index"
 
 runs:
   using: "composite"
@@ -22,7 +32,9 @@ runs:
     shell: bash
     id: choose_repo
     run: |
-      if [[ ${{ github.ref }} == *beta* ]]; then
+      if [[ -n "${{ inputs.repo }}" ]]; then
+        echo "repo=${{ inputs.repo }}" >> $GITHUB_OUTPUT
+      elif [[ ${{ github.ref }} == *beta* ]]; then
         echo "repo=fury" >> $GITHUB_OUTPUT
       else
         echo "repo=pypi" >> $GITHUB_OUTPUT
@@ -32,11 +44,19 @@ runs:
     env:
       FURY_TOKEN: ${{ inputs.fury_token }}
       PYPI_TOKEN: ${{ inputs.pypi_token }}
+      CUSTOM_PYPI_URL: ${{ inputs.custom_pypi_url }}
+      CUSTOM_PYPI_TOKEN: ${{ inputs.custom_pypi_token }}
     run: |
       if [[ ${{ steps.choose_repo.outputs.repo }} == fury ]]; then
         WHEEL=$(ls target/wheels/lancedb-*.whl 2> /dev/null | head -n 1)
         echo "Uploading $WHEEL to Fury"
         curl -f -F package=@$WHEEL https://$FURY_TOKEN@push.fury.io/lancedb/
+      elif [[ ${{ steps.choose_repo.outputs.repo }} == custom ]]; then
+        echo "Uploading to custom PyPI index: $CUSTOM_PYPI_URL"
+        twine upload --repository-url "$CUSTOM_PYPI_URL" \
+          --username __token__ \
+          --password "$CUSTOM_PYPI_TOKEN" \
+          target/wheels/lancedb-*.whl
       else
         twine upload --repository ${{ steps.choose_repo.outputs.repo }} \
           --username __token__ \
