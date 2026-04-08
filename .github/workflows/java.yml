@@ -24,6 +24,9 @@ on:
       - java/**
       - .github/workflows/java.yml
 
+permissions:
+  contents: read
+
 jobs:
   build-java:
     runs-on: ubuntu-24.04

@@ -13,6 +13,9 @@ on:
 env:
   PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/"
 
+permissions:
+  contents: read
+
 jobs:
   linux:
     name: Python ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}

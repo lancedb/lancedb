@@ -10,6 +10,10 @@ on:
       - nodejs/**
       - java/**
       - .github/workflows/license-header-check.yml
+
+permissions:
+  contents: read
+
 jobs:
   check-licenses:
     runs-on: ubuntu-latest
