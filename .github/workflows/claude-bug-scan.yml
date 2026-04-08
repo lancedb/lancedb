@@ -1,0 +1,94 @@
+name: Claude Bug Scan
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"  # Weekly on Monday at 9 AM UTC
+  workflow_dispatch:      # Allow manual trigger
+
+  # Triggered when someone comments "apply #N" on an issue
+  issue_comment:
+    types: [created]
+
+jobs:
+  bug-scan:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Scan this Rust codebase (focus on `rust/lancedb/src/`) for bugs, security issues,
+            and code quality problems.
+
+            Output your findings as a **numbered list ordered by severity** using this format:
+
+            ## Bug Scan Report — <date>
+
+            | # | Severity | File | Description |
+            |---|----------|------|-------------|
+            | 1 | 🔴 Critical | path/to/file.rs:NN | Short description |
+            | 2 | 🟠 High     | path/to/file.rs:NN | Short description |
+            | 3 | 🟡 Medium   | path/to/file.rs:NN | Short description |
+            | 4 | 🔵 Low      | path/to/file.rs:NN | Short description |
+
+            ### Details
+
+            For each finding include:
+            - **#N — Title**
+            - Severity: ...
+            - Location: `file:line`
+            - Description: what the bug is and why it matters
+            - Snippet of relevant code (fenced block)
+
+            ---
+            *To request a fix, reply to this issue with `apply #N` (e.g. `apply #1`).*
+
+            After generating the report, open a new GitHub issue titled
+            "Bug Scan Report — YYYY-MM-DD" with the report as the body.
+          claude_args: "--max-turns 10"
+
+  apply-fix:
+    if: |
+      github.event_name == 'issue_comment' &&
+      startsWith(github.event.comment.body, 'apply #')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract finding number
+        id: parse
+        run: |
+          BODY="${{ github.event.comment.body }}"
+          NUM=$(echo "$BODY" | grep -oP '(?<=apply #)\d+')
+          echo "finding_num=$NUM" >> $GITHUB_OUTPUT
+          echo "issue_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            A user has requested a fix for finding #${{ steps.parse.outputs.finding_num }}
+            from the bug scan report in issue #${{ steps.parse.outputs.issue_number }}.
+
+            Steps:
+            1. Read the issue body at issue #${{ steps.parse.outputs.issue_number }} to find
+               the details for finding #${{ steps.parse.outputs.finding_num }}.
+            2. Locate the relevant file and line number mentioned in that finding.
+            3. Understand the bug thoroughly before writing any fix.
+            4. Implement a minimal, correct fix. Do not refactor unrelated code.
+            5. Add or update a test that covers the fix if one does not already exist.
+            6. Run `cargo check --quiet --features remote --tests` to verify the fix compiles.
+            7. Open a pull request with:
+               - Title: "fix: <short description of finding #${{ steps.parse.outputs.finding_num }}>"
+               - Body: references the issue, explains the root cause and how the fix addresses it.
+          claude_args: "--max-turns 15"
