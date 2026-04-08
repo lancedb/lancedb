@@ -112,6 +112,9 @@ markers = [
     "s3_test",
 ]
 
+[tool.uv]
+extra-index-url = ["https://pypi.fury.io/lance-format/"]
+
 [tool.pyright]
 include = [
     "python/lancedb/index.py",
