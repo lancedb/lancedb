@@ -4,12 +4,13 @@
 use std::sync::Arc;
 
 use super::NativeTable;
+use crate::connection::PushdownOperation;
 use crate::error::{Error, Result};
 use crate::expr::expr_to_sql_string;
 use crate::query::{
     DEFAULT_TOP_K, QueryExecutionOptions, QueryFilter, QueryRequest, Select, VectorQueryRequest,
 };
-use crate::utils::{TimeoutStream, default_vector_column};
+use crate::utils::{MaxBatchLengthStream, TimeoutStream, default_vector_column};
 use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::Array;
@@ -40,8 +41,10 @@ pub async fn execute_query(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<DatasetRecordBatchStream> {
-    // If server-side query is enabled and namespace client is configured, use server-side query execution
-    if table.server_side_query_enabled
+    // If QueryTable pushdown is enabled and namespace client is configured, use server-side query execution
+    if table
+        .pushdown_operations
+        .contains(&PushdownOperation::QueryTable)
         && let Some(ref namespace_client) = table.namespace_client
     {
         return execute_namespace_query(table, namespace_client.clone(), query, options).await;
@@ -66,6 +69,7 @@ async fn execute_generic_query(
 ) -> Result<DatasetRecordBatchStream> {
     let plan = create_plan(table, query, options.clone()).await?;
     let inner = execute_plan(plan, Default::default())?;
+    let inner = MaxBatchLengthStream::new_boxed(inner, options.max_batch_length as usize);
     let inner = if let Some(timeout) = options.timeout {
         TimeoutStream::new_boxed(inner, timeout)
     } else {
@@ -200,7 +204,9 @@ pub async fn create_plan(
         scanner.with_row_id();
     }
 
-    scanner.batch_size(options.max_batch_length as usize);
+    if options.max_batch_length > 0 {
+        scanner.batch_size(options.max_batch_length as usize);
+    }
 
     if query.base.fast_search {
         scanner.fast_search();

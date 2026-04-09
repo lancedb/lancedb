@@ -3,6 +3,7 @@
 
 import json
 from datetime import date, datetime
+from enum import Enum
 from typing import List, Optional, Tuple
 
 import pyarrow as pa
@@ -673,3 +674,29 @@ async def test_aliases_in_lance_model_async(mem_db_async):
     assert hasattr(model, "name")
     assert hasattr(model, "distance")
     assert model.distance < 0.01
+
+
+def test_enum_types():
+    """Enum fields should map to the Arrow type of their value (issue #1846)."""
+
+    class StrStatus(str, Enum):
+        PENDING = "pending"
+        RUNNING = "running"
+        DONE = "done"
+
+    class IntPriority(int, Enum):
+        LOW = 1
+        MEDIUM = 2
+        HIGH = 3
+
+    class TestModel(pydantic.BaseModel):
+        status: StrStatus
+        priority: IntPriority
+        opt_status: Optional[StrStatus] = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    assert schema.field("status").type == pa.dictionary(pa.int32(), pa.utf8())
+    assert schema.field("priority").type == pa.int64()
+    assert schema.field("opt_status").type == pa.dictionary(pa.int32(), pa.utf8())
+    assert schema.field("opt_status").nullable

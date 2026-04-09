@@ -1201,6 +1201,18 @@ async def test_header_provider_overrides_static_headers():
         await db.table_names()
 
 
+def test_close():
+    """Test that close() works without AttributeError."""
+    import asyncio
+
+    def handler(req):
+        req.send_response(200)
+        req.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        asyncio.run(db.close())
+
+
 @pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit, GeneratorExit])
 def test_background_loop_cancellation(exception):
     """Test that BackgroundEventLoop.run() cancels the future on interrupt."""

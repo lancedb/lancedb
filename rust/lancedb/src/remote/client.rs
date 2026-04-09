@@ -52,6 +52,13 @@ pub struct ClientConfig {
     pub tls_config: Option<TlsConfig>,
     /// Provider for custom headers to be added to each request
     pub header_provider: Option<Arc<dyn HeaderProvider>>,
+    /// User identifier for tracking purposes.
+    ///
+    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+    /// It can be set directly, or via the `LANCEDB_USER_ID` environment variable.
+    /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
+    /// variable that contains the user ID value.
+    pub user_id: Option<String>,
 }
 
 impl std::fmt::Debug for ClientConfig {
@@ -67,6 +74,7 @@ impl std::fmt::Debug for ClientConfig {
                 "header_provider",
                 &self.header_provider.as_ref().map(|_| "Some(...)"),
             )
+            .field("user_id", &self.user_id)
             .finish()
     }
 }
@@ -81,7 +89,38 @@ impl Default for ClientConfig {
             id_delimiter: None,
             tls_config: None,
             header_provider: None,
+            user_id: None,
         }
+    }
+}
+
+impl ClientConfig {
+    /// Resolve the user ID from the config or environment variables.
+    ///
+    /// Resolution order:
+    /// 1. If `user_id` is set in the config, use that value
+    /// 2. If `LANCEDB_USER_ID` environment variable is set, use that value
+    /// 3. If `LANCEDB_USER_ID_ENV_KEY` is set, read the env var it points to
+    /// 4. Otherwise, return None
+    pub fn resolve_user_id(&self) -> Option<String> {
+        if self.user_id.is_some() {
+            return self.user_id.clone();
+        }
+
+        if let Ok(user_id) = std::env::var("LANCEDB_USER_ID")
+            && !user_id.is_empty()
+        {
+            return Some(user_id);
+        }
+
+        if let Ok(env_key) = std::env::var("LANCEDB_USER_ID_ENV_KEY")
+            && let Ok(user_id) = std::env::var(&env_key)
+            && !user_id.is_empty()
+        {
+            return Some(user_id);
+        }
+
+        None
     }
 }
 
@@ -460,6 +499,15 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 key_parsed,
                 HeaderValue::from_str(value).map_err(|_| Error::InvalidInput {
                     message: format!("non-ascii value for header '{}' provided", key),
+                })?,
+            );
+        }
+
+        if let Some(user_id) = config.resolve_user_id() {
+            headers.insert(
+                HeaderName::from_static("x-lancedb-user-id"),
+                HeaderValue::from_str(&user_id).map_err(|_| Error::InvalidInput {
+                    message: format!("non-ascii user_id '{}' provided", user_id),
                 })?,
             );
         }
@@ -1070,6 +1118,93 @@ mod tests {
                 assert_eq!(message, "Failed to get headers");
             }
             _ => panic!("Expected Runtime error"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_user_id_direct_value() {
+        let config = ClientConfig {
+            user_id: Some("direct-user-id".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.resolve_user_id(), Some("direct-user-id".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_user_id_none() {
+        let config = ClientConfig::default();
+        // Clear env vars that might be set from other tests
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+            std::env::remove_var("LANCEDB_USER_ID_ENV_KEY");
+        }
+        assert_eq!(config.resolve_user_id(), None);
+    }
+
+    #[test]
+    fn test_resolve_user_id_from_env() {
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCEDB_USER_ID", "env-user-id");
+        }
+        let config = ClientConfig::default();
+        assert_eq!(config.resolve_user_id(), Some("env-user-id".to_string()));
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+        }
+    }
+
+    #[test]
+    fn test_resolve_user_id_from_env_key() {
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+            std::env::set_var("LANCEDB_USER_ID_ENV_KEY", "MY_CUSTOM_USER_ID");
+            std::env::set_var("MY_CUSTOM_USER_ID", "custom-env-user-id");
+        }
+        let config = ClientConfig::default();
+        assert_eq!(
+            config.resolve_user_id(),
+            Some("custom-env-user-id".to_string())
+        );
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID_ENV_KEY");
+            std::env::remove_var("MY_CUSTOM_USER_ID");
+        }
+    }
+
+    #[test]
+    fn test_resolve_user_id_direct_takes_precedence() {
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCEDB_USER_ID", "env-user-id");
+        }
+        let config = ClientConfig {
+            user_id: Some("direct-user-id".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.resolve_user_id(), Some("direct-user-id".to_string()));
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+        }
+    }
+
+    #[test]
+    fn test_resolve_user_id_empty_env_ignored() {
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCEDB_USER_ID", "");
+            std::env::remove_var("LANCEDB_USER_ID_ENV_KEY");
+        }
+        let config = ClientConfig::default();
+        assert_eq!(config.resolve_user_id(), None);
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
         }
     }
 }

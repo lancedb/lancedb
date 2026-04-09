@@ -145,6 +145,33 @@ class TlsConfig:
 
 @dataclass
 class ClientConfig:
+    """Configuration for the LanceDB Cloud HTTP client.
+
+    Attributes
+    ----------
+    user_agent: str
+        User agent string sent with requests.
+    retry_config: RetryConfig
+        Configuration for retrying failed requests.
+    timeout_config: Optional[TimeoutConfig]
+        Configuration for request timeouts.
+    extra_headers: Optional[dict]
+        Additional headers to include in requests.
+    id_delimiter: Optional[str]
+        The delimiter to use when constructing object identifiers.
+    tls_config: Optional[TlsConfig]
+        TLS/mTLS configuration for secure connections.
+    header_provider: Optional[HeaderProvider]
+        Provider for dynamic headers to be added to each request.
+    user_id: Optional[str]
+        User identifier for tracking purposes. This is sent as the
+        `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+
+        This can also be set via the `LANCEDB_USER_ID` environment variable.
+        Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another
+        environment variable that contains the user ID value.
+    """
+
     user_agent: str = f"LanceDB-Python-Client/{__version__}"
     retry_config: RetryConfig = field(default_factory=RetryConfig)
     timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
@@ -152,6 +179,7 @@ class ClientConfig:
     id_delimiter: Optional[str] = None
     tls_config: Optional[TlsConfig] = None
     header_provider: Optional["HeaderProvider"] = None
+    user_id: Optional[str] = None
 
     def __post_init__(self):
         if isinstance(self.retry_config, dict):

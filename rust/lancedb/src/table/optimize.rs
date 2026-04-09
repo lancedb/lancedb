@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{CompactionMetrics, IndexRemapperOptions, compact_files};
-use lance_index::DatasetIndexExt;
+use lance::index::DatasetIndexExt;
 use lance_index::optimize::OptimizeOptions;
 use log::info;
 

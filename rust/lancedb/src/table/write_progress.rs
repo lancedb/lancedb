@@ -130,8 +130,11 @@ impl WriteProgressTracker {
     pub fn record_batch(&self, rows: usize, bytes: usize) {
         // Lock order: callback first, then rows_and_bytes. This is the only
         // order used anywhere, so deadlocks cannot occur.
-        let mut cb = self.callback.lock().unwrap();
-        let mut guard = self.rows_and_bytes.lock().unwrap();
+        let mut cb = self.callback.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .rows_and_bytes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         guard.0 += rows;
         guard.1 += bytes;
         let progress = self.snapshot(guard.0, guard.1, false);
@@ -151,8 +154,11 @@ impl WriteProgressTracker {
     /// `total_rows` is always `Some` on the final callback: it uses the known
     /// total if available, or falls back to the number of rows actually written.
     pub fn finish(&self) {
-        let mut cb = self.callback.lock().unwrap();
-        let guard = self.rows_and_bytes.lock().unwrap();
+        let mut cb = self.callback.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .rows_and_bytes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut snap = self.snapshot(guard.0, guard.1, true);
         snap.total_rows = Some(self.total_rows.unwrap_or(guard.0));
         drop(guard);
@@ -375,5 +381,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_record_batch_recovers_from_poisoned_callback_lock() {
+        use super::{ProgressCallback, WriteProgressTracker};
+        use std::sync::Mutex;
+
+        let callback: ProgressCallback = Arc::new(Mutex::new(|_: &super::WriteProgress| {}));
+
+        // Poison the callback mutex
+        let cb_clone = callback.clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = cb_clone.lock().unwrap();
+            panic!("intentional panic to poison callback mutex");
+        });
+        let _ = handle.join();
+        assert!(
+            callback.lock().is_err(),
+            "callback mutex should be poisoned"
+        );
+
+        let tracker = WriteProgressTracker::new(callback, Some(100));
+
+        // record_batch should not panic
+        tracker.record_batch(10, 1024);
+    }
+
+    #[test]
+    fn test_finish_recovers_from_poisoned_callback_lock() {
+        use super::{ProgressCallback, WriteProgressTracker};
+        use std::sync::Mutex;
+
+        let callback: ProgressCallback = Arc::new(Mutex::new(|_: &super::WriteProgress| {}));
+
+        // Poison the callback mutex
+        let cb_clone = callback.clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = cb_clone.lock().unwrap();
+            panic!("intentional panic to poison callback mutex");
+        });
+        let _ = handle.join();
+
+        let tracker = WriteProgressTracker::new(callback, Some(100));
+
+        // finish should not panic
+        tracker.finish();
     }
 }

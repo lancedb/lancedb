@@ -92,6 +92,13 @@ pub struct ClientConfig {
     pub extra_headers: Option<HashMap<String, String>>,
     pub id_delimiter: Option<String>,
     pub tls_config: Option<TlsConfig>,
+    /// User identifier for tracking purposes.
+    ///
+    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+    /// It can be set directly, or via the `LANCEDB_USER_ID` environment variable.
+    /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
+    /// variable that contains the user ID value.
+    pub user_id: Option<String>,
 }
 
 impl From<TimeoutConfig> for lancedb::remote::TimeoutConfig {
@@ -145,6 +152,7 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
             id_delimiter: config.id_delimiter,
             tls_config: config.tls_config.map(Into::into),
             header_provider: None, // the header provider is set separately later
+            user_id: config.user_id,
         }
     }
 }

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use lance_io::object_store::{LanceNamespaceStorageOptionsProvider, StorageOptionsProvider};
 use lance_namespace::LanceNamespace as LanceNamespaceTrait;
 use lance_namespace::models::*;
 use pyo3::prelude::*;
@@ -693,4 +694,22 @@ pub fn extract_namespace_arc(
 ) -> PyResult<Arc<dyn LanceNamespaceTrait>> {
     let ns_ref = ns.bind(py);
     PyLanceNamespace::create_arc(py, ns_ref)
+}
+
+/// Create a LanceNamespaceStorageOptionsProvider from a namespace client and table ID.
+///
+/// This creates a Rust storage options provider that fetches credentials from the
+/// namespace's describe_table() method, enabling automatic credential refresh.
+///
+/// # Arguments
+/// * `namespace_client` - The namespace client (wrapped PyLanceNamespace)
+/// * `table_id` - Full table identifier (namespace_path + table_name)
+pub fn create_namespace_storage_options_provider(
+    namespace_client: Arc<dyn LanceNamespaceTrait>,
+    table_id: Vec<String>,
+) -> Arc<dyn StorageOptionsProvider> {
+    Arc::new(LanceNamespaceStorageOptionsProvider::new(
+        namespace_client,
+        table_id,
+    ))
 }

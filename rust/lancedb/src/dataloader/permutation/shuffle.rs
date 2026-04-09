@@ -240,7 +240,7 @@ impl Shuffler {
                     .await?;
                     // Need to read the entire file in a single batch for in-memory shuffling
                     let batch = reader.read_record_batch(0, reader.num_rows()).await?;
-                    let mut rng = rng.lock().unwrap();
+                    let mut rng = rng.lock().unwrap_or_else(|e| e.into_inner());
                     Self::shuffle_batch(&batch, &mut rng, clump_size)
                 }
             })

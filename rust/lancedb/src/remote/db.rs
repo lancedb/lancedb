@@ -362,9 +362,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
-        let mut req = if !request.namespace.is_empty() {
+        let mut req = if !request.namespace_path.is_empty() {
             let namespace_id =
-                build_namespace_identifier(&request.namespace, &self.client.id_delimiter);
+                build_namespace_identifier(&request.namespace_path, &self.client.id_delimiter);
             self.client
                 .get(&format!("/v1/namespace/{}/table/list", namespace_id))
         } else {
@@ -387,12 +387,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             .tables;
         for table in &tables {
             let table_identifier =
-                build_table_identifier(table, &request.namespace, &self.client.id_delimiter);
-            let cache_key = build_cache_key(table, &request.namespace);
+                build_table_identifier(table, &request.namespace_path, &self.client.id_delimiter);
+            let cache_key = build_cache_key(table, &request.namespace_path);
             let remote_table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 table.clone(),
-                request.namespace.clone(),
+                request.namespace_path.clone(),
                 table_identifier.clone(),
                 version.clone(),
             ));
@@ -442,8 +442,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
         let body = stream_as_body(request.data.scan_as_stream())?;
 
-        let identifier =
-            build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
+        let identifier = build_table_identifier(
+            &request.name,
+            &request.namespace_path,
+            &self.client.id_delimiter,
+        );
         let req = self
             .client
             .post(&format!("/v1/table/{}/create/", identifier))
@@ -463,7 +466,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                     CreateTableMode::ExistOk(callback) => {
                         let req = OpenTableRequest {
                             name: request.name.clone(),
-                            namespace: request.namespace.clone(),
+                            namespace_path: request.namespace_path.clone(),
                             index_cache_size: None,
                             lance_read_params: None,
                             location: None,
@@ -495,13 +498,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
         let rsp = self.client.check_response(&request_id, rsp).await?;
         let version = parse_server_version(&request_id, &rsp)?;
-        let table_identifier =
-            build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
-        let cache_key = build_cache_key(&request.name, &request.namespace);
+        let table_identifier = build_table_identifier(
+            &request.name,
+            &request.namespace_path,
+            &self.client.id_delimiter,
+        );
+        let cache_key = build_cache_key(&request.name, &request.namespace_path);
         let table = Arc::new(RemoteTable::new(
             self.client.clone(),
             request.name.clone(),
-            request.namespace.clone(),
+            request.namespace_path.clone(),
             table_identifier,
             version,
         ));
@@ -513,7 +519,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
         let table_identifier = build_table_identifier(
             &request.target_table_name,
-            &request.target_namespace,
+            &request.target_namespace_path,
             &self.client.id_delimiter,
         );
 
@@ -542,11 +548,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
 
         let version = parse_server_version(&request_id, &rsp)?;
-        let cache_key = build_cache_key(&request.target_table_name, &request.target_namespace);
+        let cache_key = build_cache_key(&request.target_table_name, &request.target_namespace_path);
         let table = Arc::new(RemoteTable::new(
             self.client.clone(),
             request.target_table_name.clone(),
-            request.target_namespace.clone(),
+            request.target_namespace_path.clone(),
             table_identifier,
             version,
         ));
@@ -556,9 +562,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
-        let identifier =
-            build_table_identifier(&request.name, &request.namespace, &self.client.id_delimiter);
-        let cache_key = build_cache_key(&request.name, &request.namespace);
+        let identifier = build_table_identifier(
+            &request.name,
+            &request.namespace_path,
+            &self.client.id_delimiter,
+        );
+        let cache_key = build_cache_key(&request.name, &request.namespace_path);
 
         // We describe the table to confirm it exists before moving on.
         if let Some(table) = self.table_cache.get(&cache_key).await {
@@ -574,17 +583,17 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             let version = parse_server_version(&request_id, &rsp)?;
             let table_identifier = build_table_identifier(
                 &request.name,
-                &request.namespace,
+                &request.namespace_path,
                 &self.client.id_delimiter,
             );
             let table = Arc::new(RemoteTable::new(
                 self.client.clone(),
                 request.name.clone(),
-                request.namespace.clone(),
+                request.namespace_path.clone(),
                 table_identifier,
                 version,
             ));
-            let cache_key = build_cache_key(&request.name, &request.namespace);
+            let cache_key = build_cache_key(&request.name, &request.namespace_path);
             self.table_cache.insert(cache_key, table.clone()).await;
             Ok(table)
         }
@@ -594,18 +603,18 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         &self,
         current_name: &str,
         new_name: &str,
-        cur_namespace: &[String],
-        new_namespace: &[String],
+        cur_namespace_path: &[String],
+        new_namespace_path: &[String],
     ) -> Result<()> {
         let current_identifier =
-            build_table_identifier(current_name, cur_namespace, &self.client.id_delimiter);
-        let current_cache_key = build_cache_key(current_name, cur_namespace);
-        let new_cache_key = build_cache_key(new_name, new_namespace);
+            build_table_identifier(current_name, cur_namespace_path, &self.client.id_delimiter);
+        let current_cache_key = build_cache_key(current_name, cur_namespace_path);
+        let new_cache_key = build_cache_key(new_name, new_namespace_path);
 
         let mut body = serde_json::json!({ "new_table_name": new_name });
-        if !new_namespace.is_empty() {
+        if !new_namespace_path.is_empty() {
             body["new_namespace"] = serde_json::Value::Array(
-                new_namespace
+                new_namespace_path
                     .iter()
                     .map(|s| serde_json::Value::String(s.clone()))
                     .collect(),
@@ -624,9 +633,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(())
     }
 
-    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()> {
-        let identifier = build_table_identifier(name, namespace, &self.client.id_delimiter);
-        let cache_key = build_cache_key(name, namespace);
+    async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        let identifier = build_table_identifier(name, namespace_path, &self.client.id_delimiter);
+        let cache_key = build_cache_key(name, namespace_path);
         let req = self.client.post(&format!("/v1/table/{}/drop/", identifier));
         let (request_id, resp) = self.client.send(req).await?;
         self.client.check_response(&request_id, resp).await?;
@@ -634,9 +643,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(())
     }
 
-    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
+    async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()> {
         // TODO: Implement namespace-aware drop_all_tables
-        let _namespace = namespace; // Suppress unused warning for now
+        let _namespace_path = namespace_path; // Suppress unused warning for now
         Err(crate::Error::NotSupported {
             message: "Dropping all tables is not currently supported in the remote API".to_string(),
         })
@@ -767,6 +776,32 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
         let namespace = builder.build();
         Ok(Arc::new(namespace) as Arc<dyn lance_namespace::LanceNamespace>)
+    }
+
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
+        let mut properties = HashMap::new();
+        properties.insert("uri".to_string(), self.client.host().to_string());
+        properties.insert("delimiter".to_string(), self.client.id_delimiter.clone());
+        for (key, value) in &self.namespace_headers {
+            properties.insert(format!("header.{}", key), value.clone());
+        }
+        // Add TLS configuration if present
+        if let Some(tls_config) = &self.tls_config {
+            if let Some(cert_file) = &tls_config.cert_file {
+                properties.insert("tls.cert_file".to_string(), cert_file.clone());
+            }
+            if let Some(key_file) = &tls_config.key_file {
+                properties.insert("tls.key_file".to_string(), key_file.clone());
+            }
+            if let Some(ssl_ca_cert) = &tls_config.ssl_ca_cert {
+                properties.insert("tls.ssl_ca_cert".to_string(), ssl_ca_cert.clone());
+            }
+            properties.insert(
+                "tls.assert_hostname".to_string(),
+                tls_config.assert_hostname.to_string(),
+            );
+        }
+        Ok(("rest".to_string(), properties))
     }
 }
 

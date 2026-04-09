@@ -3,7 +3,7 @@
 
 //! Namespace-based database implementation that delegates table management to lance-namespace
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -22,6 +22,7 @@ use lance_namespace_impls::ConnectBuilder;
 use lance_table::io::commit::CommitHandler;
 use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
 
+use crate::connection::PushdownOperation;
 use crate::database::ReadConsistency;
 use crate::error::{Error, Result};
 use crate::table::NativeTable;
@@ -42,8 +43,12 @@ pub struct LanceNamespaceDatabase {
     session: Option<Arc<lance::session::Session>>,
     // database URI
     uri: String,
-    // Whether to enable server-side query execution
-    server_side_query_enabled: bool,
+    // Operations to push down to the namespace server
+    pushdown_operations: HashSet<PushdownOperation>,
+    // Namespace implementation type (e.g., "dir", "rest")
+    ns_impl: String,
+    // Namespace properties used to construct the namespace client
+    ns_properties: HashMap<String, String>,
 }
 
 impl LanceNamespaceDatabase {
@@ -53,7 +58,7 @@ impl LanceNamespaceDatabase {
         storage_options: HashMap<String, String>,
         read_consistency_interval: Option<std::time::Duration>,
         session: Option<Arc<lance::session::Session>>,
-        server_side_query_enabled: bool,
+        pushdown_operations: HashSet<PushdownOperation>,
     ) -> Result<Self> {
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
@@ -72,7 +77,9 @@ impl LanceNamespaceDatabase {
             read_consistency_interval,
             session,
             uri: format!("namespace://{}", ns_impl),
-            server_side_query_enabled,
+            pushdown_operations,
+            ns_impl: ns_impl.to_string(),
+            ns_properties,
         })
     }
 }
@@ -82,7 +89,7 @@ impl std::fmt::Debug for LanceNamespaceDatabase {
         f.debug_struct("LanceNamespaceDatabase")
             .field("storage_options", &self.storage_options)
             .field("read_consistency_interval", &self.read_consistency_interval)
-            .field("server_side_query_enabled", &self.server_side_query_enabled)
+            .field("pushdown_operations", &self.pushdown_operations)
             .finish()
     }
 }
@@ -138,7 +145,7 @@ impl Database for LanceNamespaceDatabase {
 
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
         let ns_request = ListTablesRequest {
-            id: Some(request.namespace),
+            id: Some(request.namespace_path),
             page_token: request.start_after,
             limit: request.limit.map(|l| l as i32),
             ..Default::default()
@@ -154,7 +161,7 @@ impl Database for LanceNamespaceDatabase {
     }
 
     async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
-        let mut table_id = request.namespace.clone();
+        let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
         let describe_request = DescribeTableRequest {
             id: Some(table_id.clone()),
@@ -191,11 +198,11 @@ impl Database for LanceNamespaceDatabase {
                     let native_table = NativeTable::open_from_namespace(
                         self.namespace.clone(),
                         &request.name,
-                        request.namespace.clone(),
+                        request.namespace_path.clone(),
                         None,
                         None,
                         self.read_consistency_interval,
-                        self.server_side_query_enabled,
+                        self.pushdown_operations.clone(),
                         self.session.clone(),
                     )
                     .await?;
@@ -205,7 +212,7 @@ impl Database for LanceNamespaceDatabase {
             }
         }
 
-        let mut table_id = request.namespace.clone();
+        let mut table_id = request.namespace_path.clone();
         table_id.push(request.name.clone());
 
         let declare_request = DeclareTableRequest {
@@ -255,12 +262,12 @@ impl Database for LanceNamespaceDatabase {
             self.namespace.clone(),
             &location,
             &request.name,
-            request.namespace.clone(),
+            request.namespace_path.clone(),
             request.data,
             None, // write_store_wrapper not used for namespace connections
             write_params,
             self.read_consistency_interval,
-            self.server_side_query_enabled,
+            self.pushdown_operations.clone(),
             self.session.clone(),
         )
         .await?;
@@ -272,11 +279,11 @@ impl Database for LanceNamespaceDatabase {
         let native_table = NativeTable::open_from_namespace(
             self.namespace.clone(),
             &request.name,
-            request.namespace.clone(),
+            request.namespace_path.clone(),
             None, // write_store_wrapper not used for namespace connections
             request.lance_read_params,
             self.read_consistency_interval,
-            self.server_side_query_enabled,
+            self.pushdown_operations.clone(),
             self.session.clone(),
         )
         .await?;
@@ -294,16 +301,16 @@ impl Database for LanceNamespaceDatabase {
         &self,
         _cur_name: &str,
         _new_name: &str,
-        _cur_namespace: &[String],
-        _new_namespace: &[String],
+        _cur_namespace_path: &[String],
+        _new_namespace_path: &[String],
     ) -> Result<()> {
         Err(Error::NotSupported {
             message: "rename_table is not supported for namespace connections".to_string(),
         })
     }
 
-    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()> {
-        let mut table_id = namespace.to_vec();
+    async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        let mut table_id = namespace_path.to_vec();
         table_id.push(name.to_string());
 
         let drop_request = DropTableRequest {
@@ -321,17 +328,17 @@ impl Database for LanceNamespaceDatabase {
     }
 
     #[allow(deprecated)]
-    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
+    async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()> {
         let tables = self
             .table_names(TableNamesRequest {
-                namespace: namespace.to_vec(),
+                namespace_path: namespace_path.to_vec(),
                 start_after: None,
                 limit: None,
             })
             .await?;
 
         for table in tables {
-            self.drop_table(&table, namespace).await?;
+            self.drop_table(&table, namespace_path).await?;
         }
 
         Ok(())
@@ -343,6 +350,10 @@ impl Database for LanceNamespaceDatabase {
 
     async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>> {
         Ok(self.namespace.clone())
+    }
+
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
+        Ok((self.ns_impl.clone(), self.ns_properties.clone()))
     }
 }
 
