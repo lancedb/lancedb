@@ -17,9 +17,9 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@657fb7c9c986158a19624b357bcbc8c6deb83598  # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
@@ -53,17 +53,36 @@ jobs:
             "Bug Scan Report — YYYY-MM-DD" with the report as the body.
           claude_args: "--max-turns 10"
 
+      - name: Lock Bug Scan Report issue
+        run: |
+          ISSUE_NUM=$(gh issue list \
+            --search "Bug Scan Report in:title" \
+            --limit 1 \
+            --json number,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[0].number')
+          if [ -n "$ISSUE_NUM" ]; then
+            gh issue lock "$ISSUE_NUM" --reason "resolved"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   apply-fix:
     if: |
       github.event_name == 'issue_comment' &&
-      startsWith(github.event.comment.body, 'apply #')
+      startsWith(github.event.comment.body, 'apply #') &&
+      github.event.issue.user.login == 'github-actions[bot]' &&
+      startsWith(github.event.issue.title, 'Bug Scan Report —') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
+    concurrency:
+      group: apply-fix-${{ github.event.issue.number }}
+      cancel-in-progress: false
     permissions:
       contents: write
       issues: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Extract finding number
         id: parse
@@ -73,10 +92,15 @@ jobs:
           echo "finding_num=$NUM" >> $GITHUB_OUTPUT
           echo "issue_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@657fb7c9c986158a19624b357bcbc8c6deb83598  # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
+            NEVER expose any secrets in Git commit code changes, Git messages, GitHub issue titles,
+            GitHub issue descriptions, GitHub issue comments, GitHub Pull Request titles, GitHub Pull
+            Request descriptions, GitHub Pull Request comments, GitHub Pull Request code review
+            comments, or any other forms.
+
             A user has requested a fix for finding #${{ steps.parse.outputs.finding_num }}
             from the bug scan report in issue #${{ steps.parse.outputs.issue_number }}.
 
@@ -91,4 +115,5 @@ jobs:
             7. Open a pull request with:
                - Title: "fix: <short description of finding #${{ steps.parse.outputs.finding_num }}>"
                - Body: references the issue, explains the root cause and how the fix addresses it.
+          allowed_tools: "Bash,Edit,Glob,Grep,Read,Write,mcp__github__get_issue,mcp__github__create_pull_request,mcp__github__create_branch,mcp__github__push_files"
           claude_args: "--max-turns 15"
