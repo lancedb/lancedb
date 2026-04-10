@@ -177,6 +177,7 @@ impl BedrockEmbeddingFunction {
                         ))
                         .send()
                         .await
+                        .map_err(Box::new)
                 })
             })
             .unwrap();

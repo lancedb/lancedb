@@ -8,6 +8,7 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
       - nodejs/**
       - rust/**
       - docs/src/js/**
