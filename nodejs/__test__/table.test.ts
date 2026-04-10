@@ -1766,6 +1766,7 @@ it("handles branch refs", async () => {
       {
         open: () =>
           conn.openTable("my_table", {
+            // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref normalization
             ref: { branchName: "feature-a", tagName: undefined } as any,
           }),
         expected: featureRef,
@@ -1773,6 +1774,7 @@ it("handles branch refs", async () => {
       {
         open: () =>
           conn.openTable("my_table", {
+            // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref normalization
             ref: { versionNumber: 2, tagName: undefined } as any,
           }),
         expected: mainRef,
@@ -1784,6 +1786,7 @@ it("handles branch refs", async () => {
     }
 
     const nullRefTable = await conn.openTable("my_table", {
+      // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref normalization
       ref: null as any,
     });
     expect(await nullRefTable.currentRef()).toEqual(mainRef);
@@ -1852,6 +1855,7 @@ it("handles branch refs", async () => {
     ).rejects.toThrow("branch versionNumber must be a non-negative integer");
     await expect(
       conn.openTable("my_table", {
+        // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref validation
         ref: { versionNumber: 1, tagName: "main-v1" } as any,
       }),
     ).rejects.toThrow(
@@ -1859,6 +1863,7 @@ it("handles branch refs", async () => {
     );
     await expect(
       conn.openTable("my_table", {
+        // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref validation
         ref: { tagName: undefined } as any,
       }),
     ).rejects.toThrow(
@@ -1866,6 +1871,7 @@ it("handles branch refs", async () => {
     );
     await expect(
       conn.openTable("my_table", {
+        // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref validation
         ref: { branchName: undefined } as any,
       }),
     ).rejects.toThrow(
@@ -1873,6 +1879,7 @@ it("handles branch refs", async () => {
     );
     await expect(
       conn.openTable("my_table", {
+        // biome-ignore lint/suspicious/noExplicitAny: intentionally bypass TS ref typing to validate runtime ref validation
         ref: { versionNumber: undefined } as any,
       }),
     ).rejects.toThrow(
@@ -1898,6 +1905,7 @@ it("handles branch refs", async () => {
       "version must be a non-negative integer",
     );
     await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: intentionally pass an invalid checkout shape to validate the runtime error
       (table as any).checkout({ branch: "feature-a" }),
     ).rejects.toThrow(
       "branch checkout is not supported on an existing table handle; reopen the table with ref.branchName",
@@ -1933,6 +1941,7 @@ it("handles branch refs", async () => {
       createBranch: async (name: string, from: unknown) => {
         captured = { name, from };
       },
+      // biome-ignore lint/suspicious/noExplicitAny: test only needs a minimal mock inner to reach LocalTable#createBranch
     } as any);
     await mockTable.createBranch("feature-a");
     expect(captured).toEqual({
@@ -1940,7 +1949,10 @@ it("handles branch refs", async () => {
       from: null,
     });
 
-    await mockTable.createBranch("null-from", { from: null as any });
+    await mockTable.createBranch("null-from", {
+      // biome-ignore lint/suspicious/noExplicitAny: validate that a null from selector is normalized and forwarded as null
+      from: null as any,
+    });
     expect(captured).toEqual({
       name: "null-from",
       from: null,
