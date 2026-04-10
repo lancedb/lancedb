@@ -18,7 +18,6 @@ import {
   Table,
   connect,
 } from "../lancedb";
-import { LocalTable } from "../lancedb/table";
 import {
   Table as ArrowTable,
   Field,
@@ -49,6 +48,7 @@ import {
   Operator,
   instanceOfFullTextQuery,
 } from "../lancedb/query";
+import { LocalTable } from "../lancedb/table";
 
 describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Given a table",
@@ -1878,9 +1878,9 @@ it("handles branch refs", async () => {
     ).rejects.toThrow(
       "ref must include a defined versionNumber, tagName, or branchName",
     );
-    await expect(conn.openTable("my_table", { ref: { versionNumber: 1.5 } })).rejects.toThrow(
-      "version must be a non-negative integer",
-    );
+    await expect(
+      conn.openTable("my_table", { ref: { versionNumber: 1.5 } }),
+    ).rejects.toThrow("version must be a non-negative integer");
     await expect(
       conn.openTable("my_table", {
         ref: { branchName: "main", versionNumber: Number.NaN },
@@ -1914,9 +1914,9 @@ it("handles branch refs", async () => {
     await expect(
       table.createBranch("bad-ref", { from: { branch: "" } }),
     ).rejects.toThrow("from.branch must be a non-empty string");
-    await expect(
-      table.createBranch("bad-ref", { from: 1.5 }),
-    ).rejects.toThrow("version must be a non-negative integer");
+    await expect(table.createBranch("bad-ref", { from: 1.5 })).rejects.toThrow(
+      "version must be a non-negative integer",
+    );
     await expect(
       table.createBranch("bad-ref", {
         from: { branch: "main", version: Number.POSITIVE_INFINITY },

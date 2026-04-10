@@ -18,7 +18,7 @@ import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Connection as LanceDbConnection } from "./native";
 import { sanitizeTable } from "./sanitize";
 import { cleanseStorageOptions } from "./storage_options";
-import { LocalTable, type Reference as TableReference, Table } from "./table";
+import { LocalTable, Table, type Reference as TableReference } from "./table";
 import { assertValidSelectorName, assertValidVersionNumber } from "./util";
 
 export { cleanseStorageOptions } from "./storage_options";
@@ -363,7 +363,10 @@ function normalizeOpenTableSelector(
     return null;
   }
 
-  const hasBranchNameKey = Object.prototype.hasOwnProperty.call(ref, "branchName");
+  const hasBranchNameKey = Object.prototype.hasOwnProperty.call(
+    ref,
+    "branchName",
+  );
   const hasTagNameKey = Object.prototype.hasOwnProperty.call(ref, "tagName");
   const hasVersionNumberKey = Object.prototype.hasOwnProperty.call(
     ref,

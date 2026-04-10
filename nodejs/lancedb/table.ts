@@ -165,10 +165,9 @@ function mapBranchContents(contents: {
   return {
     parentBranch: contents.parentBranch ?? null,
     identifier: {
-      versionMapping: contents.identifier.versionMapping.map(({ version, id }) => [
-        version,
-        id,
-      ]),
+      versionMapping: contents.identifier.versionMapping.map(
+        ({ version, id }) => [version, id],
+      ),
     },
     parentVersion: contents.parentVersion,
     createdAt: contents.createdAt,
@@ -1030,10 +1029,7 @@ export class LocalTable extends Table {
         assertValidVersionNumber(from.version, "branch version");
       }
     }
-    await this.inner.createBranch(
-      name,
-      from ?? null,
-    );
+    await this.inner.createBranch(name, from ?? null);
   }
 
   async deleteBranch(name: string): Promise<void> {
