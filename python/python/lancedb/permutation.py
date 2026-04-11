@@ -758,6 +758,8 @@ class Permutation:
 
         Note: transforms are not invoked in parallel.  This method is not a good place
         for expensive operations such as image decoding.
+
+        For a higher-level API that works with Python dicts, see map().
         """
         assert transform is not None, "transform is required"
         return Permutation(self.reader, self.selection, self.batch_size, transform)
@@ -773,7 +775,7 @@ class Permutation:
         column names, values are lists) and should return a dict of the
         same shape.
 
-        This is a lazy transform -> fn is not called until data is
+        This is a lazy transform -- fn is not called until data is
         iterated or accessed. This replaces any previously set format
         or transform.
         """
