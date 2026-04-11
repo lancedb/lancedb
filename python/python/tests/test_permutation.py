@@ -1095,3 +1095,94 @@ def test_getitems_invalid_offset(some_permutation: Permutation):
     """Test __getitems__ with an out-of-range offset raises an error."""
     with pytest.raises(Exception):
         some_permutation.__getitems__([999999])
+
+
+def test_map_row_by_row(some_permutation: Permutation):
+    """Test .map() applies fn to each row individually."""
+
+    def double_value(row):
+        return {"id": row["id"], "value": row["value"] * 2}
+
+    mapped = some_permutation.map(double_value)
+    batches = list(mapped.iter(10, skip_last_batch=False))
+    first_batch = batches[0]
+    assert len(first_batch) == 10
+    assert isinstance(first_batch[0], dict)
+    for row in first_batch:
+        assert row["value"] == row["id"] * 2
+
+
+def test_map_batched(some_permutation: Permutation):
+    """Test .map(batched=True) passes column-oriented dict to fn."""
+
+    def upper_keys(batch):
+        return {k.upper(): v for k, v in batch.items()}
+
+    mapped = some_permutation.map(upper_keys, batched=True)
+    batches = list(mapped.iter(10, skip_last_batch=False))
+    first_batch = batches[0]
+    assert isinstance(first_batch, dict)
+    assert "ID" in first_batch
+    assert "VALUE" in first_batch
+    assert len(first_batch["ID"]) == 10
+
+
+def test_map_with_getitems(some_permutation: Permutation):
+    """Test .map() works with __getitems__ for indexed access."""
+
+    def add_field(row):
+        return {**row, "doubled": row["value"] * 2}
+
+    mapped = some_permutation.map(add_field)
+    result = mapped.__getitems__([0, 1, 2])
+    assert len(result) == 3
+    for row in result:
+        assert "doubled" in row
+        assert row["doubled"] == row["value"] * 2
+
+
+def test_map_with_select_columns(some_permutation: Permutation):
+    """Test .map() composes with select_columns for I/O projection."""
+
+    def transform(row):
+        return {"id_str": str(row["id"])}
+
+    mapped = some_permutation.select_columns(["id"]).map(transform)
+    result = mapped.__getitems__([0])
+    assert len(result) == 1
+    assert list(result[0].keys()) == ["id_str"]
+
+
+def test_map_replaces_prior_transform(some_permutation: Permutation):
+    """Test .map() replaces a previously set format."""
+    arrow_perm = some_permutation.with_format("arrow")
+    mapped = arrow_perm.map(lambda row: {**row, "extra": 1})
+    result = mapped.__getitems__([0])
+    assert isinstance(result, list)
+    assert result[0]["extra"] == 1
+
+
+def test_map_is_lazy(some_permutation: Permutation):
+    """Test .map() does not call fn until iteration."""
+    call_count = [0]
+
+    def counting_fn(row):
+        call_count[0] += 1
+        return row
+
+    mapped = some_permutation.map(counting_fn)
+    assert call_count[0] == 0
+
+    mapped.__getitems__([0])
+    assert call_count[0] == 1
+
+
+def test_map_non_callable():
+    """Test .map() raises TypeError for non-callable fn."""
+    import lancedb
+
+    db = lancedb.connect("memory:///")
+    tbl = db.create_table("test_map_noncallable", pa.table({"x": range(10)}))
+    perm = Permutation.identity(tbl)
+    with pytest.raises(TypeError, match="fn must be callable"):
+        perm.map("not a function")
