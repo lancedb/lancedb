@@ -381,6 +381,8 @@ class LanceNamespaceDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
         session: Optional[Session] = None,
         namespace_client_pushdown_operations: Optional[List[str]] = None,
+        namespace_client_impl: Optional[str] = None,
+        namespace_client_properties: Optional[Dict[str, str]] = None,
     ):
         """
         Initialize a namespace-based LanceDB connection.
@@ -406,12 +408,37 @@ class LanceNamespaceDBConnection(DBConnection):
               namespace.create_table() instead of using declare_table + local write.
 
             Default is None (no pushdown, all operations run locally).
+        namespace_client_impl : Optional[str]
+            The namespace implementation name used to create this connection.
+            Stored for serialization purposes.
+        namespace_client_properties : Optional[Dict[str, str]]
+            The namespace properties used to create this connection.
+            Stored for serialization purposes.
         """
         self._namespace_client = namespace_client
         self.read_consistency_interval = read_consistency_interval
         self.storage_options = storage_options or {}
         self.session = session
         self._pushdown_operations = set(namespace_client_pushdown_operations or [])
+        self._namespace_client_impl = namespace_client_impl
+        self._namespace_client_properties = namespace_client_properties
+
+    @override
+    def serialize_to_json(self) -> str:
+        import json
+
+        return json.dumps({
+            "connection_type": "namespace",
+            "namespace_client_impl": self._namespace_client_impl,
+            "namespace_client_properties": self._namespace_client_properties,
+            "pushdown_operations": sorted(self._pushdown_operations),
+            "storage_options": self.storage_options or None,
+            "read_consistency_interval_seconds": (
+                self.read_consistency_interval.total_seconds()
+                if self.read_consistency_interval
+                else None
+            ),
+        })
 
     @override
     def table_names(
@@ -1472,6 +1499,8 @@ def connect_namespace(
         storage_options=storage_options,
         session=session,
         namespace_client_pushdown_operations=namespace_client_pushdown_operations,
+        namespace_client_impl=namespace_client_impl,
+        namespace_client_properties=namespace_client_properties,
     )
 
 

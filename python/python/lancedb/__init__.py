@@ -215,6 +215,65 @@ def connect(
     )
 
 
+WORKER_URI_KEY = "worker_uri"
+
+
+def from_serialized_json(
+    json_str: str,
+    *,
+    for_worker: bool = False,
+) -> DBConnection:
+    """Reconstruct a DBConnection from a JSON string.
+
+    The JSON string must have been produced by
+    :meth:`DBConnection.serialize_to_json`.
+
+    Parameters
+    ----------
+    json_str : str
+        JSON string produced by ``serialize_to_json()``.
+    for_worker : bool, default False
+        When ``True`` and the serialized connection contains a
+        ``worker_uri`` key in its namespace properties, the worker URI
+        replaces the primary ``uri`` before the connection is created.
+        This allows remote workers to connect via an internal endpoint.
+
+    Returns
+    -------
+    DBConnection
+        A new connection matching the serialized state.
+    """
+    import json
+
+    data = json.loads(json_str)
+    connection_type = data.get("connection_type")
+
+    rci_secs = data.get("read_consistency_interval_seconds")
+    rci = timedelta(seconds=rci_secs) if rci_secs is not None else None
+    storage_options = data.get("storage_options")
+
+    if connection_type == "namespace":
+        props = dict(data.get("namespace_client_properties") or {})
+        if for_worker and WORKER_URI_KEY in props:
+            worker_uri = props.pop(WORKER_URI_KEY)
+            props["uri"] = worker_uri
+        return connect_namespace(
+            namespace_client_impl=data["namespace_client_impl"],
+            namespace_client_properties=props,
+            read_consistency_interval=rci,
+            storage_options=storage_options,
+            namespace_client_pushdown_operations=data.get("pushdown_operations"),
+        )
+    elif connection_type == "local":
+        return LanceDBConnection(
+            data["uri"],
+            read_consistency_interval=rci,
+            storage_options=storage_options,
+        )
+    else:
+        raise ValueError(f"Unknown connection_type: {connection_type}")
+
+
 async def connect_async(
     uri: URI,
     *,

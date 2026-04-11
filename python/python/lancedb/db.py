@@ -529,6 +529,21 @@ class DBConnection(EnforceOverrides):
             "namespace_client is not supported for this connection type"
         )
 
+    def serialize_to_json(self) -> str:
+        """Serialize this connection to a JSON string for reconstruction.
+
+        The returned JSON can be passed to :func:`from_serialized_json`
+        to recreate an equivalent connection, e.g. in a remote worker.
+
+        Returns
+        -------
+        str
+            JSON string representation of this connection.
+        """
+        raise NotImplementedError(
+            "serialize_to_json is not supported for this connection type"
+        )
+
 
 class LanceDBConnection(DBConnection):
     """
@@ -651,6 +666,20 @@ class LanceDBConnection(DBConnection):
             val += f", read_consistency_interval={repr(self.read_consistency_interval)}"
         val += ")"
         return val
+
+    @override
+    def serialize_to_json(self) -> str:
+        import json
+
+        rci = self.read_consistency_interval
+        return json.dumps({
+            "connection_type": "local",
+            "uri": self.uri,
+            "storage_options": self.storage_options,
+            "read_consistency_interval_seconds": (
+                rci.total_seconds() if rci else None
+            ),
+        })
 
     async def _async_get_table_names(self, start_after: Optional[str], limit: int):
         conn = AsyncConnection(await lancedb_connect(self.uri))
