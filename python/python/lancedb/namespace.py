@@ -607,10 +607,13 @@ class LanceNamespaceDBConnection(DBConnection):
             fill_value=fill_value,
         )
 
+        merged = dict(self.storage_options or {})
+        if storage_options:
+            merged.update(storage_options)
         request = CreateTableRequest(
             id=table_id,
             mode=_normalize_create_table_mode(mode),
-            properties=self.storage_options if self.storage_options else None,
+            properties=merged or None,
         )
 
         try:
@@ -1147,10 +1150,13 @@ class AsyncLanceNamespaceDBConnection:
                 fill_value=fill_value,
             )
 
+            merged = dict(self.storage_options or {})
+            if storage_options:
+                merged.update(storage_options)
             request = CreateTableRequest(
                 id=table_id,
                 mode=_normalize_create_table_mode(mode),
-                properties=self.storage_options if self.storage_options else None,
+                properties=merged or None,
             )
 
             self._namespace_client.create_table(request, arrow_ipc_bytes)
