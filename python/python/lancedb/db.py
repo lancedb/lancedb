@@ -532,7 +532,7 @@ class DBConnection(EnforceOverrides):
     def serialize(self) -> str:
         """Serialize this connection for reconstruction.
 
-        The returned string can be passed to :func:`lancedb.deserialize`
+        The returned string can be passed to :func:`lancedb.deserialize_conn`
         to recreate an equivalent connection, e.g. in a remote worker.
 
         Returns
