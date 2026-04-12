@@ -681,7 +681,7 @@ class TestPushdownOperations:
             {"root": self.temp_dir},
             namespace_client_pushdown_operations=["QueryTable"],
         )
-        assert "QueryTable" in db._pushdown_operations
+        assert "QueryTable" in db._namespace_client_pushdown_operations
 
     def test_create_table_pushdown_stored(self):
         """Test that CreateTable pushdown is stored on sync connection."""
@@ -690,7 +690,7 @@ class TestPushdownOperations:
             {"root": self.temp_dir},
             namespace_client_pushdown_operations=["CreateTable"],
         )
-        assert "CreateTable" in db._pushdown_operations
+        assert "CreateTable" in db._namespace_client_pushdown_operations
 
     def test_both_pushdowns_stored(self):
         """Test that both pushdown operations can be set together."""
@@ -699,13 +699,13 @@ class TestPushdownOperations:
             {"root": self.temp_dir},
             namespace_client_pushdown_operations=["QueryTable", "CreateTable"],
         )
-        assert "QueryTable" in db._pushdown_operations
-        assert "CreateTable" in db._pushdown_operations
+        assert "QueryTable" in db._namespace_client_pushdown_operations
+        assert "CreateTable" in db._namespace_client_pushdown_operations
 
     def test_pushdown_defaults_to_empty(self):
         """Test that pushdown operations default to empty."""
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
-        assert len(db._pushdown_operations) == 0
+        assert len(db._namespace_client_pushdown_operations) == 0
 
 
 @pytest.mark.asyncio
@@ -727,7 +727,7 @@ class TestAsyncPushdownOperations:
             {"root": self.temp_dir},
             namespace_client_pushdown_operations=["QueryTable"],
         )
-        assert "QueryTable" in db._pushdown_operations
+        assert "QueryTable" in db._namespace_client_pushdown_operations
 
     async def test_async_create_table_pushdown_stored(self):
         """Test that CreateTable pushdown is stored on async connection."""
@@ -736,9 +736,9 @@ class TestAsyncPushdownOperations:
             {"root": self.temp_dir},
             namespace_client_pushdown_operations=["CreateTable"],
         )
-        assert "CreateTable" in db._pushdown_operations
+        assert "CreateTable" in db._namespace_client_pushdown_operations
 
     async def test_async_pushdown_defaults_to_empty(self):
         """Test that pushdown operations default to empty on async connection."""
         db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
-        assert len(db._pushdown_operations) == 0
+        assert len(db._namespace_client_pushdown_operations) == 0

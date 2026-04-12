@@ -237,7 +237,7 @@ def _apply_worker_overrides(props: dict[str, str]) -> dict[str, str]:
     return result
 
 
-def deserialize(
+def deserialize_conn(
     data: str,
     *,
     for_worker: bool = False,
@@ -280,7 +280,9 @@ def deserialize(
             namespace_client_properties=props,
             read_consistency_interval=rci,
             storage_options=storage_options,
-            namespace_client_pushdown_operations=parsed.get("pushdown_operations"),
+            namespace_client_pushdown_operations=parsed.get(
+                "namespace_client_pushdown_operations"
+            ),
         )
     elif connection_type == "local":
         return LanceDBConnection(

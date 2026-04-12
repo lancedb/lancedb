@@ -419,7 +419,9 @@ class LanceNamespaceDBConnection(DBConnection):
         self.read_consistency_interval = read_consistency_interval
         self.storage_options = storage_options or {}
         self.session = session
-        self._pushdown_operations = set(namespace_client_pushdown_operations or [])
+        self._namespace_client_pushdown_operations = set(
+            namespace_client_pushdown_operations or []
+        )
         self._namespace_client_impl = namespace_client_impl
         self._namespace_client_properties = namespace_client_properties
 
@@ -432,7 +434,9 @@ class LanceNamespaceDBConnection(DBConnection):
                 "connection_type": "namespace",
                 "namespace_client_impl": self._namespace_client_impl,
                 "namespace_client_properties": self._namespace_client_properties,
-                "pushdown_operations": sorted(self._pushdown_operations),
+                "namespace_client_pushdown_operations": sorted(
+                    self._namespace_client_pushdown_operations
+                ),
                 "storage_options": self.storage_options or None,
                 "read_consistency_interval_seconds": (
                     self.read_consistency_interval.total_seconds()
@@ -496,7 +500,7 @@ class LanceNamespaceDBConnection(DBConnection):
 
         table_id = namespace_path + [name]
 
-        if "CreateTable" in self._pushdown_operations:
+        if "CreateTable" in self._namespace_client_pushdown_operations:
             return self._create_table_server_side(
                 name=name,
                 data=data,
@@ -578,7 +582,7 @@ class LanceNamespaceDBConnection(DBConnection):
             storage_options=merged_storage_options,
             location=location,
             namespace_client=self._namespace_client,
-            pushdown_operations=self._pushdown_operations,
+            pushdown_operations=self._namespace_client_pushdown_operations,
         )
 
         return tbl
@@ -919,7 +923,7 @@ class LanceNamespaceDBConnection(DBConnection):
             location=table_uri,
             namespace_client=namespace_client,
             managed_versioning=managed_versioning,
-            pushdown_operations=self._pushdown_operations,
+            pushdown_operations=self._namespace_client_pushdown_operations,
         )
 
     @override
@@ -983,7 +987,9 @@ class AsyncLanceNamespaceDBConnection:
         self.read_consistency_interval = read_consistency_interval
         self.storage_options = storage_options or {}
         self.session = session
-        self._pushdown_operations = set(namespace_client_pushdown_operations or [])
+        self._namespace_client_pushdown_operations = set(
+            namespace_client_pushdown_operations or []
+        )
 
     async def table_names(
         self,
@@ -1038,7 +1044,7 @@ class AsyncLanceNamespaceDBConnection:
 
         table_id = namespace_path + [name]
 
-        if "CreateTable" in self._pushdown_operations:
+        if "CreateTable" in self._namespace_client_pushdown_operations:
             return await self._create_table_server_side(
                 name=name,
                 data=data,
@@ -1118,7 +1124,7 @@ class AsyncLanceNamespaceDBConnection:
                 storage_options=merged_storage_options,
                 location=location,
                 namespace_client=self._namespace_client,
-                pushdown_operations=self._pushdown_operations,
+                pushdown_operations=self._namespace_client_pushdown_operations,
             )
 
         lance_table = await asyncio.to_thread(_create_table)
@@ -1225,7 +1231,7 @@ class AsyncLanceNamespaceDBConnection:
                 location=response.location,
                 namespace_client=self._namespace_client,
                 managed_versioning=managed_versioning,
-                pushdown_operations=self._pushdown_operations,
+                pushdown_operations=self._namespace_client_pushdown_operations,
             )
 
         lance_table = await asyncio.to_thread(_open_table)
