@@ -126,6 +126,7 @@ export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 
 export * as embedding from "./embedding";
 export { permutationBuilder, PermutationBuilder } from "./permutation";
+export { Scannable, ScannableOptions } from "./scannable";
 export * as rerankers from "./rerankers";
 export {
   SchemaLike,
