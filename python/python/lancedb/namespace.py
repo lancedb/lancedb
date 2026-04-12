@@ -424,7 +424,7 @@ class LanceNamespaceDBConnection(DBConnection):
         self._namespace_client_properties = namespace_client_properties
 
     @override
-    def serialize_to_json(self) -> str:
+    def serialize(self) -> str:
         import json
 
         return json.dumps({

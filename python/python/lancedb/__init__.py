@@ -237,20 +237,20 @@ def _apply_worker_overrides(props: dict[str, str]) -> dict[str, str]:
     return result
 
 
-def from_serialized_json(
-    json_str: str,
+def deserialize(
+    data: str,
     *,
     for_worker: bool = False,
 ) -> DBConnection:
-    """Reconstruct a DBConnection from a JSON string.
+    """Reconstruct a DBConnection from a serialized string.
 
-    The JSON string must have been produced by
-    :meth:`DBConnection.serialize_to_json`.
+    The string must have been produced by
+    :meth:`DBConnection.serialize`.
 
     Parameters
     ----------
-    json_str : str
-        JSON string produced by ``serialize_to_json()``.
+    data : str
+        String produced by ``serialize()``.
     for_worker : bool, default False
         When ``True``, any namespace client property whose key starts
         with ``_lancedb_worker_`` has that prefix stripped and the
@@ -264,27 +264,27 @@ def from_serialized_json(
     """
     import json
 
-    data = json.loads(json_str)
-    connection_type = data.get("connection_type")
+    parsed = json.loads(data)
+    connection_type = parsed.get("connection_type")
 
-    rci_secs = data.get("read_consistency_interval_seconds")
+    rci_secs = parsed.get("read_consistency_interval_seconds")
     rci = timedelta(seconds=rci_secs) if rci_secs is not None else None
-    storage_options = data.get("storage_options")
+    storage_options = parsed.get("storage_options")
 
     if connection_type == "namespace":
-        props = dict(data.get("namespace_client_properties") or {})
+        props = dict(parsed.get("namespace_client_properties") or {})
         if for_worker:
             props = _apply_worker_overrides(props)
         return connect_namespace(
-            namespace_client_impl=data["namespace_client_impl"],
+            namespace_client_impl=parsed["namespace_client_impl"],
             namespace_client_properties=props,
             read_consistency_interval=rci,
             storage_options=storage_options,
-            namespace_client_pushdown_operations=data.get("pushdown_operations"),
+            namespace_client_pushdown_operations=parsed.get("pushdown_operations"),
         )
     elif connection_type == "local":
         return LanceDBConnection(
-            data["uri"],
+            parsed["uri"],
             read_consistency_interval=rci,
             storage_options=storage_options,
         )

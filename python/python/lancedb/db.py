@@ -529,19 +529,19 @@ class DBConnection(EnforceOverrides):
             "namespace_client is not supported for this connection type"
         )
 
-    def serialize_to_json(self) -> str:
-        """Serialize this connection to a JSON string for reconstruction.
+    def serialize(self) -> str:
+        """Serialize this connection for reconstruction.
 
-        The returned JSON can be passed to :func:`from_serialized_json`
+        The returned string can be passed to :func:`lancedb.deserialize`
         to recreate an equivalent connection, e.g. in a remote worker.
 
         Returns
         -------
         str
-            JSON string representation of this connection.
+            Serialized representation of this connection.
         """
         raise NotImplementedError(
-            "serialize_to_json is not supported for this connection type"
+            "serialize is not supported for this connection type"
         )
 
 
@@ -670,7 +670,7 @@ class LanceDBConnection(DBConnection):
         return val
 
     @override
-    def serialize_to_json(self) -> str:
+    def serialize(self) -> str:
         import json
 
         rci = self.read_consistency_interval
