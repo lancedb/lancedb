@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import { spawn } from "node:child_process";
+import * as path from "node:path";
 import { RecordBatch } from "apache-arrow";
 import * as tmp from "tmp";
 import { Connection, Index, Table, connect, makeArrowTable } from "../lancedb";
@@ -75,5 +77,92 @@ describe("rerankers", function () {
       .toArray();
 
     expect(result).toHaveLength(2);
+  });
+
+  it("does not keep process alive after rerank query", async function () {
+    const script = `
+import * as lancedb from "./dist/index.js";
+import * as os from "node:os";
+import * as path from "node:path";
+import * as fs from "node:fs/promises";
+
+const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lancedb-rerank-exit-"));
+const db = await lancedb.connect(dir);
+const table = await db.createTable("test", [{ text: "hello", vector: [1, 2, 3] }], {
+  mode: "overwrite",
+});
+await table.createIndex("text", { config: lancedb.Index.fts() });
+await table.waitForIndex(["text_idx"], 30);
+
+const reranker = await lancedb.rerankers.RRFReranker.create();
+await table
+  .query()
+  .nearestTo([1, 2, 3])
+  .fullTextSearch("hello")
+  .rerank(reranker)
+  .toArray();
+
+table.close();
+db.close();
+`;
+
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        ["--input-type=module", "-e", script],
+        {
+          cwd: path.resolve(__dirname, ".."),
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      const timeout = setTimeout(() => {
+        child.kill();
+        reject(
+          new Error(
+            `child process did not exit in time\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+          ),
+        );
+      }, 20_000);
+
+      child.on("error", (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+
+      child.on("exit", (code, signal) => {
+        clearTimeout(timeout);
+        if (signal !== null) {
+          reject(
+            new Error(
+              `child process exited with signal ${signal}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+            ),
+          );
+          return;
+        }
+
+        if (code !== 0) {
+          reject(
+            new Error(
+              `child process exited with code ${code}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+            ),
+          );
+          return;
+        }
+
+        resolve();
+      });
+    });
   });
 });
