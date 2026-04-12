@@ -16,6 +16,7 @@ pub mod permutation;
 mod query;
 pub mod remote;
 mod rerankers;
+mod scannable;
 mod session;
 mod table;
 mod util;
