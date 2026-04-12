@@ -718,18 +718,10 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        if namespace_path:
-            return self._namespace_conn().list_namespaces(
-                namespace_path=namespace_path,
-                page_token=page_token,
-                limit=limit,
-            )
-        return LOOP.run(
-            self._conn.list_namespaces(
-                namespace_path=namespace_path,
-                page_token=page_token,
-                limit=limit,
-            )
+        return self._namespace_conn().list_namespaces(
+            namespace_path=namespace_path,
+            page_token=page_token,
+            limit=limit,
         )
 
     @override
