@@ -215,7 +215,26 @@ def connect(
     )
 
 
-WORKER_URI_KEY = "worker_uri"
+WORKER_PROPERTY_PREFIX = "_lancedb_worker_"
+
+
+def _apply_worker_overrides(props: dict[str, str]) -> dict[str, str]:
+    """Apply worker property overrides.
+
+    Any key starting with ``_lancedb_worker_`` is extracted, the prefix
+    is stripped, and the resulting key-value pair is put back into the
+    map (overriding the existing value if present).  The original
+    prefixed key is removed.
+    """
+    worker_keys = [k for k in props if k.startswith(WORKER_PROPERTY_PREFIX)]
+    if not worker_keys:
+        return props
+    result = dict(props)
+    for key in worker_keys:
+        value = result.pop(key)
+        real_key = key[len(WORKER_PROPERTY_PREFIX):]
+        result[real_key] = value
+    return result
 
 
 def from_serialized_json(
@@ -233,10 +252,10 @@ def from_serialized_json(
     json_str : str
         JSON string produced by ``serialize_to_json()``.
     for_worker : bool, default False
-        When ``True`` and the serialized connection contains a
-        ``worker_uri`` key in its namespace properties, the worker URI
-        replaces the primary ``uri`` before the connection is created.
-        This allows remote workers to connect via an internal endpoint.
+        When ``True``, any namespace client property whose key starts
+        with ``_lancedb_worker_`` has that prefix stripped and the
+        value overrides the corresponding property.  For example,
+        ``_lancedb_worker_uri`` replaces ``uri``.
 
     Returns
     -------
@@ -254,9 +273,8 @@ def from_serialized_json(
 
     if connection_type == "namespace":
         props = dict(data.get("namespace_client_properties") or {})
-        if for_worker and WORKER_URI_KEY in props:
-            worker_uri = props.pop(WORKER_URI_KEY)
-            props["uri"] = worker_uri
+        if for_worker:
+            props = _apply_worker_overrides(props)
         return connect_namespace(
             namespace_client_impl=data["namespace_client_impl"],
             namespace_client_properties=props,
