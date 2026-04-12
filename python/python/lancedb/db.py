@@ -540,9 +540,7 @@ class DBConnection(EnforceOverrides):
         str
             Serialized representation of this connection.
         """
-        raise NotImplementedError(
-            "serialize is not supported for this connection type"
-        )
+        raise NotImplementedError("serialize is not supported for this connection type")
 
 
 class LanceDBConnection(DBConnection):
@@ -674,14 +672,16 @@ class LanceDBConnection(DBConnection):
         import json
 
         rci = self.read_consistency_interval
-        return json.dumps({
-            "connection_type": "local",
-            "uri": self.uri,
-            "storage_options": self.storage_options,
-            "read_consistency_interval_seconds": (
-                rci.total_seconds() if rci else None
-            ),
-        })
+        return json.dumps(
+            {
+                "connection_type": "local",
+                "uri": self.uri,
+                "storage_options": self.storage_options,
+                "read_consistency_interval_seconds": (
+                    rci.total_seconds() if rci else None
+                ),
+            }
+        )
 
     async def _async_get_table_names(self, start_after: Optional[str], limit: int):
         conn = AsyncConnection(await lancedb_connect(self.uri))
@@ -918,7 +918,7 @@ class LanceDBConnection(DBConnection):
         )
         return tbl
 
-    def _namespace_conn(self) -> "LanceNamespaceDBConnection":
+    def _namespace_conn(self) -> DBConnection:
         """Return a LanceNamespaceDBConnection backed by this connection's
         directory namespace.  Used to delegate child-namespace operations."""
         from lancedb.namespace import LanceNamespaceDBConnection
@@ -1122,9 +1122,7 @@ class LanceDBConnection(DBConnection):
             The namespace client for this connection.
         """
         if self._cached_namespace_client is None:
-            self._cached_namespace_client = LOOP.run(
-                self._conn.namespace_client()
-            )
+            self._cached_namespace_client = LOOP.run(self._conn.namespace_client())
         return self._cached_namespace_client
 
     @deprecation.deprecated(

@@ -232,7 +232,7 @@ def _apply_worker_overrides(props: dict[str, str]) -> dict[str, str]:
     result = dict(props)
     for key in worker_keys:
         value = result.pop(key)
-        real_key = key[len(WORKER_PROPERTY_PREFIX):]
+        real_key = key[len(WORKER_PROPERTY_PREFIX) :]
         result[real_key] = value
     return result
 

@@ -427,18 +427,20 @@ class LanceNamespaceDBConnection(DBConnection):
     def serialize(self) -> str:
         import json
 
-        return json.dumps({
-            "connection_type": "namespace",
-            "namespace_client_impl": self._namespace_client_impl,
-            "namespace_client_properties": self._namespace_client_properties,
-            "pushdown_operations": sorted(self._pushdown_operations),
-            "storage_options": self.storage_options or None,
-            "read_consistency_interval_seconds": (
-                self.read_consistency_interval.total_seconds()
-                if self.read_consistency_interval
-                else None
-            ),
-        })
+        return json.dumps(
+            {
+                "connection_type": "namespace",
+                "namespace_client_impl": self._namespace_client_impl,
+                "namespace_client_properties": self._namespace_client_properties,
+                "pushdown_operations": sorted(self._pushdown_operations),
+                "storage_options": self.storage_options or None,
+                "read_consistency_interval_seconds": (
+                    self.read_consistency_interval.total_seconds()
+                    if self.read_consistency_interval
+                    else None
+                ),
+            }
+        )
 
     @override
     def table_names(
