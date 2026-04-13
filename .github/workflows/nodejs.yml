@@ -126,7 +126,7 @@ jobs:
         # We run this as part of the job because the binary needs to be built
         # first to export the types of the native code.
         set -e
-        npm ci
+        npm ci --include=optional
         npm run docs
         if ! git diff --exit-code -- ../ ':(exclude)Cargo.lock'; then
           echo "Docs need to be updated"
